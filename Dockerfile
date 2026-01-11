@@ -45,7 +45,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=100 \
-    NAME=Calibre-Web-Automated-Book-Downloader \
+    NAME=Shelfmark \
     PYTHONPATH=/app \
     # PUID/PGID will be handled by entrypoint script, but TZ/Locale are still needed
     LANG=en_US.UTF-8 \
@@ -68,7 +68,14 @@ RUN apt-get update && \
     # For debug
     zip iputils-ping \
     # For user switching
-    sudo && \
+    sudo \
+    # --- Tor support (activated via USING_TOR=true) ---
+    tor \
+    supervisor \
+    iptables && \
+    # Configure iptables alternatives for tor.sh compatibility
+    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
     # Cleanup APT cache *after* all installs in this layer
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
     apt-get clean && \
@@ -87,7 +94,7 @@ WORKDIR /app
 # Install Python dependencies using pip
 # Copying requirements files separately leverages build cache
 # Cache mount persists pip cache between builds for faster installs
-COPY requirements-base.txt requirements-cwa-bd.txt ./
+COPY requirements-base.txt requirements-shelfmark.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements-base.txt
 
@@ -100,7 +107,7 @@ COPY --from=frontend-builder /frontend/dist /app/frontend-dist
 # Final setup: permissions and directories in one layer
 # Only creating directories and setting executable bits.
 # Ownership will be handled by the entrypoint script.
-RUN mkdir -p /var/log/cwa-book-downloader /books && \
+RUN mkdir -p /var/log/shelfmark /books && \
     chmod +x /app/entrypoint.sh /app/tor.sh /app/genDebug.sh
 
 # Expose the application port
@@ -115,7 +122,7 @@ HEALTHCHECK --interval=60s --timeout=60s --start-period=60s --retries=3 \
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 
-FROM base AS cwa-bd
+FROM base AS shelfmark
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -140,7 +147,7 @@ RUN apt-get update && \
 
 # Install additional dependencies (requirements file already copied in base stage)
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements-cwa-bd.txt
+    pip install -r requirements-shelfmark.txt
 
 # Grant read/execute permissions to others
 RUN chmod -R o+rx /usr/bin/chromium && \
@@ -150,30 +157,7 @@ RUN chmod -R o+rx /usr/bin/chromium && \
 # Default command to run the application entrypoint script
 CMD ["/app/entrypoint.sh"]
 
-FROM cwa-bd AS cwa-bd-tor
-
-ENV USING_TOR=true
-
-# Install Tor and dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    # --- Tor ---
-    tor \
-    # --- Supervisor ---
-    supervisor \
-    # --- iptables ---
-    iptables && \
-    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
-    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
-    # Cleanup APT cache *after* all installs in this layer
-    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Override the default command to run Tor
-CMD ["/app/entrypoint.sh"]
-
-FROM base AS cwa-bd-extbp
+FROM base AS shelfmark-lite
 
 ENV USING_EXTERNAL_BYPASSER=true
 

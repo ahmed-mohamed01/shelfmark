@@ -284,8 +284,8 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
           type="button"
           onClick={toggle}
           className={`relative flex items-center gap-2 px-3 py-2 rounded-full transition-all duration-200 text-gray-900 dark:text-gray-100 hover-action ${
-            isOpen ? 'bg-gray-100 dark:bg-gray-700' : ''
-          } animate-fade-in-up`}
+            isOpen ? 'bg-[var(--hover-action)]' : ''
+          } animate-pop-up`}
           aria-haspopup="listbox"
           aria-expanded={isOpen}
           aria-label="Change sort order"

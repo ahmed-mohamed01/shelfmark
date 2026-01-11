@@ -1,12 +1,13 @@
 # Routes all traffic through Tor - requires NET_ADMIN capability
 services:
-  calibre-web-automated-book-downloader-tor:
-    image: ghcr.io/calibrain/calibre-web-automated-book-downloader-tor:latest
+  shelfmark-tor:
+    image: ghcr.io/calibrain/shelfmark:latest
     environment:
       FLASK_PORT: 8084
-      TZ: America/New_York
+      # TZ: America/New_York
       USING_TOR: true
-      # CWA_DB_PATH: /auth/app.db
+      # PUID: 1000
+      # PGID: 1000
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -14,6 +15,7 @@ services:
       - 8084:8084
     restart: unless-stopped
     volumes:
-      - /tmp/data/calibre-web/ingest:/cwa-book-ingest
-      - /path/to/config:/config
-      # - /cwa/config/path/app.db:/auth/app.db:ro
+      - /path/to/books:/books # Book destination directory
+      - /path/to/config:/config # App configuration
+      # Download client mount - path must match your torrent/usenet client's volume exactly
+      # - /path/to/downloads:/path/to/downloads
