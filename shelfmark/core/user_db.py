@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     publish_year INTEGER,
     isbn_13 TEXT,
     cover_url TEXT,
+    series_name TEXT,
+    series_position REAL,
+    series_count INTEGER,
     state TEXT NOT NULL DEFAULT 'discovered',
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, provider, provider_book_id)
@@ -201,6 +204,7 @@ class UserDB:
                 self._migrate_auth_source_column(conn)
                 self._migrate_request_delivery_columns(conn)
                 self._migrate_activity_tables(conn)
+                self._migrate_monitored_books_series_columns(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -400,6 +404,9 @@ class UserDB:
         publish_year: Any = None,
         isbn_13: str | None = None,
         cover_url: str | None = None,
+        series_name: str | None = None,
+        series_position: float | None = None,
+        series_count: int | None = None,
         state: str = "discovered",
     ) -> None:
         """Upsert a monitored book snapshot."""
@@ -440,9 +447,12 @@ class UserDB:
                         publish_year,
                         isbn_13,
                         cover_url,
+                        series_name,
+                        series_position,
+                        series_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
@@ -450,6 +460,9 @@ class UserDB:
                         publish_year=excluded.publish_year,
                         isbn_13=excluded.isbn_13,
                         cover_url=excluded.cover_url,
+                        series_name=excluded.series_name,
+                        series_position=excluded.series_position,
+                        series_count=excluded.series_count,
                         state=excluded.state
                     """,
                     (
@@ -461,6 +474,9 @@ class UserDB:
                         year_value,
                         isbn_13,
                         cover_url,
+                        series_name,
+                        series_position,
+                        series_count,
                         normalized_state,
                     ),
                 )
@@ -573,6 +589,19 @@ class UserDB:
         dismissal_column_names = {str(col["name"]) for col in dismissal_columns}
         if "activity_log_id" not in dismissal_column_names:
             conn.execute("ALTER TABLE activity_dismissals ADD COLUMN activity_log_id INTEGER")
+
+    def _migrate_monitored_books_series_columns(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has series_name, series_position, series_count columns."""
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return  # table doesn't exist yet (will be created by _CREATE_TABLES_SQL)
+        column_names = {str(col["name"]) for col in rows}
+        if "series_name" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_name TEXT")
+        if "series_position" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_position REAL")
+        if "series_count" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_count INTEGER")
 
     def create_user(
         self,

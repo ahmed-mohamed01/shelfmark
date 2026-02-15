@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, syncMonitoredEntity, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
 
@@ -61,9 +61,10 @@ interface AuthorModalProps {
   author: AuthorModalAuthor | null;
   onClose: () => void;
   onGetReleases?: (book: Book, contentType: ContentType) => Promise<void>;
+  monitoredEntityId?: number | null;
 }
 
-export const AuthorModal = ({ author, onClose, onGetReleases }: AuthorModalProps) => {
+export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
   const [supportsDetails, setSupportsDetails] = useState<boolean | null>(null);
@@ -173,75 +174,154 @@ export const AuthorModal = ({ author, onClose, onGetReleases }: AuthorModalProps
 
     let isCancelled = false;
 
+    const monitoredBookToBook = (row: MonitoredBookRow): Book => ({
+      id: `${row.provider || 'unknown'}:${row.provider_book_id || row.id}`,
+      title: row.title,
+      author: row.authors || '',
+      year: row.publish_year != null ? String(row.publish_year) : undefined,
+      preview: row.cover_url || undefined,
+      isbn_13: row.isbn_13 || undefined,
+      provider: row.provider || undefined,
+      provider_id: row.provider_book_id || undefined,
+      series_name: row.series_name || undefined,
+      series_position: row.series_position != null ? row.series_position : undefined,
+      series_count: row.series_count != null ? row.series_count : undefined,
+    });
+
+    const enrichSeriesInfo = async (allBooks: Book[]): Promise<void> => {
+      const candidates = allBooks
+        .filter((book) => Boolean(book.provider && book.provider_id))
+        .filter((book) => !(book.series_name && book.series_position != null));
+
+      const maxEnrich = 40;
+      const batchSize = 5;
+      const toEnrich = candidates.slice(0, maxEnrich);
+
+      if (toEnrich.length === 0) return;
+
+      const enriched: Array<Book | null> = [];
+
+      for (let i = 0; i < toEnrich.length; i += batchSize) {
+        const batch = toEnrich.slice(i, i + batchSize);
+        const batchResults = await Promise.all(
+          batch.map(async (book) => {
+            try {
+              if (!book.provider || !book.provider_id) return null;
+              return await getMetadataBookInfo(book.provider, book.provider_id);
+            } catch {
+              return null;
+            }
+          })
+        );
+        enriched.push(...batchResults);
+        if (isCancelled) return;
+      }
+
+      const byId = new Map(enriched.filter((b): b is Book => Boolean(b)).map((b) => [b.id, b]));
+
+      if (byId.size > 0) {
+        setBooks((current) =>
+          current.map((book) => {
+            const update = byId.get(book.id);
+            if (!update) return book;
+            if (book.series_name && book.series_position != null) return book;
+            return {
+              ...book,
+              series_name: update.series_name,
+              series_position: update.series_position,
+              series_count: update.series_count,
+            };
+          })
+        );
+      }
+    };
+
+    const mergeProviderBooks = (cached: Book[], fresh: Book[]): Book[] => {
+      const cachedById = new Map(cached.map((b) => [b.id, b]));
+      const merged: Book[] = [];
+      const seen = new Set<string>();
+
+      for (const book of fresh) {
+        seen.add(book.id);
+        const existing = cachedById.get(book.id);
+        if (existing) {
+          merged.push({
+            ...book,
+            series_name: book.series_name || existing.series_name,
+            series_position: book.series_position ?? existing.series_position,
+            series_count: book.series_count ?? existing.series_count,
+          });
+        } else {
+          merged.push(book);
+        }
+      }
+
+      for (const book of cached) {
+        if (!seen.has(book.id)) {
+          merged.push(book);
+        }
+      }
+
+      return merged;
+    };
+
     const loadBooks = async () => {
       setBooks([]);
       setBooksError(null);
       setIsLoadingBooks(true);
 
       try {
+        let cachedBooks: Book[] = [];
+
+        if (monitoredEntityId) {
+          try {
+            const rows = await listMonitoredBooks(monitoredEntityId);
+            if (isCancelled) return;
+            if (rows.length > 0) {
+              cachedBooks = rows.map(monitoredBookToBook);
+              setBooks(cachedBooks);
+              setIsLoadingBooks(false);
+            }
+          } catch {
+            // Cache miss is fine, continue to provider fetch
+          }
+        }
+
+        // Fetch from provider page-by-page, progressively updating the display
         const limit = 40;
         const maxPages = 12;
         const maxBooks = 500;
 
         let page = 1;
         let hasMore = true;
-        const allBooks: Book[] = [];
+        const allFreshBooks: Book[] = [];
 
-        while (hasMore && page <= maxPages && allBooks.length < maxBooks) {
+        while (hasMore && page <= maxPages && allFreshBooks.length < maxBooks) {
           const result = await searchMetadata('', limit, 'relevance', { author: author.name }, page, 'ebook');
           if (isCancelled) return;
 
-          allBooks.push(...result.books);
-          setBooks([...allBooks]);
+          allFreshBooks.push(...result.books);
+
+          if (cachedBooks.length > 0) {
+            setBooks(mergeProviderBooks(cachedBooks, allFreshBooks));
+          } else {
+            setBooks([...allFreshBooks]);
+          }
 
           hasMore = result.hasMore;
           page += 1;
         }
 
-        const candidates = allBooks
-          .filter((book) => Boolean(book.provider && book.provider_id))
-          .filter((book) => !(book.series_name && book.series_position != null));
+        setIsLoadingBooks(false);
 
-        const maxEnrich = 40;
-        const batchSize = 5;
-        const toEnrich = candidates.slice(0, maxEnrich);
+        await enrichSeriesInfo(allFreshBooks);
+        if (isCancelled) return;
 
-        if (toEnrich.length > 0) {
-          const enriched: Array<Book | null> = [];
-
-          for (let i = 0; i < toEnrich.length; i += batchSize) {
-            const batch = toEnrich.slice(i, i + batchSize);
-            const batchResults = await Promise.all(
-              batch.map(async (book) => {
-                try {
-                  if (!book.provider || !book.provider_id) return null;
-                  const full = await getMetadataBookInfo(book.provider, book.provider_id);
-                  return full;
-                } catch {
-                  return null;
-                }
-              })
-            );
-            enriched.push(...batchResults);
-            if (isCancelled) return;
-          }
-
-          const byId = new Map(enriched.filter((b): b is Book => Boolean(b)).map((b) => [b.id, b]));
-
-          if (byId.size > 0) {
-            setBooks((current) =>
-              current.map((book) => {
-                const update = byId.get(book.id);
-                if (!update) return book;
-                if (book.series_name && book.series_position != null) return book;
-                return {
-                  ...book,
-                  series_name: update.series_name,
-                  series_position: update.series_position,
-                  series_count: update.series_count,
-                };
-              })
-            );
+        if (monitoredEntityId) {
+          try {
+            await syncMonitoredEntity(monitoredEntityId);
+          } catch {
+            // Best-effort sync, don't block UI
           }
         }
       } catch (e) {
@@ -260,7 +340,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases }: AuthorModalProps
     return () => {
       isCancelled = true;
     };
-  }, [author]);
+  }, [author, monitoredEntityId]);
 
   const titleId = useMemo(() => {
     if (!author) return '';

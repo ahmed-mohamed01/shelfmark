@@ -213,6 +213,9 @@ def register_monitored_routes(
                         publish_year=payload.get("publish_year"),
                         isbn_13=payload.get("isbn_13"),
                         cover_url=payload.get("cover_url"),
+                        series_name=payload.get("series_name"),
+                        series_position=payload.get("series_position"),
+                        series_count=payload.get("series_count"),
                         state="discovered",
                     )
                     discovered += 1

@@ -98,6 +98,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
     provider_id?: string | null;
     source_url?: string | null;
     photo_url?: string | null;
+    monitoredEntityId?: number | null;
   } | null>(null);
 
   const [isDesktop, setIsDesktop] = useState(false);
@@ -205,6 +206,14 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
   }, [monitoredViewMode]);
 
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);
+
+  const monitoredEntityIdByName = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of monitored) {
+      map.set(item.name.toLowerCase(), item.id);
+    }
+    return map;
+  }, [monitored]);
 
   const runAuthorSearch = useCallback(async () => {
     const q = normalizeAuthor(authorQuery);
@@ -314,7 +323,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
     }
   }, [monitored]);
 
-  const openAuthorModal = useCallback((payload: { name: string; provider?: string | null; provider_id?: string | null; source_url?: string | null; photo_url?: string | null }) => {
+  const openAuthorModal = useCallback((payload: { name: string; provider?: string | null; provider_id?: string | null; source_url?: string | null; photo_url?: string | null; monitoredEntityId?: number | null }) => {
     const normalized = normalizeAuthor(payload.name);
     if (!normalized) {
       return;
@@ -325,6 +334,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
       provider_id: payload.provider_id || null,
       source_url: payload.source_url || null,
       photo_url: payload.photo_url || null,
+      monitoredEntityId: payload.monitoredEntityId ?? null,
     });
   }, []);
 
@@ -494,7 +504,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
                             <AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name} />
                             <button
                               type="button"
-                              onClick={() => openAuthorModal(author)}
+                              onClick={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                               className="text-left flex-1 min-w-0"
                             >
                               <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{author.name}</div>
@@ -526,7 +536,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
                           actionLabel="Remove"
                           actionDisabled={false}
                           onAction={() => removeMonitored(author.name)}
-                          onOpen={() => openAuthorModal(author)}
+                          onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                           onRemove={() => removeMonitored(author.name)}
                           animationDelay={index * 50}
                         />
@@ -537,7 +547,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
                           actionLabel="Remove"
                           actionDisabled={false}
                           onAction={() => removeMonitored(author.name)}
-                          onOpen={() => openAuthorModal(author)}
+                          onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                           animationDelay={index * 50}
                         />
                       );
@@ -740,6 +750,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
           author={activeAuthor}
           onGetReleases={onGetReleases}
           onClose={() => setActiveAuthor(null)}
+          monitoredEntityId={activeAuthor.monitoredEntityId}
         />
       )}
     </div>
