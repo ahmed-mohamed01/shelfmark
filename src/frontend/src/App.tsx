@@ -863,10 +863,6 @@ function App() {
     return openReleasesForBook(book, contentType);
   };
 
-  const handleGetReleasesForContentType = async (book: Book, releaseContentType: ContentType) => {
-    return openReleasesForBook(book, releaseContentType);
-  };
-
   // Handle download from ReleaseModal (universal mode release rows).
   const handleReleaseDownload = async (book: Book, release: Release, releaseContentType: ContentType) => {
     try {
@@ -1423,7 +1419,7 @@ function App() {
           ) : (
             <MonitoredPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
-              onGetReleases={handleGetReleasesForContentType}
+              onGetReleases={openReleasesForBook}
               onBack={() => {
                 window.location.assign(withBasePath('/'));
               }}
