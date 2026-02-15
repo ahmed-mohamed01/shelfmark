@@ -175,7 +175,12 @@ def register_monitored_routes(
         rows = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        return jsonify(rows)
+
+        # Include last_checked_at so the frontend can decide whether to refresh
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        last_checked_at = entity.get("last_checked_at") if entity else None
+
+        return jsonify({"books": rows, "last_checked_at": last_checked_at})
 
     @app.route("/api/monitored/<int:entity_id>/books/series", methods=["PATCH"])
     def api_update_monitored_books_series(entity_id: int):

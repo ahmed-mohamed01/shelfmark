@@ -399,8 +399,13 @@ export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boole
   });
 };
 
-export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBookRow[]> => {
-  return fetchJSON<MonitoredBookRow[]>(`${API.monitored}/${entityId}/books`);
+export interface MonitoredBooksResponse {
+  books: MonitoredBookRow[];
+  last_checked_at: string | null;
+}
+
+export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBooksResponse> => {
+  return fetchJSON<MonitoredBooksResponse>(`${API.monitored}/${entityId}/books`);
 };
 
 export const updateMonitoredBooksSeries = async (
