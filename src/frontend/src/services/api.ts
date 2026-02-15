@@ -424,6 +424,87 @@ export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boole
   });
 };
 
+export interface MonitoredBookFileRow {
+  id: number;
+  entity_id: number;
+  provider: string | null;
+  provider_book_id: string | null;
+  path: string;
+  ext?: string | null;
+  file_type?: string | null;
+  size_bytes?: number | null;
+  mtime?: string | null;
+  confidence?: number | null;
+  match_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const listMonitoredBookFiles = async (entityId: number): Promise<{ files: MonitoredBookFileRow[] }> => {
+  return fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API.monitored}/${entityId}/files`);
+};
+
+export interface MonitoredFilesScanResult {
+  ok: boolean;
+  entity_id: number;
+  scanned: {
+    ebook_author_dir: string;
+  };
+  stats: {
+    files_scanned: number;
+    matched: number;
+    unmatched: number;
+  };
+  matched: Array<{
+    path: string;
+    ext?: string;
+    file_type?: string;
+    size_bytes?: number | null;
+    mtime?: string | null;
+    candidate?: string;
+    match: {
+      provider: string | null;
+      provider_book_id: string | null;
+      title: string | null;
+      confidence: number;
+      reason: string;
+      top_matches?: Array<{
+        title: string;
+        provider: string | null;
+        provider_book_id: string | null;
+        score: number;
+      }>;
+    };
+  }>;
+  unmatched: Array<{
+    path: string;
+    ext?: string;
+    file_type?: string;
+    size_bytes?: number | null;
+    mtime?: string | null;
+    candidate?: string;
+    best_score?: number;
+    top_matches?: Array<{
+      title: string;
+      provider: string | null;
+      provider_book_id: string | null;
+      score: number;
+    }>;
+  }>;
+  missing_books: Array<{
+    provider: string;
+    provider_book_id: string;
+    title: string | null;
+  }>;
+  last_ebook_scan_at?: string;
+}
+
+export const scanMonitoredEntityFiles = async (entityId: number): Promise<MonitoredFilesScanResult> => {
+  return fetchJSON<MonitoredFilesScanResult>(`${API.monitored}/${entityId}/scan-files`, {
+    method: 'POST',
+  });
+};
+
 export interface MonitoredBooksResponse {
   books: MonitoredBookRow[];
   last_checked_at: string | null;

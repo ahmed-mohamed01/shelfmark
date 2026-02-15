@@ -4,6 +4,10 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable
 
+import difflib
+import re
+from pathlib import Path
+
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
@@ -75,6 +79,147 @@ def register_monitored_routes(
     *,
     resolve_auth_mode: Callable[[], str],
 ) -> None:
+
+    def _resolve_allowed_roots(*, db_user_id: int) -> list[Path]:
+        # Mirror the safety model in /api/fs/list: only allow browsing/scanning inside
+        # configured destinations + remembered monitored roots.
+        try:
+            from shelfmark.core.config import config as app_config
+        except Exception:
+            app_config = None
+
+        def _normalize_root(value: Any) -> str | None:
+            if not isinstance(value, str):
+                return None
+            v = value.strip().rstrip('/')
+            if not v or not v.startswith('/'):
+                return None
+            return v
+
+        allowed: list[Path] = []
+        if app_config is not None:
+            try:
+                dest = _normalize_root(app_config.get('DESTINATION', '/books', user_id=db_user_id))
+                if dest:
+                    allowed.append(Path(dest).resolve())
+                dest_audio = _normalize_root(app_config.get('DESTINATION_AUDIOBOOK', '', user_id=db_user_id))
+                if dest_audio:
+                    allowed.append(Path(dest_audio).resolve())
+            except Exception:
+                pass
+
+        try:
+            user_settings = user_db.get_user_settings(db_user_id) or {}
+        except Exception:
+            user_settings = {}
+
+        for key in ('MONITORED_EBOOK_ROOTS', 'MONITORED_AUDIOBOOK_ROOTS'):
+            roots_value = user_settings.get(key)
+            if isinstance(roots_value, list):
+                for item in roots_value:
+                    root = _normalize_root(item)
+                    if root:
+                        try:
+                            allowed.append(Path(root).resolve())
+                        except Exception:
+                            continue
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for root in allowed:
+            s = str(root)
+            if s not in seen:
+                seen.add(s)
+                unique.append(root)
+        return unique
+
+    def _path_within_allowed_roots(*, path: Path, roots: list[Path]) -> bool:
+        for root in roots:
+            try:
+                path.relative_to(root)
+                return True
+            except Exception:
+                continue
+        return False
+
+    _TAG_PATTERNS = [
+        re.compile(r"\[[^\]]+\]"),
+        re.compile(r"\([^\)]+\)"),
+        re.compile(r"\{[^\}]+\}"),
+    ]
+
+    def _normalize_candidate_title(raw: str, author_name: str) -> str:
+        s = (raw or "").strip()
+        if not s:
+            return ""
+        s = s.replace('_', ' ').replace('.', ' ')
+        for pat in _TAG_PATTERNS:
+            s = pat.sub(' ', s)
+        s = re.sub(r"\b(ebook|epub|mobi|azw3?|pdf|retail|repack|illustrated|unabridged|scan|ocr)\b", " ", s, flags=re.IGNORECASE)
+        # Strip author suffix/prefix
+        a = (author_name or "").strip()
+        if a:
+            s = re.sub(rf"\s*[-–—:]\s*{re.escape(a)}\s*$", " ", s, flags=re.IGNORECASE)
+            s = re.sub(rf"^\s*{re.escape(a)}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
+        # Collapse whitespace
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    _VOLUME_MARKER_RE = re.compile(
+        r"\b(?:(arc|book|vol(?:ume)?)\s*[-:#]?\s*)(\d{1,3})\b",
+        re.IGNORECASE,
+    )
+
+    def _extract_volume_markers(s: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        text = (s or "").strip().lower()
+        if not text:
+            return out
+        for m in _VOLUME_MARKER_RE.finditer(text):
+            kind = (m.group(1) or "").lower()
+            num_raw = m.group(2) or ""
+            try:
+                num = int(num_raw)
+            except Exception:
+                continue
+            if kind.startswith("vol"):
+                kind = "vol"
+            out[kind] = num
+        return out
+
+    def _score_title_match(candidate: str, title: str) -> float:
+        c = (candidate or "").strip().lower()
+        t = (title or "").strip().lower()
+        if not c or not t:
+            return 0.0
+        if c == t:
+            return 1.0
+
+        base = difflib.SequenceMatcher(None, c, t).ratio()
+
+        c_markers = _extract_volume_markers(c)
+        t_markers = _extract_volume_markers(t)
+
+        # Sonarr-style idea: structured tokens (e.g. ARC 1) should dominate over fuzzy similarity.
+        bonus = 0.0
+        penalty = 0.0
+        for kind in ("arc", "book", "vol"):
+            cn = c_markers.get(kind)
+            tn = t_markers.get(kind)
+            if cn is None or tn is None:
+                continue
+            if cn == tn:
+                bonus = max(bonus, 0.22)
+            else:
+                penalty = max(penalty, 0.35)
+
+        score = base + bonus - penalty
+        if score < 0.0:
+            return 0.0
+        if score > 1.0:
+            return 1.0
+        return float(score)
+
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
@@ -238,6 +383,256 @@ def register_monitored_routes(
         last_checked_at = entity.get("last_checked_at") if entity else None
 
         return jsonify({"books": rows, "last_checked_at": last_checked_at})
+
+    @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])
+    def api_list_monitored_book_files(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        rows = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id)
+        if rows is None:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"files": rows})
+
+    @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
+    def api_scan_monitored_files(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
+        if not allowed:
+            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+        if entity.get("kind") != "author":
+            return jsonify({"error": "Scan is only supported for author entities"}), 400
+
+        settings = entity.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+
+        author_name = str(entity.get("name") or "").strip()
+        ebook_dir_raw = settings.get("ebook_author_dir")
+        ebook_dir = str(ebook_dir_raw).strip() if isinstance(ebook_dir_raw, str) else ""
+        ebook_dir = ebook_dir.rstrip('/')
+        if not ebook_dir or not ebook_dir.startswith('/'):
+            return jsonify({"error": "ebook_author_dir is not set"}), 400
+
+        roots = _resolve_allowed_roots(db_user_id=int(db_user_id or 0))
+        if not roots:
+            return jsonify({"error": "No allowed roots configured"}), 400
+
+        try:
+            ebook_path = Path(ebook_dir).resolve()
+        except Exception:
+            return jsonify({"error": "Invalid ebook_author_dir"}), 400
+
+        if not _path_within_allowed_roots(path=ebook_path, roots=roots):
+            return jsonify({"error": "Path not allowed"}), 403
+        if not ebook_path.exists() or not ebook_path.is_dir():
+            return jsonify({"error": "Directory not found"}), 404
+
+        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
+        if books is None:
+            return jsonify({"error": "Not found"}), 404
+
+        known_titles: list[tuple[dict[str, Any], str]] = []
+        for row in books:
+            title = str(row.get("title") or "").strip()
+            if title:
+                known_titles.append((row, title))
+
+        allowed_ext = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
+        max_files = 4000
+        scanned_files = 0
+        matched: list[dict[str, Any]] = []
+        unmatched: list[dict[str, Any]] = []
+        best_by_book_and_type: dict[tuple[str, str, str], float] = {}
+
+        def _iso_mtime(p: Path) -> str | None:
+            try:
+                ts = p.stat().st_mtime
+                return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+            except Exception:
+                return None
+
+        try:
+            for p in ebook_path.rglob('*'):
+                if scanned_files >= max_files:
+                    break
+                try:
+                    if not p.is_file():
+                        continue
+                    if p.is_symlink():
+                        continue
+                except Exception:
+                    continue
+
+                ext = p.suffix.lower()
+                if ext not in allowed_ext:
+                    continue
+
+                scanned_files += 1
+                try:
+                    st = p.stat()
+                    size_bytes = int(st.st_size)
+                except Exception:
+                    size_bytes = None
+
+                candidate = _normalize_candidate_title(p.stem, author_name)
+                best_score = 0.0
+                best_row: dict[str, Any] | None = None
+                scored: list[tuple[float, dict[str, Any], str]] = []
+                for row, title in known_titles:
+                    score = _score_title_match(candidate, title)
+                    scored.append((score, row, title))
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+
+                scored.sort(key=lambda x: x[0], reverse=True)
+                top_matches = [
+                    {
+                        "title": t,
+                        "provider": r.get("provider"),
+                        "provider_book_id": r.get("provider_book_id"),
+                        "score": float(s),
+                    }
+                    for (s, r, t) in scored[:5]
+                    if t
+                ]
+
+                file_type = ext.lstrip('.')
+                mtime = _iso_mtime(p)
+
+                # Aggressive threshold
+                if best_row is not None and best_score >= 0.55:
+                    provider = best_row.get("provider")
+                    provider_book_id = best_row.get("provider_book_id")
+                    provider = str(provider) if provider is not None else None
+                    provider_book_id = str(provider_book_id) if provider_book_id is not None else None
+
+                    match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
+                    prev = best_by_book_and_type.get(match_key)
+                    if prev is None or best_score >= prev:
+                        best_by_book_and_type[match_key] = float(best_score)
+                        user_db.upsert_monitored_book_file(
+                            user_id=db_user_id,
+                            entity_id=entity_id,
+                            provider=provider,
+                            provider_book_id=provider_book_id,
+                            path=str(p),
+                            ext=ext.lstrip('.'),
+                            file_type=file_type,
+                            size_bytes=size_bytes,
+                            mtime=mtime,
+                            confidence=float(best_score),
+                            match_reason="filename_title_fuzzy",
+                        )
+
+                    matched.append({
+                        "path": str(p),
+                        "ext": ext.lstrip('.'),
+                        "file_type": file_type,
+                        "size_bytes": size_bytes,
+                        "mtime": mtime,
+                        "candidate": candidate,
+                        "match": {
+                            "provider": provider,
+                            "provider_book_id": provider_book_id,
+                            "title": best_row.get("title"),
+                            "confidence": float(best_score),
+                            "reason": "filename_title_fuzzy",
+                            "top_matches": top_matches,
+                        },
+                    })
+                else:
+                    unmatched.append({
+                        "path": str(p),
+                        "ext": ext.lstrip('.'),
+                        "file_type": file_type,
+                        "size_bytes": size_bytes,
+                        "mtime": mtime,
+                        "candidate": candidate,
+                        "best_score": float(best_score),
+                        "top_matches": top_matches,
+                    })
+
+            # Determine missing books (best-effort): books with no matching file rows for epub
+            existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+            have_book_ids: set[tuple[str, str]] = set()
+            for row in existing_files:
+                prov = row.get("provider")
+                bid = row.get("provider_book_id")
+                if isinstance(prov, str) and isinstance(bid, str) and prov and bid:
+                    have_book_ids.add((prov, bid))
+
+            missing_books: list[dict[str, Any]] = []
+            for row in books:
+                prov = row.get("provider")
+                bid = row.get("provider_book_id")
+                if not isinstance(prov, str) or not isinstance(bid, str) or not prov or not bid:
+                    continue
+                if (prov, bid) not in have_book_ids:
+                    missing_books.append({
+                        "provider": prov,
+                        "provider_book_id": bid,
+                        "title": row.get("title"),
+                    })
+
+            # Update settings with scan timestamp
+            scan_at = datetime.utcnow().isoformat() + "Z"
+            merged_settings = dict(settings)
+            merged_settings["last_ebook_scan_at"] = scan_at
+            merged_settings.pop("last_ebook_scan_error", None)
+            user_db.create_monitored_entity(
+                user_id=db_user_id,
+                kind=str(entity.get("kind") or "author"),
+                provider=entity.get("provider"),
+                provider_id=entity.get("provider_id"),
+                name=str(entity.get("name") or "").strip() or "Unknown",
+                enabled=bool(int(entity.get("enabled") or 0)),
+                settings=merged_settings,
+            )
+
+            return jsonify({
+                "ok": True,
+                "entity_id": entity_id,
+                "scanned": {
+                    "ebook_author_dir": str(ebook_path),
+                },
+                "stats": {
+                    "files_scanned": scanned_files,
+                    "matched": len(matched),
+                    "unmatched": len(unmatched),
+                },
+                "matched": matched,
+                "unmatched": unmatched,
+                "missing_books": missing_books,
+                "last_ebook_scan_at": scan_at,
+            })
+
+        except Exception as exc:
+            logger.warning("Scan files failed entity_id=%s: %s", entity_id, exc)
+            try:
+                merged_settings = dict(settings)
+                merged_settings["last_ebook_scan_error"] = str(exc)
+                user_db.create_monitored_entity(
+                    user_id=db_user_id,
+                    kind=str(entity.get("kind") or "author"),
+                    provider=entity.get("provider"),
+                    provider_id=entity.get("provider_id"),
+                    name=str(entity.get("name") or "").strip() or "Unknown",
+                    enabled=bool(int(entity.get("enabled") or 0)),
+                    settings=merged_settings,
+                )
+            except Exception:
+                pass
+            return jsonify({"error": "Scan failed"}), 500
 
     @app.route("/api/monitored/<int:entity_id>/books/series", methods=["PATCH"])
     def api_update_monitored_books_series(entity_id: int):

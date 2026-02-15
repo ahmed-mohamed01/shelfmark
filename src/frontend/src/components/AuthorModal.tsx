@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, MonitoredFilesScanResult } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
 import { FolderBrowserModal } from './FolderBrowserModal';
@@ -98,6 +98,11 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   });
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
+  const [lastScanResult, setLastScanResult] = useState<MonitoredFilesScanResult | null>(null);
+
   const handleClose = useCallback(() => {
     setIsClosing(true);
     setTimeout(() => {
@@ -135,6 +140,11 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       setEbookAuthorDir('');
       setAudiobookAuthorDir('');
       setIsEditModalOpen(false);
+
+      setFilesLoading(false);
+      setFilesError(null);
+      setFiles([]);
+      setLastScanResult(null);
       return;
     }
 
@@ -164,6 +174,54 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       alive = false;
     };
   }, [author, monitoredEntityId]);
+
+  useEffect(() => {
+    if (!author || !monitoredEntityId) return;
+    let alive = true;
+    const load = async () => {
+      setFilesLoading(true);
+      setFilesError(null);
+      try {
+        const resp = await listMonitoredBookFiles(monitoredEntityId);
+        if (!alive) return;
+        setFiles(resp.files || []);
+      } catch (e) {
+        if (!alive) return;
+        const message = e instanceof Error ? e.message : 'Failed to load matched files';
+        setFilesError(message);
+        setFiles([]);
+      } finally {
+        if (alive) setFilesLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      alive = false;
+    };
+  }, [author, monitoredEntityId]);
+
+  const handleRefreshAndScan = useCallback(async () => {
+    if (!monitoredEntityId) {
+      setRefreshKey((k) => k + 1);
+      return;
+    }
+
+    setIsRefreshing(true);
+    setFilesError(null);
+    try {
+      setRefreshKey((k) => k + 1);
+      await syncMonitoredEntity(monitoredEntityId);
+      const scan = await scanMonitoredEntityFiles(monitoredEntityId);
+      setLastScanResult(scan);
+      const resp = await listMonitoredBookFiles(monitoredEntityId);
+      setFiles(resp.files || []);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Refresh & scan failed';
+      setFilesError(message);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [monitoredEntityId]);
 
   useEffect(() => {
     try {
@@ -511,6 +569,25 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
 
     return groups;
   }, [books, booksSort]);
+
+  const matchedFileTypesByBookKey = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const f of files) {
+      const prov = typeof f.provider === 'string' ? f.provider : '';
+      const bid = typeof f.provider_book_id === 'string' ? f.provider_book_id : '';
+      if (!prov || !bid) continue;
+      const key = `${prov}:${bid}`;
+      const t = typeof f.file_type === 'string' ? f.file_type.trim().toLowerCase() : '';
+      if (!t) continue;
+      let set = map.get(key);
+      if (!set) {
+        set = new Set<string>();
+        map.set(key, set);
+      }
+      set.add(t);
+    }
+    return map;
+  }, [files]);
 
   const filteredGroupedBooks = useMemo(() => {
     const q = booksQuery.trim().toLowerCase();
@@ -868,11 +945,11 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                     </Dropdown>
                     <button
                       type="button"
-                      onClick={() => setRefreshKey((k) => k + 1)}
+                      onClick={() => void handleRefreshAndScan()}
                       disabled={isLoadingBooks || isRefreshing}
                       className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                      aria-label="Refresh books from provider"
-                      title="Refresh books from provider"
+                      aria-label={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'}
+                      title={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'}
                     >
                       <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" />
@@ -880,6 +957,62 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                     </button>
                   </div>
                 </div>
+
+                {monitoredEntityId ? (
+                  <div className="px-4 pb-3">
+                    {filesError ? <div className="text-sm text-red-500">{filesError}</div> : null}
+                    {filesLoading ? <div className="text-sm text-gray-600 dark:text-gray-300">Loading files…</div> : null}
+                    {lastScanResult ? (
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        Last scan: {lastScanResult.last_ebook_scan_at || '—'} · matched {lastScanResult.stats?.matched ?? 0} of {lastScanResult.stats?.files_scanned ?? 0}
+                      </div>
+                    ) : null}
+
+                    {lastScanResult?.matched && lastScanResult.matched.length > 0 ? (
+                      <div className="mt-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
+                        <div className="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Last scan matches</div>
+                        <div className="max-h-48 overflow-auto divide-y divide-black/10 dark:divide-white/10">
+                          {lastScanResult.matched.slice(0, 20).map((m) => (
+                            <div key={m.path} className="px-3 py-2 text-sm">
+                              <div className="truncate">{m.path}</div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {(m.candidate || '').trim() ? `candidate: ${m.candidate}` : null}
+                                {(m.match?.title || '').trim() ? ` → ${m.match.title}` : ''}
+                                {typeof m.match?.confidence === 'number' ? ` · ${(m.match.confidence * 100).toFixed(0)}%` : ''}
+                              </div>
+                              {m.match?.top_matches && m.match.top_matches.length > 0 ? (
+                                <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                                  {m.match.top_matches.slice(0, 3).map((t, idx) => (
+                                    <span key={`${t.provider || ''}:${t.provider_book_id || ''}:${t.title}:${idx}`}>
+                                      {idx === 0 ? '' : ' · '}
+                                      {(t.score * 100).toFixed(0)}% {t.title}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!filesLoading && files.length > 0 ? (
+                      <div className="mt-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
+                        <div className="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
+                        <div className="max-h-40 overflow-auto divide-y divide-black/10 dark:divide-white/10">
+                          {files.slice(0, 10).map((f) => (
+                            <div key={f.id} className="px-3 py-2 text-sm">
+                              <div className="truncate">{f.path}</div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {f.provider && f.provider_book_id ? `${f.provider}:${f.provider_book_id}` : 'unlinked'}{f.file_type ? ` · ${f.file_type}` : ''}{typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div className="px-4 py-3">
                   {booksError && <div className="text-sm text-red-500">{booksError}</div>}
@@ -968,11 +1101,40 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                         </div>
 
                                         <div className="flex flex-row justify-end gap-0.5 sm:gap-1 sm:pr-3">
+                                          {(() => {
+                                            const prov = book.provider || '';
+                                            const bid = book.provider_id || '';
+                                            const key = prov && bid ? `${prov}:${bid}` : '';
+                                            const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                            if (!types || types.size === 0) return null;
+
+                                            const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
+                                            return (
+                                              <div className="hidden sm:flex items-center gap-1 mr-1">
+                                                {sorted.slice(0, 2).map((t) => (
+                                                  <span
+                                                    key={t}
+                                                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800"
+                                                    title={`Matched file: ${t.toUpperCase()}`}
+                                                  >
+                                                    {t.toUpperCase()}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            );
+                                          })()}
                                           {onGetReleases ? (
                                             <>
                                               <button
                                                 type="button"
-                                                className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
+                                                className={`flex items-center justify-center p-1.5 sm:p-2 rounded-full hover-action transition-all duration-200 ${(() => {
+                                                  const prov = book.provider || '';
+                                                  const bid = book.provider_id || '';
+                                                  const key = prov && bid ? `${prov}:${bid}` : '';
+                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                                  const hasMatch = Boolean(types && types.size > 0);
+                                                  return hasMatch ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-200';
+                                                })()}`}
                                                 onClick={() => void onGetReleases(book, 'ebook', monitoredEntityId)}
                                                 aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
                                               >

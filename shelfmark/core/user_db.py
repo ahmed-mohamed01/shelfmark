@@ -134,6 +134,27 @@ CREATE TABLE IF NOT EXISTS monitored_books (
 
 CREATE INDEX IF NOT EXISTS idx_monitored_books_entity_state
 ON monitored_books (entity_id, state, first_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_book_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    provider TEXT,
+    provider_book_id TEXT,
+    path TEXT NOT NULL,
+    ext TEXT,
+    file_type TEXT,
+    size_bytes INTEGER,
+    mtime TIMESTAMP,
+    confidence REAL,
+    match_reason TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entity_id, path),
+    UNIQUE(entity_id, provider, provider_book_id, file_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
+ON monitored_book_files (entity_id, updated_at DESC);
 """
 
 
@@ -205,6 +226,7 @@ class UserDB:
                 self._migrate_request_delivery_columns(conn)
                 self._migrate_activity_tables(conn)
                 self._migrate_monitored_books_series_columns(conn)
+                self._migrate_monitored_book_files_table(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -536,6 +558,160 @@ class UserDB:
                 conn.close()
         return updated
 
+    def upsert_monitored_book_file(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str | None,
+        provider_book_id: str | None,
+        path: str,
+        ext: str | None,
+        file_type: str | None,
+        size_bytes: int | None,
+        mtime: str | None,
+        confidence: float | None,
+        match_reason: str | None,
+    ) -> None:
+        """Upsert a matched file for a monitored book.
+
+        Constraints:
+        - one row per (entity_id, path)
+        - one row per (entity_id, provider, provider_book_id, file_type)
+        """
+
+        normalized_path = (path or "").strip()
+        if not normalized_path:
+            return
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    raise ValueError("Monitored entity not found")
+
+                conn.execute(
+                    """
+                    INSERT INTO monitored_book_files (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        path,
+                        ext,
+                        file_type,
+                        size_bytes,
+                        mtime,
+                        confidence,
+                        match_reason,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(entity_id, path)
+                    DO UPDATE SET
+                        provider=excluded.provider,
+                        provider_book_id=excluded.provider_book_id,
+                        ext=excluded.ext,
+                        file_type=excluded.file_type,
+                        size_bytes=excluded.size_bytes,
+                        mtime=excluded.mtime,
+                        confidence=excluded.confidence,
+                        match_reason=excluded.match_reason,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        normalized_path,
+                        ext,
+                        file_type,
+                        size_bytes,
+                        mtime,
+                        confidence,
+                        match_reason,
+                    ),
+                )
+
+                # Enforce uniqueness (entity_id, provider, provider_book_id, file_type)
+                if provider and provider_book_id and file_type:
+                    conn.execute(
+                        """
+                        INSERT INTO monitored_book_files (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            path,
+                            ext,
+                            file_type,
+                            size_bytes,
+                            mtime,
+                            confidence,
+                            match_reason,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(entity_id, provider, provider_book_id, file_type)
+                        DO UPDATE SET
+                            path=excluded.path,
+                            ext=excluded.ext,
+                            size_bytes=excluded.size_bytes,
+                            mtime=excluded.mtime,
+                            confidence=excluded.confidence,
+                            match_reason=excluded.match_reason,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            normalized_path,
+                            ext,
+                            file_type,
+                            size_bytes,
+                            mtime,
+                            confidence,
+                            match_reason,
+                        ),
+                    )
+
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_monitored_book_files(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+    ) -> list[dict[str, Any]] | None:
+        """List matched files for a monitored entity (None if entity not found)."""
+
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM monitored_book_files
+                WHERE entity_id = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (entity_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
         """Ensure users.auth_source exists and backfill historical rows."""
         columns = conn.execute("PRAGMA table_info(users)").fetchall()
@@ -654,6 +830,39 @@ class UserDB:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN series_position REAL")
         if "series_count" not in column_names:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN series_count INTEGER")
+
+    def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_book_files table exists for older DBs."""
+
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_files'"
+        ).fetchone()
+        if exists:
+            return
+
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS monitored_book_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+                provider TEXT,
+                provider_book_id TEXT,
+                path TEXT NOT NULL,
+                ext TEXT,
+                file_type TEXT,
+                size_bytes INTEGER,
+                mtime TIMESTAMP,
+                confidence REAL,
+                match_reason TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(entity_id, path),
+                UNIQUE(entity_id, provider, provider_book_id, file_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
+            ON monitored_book_files (entity_id, updated_at DESC);
+            """
+        )
 
     def create_user(
         self,
