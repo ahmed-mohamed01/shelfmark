@@ -4,6 +4,51 @@ import { getMetadataAuthorInfo, getMetadataBookInfo, MetadataAuthor, MetadataAut
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
 
+const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
+
+  if (!preview || imageError) {
+    return (
+      <div
+        className="w-7 h-10 sm:w-10 sm:h-14 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300"
+        aria-label="No cover available"
+      >
+        No Cover
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-7 h-10 sm:w-10 sm:h-14 rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70">
+      {!imageLoaded && (
+        <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
+      )}
+      <img
+        src={preview}
+        alt={title || 'Book cover'}
+        className="w-full h-full object-cover object-top"
+        loading="lazy"
+        onLoad={() => setImageLoaded(true)}
+        onError={() => setImageError(true)}
+        style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}
+      />
+    </div>
+  );
+};
+
+const BookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+  </svg>
+);
+
+const AudiobookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
+  </svg>
+);
+
 export interface AuthorModalAuthor {
   name: string;
   provider?: string | null;
@@ -223,16 +268,6 @@ export const AuthorModal = ({ author, onClose, onGetReleases }: AuthorModalProps
     return `author-details-title-${key.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   }, [author]);
 
-  if (!author && !isClosing) return null;
-  if (!author) return null;
-
-  const resolvedName = details?.name || author.name;
-  const resolvedPhoto = details?.photo_url || author.photo_url || null;
-  const resolvedBio = details?.bio || null;
-  const resolvedUrl = details?.source_url || author.source_url || null;
-  const providerLabel = details?.provider || author.provider || null;
-  const booksCount = details?.stats?.books_count ?? null;
-
   const groupedBooks = useMemo(() => {
     const parseYear = (value?: string) => {
       const n = value ? Number.parseInt(value, 10) : Number.NaN;
@@ -296,50 +331,15 @@ export const AuthorModal = ({ author, onClose, onGetReleases }: AuthorModalProps
     return groups;
   }, [books, booksSort]);
 
-  const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
-    const [imageLoaded, setImageLoaded] = useState(false);
-    const [imageError, setImageError] = useState(false);
+  if (!author && !isClosing) return null;
+  if (!author) return null;
 
-    if (!preview || imageError) {
-      return (
-        <div
-          className="w-7 h-10 sm:w-10 sm:h-14 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300"
-          aria-label="No cover available"
-        >
-          No Cover
-        </div>
-      );
-    }
-
-    return (
-      <div className="relative w-7 h-10 sm:w-10 sm:h-14 rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70">
-        {!imageLoaded && (
-          <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
-        )}
-        <img
-          src={preview}
-          alt={title || 'Book cover'}
-          className="w-full h-full object-cover object-top"
-          loading="lazy"
-          onLoad={() => setImageLoaded(true)}
-          onError={() => setImageError(true)}
-          style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}
-        />
-      </div>
-    );
-  };
-
-  const BookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
-    </svg>
-  );
-
-  const AudiobookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
-    </svg>
-  );
+  const resolvedName = details?.name || author.name;
+  const resolvedPhoto = details?.photo_url || author.photo_url || null;
+  const resolvedBio = details?.bio || null;
+  const resolvedUrl = details?.source_url || author.source_url || null;
+  const providerLabel = details?.provider || author.provider || null;
+  const booksCount = details?.stats?.books_count ?? null;
 
   return (
     <div
