@@ -201,6 +201,39 @@ export interface MetadataSearchResult {
   hasMore: boolean;
 }
 
+export interface MetadataAuthor {
+  provider: string;
+  provider_id: string;
+  name: string;
+  photo_url?: string | null;
+  bio?: string | null;
+  born_year?: number | string | null;
+  source_url?: string | null;
+  stats?: {
+    books_count?: number | null;
+    users_count?: number | null;
+    ratings_count?: number | null;
+    rating?: number | null;
+  } | null;
+}
+
+export interface MetadataAuthorSearchResult {
+  provider: string;
+  query: string;
+  page: number;
+  totalFound?: number;
+  hasMore?: boolean;
+  supportsAuthors: boolean;
+  authors: MetadataAuthor[];
+}
+
+export interface MetadataAuthorDetailsResult {
+  provider: string;
+  providerId: string;
+  supportsAuthors: boolean;
+  author: MetadataAuthor | null;
+}
+
 // Search metadata providers and normalize to Book format
 export const searchMetadata = async (
   query: string,
@@ -239,6 +272,66 @@ export const searchMetadata = async (
     page: response.page || page,
     totalFound: response.total_found || 0,
     hasMore: response.has_more || false,
+  };
+};
+
+export const searchMetadataAuthors = async (
+  query: string,
+  limit: number = 20,
+  page: number = 1,
+  contentType: string = 'ebook'
+): Promise<MetadataAuthorSearchResult> => {
+  const q = query?.trim() || '';
+  if (!q) {
+    return {
+      provider: '',
+      query: '',
+      page: 1,
+      supportsAuthors: false,
+      authors: [],
+    };
+  }
+
+  const params = new URLSearchParams();
+  params.set('query', q);
+  params.set('limit', String(limit));
+  params.set('page', String(page));
+  params.set('content_type', contentType);
+
+  const response = await fetchJSON<{
+    provider: string;
+    query: string;
+    page: number;
+    total_found?: number;
+    has_more?: boolean;
+    supports_authors: boolean;
+    authors: MetadataAuthor[];
+  }>(`${API_BASE}/metadata/authors/search?${params.toString()}`);
+
+  return {
+    provider: response.provider,
+    query: response.query,
+    page: response.page,
+    totalFound: response.total_found,
+    hasMore: response.has_more,
+    supportsAuthors: response.supports_authors,
+    authors: response.authors || [],
+  };
+};
+
+export const getMetadataAuthorInfo = async (provider: string, authorId: string): Promise<MetadataAuthorDetailsResult> => {
+  const response = await fetchJSON<{
+    provider: string;
+    provider_id: string;
+    supports_authors: boolean;
+    author: MetadataAuthor | null;
+  }>(`${API_BASE}/metadata/authors/${encodeURIComponent(provider)}/${encodeURIComponent(authorId)}`);
+
+  return {
+    provider: response.provider,
+    providerId: response.provider_id,
+    supportsAuthors: response.supports_authors,
+    author: response.author,
   };
 };
 

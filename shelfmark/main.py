@@ -1965,6 +1965,292 @@ def api_metadata_search() -> Union[Response, Tuple[Response, int]]:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/metadata/authors/search', methods=['GET'])
+@login_required
+def api_metadata_author_search() -> Union[Response, Tuple[Response, int]]:
+    """Search for authors using the configured metadata provider.
+
+    This endpoint is capability-based: providers may or may not support rich
+    author entities (photo, bio, stats). For providers without author support,
+    this endpoint returns supports_authors=false.
+    """
+    try:
+        from shelfmark.metadata_providers import get_configured_provider
+        from shelfmark.core.utils import transform_cover_url
+
+        query = request.args.get('query', '').strip()
+        content_type = request.args.get('content_type', 'ebook').strip()
+
+        try:
+            limit = min(int(request.args.get('limit', 20)), 50)
+        except ValueError:
+            limit = 20
+
+        try:
+            page = max(1, int(request.args.get('page', 1)))
+        except ValueError:
+            page = 1
+
+        if not query:
+            return jsonify({"error": "'query' is required"}), 400
+
+        provider = get_configured_provider(content_type=content_type)
+        if not provider:
+            return jsonify({
+                "error": "No metadata provider configured",
+                "message": "No metadata provider configured. Enable one in Settings."
+            }), 503
+
+        if not provider.is_available():
+            return jsonify({
+                "error": f"Metadata provider '{provider.name}' is not available",
+                "message": f"{getattr(provider, 'display_name', provider.name)} is not available. Check configuration in Settings."
+            }), 503
+
+        # Hardcover-only implementation for now.
+        if provider.name != 'hardcover':
+            return jsonify({
+                "provider": provider.name,
+                "query": query,
+                "page": page,
+                "supports_authors": False,
+                "authors": [],
+            })
+
+        from shelfmark.metadata_providers.hardcover import HardcoverProvider
+        if not isinstance(provider, HardcoverProvider):
+            return jsonify({
+                "provider": provider.name,
+                "query": query,
+                "page": page,
+                "supports_authors": False,
+                "authors": [],
+            })
+
+        graphql_query = """
+        query SearchAuthors($query: String!, $limit: Int!, $page: Int!) {
+            search(query: $query, query_type: "Author", per_page: $limit, page: $page) {
+                results
+            }
+        }
+        """
+
+        result = provider._execute_query(graphql_query, {
+            "query": query,
+            "limit": limit,
+            "page": page,
+        })
+        if not result:
+            return jsonify({
+                "provider": provider.name,
+                "query": query,
+                "page": page,
+                "supports_authors": True,
+                "authors": [],
+            })
+
+        results_obj = result.get("search", {}).get("results", {})
+        hits = []
+        found_count = 0
+        if isinstance(results_obj, dict):
+            hits = results_obj.get("hits", [])
+            found_count = results_obj.get("found", 0) or 0
+        elif isinstance(results_obj, list):
+            hits = results_obj
+
+        authors = []
+        for hit in hits:
+            item = hit.get("document", hit) if isinstance(hit, dict) else hit
+            if not isinstance(item, dict):
+                continue
+
+            author_id = item.get("id")
+            name = item.get("name")
+            if not author_id or not name:
+                continue
+
+            photo_url = None
+            for key in ("image", "cached_image", "photo", "avatar"):
+                value = item.get(key)
+                if value:
+                    if isinstance(value, str):
+                        photo_url = value
+                        break
+                    if isinstance(value, dict) and value.get("url"):
+                        photo_url = value.get("url")
+                        break
+
+            if photo_url:
+                cache_id = f"hardcover_author_{author_id}"
+                photo_url = transform_cover_url(photo_url, cache_id)
+
+            # Hardcover author data varies; we include optional fields when present.
+            author_payload = {
+                "provider": "hardcover",
+                "provider_id": str(author_id),
+                "name": str(name),
+                "photo_url": photo_url,
+                "bio": item.get("bio") or item.get("description"),
+                "born_year": item.get("born_year") or item.get("birth_year"),
+                "source_url": None,
+                "stats": {
+                    "books_count": item.get("books_count") or item.get("works_count"),
+                    "users_count": item.get("users_count"),
+                    "ratings_count": item.get("ratings_count"),
+                    "rating": item.get("rating"),
+                },
+            }
+
+            slug = item.get("slug")
+            if slug and isinstance(slug, str):
+                author_payload["source_url"] = f"https://hardcover.app/authors/{slug}"
+
+            authors.append(author_payload)
+
+        has_more = False
+        if found_count and isinstance(found_count, int):
+            results_so_far = (page - 1) * limit + len(hits)
+            has_more = results_so_far < found_count
+        else:
+            has_more = len(authors) >= limit
+
+        return jsonify({
+            "provider": provider.name,
+            "query": query,
+            "page": page,
+            "total_found": found_count,
+            "has_more": has_more,
+            "supports_authors": True,
+            "authors": authors,
+        })
+
+    except Exception as e:
+        logger.error_trace(f"Metadata author search error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/metadata/authors/<provider>/<author_id>', methods=['GET'])
+@login_required
+def api_metadata_author(provider: str, author_id: str) -> Union[Response, Tuple[Response, int]]:
+    """Get detailed author information from a metadata provider.
+
+    This is capability-based: not all metadata providers have a first-class
+    author entity endpoint.
+    """
+    try:
+        from shelfmark.metadata_providers import (
+            get_provider,
+            is_provider_registered,
+            get_provider_kwargs,
+        )
+        from shelfmark.core.utils import transform_cover_url
+
+        if not is_provider_registered(provider):
+            return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
+
+        kwargs = get_provider_kwargs(provider)
+        prov = get_provider(provider, **kwargs)
+        if not prov.is_available():
+            return jsonify({"error": f"Provider '{provider}' is not available"}), 503
+
+        # Hardcover-only implementation for now.
+        if provider != 'hardcover':
+            return jsonify({
+                "provider": provider,
+                "provider_id": str(author_id),
+                "supports_authors": False,
+                "author": None,
+            })
+
+        from shelfmark.metadata_providers.hardcover import HardcoverProvider
+        if not isinstance(prov, HardcoverProvider):
+            return jsonify({
+                "provider": provider,
+                "provider_id": str(author_id),
+                "supports_authors": False,
+                "author": None,
+            })
+
+        graphql_query = """
+        query GetAuthor($id: Int!) {
+            authors(where: {id: {_eq: $id}}, limit: 1) {
+                id
+                name
+                slug
+                bio
+                born_year
+                cached_image
+                users_count
+                books_count
+                ratings_count
+                rating
+            }
+        }
+        """
+
+        try:
+            author_id_int = int(author_id)
+        except ValueError:
+            return jsonify({"error": "Invalid author_id"}), 400
+
+        result = prov._execute_query(graphql_query, {"id": author_id_int})
+        if not result:
+            return jsonify({
+                "provider": provider,
+                "provider_id": str(author_id),
+                "supports_authors": True,
+                "author": None,
+            }), 404
+
+        authors = result.get("authors", [])
+        if not authors:
+            return jsonify({
+                "provider": provider,
+                "provider_id": str(author_id),
+                "supports_authors": True,
+                "author": None,
+            }), 404
+
+        author = authors[0]
+
+        photo_url = author.get("cached_image")
+        if photo_url:
+            cache_id = f"hardcover_author_{author.get('id')}"
+            photo_url = transform_cover_url(photo_url, cache_id)
+
+        payload = {
+            "provider": "hardcover",
+            "provider_id": str(author.get("id")),
+            "name": author.get("name") or "",
+            "photo_url": photo_url,
+            "bio": author.get("bio"),
+            "born_year": author.get("born_year"),
+            "source_url": None,
+            "stats": {
+                "books_count": author.get("books_count"),
+                "users_count": author.get("users_count"),
+                "ratings_count": author.get("ratings_count"),
+                "rating": author.get("rating"),
+            },
+        }
+
+        slug = author.get("slug")
+        if slug and isinstance(slug, str):
+            payload["source_url"] = f"https://hardcover.app/authors/{slug}"
+
+        return jsonify({
+            "provider": provider,
+            "provider_id": str(author_id),
+            "supports_authors": True,
+            "author": payload,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error_trace(f"Metadata author details error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/metadata/book/<provider>/<book_id>', methods=['GET'])
 @login_required
 def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Response, int]]:

@@ -42,6 +42,7 @@ import { ToastContainer } from './components/ToastContainer';
 import { Footer } from './components/Footer';
 import { ActivitySidebar } from './components/activity';
 import { LoginPage } from './pages/LoginPage';
+import { MonitoredPage } from './pages/MonitoredPage';
 import { SelfSettingsModal, SettingsModal } from './components/settings';
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -262,6 +263,7 @@ function App() {
       complete: filteredComplete,
     };
   }, [currentStatus, dismissedDownloadTaskIds]);
+  const monitoredPath = useMemo(() => withBasePath('/monitored'), []);
 
   const showRequestsTab = useMemo(() => {
     if (requestRoleIsAdmin) {
@@ -331,6 +333,7 @@ function App() {
   // UI state
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [releaseBook, setReleaseBook] = useState<Book | null>(null);
+  const [releaseContentTypeOverride, setReleaseContentTypeOverride] = useState<ContentType | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [downloadsSidebarOpen, setDownloadsSidebarOpen] = useState(false);
   const [sidebarPinnedOpen, setSidebarPinnedOpen] = useState(false);
@@ -799,9 +802,9 @@ function App() {
   };
 
   // Universal-mode "Get" action (open releases, request-book, or block by policy).
-  const handleGetReleases = async (book: Book) => {
+  const openReleasesForBook = async (book: Book, releaseContentType: ContentType) => {
     let mode = getUniversalDefaultPolicyMode();
-    const normalizedContentType = toContentType(contentType);
+    const normalizedContentType = toContentType(releaseContentType);
     policyTrace('universal.get:start', {
       bookId: book.id,
       contentType: normalizedContentType,
@@ -811,7 +814,7 @@ function App() {
     try {
       const latestPolicy = await refreshRequestPolicy({ force: true });
       const effectiveIsAdmin = latestPolicy ? Boolean(latestPolicy.is_admin) : requestRoleIsAdmin;
-      mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, contentType);
+      mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, normalizedContentType);
       policyTrace('universal.get:resolved', {
         bookId: book.id,
         contentType: normalizedContentType,
@@ -822,6 +825,9 @@ function App() {
       });
     } catch (error) {
       console.warn('Failed to refresh request policy before universal action:', error);
+      // In no-auth mode the request-policy endpoint can be unavailable; ensure the
+      // "Get" action still works by falling back to direct download/release search.
+      mode = 'download';
       policyTrace('universal.get:refresh_failed', {
         bookId: book.id,
         contentType: normalizedContentType,
@@ -861,6 +867,7 @@ function App() {
           contentType: normalizedContentType,
         });
         const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
+        setReleaseContentTypeOverride(normalizedContentType);
         setReleaseBook({
           ...book,
           description: fullBook.description || book.description,
@@ -875,6 +882,7 @@ function App() {
           contentType: normalizedContentType,
           message: error instanceof Error ? error.message : String(error),
         });
+        setReleaseContentTypeOverride(normalizedContentType);
         setReleaseBook(book);
       }
     } else {
@@ -882,8 +890,17 @@ function App() {
         bookId: book.id,
         contentType: normalizedContentType,
       });
+      setReleaseContentTypeOverride(normalizedContentType);
       setReleaseBook(book);
     }
+  };
+
+  const handleGetReleases = async (book: Book) => {
+    return openReleasesForBook(book, contentType);
+  };
+
+  const handleGetReleasesForContentType = async (book: Book, releaseContentType: ContentType) => {
+    return openReleasesForBook(book, releaseContentType);
   };
 
   // Handle download from ReleaseModal (universal mode release rows).
@@ -1168,7 +1185,7 @@ function App() {
 
   const isBrowseFulfilMode = fulfillingRequest !== null;
   const activeReleaseBook = fulfillingRequest?.book ?? releaseBook;
-  const activeReleaseContentType = fulfillingRequest?.contentType ?? contentType;
+  const activeReleaseContentType = fulfillingRequest?.contentType ?? releaseContentTypeOverride ?? contentType;
   const usePinnedMainScrollContainer = sidebarPinnedOpen;
 
   const handleReleaseModalClose = useCallback(() => {
@@ -1177,6 +1194,7 @@ function App() {
       return;
     }
     setReleaseBook(null);
+    setReleaseContentTypeOverride(null);
   }, [isBrowseFulfilMode]);
 
   const mainAppContent = (
@@ -1191,6 +1209,9 @@ function App() {
           searchInput={searchInput}
           onSearchChange={setSearchInput}
           onDownloadsClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+          onMonitoredClick={() => {
+            window.location.assign(monitoredPath);
+          }}
           onSettingsClick={() => {
             if (config?.settings_enabled) {
               if (authIsAdmin) {
@@ -1353,7 +1374,6 @@ function App() {
             onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
           />
         )}
-
         {pendingRequestPayload && (
           <RequestConfirmationModal
             payload={pendingRequestPayload}
@@ -1484,6 +1504,7 @@ function App() {
   );
 
   return (
+    <>
     <Routes>
       <Route
         path="/login"
@@ -1501,8 +1522,44 @@ function App() {
           )
         }
       />
+      <Route
+        path="/monitored"
+        element={
+          authRequired && !isAuthenticated ? (
+            <Navigate to="/login" replace />
+          ) : (
+            <MonitoredPage
+              onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+              onGetReleases={handleGetReleasesForContentType}
+              onBack={() => {
+                window.location.assign(withBasePath('/'));
+              }}
+            />
+          )
+        }
+      />
       <Route path="/*" element={appElement} />
     </Routes>
+
+    {activeReleaseBook && (
+      <ReleaseModal
+        book={activeReleaseBook}
+        onClose={handleReleaseModalClose}
+        onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
+        onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
+        getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
+        onPolicyRefresh={() => refreshRequestPolicy({ force: true })}
+        supportedFormats={supportedFormats}
+        supportedAudiobookFormats={config?.supported_audiobook_formats || []}
+        contentType={activeReleaseContentType}
+        defaultLanguages={defaultLanguageCodes}
+        bookLanguages={bookLanguages}
+        currentStatus={currentStatus}
+        defaultReleaseSource={config?.default_release_source}
+        onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
+      />
+    )}
+    </>
   );
 }
 
