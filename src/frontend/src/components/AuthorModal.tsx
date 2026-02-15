@@ -601,6 +601,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
     <>
       <div
         className="modal-overlay active sm:px-6 sm:py-6"
+        style={isEditModalOpen ? { pointerEvents: 'none' } : undefined}
         onClick={e => {
           if (e.target === e.currentTarget) handleClose();
         }}
@@ -1031,6 +1032,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
         open={pathsBrowserState.open}
         title={pathsBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
         initialPath={pathsBrowserState.initialPath}
+        overlayZIndex={2100}
         onClose={() => setPathsBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
           const authorName = (resolvedName || author.name || '').trim();
@@ -1046,6 +1048,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       {isEditModalOpen ? (
         <div
           className="modal-overlay active sm:px-6 sm:py-6"
+          style={{ zIndex: 2000, pointerEvents: pathsBrowserState.open ? 'none' : 'auto' }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               const settings = pathsEntity?.settings || {};

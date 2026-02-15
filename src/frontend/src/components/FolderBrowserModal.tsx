@@ -7,9 +7,10 @@ interface FolderBrowserModalProps {
   initialPath?: string | null;
   onClose: () => void;
   onSelect: (path: string) => void;
+  overlayZIndex?: number;
 }
 
-export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect }: FolderBrowserModalProps) => {
+export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect, overlayZIndex }: FolderBrowserModalProps) => {
   const [currentPath, setCurrentPath] = useState<string | null>(initialPath ?? null);
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<FsDirectoryEntry[]>([]);
@@ -78,6 +79,7 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
   return (
     <div
       className="modal-overlay active sm:px-6 sm:py-6"
+      style={typeof overlayZIndex === 'number' ? { zIndex: overlayZIndex } : undefined}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
