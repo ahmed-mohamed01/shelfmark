@@ -82,6 +82,25 @@ def register_monitored_routes(
             return gate
 
         rows = user_db.list_monitored_entities(user_id=db_user_id)
+
+        # Enrich with cached author details (bio, source_url) if available
+        try:
+            from shelfmark.core.metadata_cache import get_metadata_file_cache
+            mcache = get_metadata_file_cache()
+            for row in rows:
+                provider = row.get("provider")
+                provider_id = row.get("provider_id")
+                if not provider or not provider_id:
+                    continue
+                cached = mcache.get("authors", provider, provider_id)
+                if cached and isinstance(cached, dict):
+                    author_data = cached.get("author")
+                    if isinstance(author_data, dict):
+                        row["cached_bio"] = author_data.get("bio")
+                        row["cached_source_url"] = author_data.get("source_url")
+        except Exception:
+            pass  # Best-effort enrichment
+
         return jsonify(rows)
 
     @app.route("/api/monitored", methods=["POST"])

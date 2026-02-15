@@ -349,6 +349,8 @@ export interface MonitoredEntity {
   created_at?: string;
   updated_at?: string;
   settings?: Record<string, unknown>;
+  cached_bio?: string | null;
+  cached_source_url?: string | null;
 }
 
 export interface MonitoredBookRow {

@@ -21,6 +21,8 @@ interface MonitoredAuthor {
   provider_id?: string;
   photo_url?: string;
   books_count?: number;
+  cached_bio?: string;
+  cached_source_url?: string;
 }
 
 interface MonitoredPageProps {
@@ -147,6 +149,8 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
         provider_id: entity.provider_id || undefined,
         photo_url,
         books_count,
+        cached_bio: entity.cached_bio || undefined,
+        cached_source_url: entity.cached_source_url || undefined,
       };
     };
 
@@ -183,6 +187,8 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
       provider_id: item.provider_id || item.name,
       name: item.name,
       photo_url: item.photo_url,
+      source_url: item.cached_source_url || null,
+      bio: item.cached_bio || null,
       stats: {
         books_count: typeof item.books_count === 'number' ? item.books_count : null,
       },

@@ -2178,6 +2178,13 @@ def api_metadata_author(provider: str, author_id: str) -> Union[Response, Tuple[
                 "author": None,
             })
 
+        # Check persistent metadata cache first
+        from shelfmark.core.metadata_cache import get_metadata_file_cache
+        mcache = get_metadata_file_cache()
+        cached = mcache.get("authors", provider, author_id)
+        if cached is not None:
+            return jsonify(cached)
+
         graphql_query = """
         query GetAuthor($id: Int!) {
             authors(where: {id: {_eq: $id}}, limit: 1) {
@@ -2249,12 +2256,17 @@ def api_metadata_author(provider: str, author_id: str) -> Union[Response, Tuple[
         if slug and isinstance(slug, str):
             payload["source_url"] = f"https://hardcover.app/authors/{slug}"
 
-        return jsonify({
+        response_data = {
             "provider": provider,
             "provider_id": str(author_id),
             "supports_authors": True,
             "author": payload,
-        })
+        }
+
+        # Persist to file cache for next time
+        mcache.set("authors", provider, author_id, response_data)
+
+        return jsonify(response_data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -2293,6 +2305,13 @@ def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Resp
         if not prov.is_available():
             return jsonify({"error": f"Provider '{provider}' is not available"}), 503
 
+        # Check persistent metadata cache first
+        from shelfmark.core.metadata_cache import get_metadata_file_cache
+        mcache = get_metadata_file_cache()
+        cached = mcache.get("books", provider, book_id)
+        if cached is not None:
+            return jsonify(cached)
+
         book = prov.get_book(book_id)
         if not book:
             return jsonify({"error": "Book not found"}), 404
@@ -2304,6 +2323,9 @@ def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Resp
         if book_dict.get('cover_url'):
             cache_id = f"{provider}_{book_id}"
             book_dict['cover_url'] = transform_cover_url(book_dict['cover_url'], cache_id)
+
+        # Persist to file cache for next time
+        mcache.set("books", provider, book_id, book_dict)
 
         return jsonify(book_dict)
     except ValueError as e:
