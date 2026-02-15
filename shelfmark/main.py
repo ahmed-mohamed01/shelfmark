@@ -391,6 +391,7 @@ if user_db is not None:
     try:
         from shelfmark.core.request_routes import register_request_routes
         from shelfmark.core.activity_routes import register_activity_routes
+        from shelfmark.core.monitored_routes import register_monitored_routes
 
         register_request_routes(
             app,
@@ -412,6 +413,12 @@ if user_db is not None:
                 emit_request_updates=lambda rows: _emit_request_update_events(rows),
                 ws_manager=ws_manager,
             )
+
+        register_monitored_routes(
+            app,
+            user_db,
+            resolve_auth_mode=lambda: get_auth_mode(),
+        )
     except Exception as e:
         logger.warning(f"Failed to register request routes: {e}")
 

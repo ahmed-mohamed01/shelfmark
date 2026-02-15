@@ -94,6 +94,43 @@ CREATE TABLE IF NOT EXISTS activity_dismissals (
 
 CREATE INDEX IF NOT EXISTS idx_activity_dismissals_user_dismissed_at
 ON activity_dismissals (user_id, dismissed_at DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    provider TEXT,
+    provider_id TEXT,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    last_checked_at TIMESTAMP,
+    last_error TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, kind, provider, provider_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_entities_user_kind
+ON monitored_entities (user_id, kind, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_books (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    provider TEXT,
+    provider_book_id TEXT,
+    title TEXT NOT NULL,
+    authors TEXT,
+    publish_year INTEGER,
+    isbn_13 TEXT,
+    cover_url TEXT,
+    state TEXT NOT NULL DEFAULT 'discovered',
+    first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entity_id, provider, provider_book_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_books_entity_state
+ON monitored_books (entity_id, state, first_seen_at DESC);
 """
 
 
@@ -167,6 +204,267 @@ class UserDB:
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
+            finally:
+                conn.close()
+
+    def list_monitored_entities(self, *, user_id: int | None) -> List[Dict[str, Any]]:
+        """List monitored entities scoped to a user_id."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM monitored_entities
+                WHERE user_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                payload = dict(row)
+                raw_settings = payload.get("settings_json")
+                if isinstance(raw_settings, str) and raw_settings:
+                    try:
+                        payload["settings"] = json.loads(raw_settings)
+                    except Exception:
+                        payload["settings"] = {}
+                else:
+                    payload["settings"] = {}
+                payload.pop("settings_json", None)
+                results.append(payload)
+            return results
+        finally:
+            conn.close()
+
+    def get_monitored_entity(self, *, user_id: int | None, entity_id: int) -> Optional[Dict[str, Any]]:
+        """Return a monitored entity by id (scoped to user_id)."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            payload = dict(row)
+            raw_settings = payload.get("settings_json")
+            if isinstance(raw_settings, str) and raw_settings:
+                try:
+                    payload["settings"] = json.loads(raw_settings)
+                except Exception:
+                    payload["settings"] = {}
+            else:
+                payload["settings"] = {}
+            payload.pop("settings_json", None)
+            return payload
+        finally:
+            conn.close()
+
+    def create_monitored_entity(
+        self,
+        *,
+        user_id: int | None,
+        kind: str,
+        provider: str | None,
+        provider_id: str | None,
+        name: str,
+        enabled: bool = True,
+        settings: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Create or return existing monitored entity."""
+        normalized_kind = (kind or "").strip().lower()
+        if normalized_kind not in {"author", "book"}:
+            raise ValueError("kind must be 'author' or 'book'")
+
+        normalized_name = (name or "").strip()
+        if not normalized_name:
+            raise ValueError("name is required")
+
+        settings_json = self._serialize_json(settings or {}, "settings") or "{}"
+        enabled_value = 1 if enabled else 0
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO monitored_entities (
+                        user_id,
+                        kind,
+                        provider,
+                        provider_id,
+                        name,
+                        enabled,
+                        settings_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, kind, provider, provider_id)
+                    DO UPDATE SET
+                        name=excluded.name,
+                        enabled=excluded.enabled,
+                        settings_json=excluded.settings_json,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        user_id,
+                        normalized_kind,
+                        provider,
+                        provider_id,
+                        normalized_name,
+                        enabled_value,
+                        settings_json,
+                    ),
+                )
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM monitored_entities
+                    WHERE user_id = ? AND kind = ? AND provider IS ? AND provider_id IS ?
+                    """,
+                    (user_id, normalized_kind, provider, provider_id),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Failed to create monitored entity")
+                payload = dict(row)
+                payload["settings"] = json.loads(payload.get("settings_json") or "{}")
+                payload.pop("settings_json", None)
+                return payload
+            finally:
+                conn.close()
+
+    def delete_monitored_entity(self, *, user_id: int | None, entity_id: int) -> bool:
+        """Delete a monitored entity scoped to user_id."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                )
+                conn.commit()
+                return bool(cursor.rowcount)
+            finally:
+                conn.close()
+
+    def update_monitored_entity_check(self, *, entity_id: int, last_error: str | None) -> None:
+        """Update last_checked_at and last_error for a monitored entity."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    UPDATE monitored_entities
+                    SET last_checked_at=CURRENT_TIMESTAMP, last_error=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (last_error, entity_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_monitored_books(self, *, user_id: int | None, entity_id: int) -> List[Dict[str, Any]] | None:
+        """List discovered books for a monitored entity (None if entity not found)."""
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return None
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM monitored_books
+                WHERE entity_id = ?
+                ORDER BY first_seen_at DESC, id DESC
+                """,
+                (entity_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def upsert_monitored_book(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str | None,
+        provider_book_id: str | None,
+        title: str,
+        authors: str | None,
+        publish_year: Any = None,
+        isbn_13: str | None = None,
+        cover_url: str | None = None,
+        state: str = "discovered",
+    ) -> None:
+        """Upsert a monitored book snapshot."""
+        normalized_title = (title or "").strip()
+        if not normalized_title:
+            return
+
+        normalized_state = (state or "").strip().lower() or "discovered"
+        if normalized_state not in {"discovered", "ignored"}:
+            normalized_state = "discovered"
+
+        year_value: int | None = None
+        if publish_year is not None:
+            try:
+                year_value = int(publish_year)
+            except (TypeError, ValueError):
+                year_value = None
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                # Ensure entity exists and is scoped correctly.
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    raise ValueError("Monitored entity not found")
+
+                conn.execute(
+                    """
+                    INSERT INTO monitored_books (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        title,
+                        authors,
+                        publish_year,
+                        isbn_13,
+                        cover_url,
+                        state
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(entity_id, provider, provider_book_id)
+                    DO UPDATE SET
+                        title=excluded.title,
+                        authors=excluded.authors,
+                        publish_year=excluded.publish_year,
+                        isbn_13=excluded.isbn_13,
+                        cover_url=excluded.cover_url,
+                        state=excluded.state
+                    """,
+                    (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        normalized_title,
+                        authors,
+                        year_value,
+                        isbn_13,
+                        cover_url,
+                        normalized_state,
+                    ),
+                )
+                conn.commit()
             finally:
                 conn.close()
 
