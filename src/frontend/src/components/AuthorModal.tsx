@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
 
@@ -79,6 +79,10 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoadingBooks, setIsLoadingBooks] = useState(false);
   const [booksError, setBooksError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [booksQuery, setBooksQuery] = useState('');
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -249,102 +253,117 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       return seriesUpdates;
     };
 
+    const REFRESH_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const forceRefresh = refreshKey > 0;
+
+    const fetchFromProvider = async (authorName: string, cachedBooks: Book[]): Promise<void> => {
+      const hasCachedDisplay = cachedBooks.length > 0;
+      if (hasCachedDisplay) setIsRefreshing(true);
+
+      const limit = 40;
+      const maxPages = 12;
+      const maxBooks = 500;
+
+      let page = 1;
+      let hasMore = true;
+      const allFreshBooks: Book[] = [];
+
+      while (hasMore && page <= maxPages && allFreshBooks.length < maxBooks) {
+        const result = await searchMetadata('', limit, 'relevance', { author: authorName }, page, 'ebook');
+        if (isCancelled) return;
+
+        allFreshBooks.push(...result.books);
+
+        if (!hasCachedDisplay) {
+          setBooks([...allFreshBooks]);
+        }
+
+        hasMore = result.hasMore;
+        page += 1;
+      }
+
+      setIsLoadingBooks(false);
+
+      const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
+      if (isCancelled) return;
+
+      // Single merge after all provider data + series enrichment is done.
+      if (hasCachedDisplay) {
+        setBooks((current) => {
+          const cachedById = new Map(cachedBooks.map((b) => [b.id, b]));
+          const currentById = new Map(current.map((b) => [b.id, b]));
+          const merged: Book[] = [];
+          const seen = new Set<string>();
+
+          for (const book of current) {
+            seen.add(book.id);
+            const cached = cachedById.get(book.id);
+            merged.push({
+              ...book,
+              series_name: book.series_name || cached?.series_name,
+              series_position: book.series_position ?? cached?.series_position,
+              series_count: book.series_count ?? cached?.series_count,
+            });
+          }
+
+          for (const book of cachedBooks) {
+            if (!seen.has(book.id)) {
+              const cur = currentById.get(book.id);
+              merged.push(cur || book);
+            }
+          }
+
+          return merged;
+        });
+        setIsRefreshing(false);
+      }
+
+      if (monitoredEntityId) {
+        try {
+          await syncMonitoredEntity(monitoredEntityId);
+          if (seriesUpdates.length > 0) {
+            await updateMonitoredBooksSeries(monitoredEntityId, seriesUpdates);
+          }
+        } catch {
+          // Best-effort sync, don't block UI
+        }
+      }
+    };
+
     const loadBooks = async () => {
       setBooks([]);
       setBooksError(null);
       setIsLoadingBooks(true);
+      setIsRefreshing(false);
 
       try {
         let cachedBooks: Book[] = [];
+        let skipProviderRefresh = false;
 
         if (monitoredEntityId) {
           try {
-            const rows = await listMonitoredBooks(monitoredEntityId);
+            const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
             if (isCancelled) return;
-            if (rows.length > 0) {
-              cachedBooks = rows.map(monitoredBookToBook);
+            if (resp.books.length > 0) {
+              cachedBooks = resp.books.map(monitoredBookToBook);
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
+
+              // Skip provider refresh if last sync was <24hrs ago and not a forced refresh
+              if (!forceRefresh && resp.last_checked_at) {
+                const lastChecked = new Date(resp.last_checked_at + 'Z').getTime();
+                if (Date.now() - lastChecked < REFRESH_TTL_MS) {
+                  skipProviderRefresh = true;
+                }
+              }
             }
           } catch {
             // Cache miss is fine, continue to provider fetch
           }
         }
 
-        // Fetch from provider; if we have cached books, fetch silently and
-        // do a single merge at the end to avoid visual churn. Otherwise,
-        // update progressively page-by-page.
-        const hasCachedDisplay = cachedBooks.length > 0;
-        const limit = 40;
-        const maxPages = 12;
-        const maxBooks = 500;
-
-        let page = 1;
-        let hasMore = true;
-        const allFreshBooks: Book[] = [];
-
-        while (hasMore && page <= maxPages && allFreshBooks.length < maxBooks) {
-          const result = await searchMetadata('', limit, 'relevance', { author: author.name }, page, 'ebook');
-          if (isCancelled) return;
-
-          allFreshBooks.push(...result.books);
-
-          if (!hasCachedDisplay) {
-            setBooks([...allFreshBooks]);
-          }
-
-          hasMore = result.hasMore;
-          page += 1;
-        }
-
-        setIsLoadingBooks(false);
-
-        const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
-        if (isCancelled) return;
-
-        // Single merge after all provider data + series enrichment is done.
-        // Use the current books state (which has series info from enrichment)
-        // rather than the stale allFreshBooks array.
-        if (hasCachedDisplay) {
-          setBooks((current) => {
-            const cachedById = new Map(cachedBooks.map((b) => [b.id, b]));
-            const currentById = new Map(current.map((b) => [b.id, b]));
-            const merged: Book[] = [];
-            const seen = new Set<string>();
-
-            for (const book of current) {
-              seen.add(book.id);
-              const cached = cachedById.get(book.id);
-              merged.push({
-                ...book,
-                series_name: book.series_name || cached?.series_name,
-                series_position: book.series_position ?? cached?.series_position,
-                series_count: book.series_count ?? cached?.series_count,
-              });
-            }
-
-            for (const book of cachedBooks) {
-              if (!seen.has(book.id)) {
-                const cur = currentById.get(book.id);
-                merged.push(cur || book);
-              }
-            }
-
-            return merged;
-          });
-        }
-
-        if (monitoredEntityId) {
-          try {
-            // Sync books from provider to DB first
-            await syncMonitoredEntity(monitoredEntityId);
-            // Then persist enriched series info back to DB
-            if (seriesUpdates.length > 0) {
-              await updateMonitoredBooksSeries(monitoredEntityId, seriesUpdates);
-            }
-          } catch {
-            // Best-effort sync, don't block UI
-          }
+        if (!skipProviderRefresh) {
+          await fetchFromProvider(author.name, cachedBooks);
         }
       } catch (e) {
         if (isCancelled) return;
@@ -353,6 +372,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       } finally {
         if (!isCancelled) {
           setIsLoadingBooks(false);
+          setIsRefreshing(false);
         }
       }
     };
@@ -362,7 +382,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
     return () => {
       isCancelled = true;
     };
-  }, [author, monitoredEntityId]);
+  }, [author, monitoredEntityId, refreshKey]);
 
   const titleId = useMemo(() => {
     if (!author) return '';
@@ -433,6 +453,44 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
     return groups;
   }, [books, booksSort]);
 
+  const filteredGroupedBooks = useMemo(() => {
+    const q = booksQuery.trim().toLowerCase();
+    if (!q) return groupedBooks;
+
+    return groupedBooks
+      .map((g) => {
+        const titleMatch = (g.title || '').toLowerCase().includes(q);
+        if (titleMatch) return g;
+        const matching = g.books.filter((b) => (b.title || '').toLowerCase().includes(q));
+        if (matching.length === 0) return null;
+        return { ...g, books: matching };
+      })
+      .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
+  }, [groupedBooks, booksQuery]);
+
+  const allGroupsCollapsed = useMemo(() => {
+    if (groupedBooks.length === 0) return false;
+    return groupedBooks.every((g) => (collapsedGroups[g.key] ?? false) === true);
+  }, [groupedBooks, collapsedGroups]);
+
+  const toggleAllGroups = useCallback(() => {
+    setCollapsedGroups((prev) => {
+      const next: Record<string, boolean> = { ...prev };
+      const shouldCollapse = !allGroupsCollapsed;
+      for (const g of groupedBooks) {
+        next[g.key] = shouldCollapse;
+      }
+      return next;
+    });
+  }, [allGroupsCollapsed, groupedBooks]);
+
+  const toggleGroupCollapsed = useCallback((key: string) => {
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [key]: !(prev[key] ?? false),
+    }));
+  }, []);
+
   if (!author && !isClosing) return null;
   if (!author) return null;
 
@@ -465,80 +523,6 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
               </h3>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <Dropdown
-                align="right"
-                widthClassName="w-48"
-                renderTrigger={({ isOpen, toggle }) => (
-                  <button
-                    type="button"
-                    onClick={toggle}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
-                      isOpen
-                        ? 'bg-white text-gray-900 dark:bg-white/20 dark:text-gray-100'
-                        : 'bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100'
-                    }`}
-                    aria-haspopup="listbox"
-                    aria-expanded={isOpen}
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" />
-                      </svg>
-                      <span>Filters</span>
-                    </span>
-                  </button>
-                )}
-              >
-                {({ close }) => (
-                  <div role="listbox" aria-label="Sort books">
-                    <button
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                      onClick={() => { setBooksSort('series_asc'); close(); }}
-                      role="option"
-                      aria-selected={booksSort === 'series_asc'}
-                    >
-                      Series (A–Z)
-                    </button>
-                    <button
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                      onClick={() => { setBooksSort('series_desc'); close(); }}
-                      role="option"
-                      aria-selected={booksSort === 'series_desc'}
-                    >
-                      Series (Z–A)
-                    </button>
-                    <button
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                      onClick={() => { setBooksSort('year_desc'); close(); }}
-                      role="option"
-                      aria-selected={booksSort === 'year_desc'}
-                    >
-                      Year (newest)
-                    </button>
-                    <button
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                      onClick={() => { setBooksSort('year_asc'); close(); }}
-                      role="option"
-                      aria-selected={booksSort === 'year_asc'}
-                    >
-                      Year (oldest)
-                    </button>
-                    <button
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'title_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                      onClick={() => { setBooksSort('title_asc'); close(); }}
-                      role="option"
-                      aria-selected={booksSort === 'title_asc'}
-                    >
-                      Title (A–Z)
-                    </button>
-                  </div>
-                )}
-              </Dropdown>
               <button
                 type="button"
                 onClick={handleClose}
@@ -654,7 +638,137 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
 
               <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
                 <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)]">
-                  <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Books</p>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={toggleAllGroups}
+                      className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200"
+                      aria-label={allGroupsCollapsed ? 'Expand all series groups' : 'Collapse all series groups'}
+                      title={allGroupsCollapsed ? 'Expand all' : 'Collapse all'}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">
+                      Books
+                      {isRefreshing ? (
+                        <span className="ml-2 text-[10px] text-gray-400 dark:text-gray-500">refreshing…</span>
+                      ) : null}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
+                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                      </svg>
+                      <input
+                        value={booksQuery}
+                        onChange={(e) => setBooksQuery(e.target.value)}
+                        placeholder="Search books or series"
+                        className="bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500 w-44"
+                        aria-label="Search books"
+                      />
+                      {booksQuery ? (
+                        <button
+                          type="button"
+                          onClick={() => setBooksQuery('')}
+                          className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action"
+                          aria-label="Clear search"
+                          title="Clear"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      ) : null}
+                    </div>
+                    <Dropdown
+                      align="right"
+                      widthClassName="w-auto flex-shrink-0"
+                      panelClassName="w-48"
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`p-1.5 rounded-full transition-all duration-200 ${
+                            isOpen
+                              ? 'text-gray-900 dark:text-gray-100'
+                              : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'
+                          }`}
+                          aria-haspopup="listbox"
+                          aria-expanded={isOpen}
+                          title="Sort books"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" />
+                          </svg>
+                        </button>
+                      )}
+                    >
+                      {({ close }) => (
+                        <div role="listbox" aria-label="Sort books">
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('series_asc'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'series_asc'}
+                          >
+                            Series (A–Z)
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('series_desc'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'series_desc'}
+                          >
+                            Series (Z–A)
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('year_desc'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'year_desc'}
+                          >
+                            Year (newest)
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('year_asc'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'year_asc'}
+                          >
+                            Year (oldest)
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'title_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('title_asc'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'title_asc'}
+                          >
+                            Title (A–Z)
+                          </button>
+                        </div>
+                      )}
+                    </Dropdown>
+                    <button
+                      type="button"
+                      onClick={() => setRefreshKey((k) => k + 1)}
+                      disabled={isLoadingBooks || isRefreshing}
+                      className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                      aria-label="Refresh books from provider"
+                      title="Refresh books from provider"
+                    >
+                      <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="px-4 py-3">
@@ -666,114 +780,135 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                     <div className="text-sm text-gray-600 dark:text-gray-300">No books found.</div>
                   ) : (
                     <>
-                    <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
-                      {groupedBooks.map((group, groupIndex) => (
-                        <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
-                          <div className="px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5">
-                            <div className="flex items-center justify-between gap-3">
-                              <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
-                              <p className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{group.books.length}</p>
-                            </div>
-                          </div>
-
-                          <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                            {group.books.map((book, index) => (
-                              <div
-                                key={book.id}
-                                className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full animate-pop-up will-change-transform"
-                                style={{
-                                  animationDelay: `${Math.min((groupIndex * 30) + (index * 30), 1500)}ms`,
-                                  animationFillMode: 'both',
-                                }}
-                                role="article"
+                      <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
+                        {filteredGroupedBooks.map((group, groupIndex) => {
+                          const isCollapsed = collapsedGroups[group.key] ?? false;
+                          return (
+                            <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
+                              <button
+                                type="button"
+                                onClick={() => toggleGroupCollapsed(group.key)}
+                                className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 hover-action"
+                                aria-expanded={!isCollapsed}
                               >
-                                <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_auto]">
-                                  <div className="flex items-center pl-1 sm:pl-3">
-                                    <BooksListThumbnail preview={book.preview} title={book.title} />
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <svg
+                                      className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                      strokeWidth={2}
+                                    >
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                    </svg>
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
                                   </div>
-
-                                  <button
-                                    type="button"
-                                    className="min-w-0 flex flex-col justify-center sm:pl-3 text-left"
-                                    onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(book.title)}&author=${encodeURIComponent(author.name)}`))}
-                                  >
-                                    <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight line-clamp-1 sm:line-clamp-2" title={book.title || 'Untitled'}>
-                                      <span className="truncate">{book.title || 'Untitled'}</span>
-                                    </h3>
-                                    <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                                      {book.author || resolvedName || 'Unknown author'}
-                                      {book.year && <span className="sm:hidden"> • {book.year}</span>}
-                                    </p>
-                                    {group.key !== '__standalone__' && book.series_position != null ? (
-                                      <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-2">
-                                        <span
-                                          className="inline-flex px-1.5 py-0.5 text-[10px] sm:text-xs font-bold text-white bg-emerald-600 rounded border border-emerald-700 flex-shrink-0"
-                                          style={{
-                                            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
-                                            textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
-                                          }}
-                                          title={`${group.title}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}`}
-                                        >
-                                          #{book.series_position}
-                                          {book.series_count != null ? `/${book.series_count}` : ''}
-                                        </span>
-                                      </div>
-                                    ) : null}
-                                  </button>
-
-                                  <div className="hidden sm:flex text-xs text-gray-700 dark:text-gray-200 justify-center">
-                                    {book.year || '-'}
-                                  </div>
-
-                                  <div className="flex flex-row justify-end gap-0.5 sm:gap-1 sm:pr-3">
-                                    {onGetReleases ? (
-                                      <>
-                                        <button
-                                          type="button"
-                                          className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                          onClick={() => void onGetReleases(book, 'ebook')}
-                                          aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
-                                        >
-                                          <BookIcon />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                          onClick={() => void onGetReleases(book, 'audiobook')}
-                                          aria-label={`Search providers for audiobook: ${book.title || 'this book'}`}
-                                        >
-                                          <AudiobookIcon />
-                                        </button>
-                                      </>
-                                    ) : null}
-                                    {book.source_url ? (
-                                      <a
-                                        className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                        href={book.source_url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        aria-label={`View source for ${book.title || 'this book'}`}
-                                      >
-                                        <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H18a.75.75 0 0 1 .75.75V18A.75.75 0 0 1 18 18.75H6A.75.75 0 0 1 5.25 18V6.75A.75.75 0 0 1 6 6h4.5" />
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 12.75 18.75 6M15 6h3.75v3.75" />
-                                        </svg>
-                                      </a>
-                                    ) : null}
-                                  </div>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{group.books.length}</p>
                                 </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {isLoadingBooks && (
-                      <div className="flex items-center gap-2 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
-                        <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                        Loading more…
+                              </button>
+
+                              {!isCollapsed ? (
+                                <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                                  {group.books.map((book, index) => (
+                                    <div
+                                      key={book.id}
+                                      className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full animate-pop-up will-change-transform"
+                                      style={{
+                                        animationDelay: `${Math.min((groupIndex * 30) + (index * 30), 1500)}ms`,
+                                        animationFillMode: 'both',
+                                      }}
+                                    >
+                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_auto]">
+                                        <div className="flex items-center pl-1 sm:pl-3">
+                                          <BooksListThumbnail preview={book.preview} title={book.title} />
+                                        </div>
+
+                                        <button
+                                          type="button"
+                                          className="min-w-0 flex flex-col justify-center sm:pl-3 text-left"
+                                          onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(book.title)}&author=${encodeURIComponent(author.name)}`))}
+                                        >
+                                          <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight line-clamp-1 sm:line-clamp-2" title={book.title || 'Untitled'}>
+                                            <span className="truncate">{book.title || 'Untitled'}</span>
+                                          </h3>
+                                          <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
+                                            {book.author || resolvedName || 'Unknown author'}
+                                            {book.year && <span className="sm:hidden"> • {book.year}</span>}
+                                          </p>
+                                          {group.key !== '__standalone__' && book.series_position != null ? (
+                                            <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-2">
+                                              <span
+                                                className="inline-flex px-1.5 py-0.5 text-[10px] sm:text-xs font-bold text-white bg-emerald-600 rounded border border-emerald-700 flex-shrink-0"
+                                                style={{
+                                                  boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
+                                                  textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+                                                }}
+                                                title={`${group.title}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}`}
+                                              >
+                                                #{book.series_position}
+                                                {book.series_count != null ? `/${book.series_count}` : ''}
+                                              </span>
+                                            </div>
+                                          ) : null}
+                                        </button>
+
+                                        <div className="hidden sm:flex text-xs text-gray-700 dark:text-gray-200 justify-center">
+                                          {book.year || '-'}
+                                        </div>
+
+                                        <div className="flex flex-row justify-end gap-0.5 sm:gap-1 sm:pr-3">
+                                          {onGetReleases ? (
+                                            <>
+                                              <button
+                                                type="button"
+                                                className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
+                                                onClick={() => void onGetReleases(book, 'ebook')}
+                                                aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
+                                              >
+                                                <BookIcon />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
+                                                onClick={() => void onGetReleases(book, 'audiobook')}
+                                                aria-label={`Search providers for audiobook: ${book.title || 'this book'}`}
+                                              >
+                                                <AudiobookIcon />
+                                              </button>
+                                            </>
+                                          ) : null}
+                                          {book.source_url ? (
+                                            <a
+                                              className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
+                                              href={book.source_url}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              aria-label={`View source for ${book.title || 'this book'}`}
+                                            >
+                                              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H18a.75.75 0 0 1 .75.75V18A.75.75 0 0 1 18 18.75H6A.75.75 0 0 1 5.25 18V6.75A.75.75 0 0 1 6 6h4.5" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 12.75 18.75 6M15 6h3.75v3.75" />
+                                              </svg>
+                                            </a>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
                       </div>
-                    )}
+
+                      {isLoadingBooks && (
+                        <div className="flex items-center gap-2 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                          <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          Loading more…
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
