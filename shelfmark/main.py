@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import time
+from pathlib import Path
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Dict, Tuple, Union
@@ -430,7 +431,7 @@ if DEBUG:
             "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
             "supports_credentials": True,
             "allow_headers": ["Content-Type", "Authorization"],
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
         }
     })
 
@@ -891,6 +892,43 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
             release_payload = dict(data)
             release_payload["content_type"] = resolved_content_type
 
+        # Preserve monitored context when triggered from monitored authors UI.
+        monitored_entity_id = release_payload.get("monitored_entity_id")
+        if monitored_entity_id is not None:
+            try:
+                release_payload = dict(release_payload)
+                release_payload["monitored_entity_id"] = int(monitored_entity_id)
+            except (TypeError, ValueError):
+                release_payload = dict(release_payload)
+                release_payload.pop("monitored_entity_id", None)
+
+        # If this is a monitored download, inject output overrides based on monitored entity settings.
+        try:
+            monitored_entity_id_int = release_payload.get("monitored_entity_id")
+            if (
+                monitored_entity_id_int is not None
+                and user_db is not None
+                and session.get("db_user_id") is not None
+                and str(release_payload.get("content_type") or "").strip().lower() == "ebook"
+            ):
+                entity = user_db.get_monitored_entity(
+                    user_id=int(session.get("db_user_id")),
+                    entity_id=int(monitored_entity_id_int),
+                )
+                settings = entity.get("settings") if isinstance(entity, dict) else None
+                if not isinstance(settings, dict):
+                    settings = {}
+
+                ebook_author_dir = settings.get("ebook_author_dir")
+                if isinstance(ebook_author_dir, str) and ebook_author_dir.strip().startswith("/"):
+                    release_payload = dict(release_payload)
+                    release_payload["destination_override"] = ebook_author_dir.strip().rstrip("/")
+                    release_payload["file_organization_override"] = "organize"
+                    # Destination is already the author folder, so template starts at Series.
+                    release_payload["template_override"] = "{Series}/{Title} - {Author} ({Year})"
+        except Exception:
+            pass
+
         priority = data.get('priority', 0)
         # Per-user download overrides
         db_user_id = session.get('db_user_id')
@@ -953,6 +991,137 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
     except Exception as e:
         logger.error_trace(f"Config error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/fs/list', methods=['GET'])
+@login_required
+def api_fs_list() -> Union[Response, Tuple[Response, int]]:
+    """List directories for folder browsing UI.
+
+    Query parameters:
+      - path: absolute path to list; if omitted, returns allowed roots.
+
+    Safety:
+      Only lists directories within allowed roots derived from config and per-user settings.
+    """
+
+    if user_db is None:
+        return jsonify({"error": "Filesystem browsing unavailable"}), 503
+
+    raw_user_id = session.get('db_user_id')
+    try:
+        db_user_id = int(raw_user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid user context"}), 400
+
+    requested = (request.args.get('path') or '').strip()
+
+    def _normalize_root(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        v = value.strip().rstrip('/')
+        if not v or not v.startswith('/'):
+            return None
+        return v
+
+    # Allowed roots: configured destinations + remembered monitored roots.
+    allowed_roots: list[Path] = []
+    try:
+        dest = _normalize_root(app_config.get('DESTINATION', '/books', user_id=db_user_id))
+        if dest:
+            allowed_roots.append(Path(dest).resolve())
+        dest_audio = _normalize_root(app_config.get('DESTINATION_AUDIOBOOK', '', user_id=db_user_id))
+        if dest_audio:
+            allowed_roots.append(Path(dest_audio).resolve())
+    except Exception:
+        pass
+
+    try:
+        user_settings = user_db.get_user_settings(db_user_id)
+    except Exception:
+        user_settings = {}
+
+    for key in ('MONITORED_EBOOK_ROOTS', 'MONITORED_AUDIOBOOK_ROOTS'):
+        roots_value = user_settings.get(key)
+        if isinstance(roots_value, list):
+            for item in roots_value:
+                root = _normalize_root(item)
+                if root:
+                    allowed_roots.append(Path(root).resolve())
+
+    # De-dupe
+    unique_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in allowed_roots:
+        s = str(root)
+        if s not in seen:
+            seen.add(s)
+            unique_roots.append(root)
+
+    if not requested:
+        return jsonify({
+            "path": None,
+            "parent": None,
+            "directories": [
+                {"name": p.name or str(p), "path": str(p)}
+                for p in unique_roots
+            ],
+        })
+
+    if not requested.startswith('/'):
+        return jsonify({"error": "path must be absolute"}), 400
+
+    try:
+        requested_path = Path(requested).resolve()
+    except Exception:
+        return jsonify({"error": "Invalid path"}), 400
+
+    # Ensure requested path is within at least one allowed root.
+    allowed = False
+    for root in unique_roots:
+        try:
+            requested_path.relative_to(root)
+            allowed = True
+            break
+        except Exception:
+            continue
+
+    if not allowed:
+        return jsonify({"error": "Path not allowed"}), 403
+
+    if not requested_path.exists() or not requested_path.is_dir():
+        return jsonify({"error": "Directory not found"}), 404
+
+    try:
+        children: list[dict[str, str]] = []
+        for entry in sorted(requested_path.iterdir(), key=lambda p: p.name.lower()):
+            try:
+                if entry.is_dir():
+                    children.append({"name": entry.name, "path": str(entry)})
+            except Exception:
+                continue
+    except Exception as exc:
+        return jsonify({"error": f"Failed to list directory: {exc}"}), 500
+
+    parent: str | None = None
+    try:
+        if requested_path.parent != requested_path:
+            # Only expose parent if still within allowed roots.
+            for root in unique_roots:
+                try:
+                    requested_path.parent.relative_to(root)
+                    parent = str(requested_path.parent)
+                    break
+                except Exception:
+                    continue
+    except Exception:
+        parent = None
+
+    return jsonify({
+        "path": str(requested_path),
+        "parent": parent,
+        "directories": children,
+    })
 
 @app.route('/api/health', methods=['GET'])
 def api_health() -> Union[Response, Tuple[Response, int]]:

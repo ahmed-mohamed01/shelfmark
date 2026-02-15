@@ -49,10 +49,9 @@ def _build_processing_plan(
         get_final_destination,
         validate_destination,
     )
-    from shelfmark.download.postprocess.policy import get_file_organization
+    from shelfmark.download.postprocess.policy import get_file_organization_for_task
 
-    is_audiobook = check_audiobook(task.content_type)
-    organization_mode = get_file_organization(is_audiobook)
+    organization_mode = get_file_organization_for_task(task)
     destination = get_final_destination(task)
 
     if not validate_destination(destination, status_callback):

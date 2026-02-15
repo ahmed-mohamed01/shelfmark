@@ -95,6 +95,12 @@ class DownloadTask:
     output_mode: Optional[str] = None  # e.g. "folder", "booklore", "email"
     output_args: Dict[str, Any] = field(default_factory=dict)  # Per-output parameters (e.g. email recipient)
 
+    # Monitored-mode context / overrides.
+    monitored_entity_id: Optional[int] = None
+    destination_override: Optional[str] = None
+    file_organization_override: Optional[str] = None
+    template_override: Optional[str] = None
+
     # User association (multi-user support)
     user_id: Optional[int] = None  # DB user ID who queued this download
     username: Optional[str] = None  # Username for {User} template variable

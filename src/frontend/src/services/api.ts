@@ -49,6 +49,7 @@ const API = {
   activityDismissMany: `${API_BASE}/activity/dismiss-many`,
   activityHistory: `${API_BASE}/activity/history`,
   monitored: `${API_BASE}/monitored`,
+  fsList: `${API_BASE}/fs/list`,
 };
 
 // Custom error class for authentication failures
@@ -393,6 +394,30 @@ export const deleteMonitoredEntity = async (entityId: number): Promise<{ ok: boo
   });
 };
 
+export const getMonitoredEntity = async (entityId: number): Promise<MonitoredEntity> => {
+  return fetchJSON<MonitoredEntity>(`${API.monitored}/${entityId}`);
+};
+
+export const patchMonitoredEntity = async (
+  entityId: number,
+  payload: { settings: Record<string, unknown> }
+): Promise<MonitoredEntity> => {
+  try {
+    return await fetchJSON<MonitoredEntity>(`${API.monitored}/${entityId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    if (e instanceof ApiResponseError && e.status === 405) {
+      return fetchJSON<MonitoredEntity>(`${API.monitored}/${entityId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+    }
+    throw e;
+  }
+};
+
 export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boolean; discovered?: number }> => {
   return fetchJSON<{ ok: boolean; discovered?: number }>(`${API.monitored}/${entityId}/sync`, {
     method: 'POST',
@@ -464,6 +489,7 @@ export const downloadRelease = async (release: {
   series_position?: number;
   subtitle?: string;
   search_author?: string;
+  monitored_entity_id?: number;
 }): Promise<void> => {
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',
@@ -935,6 +961,26 @@ export const getAdminSettingsOverridesSummary = async (
 
 export const getSelfUserEditContext = async (): Promise<SelfUserEditContext> => {
   return fetchJSON<SelfUserEditContext>(`${API_BASE}/users/me/edit-context`);
+};
+
+export interface FsDirectoryEntry {
+  name: string;
+  path: string;
+}
+
+export interface FsListResponse {
+  path: string | null;
+  parent: string | null;
+  directories: FsDirectoryEntry[];
+}
+
+export const fsListDirectories = async (path?: string | null): Promise<FsListResponse> => {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set('path', path);
+  }
+  const url = params.toString() ? `${API.fsList}?${params.toString()}` : API.fsList;
+  return fetchJSON<FsListResponse>(url);
 };
 
 export const updateSelfUser = async (

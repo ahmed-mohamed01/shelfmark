@@ -840,6 +840,27 @@ def download_settings():
                 "value": "folder",
             },
         ),
+
+        # Hidden per-user settings used for monitored author folder suggestions.
+        # These are persisted in user_settings but are not rendered in the UI.
+        TagListField(
+            key="MONITORED_EBOOK_ROOTS",
+            label="Monitored Ebook Roots",
+            description="Internal: remembered root folders for monitored ebook authors.",
+            default=[],
+            env_supported=False,
+            user_overridable=True,
+            hidden_in_ui=True,
+        ),
+        TagListField(
+            key="MONITORED_AUDIOBOOK_ROOTS",
+            label="Monitored Audiobook Roots",
+            description="Internal: remembered root folders for monitored audiobook authors.",
+            default=[],
+            env_supported=False,
+            user_overridable=True,
+            hidden_in_ui=True,
+        ),
         HeadingField(
             key="booklore_heading",
             title="Booklore",

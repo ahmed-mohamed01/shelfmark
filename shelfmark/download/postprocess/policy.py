@@ -98,3 +98,37 @@ def get_template(is_audiobook: bool, organization_mode: str) -> str:
         return "{Author} - {Title} ({Year})"
 
     return template
+
+
+def get_file_organization_for_task(task) -> str:
+    """Resolve organization mode for a task, respecting task overrides."""
+
+    try:
+        override = getattr(task, "file_organization_override", None)
+    except Exception:
+        override = None
+
+    if isinstance(override, str) and override.strip():
+        normalized = override.strip().lower()
+        if normalized in {"none", "rename", "organize"}:
+            return normalized
+
+    from shelfmark.core.utils import is_audiobook as check_audiobook
+
+    return get_file_organization(check_audiobook(getattr(task, "content_type", None)))
+
+
+def get_template_for_task(task, organization_mode: str) -> str:
+    """Resolve template for a task + org mode, respecting task overrides."""
+
+    try:
+        override = getattr(task, "template_override", None)
+    except Exception:
+        override = None
+
+    if isinstance(override, str) and override.strip():
+        return override
+
+    from shelfmark.core.utils import is_audiobook as check_audiobook
+
+    return get_template(check_audiobook(getattr(task, "content_type", None)), organization_mode)

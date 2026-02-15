@@ -75,6 +75,63 @@ def register_monitored_routes(
     *,
     resolve_auth_mode: Callable[[], str],
 ) -> None:
+    @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
+    def api_get_monitored(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
+        return jsonify(entity)
+
+    @app.route("/api/monitored/<int:entity_id>", methods=["PATCH", "PUT"])
+    def api_patch_monitored(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
+        if not allowed:
+            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        settings_patch = data.get("settings")
+        if settings_patch is None:
+            settings_patch = {}
+        if not isinstance(settings_patch, dict):
+            return jsonify({"error": "settings must be an object"}), 400
+
+        settings = entity.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+        merged_settings = dict(settings)
+        merged_settings.update(settings_patch)
+
+        try:
+            updated = user_db.create_monitored_entity(
+                user_id=db_user_id,
+                kind=str(entity.get("kind") or "author"),
+                provider=entity.get("provider"),
+                provider_id=entity.get("provider_id"),
+                name=str(entity.get("name") or "").strip() or "Unknown",
+                enabled=bool(int(entity.get("enabled") or 0)),
+                settings=merged_settings,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        return jsonify(updated)
+
     @app.route("/api/monitored", methods=["GET"])
     def api_list_monitored():
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

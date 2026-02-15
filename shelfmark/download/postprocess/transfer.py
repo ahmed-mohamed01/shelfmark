@@ -16,7 +16,7 @@ from shelfmark.core.naming import (
 )
 from shelfmark.core.utils import is_audiobook as check_audiobook
 from shelfmark.download.fs import atomic_copy, atomic_hardlink, atomic_move, run_blocking_io
-from shelfmark.download.postprocess.policy import get_file_organization, get_template
+from shelfmark.download.postprocess.policy import get_file_organization, get_template, get_template_for_task
 
 from .scan import collect_directory_files, scan_directory_tree
 from .types import TransferPlan
@@ -156,7 +156,7 @@ def transfer_book_files(
     op_counts: Dict[str, int] = {"hardlink": 0, "copy": 0, "move": 0}
 
     if organization_mode == "organize":
-        template = get_template(is_audiobook, "organize")
+        template = get_template_for_task(task, "organize")
         metadata = build_metadata_dict(task)
 
         if len(book_files) == 1:
@@ -217,7 +217,7 @@ def transfer_book_files(
             if not task.format:
                 task.format = book_file.suffix.lower().lstrip(".")
 
-            template = get_template(is_audiobook, "rename")
+            template = get_template_for_task(task, "rename")
             metadata = build_metadata_dict(task)
             extension = book_file.suffix.lstrip(".") or task.format or ""
 

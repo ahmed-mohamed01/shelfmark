@@ -173,6 +173,8 @@ function App() {
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
   const [contentType, setContentType] = useState<ContentType>(() => getInitialContentType());
 
+  const [releaseMonitoredEntityId, setReleaseMonitoredEntityId] = useState<number | null>(null);
+
   useEffect(() => {
     try {
       localStorage.setItem(CONTENT_TYPE_STORAGE_KEY, contentType);
@@ -802,7 +804,7 @@ function App() {
   };
 
   // Universal-mode "Get" action (open releases, request-book, or block by policy).
-  const openReleasesForBook = async (book: Book, releaseContentType: ContentType) => {
+  const openReleasesForBook = async (book: Book, releaseContentType: ContentType, monitoredEntityId?: number | null) => {
     let mode = getUniversalDefaultPolicyMode();
     const normalizedContentType = toContentType(releaseContentType);
     policyTrace('universal.get:start', {
@@ -868,6 +870,7 @@ function App() {
         });
         const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
         setReleaseContentTypeOverride(normalizedContentType);
+        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
         setReleaseBook({
           ...book,
           description: fullBook.description || book.description,
@@ -883,6 +886,7 @@ function App() {
           message: error instanceof Error ? error.message : String(error),
         });
         setReleaseContentTypeOverride(normalizedContentType);
+        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
         setReleaseBook(book);
       }
     } else {
@@ -891,6 +895,7 @@ function App() {
         contentType: normalizedContentType,
       });
       setReleaseContentTypeOverride(normalizedContentType);
+      setReleaseMonitoredEntityId(monitoredEntityId ?? null);
       setReleaseBook(book);
     }
   };
@@ -929,6 +934,7 @@ function App() {
         series_name: book.series_name,
         series_position: book.series_position,
         subtitle: book.subtitle,
+        monitored_entity_id: releaseMonitoredEntityId ?? undefined,
       });
       await fetchStatus();
     } catch (error) {
@@ -1191,6 +1197,7 @@ function App() {
     }
     setReleaseBook(null);
     setReleaseContentTypeOverride(null);
+    setReleaseMonitoredEntityId(null);
   }, [isBrowseFulfilMode]);
 
   const mainAppContent = (

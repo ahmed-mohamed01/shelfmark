@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
+import { FolderBrowserModal } from './FolderBrowserModal';
 
 const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -60,7 +61,7 @@ export interface AuthorModalAuthor {
 interface AuthorModalProps {
   author: AuthorModalAuthor | null;
   onClose: () => void;
-  onGetReleases?: (book: Book, contentType: ContentType) => Promise<void>;
+  onGetReleases?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
   monitoredEntityId?: number | null;
 }
 
@@ -83,6 +84,19 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [booksQuery, setBooksQuery] = useState('');
+
+  const [pathsEntity, setPathsEntity] = useState<MonitoredEntity | null>(null);
+  const [pathsLoading, setPathsLoading] = useState(false);
+  const [pathsError, setPathsError] = useState<string | null>(null);
+  const [ebookAuthorDir, setEbookAuthorDir] = useState('');
+  const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
+  const [pathsSaving, setPathsSaving] = useState(false);
+  const [pathsBrowserState, setPathsBrowserState] = useState<{ open: boolean; kind: 'ebook' | 'audiobook' | null; initialPath: string | null }>({
+    open: false,
+    kind: null,
+    initialPath: null,
+  });
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -114,6 +128,44 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   }, [author]);
 
   useEffect(() => {
+    if (!author || !monitoredEntityId) {
+      setPathsEntity(null);
+      setPathsError(null);
+      setPathsLoading(false);
+      setEbookAuthorDir('');
+      setAudiobookAuthorDir('');
+      setIsEditModalOpen(false);
+      return;
+    }
+
+    let alive = true;
+    const load = async () => {
+      setPathsLoading(true);
+      setPathsError(null);
+      try {
+        const entity = await getMonitoredEntity(monitoredEntityId);
+        if (!alive) return;
+        setPathsEntity(entity);
+        const settings = entity.settings || {};
+        setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
+        setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+      } catch (e) {
+        if (!alive) return;
+        const message = e instanceof Error ? e.message : 'Failed to load monitored paths';
+        setPathsError(message);
+        setPathsEntity(null);
+      } finally {
+        if (alive) setPathsLoading(false);
+      }
+    };
+
+    void load();
+    return () => {
+      alive = false;
+    };
+  }, [author, monitoredEntityId]);
+
+  useEffect(() => {
     try {
       localStorage.setItem('authorBooksSort', booksSort);
     } catch {
@@ -131,6 +183,13 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       setBooks([]);
       setBooksError(null);
       setIsLoadingBooks(false);
+
+      setPathsEntity(null);
+      setPathsError(null);
+      setPathsLoading(false);
+      setEbookAuthorDir('');
+      setAudiobookAuthorDir('');
+      setIsEditModalOpen(false);
       return;
     }
 
@@ -501,49 +560,87 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   const providerLabel = details?.provider || author.provider || null;
   const booksCount = details?.stats?.books_count ?? null;
 
-  return (
-    <div
-      className="modal-overlay active sm:px-6 sm:py-6"
-      onClick={e => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
-    >
-      <div
-        className={`details-container w-full max-w-5xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
-        <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
-          <header className="flex items-start gap-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5 py-4">
-            <div className="flex-1 space-y-1 min-w-0">
-              <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Author</p>
-              <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
-                {resolvedName || 'Unknown author'}
-              </h3>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-                aria-label="Close author details"
-              >
-                <svg
-                  className="h-5 w-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={1.5}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </header>
+  const normalizePath = (value: string): string => {
+    const v = (value || '').trim();
+    if (!v) return '';
+    return v.replace(/\/+$/g, '');
+  };
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6">
-            <div className="flex flex-col gap-6">
+  const handleSavePaths = async () => {
+    if (!monitoredEntityId) return;
+    const ebook = normalizePath(ebookAuthorDir);
+    const audio = normalizePath(audiobookAuthorDir);
+    if (!ebook && !audio) {
+      setPathsError('Please set an Ebook folder or Audiobook folder.');
+      return;
+    }
+
+    setPathsSaving(true);
+    setPathsError(null);
+    try {
+      const updated = await patchMonitoredEntity(monitoredEntityId, {
+        settings: {
+          ebook_author_dir: ebook || undefined,
+          audiobook_author_dir: audio || undefined,
+        },
+      });
+      setPathsEntity(updated);
+      const settings = updated.settings || {};
+      setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : ebook);
+      setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : audio);
+      setIsEditModalOpen(false);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to save paths';
+      setPathsError(message);
+    } finally {
+      setPathsSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        className="modal-overlay active sm:px-6 sm:py-6"
+        onClick={e => {
+          if (e.target === e.currentTarget) handleClose();
+        }}
+      >
+        <div
+          className={`details-container w-full max-w-5xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+        >
+          <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
+            <header className="flex items-start gap-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5 py-4">
+              <div className="flex-1 space-y-1 min-w-0">
+                <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Author</p>
+                <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
+                  {resolvedName || 'Unknown author'}
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                  aria-label="Close author details"
+                >
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    strokeWidth={1.5}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </header>
+
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6">
+              <div className="flex flex-col gap-6">
               <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] p-4">
                 <div className="flex items-start gap-4">
                   <div className="flex-shrink-0">
@@ -572,6 +669,18 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                       </div>
 
                       <div className="flex items-center gap-2 flex-shrink-0">
+                        {monitoredEntityId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPathsError(null);
+                              setIsEditModalOpen(true);
+                            }}
+                            className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                          >
+                            Edit
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(author.name)}`))}
@@ -863,7 +972,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                               <button
                                                 type="button"
                                                 className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                                onClick={() => void onGetReleases(book, 'ebook')}
+                                                onClick={() => void onGetReleases(book, 'ebook', monitoredEntityId)}
                                                 aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
                                               >
                                                 <BookIcon />
@@ -871,7 +980,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                               <button
                                                 type="button"
                                                 className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                                onClick={() => void onGetReleases(book, 'audiobook')}
+                                                onClick={() => void onGetReleases(book, 'audiobook', monitoredEntityId)}
                                                 aria-label={`Search providers for audiobook: ${book.title || 'this book'}`}
                                               >
                                                 <AudiobookIcon />
@@ -918,5 +1027,130 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
         </div>
       </div>
     </div>
+      <FolderBrowserModal
+        open={pathsBrowserState.open}
+        title={pathsBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
+        initialPath={pathsBrowserState.initialPath}
+        onClose={() => setPathsBrowserState({ open: false, kind: null, initialPath: null })}
+        onSelect={(path) => {
+          const authorName = (resolvedName || author.name || '').trim();
+          const suggested = authorName ? `${normalizePath(path)}/${authorName}` : path;
+          if (pathsBrowserState.kind === 'audiobook') {
+            setAudiobookAuthorDir(suggested);
+          } else {
+            setEbookAuthorDir(suggested);
+          }
+        }}
+      />
+
+      {isEditModalOpen ? (
+        <div
+          className="modal-overlay active sm:px-6 sm:py-6"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              const settings = pathsEntity?.settings || {};
+              setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
+              setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+              setPathsError(null);
+              setIsEditModalOpen(false);
+            }
+          }}
+        >
+          <div className="details-container w-full max-w-2xl h-auto settings-modal-enter" role="dialog" aria-modal="true" aria-label="Edit monitored author">
+            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
+              <header className="flex items-start justify-between gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+                <div className="min-w-0">
+                  <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Edit</div>
+                  <div className="mt-1 text-base font-semibold truncate">{resolvedName || 'Unknown author'}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const settings = pathsEntity?.settings || {};
+                    setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
+                    setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+                    setPathsError(null);
+                    setIsEditModalOpen(false);
+                  }}
+                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                  aria-label="Close"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </header>
+
+              <div className="px-5 py-4 space-y-4">
+                {pathsLoading ? <div className="text-sm text-gray-500 dark:text-gray-400">Loading…</div> : null}
+                {pathsError ? <div className="text-sm text-red-500">{pathsError}</div> : null}
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">eBooks Path</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPathsBrowserState({ open: true, kind: 'ebook', initialPath: ebookAuthorDir || null })}
+                      className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                    >
+                      Browse
+                    </button>
+                    <input
+                      value={ebookAuthorDir}
+                      onChange={(e) => setEbookAuthorDir(e.target.value)}
+                      placeholder="/books/ebooks/Author Name"
+                      className="flex-1 px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Audiobooks Path</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPathsBrowserState({ open: true, kind: 'audiobook', initialPath: audiobookAuthorDir || null })}
+                      className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                    >
+                      Browse
+                    </button>
+                    <input
+                      value={audiobookAuthorDir}
+                      onChange={(e) => setAudiobookAuthorDir(e.target.value)}
+                      placeholder="/books/audiobooks/Author Name"
+                      className="flex-1 px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const settings = pathsEntity?.settings || {};
+                    setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
+                    setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+                    setPathsError(null);
+                    setIsEditModalOpen(false);
+                  }}
+                  className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-gray-900 font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={pathsSaving}
+                  onClick={() => void handleSavePaths()}
+                  className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
+                >
+                  {pathsSaving ? 'Saving…' : 'Save'}
+                </button>
+              </footer>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 };

@@ -204,6 +204,11 @@ def queue_release(
         series_position = release_data.get('series_position') or extra.get('series_position')
         subtitle = release_data.get('subtitle') or extra.get('subtitle')
 
+        monitored_entity_id = release_data.get('monitored_entity_id')
+        destination_override = release_data.get('destination_override')
+        file_organization_override = release_data.get('file_organization_override')
+        template_override = release_data.get('template_override')
+
         books_output_mode = str(
             config.get("BOOKS_OUTPUT_MODE", "folder", user_id=user_id) or "folder"
         ).strip().lower()
@@ -237,6 +242,10 @@ def queue_release(
             search_mode=SearchMode.UNIVERSAL,
             output_mode=output_mode,
             output_args=output_args,
+            monitored_entity_id=int(monitored_entity_id) if monitored_entity_id is not None else None,
+            destination_override=str(destination_override).strip() if isinstance(destination_override, str) and destination_override.strip() else None,
+            file_organization_override=str(file_organization_override).strip() if isinstance(file_organization_override, str) and file_organization_override.strip() else None,
+            template_override=str(template_override) if isinstance(template_override, str) and template_override.strip() else None,
             priority=priority,
             user_id=user_id,
             username=username,
