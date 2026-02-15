@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, syncMonitoredEntity, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { Dropdown } from './Dropdown';
 
@@ -188,7 +188,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       series_count: row.series_count != null ? row.series_count : undefined,
     });
 
-    const enrichSeriesInfo = async (allBooks: Book[]): Promise<void> => {
+    const enrichSeriesInfo = async (allBooks: Book[]): Promise<Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>> => {
       const candidates = allBooks
         .filter((book) => Boolean(book.provider && book.provider_id))
         .filter((book) => !(book.series_name && book.series_position != null));
@@ -197,7 +197,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       const batchSize = 5;
       const toEnrich = candidates.slice(0, maxEnrich);
 
-      if (toEnrich.length === 0) return;
+      if (toEnrich.length === 0) return [];
 
       const enriched: Array<Book | null> = [];
 
@@ -214,10 +214,12 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
           })
         );
         enriched.push(...batchResults);
-        if (isCancelled) return;
+        if (isCancelled) return [];
       }
 
       const byId = new Map(enriched.filter((b): b is Book => Boolean(b)).map((b) => [b.id, b]));
+
+      const seriesUpdates: Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }> = [];
 
       if (byId.size > 0) {
         setBooks((current) =>
@@ -225,6 +227,15 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
             const update = byId.get(book.id);
             if (!update) return book;
             if (book.series_name && book.series_position != null) return book;
+            if (update.series_name && update.provider && update.provider_id) {
+              seriesUpdates.push({
+                provider: update.provider,
+                provider_book_id: update.provider_id,
+                series_name: update.series_name,
+                series_position: update.series_position,
+                series_count: update.series_count,
+              });
+            }
             return {
               ...book,
               series_name: update.series_name,
@@ -234,35 +245,8 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
           })
         );
       }
-    };
 
-    const mergeProviderBooks = (cached: Book[], fresh: Book[]): Book[] => {
-      const cachedById = new Map(cached.map((b) => [b.id, b]));
-      const merged: Book[] = [];
-      const seen = new Set<string>();
-
-      for (const book of fresh) {
-        seen.add(book.id);
-        const existing = cachedById.get(book.id);
-        if (existing) {
-          merged.push({
-            ...book,
-            series_name: book.series_name || existing.series_name,
-            series_position: book.series_position ?? existing.series_position,
-            series_count: book.series_count ?? existing.series_count,
-          });
-        } else {
-          merged.push(book);
-        }
-      }
-
-      for (const book of cached) {
-        if (!seen.has(book.id)) {
-          merged.push(book);
-        }
-      }
-
-      return merged;
+      return seriesUpdates;
     };
 
     const loadBooks = async () => {
@@ -287,7 +271,10 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
           }
         }
 
-        // Fetch from provider page-by-page, progressively updating the display
+        // Fetch from provider; if we have cached books, fetch silently and
+        // do a single merge at the end to avoid visual churn. Otherwise,
+        // update progressively page-by-page.
+        const hasCachedDisplay = cachedBooks.length > 0;
         const limit = 40;
         const maxPages = 12;
         const maxBooks = 500;
@@ -302,9 +289,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
 
           allFreshBooks.push(...result.books);
 
-          if (cachedBooks.length > 0) {
-            setBooks(mergeProviderBooks(cachedBooks, allFreshBooks));
-          } else {
+          if (!hasCachedDisplay) {
             setBooks([...allFreshBooks]);
           }
 
@@ -314,12 +299,49 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
 
         setIsLoadingBooks(false);
 
-        await enrichSeriesInfo(allFreshBooks);
+        const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
         if (isCancelled) return;
+
+        // Single merge after all provider data + series enrichment is done.
+        // Use the current books state (which has series info from enrichment)
+        // rather than the stale allFreshBooks array.
+        if (hasCachedDisplay) {
+          setBooks((current) => {
+            const cachedById = new Map(cachedBooks.map((b) => [b.id, b]));
+            const currentById = new Map(current.map((b) => [b.id, b]));
+            const merged: Book[] = [];
+            const seen = new Set<string>();
+
+            for (const book of current) {
+              seen.add(book.id);
+              const cached = cachedById.get(book.id);
+              merged.push({
+                ...book,
+                series_name: book.series_name || cached?.series_name,
+                series_position: book.series_position ?? cached?.series_position,
+                series_count: book.series_count ?? cached?.series_count,
+              });
+            }
+
+            for (const book of cachedBooks) {
+              if (!seen.has(book.id)) {
+                const cur = currentById.get(book.id);
+                merged.push(cur || book);
+              }
+            }
+
+            return merged;
+          });
+        }
 
         if (monitoredEntityId) {
           try {
+            // Sync books from provider to DB first
             await syncMonitoredEntity(monitoredEntityId);
+            // Then persist enriched series info back to DB
+            if (seriesUpdates.length > 0) {
+              await updateMonitoredBooksSeries(monitoredEntityId, seriesUpdates);
+            }
           } catch {
             // Best-effort sync, don't block UI
           }

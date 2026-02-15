@@ -2185,12 +2185,8 @@ def api_metadata_author(provider: str, author_id: str) -> Union[Response, Tuple[
                 name
                 slug
                 bio
-                born_year
-                cached_image
-                users_count
+                image { url }
                 books_count
-                ratings_count
-                rating
             }
         }
         """
@@ -2220,7 +2216,15 @@ def api_metadata_author(provider: str, author_id: str) -> Union[Response, Tuple[
 
         author = authors[0]
 
-        photo_url = author.get("cached_image")
+        photo_url = None
+        image_obj = author.get("image")
+        if isinstance(image_obj, dict) and image_obj.get("url"):
+            photo_url = image_obj["url"]
+        elif isinstance(image_obj, str) and image_obj:
+            photo_url = image_obj
+        # Fallback to cached_image if present
+        if not photo_url:
+            photo_url = author.get("cached_image")
         if photo_url:
             cache_id = f"hardcover_author_{author.get('id')}"
             photo_url = transform_cover_url(photo_url, cache_id)

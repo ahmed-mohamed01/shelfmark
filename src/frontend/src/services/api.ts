@@ -401,6 +401,22 @@ export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBoo
   return fetchJSON<MonitoredBookRow[]>(`${API.monitored}/${entityId}/books`);
 };
 
+export const updateMonitoredBooksSeries = async (
+  entityId: number,
+  updates: Array<{
+    provider: string;
+    provider_book_id: string;
+    series_name: string;
+    series_position?: number | null;
+    series_count?: number | null;
+  }>,
+): Promise<{ ok: boolean; updated: number }> => {
+  return fetchJSON<{ ok: boolean; updated: number }>(`${API.monitored}/${entityId}/books/series`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  });
+};
+
 export const getBookInfo = async (id: string): Promise<Book> => {
   return fetchJSON<Book>(`${API.info}?id=${encodeURIComponent(id)}`);
 };

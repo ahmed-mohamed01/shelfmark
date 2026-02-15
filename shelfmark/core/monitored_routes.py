@@ -158,6 +158,40 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
         return jsonify(rows)
 
+    @app.route("/api/monitored/<int:entity_id>/books/series", methods=["PATCH"])
+    def api_update_monitored_books_series(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, list):
+            return jsonify({"error": "Expected a JSON array"}), 400
+
+        updates = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            provider = item.get("provider")
+            provider_book_id = item.get("provider_book_id")
+            series_name = item.get("series_name")
+            if not provider or not provider_book_id or not series_name:
+                continue
+            updates.append({
+                "provider": str(provider),
+                "provider_book_id": str(provider_book_id),
+                "series_name": str(series_name),
+                "series_position": item.get("series_position"),
+                "series_count": item.get("series_count"),
+            })
+
+        count = user_db.batch_update_monitored_books_series(
+            user_id=db_user_id,
+            entity_id=entity_id,
+            updates=updates,
+        )
+        return jsonify({"ok": True, "updated": count})
+
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
     def api_sync_monitored(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

@@ -484,6 +484,58 @@ class UserDB:
             finally:
                 conn.close()
 
+    def batch_update_monitored_books_series(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        updates: list[dict],
+    ) -> int:
+        """Batch-update series info on monitored books.
+
+        Each item in *updates* should have keys:
+        provider, provider_book_id, series_name, series_position, series_count.
+        Returns the number of rows updated.
+        """
+        if not updates:
+            return 0
+
+        updated = 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return 0
+
+                for item in updates:
+                    cur = conn.execute(
+                        """
+                        UPDATE monitored_books
+                        SET series_name = ?, series_position = ?, series_count = ?
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND (series_name IS NULL OR series_name = '')
+                        """,
+                        (
+                            item.get("series_name"),
+                            item.get("series_position"),
+                            item.get("series_count"),
+                            entity_id,
+                            item.get("provider"),
+                            item.get("provider_book_id"),
+                        ),
+                    )
+                    updated += cur.rowcount
+                conn.commit()
+            finally:
+                conn.close()
+        return updated
+
     def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
         """Ensure users.auth_source exists and backfill historical rows."""
         columns = conn.execute("PRAGMA table_info(users)").fetchall()
