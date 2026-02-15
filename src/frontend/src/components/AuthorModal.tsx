@@ -463,33 +463,99 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
               <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
                 {resolvedName || 'Unknown author'}
               </h3>
-              {resolvedUrl ? (
-                <a
-                  href={resolvedUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sm text-gray-600 dark:text-gray-300 hover:underline"
-                >
-                  View on provider
-                </a>
-              ) : null}
             </div>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-              aria-label="Close author details"
-            >
-              <svg
-                className="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Dropdown
+                align="right"
+                widthClassName="w-48"
+                renderTrigger={({ isOpen, toggle }) => (
+                  <button
+                    type="button"
+                    onClick={toggle}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                      isOpen
+                        ? 'bg-white text-gray-900 dark:bg-white/20 dark:text-gray-100'
+                        : 'bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100'
+                    }`}
+                    aria-haspopup="listbox"
+                    aria-expanded={isOpen}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" />
+                      </svg>
+                      <span>Filters</span>
+                    </span>
+                  </button>
+                )}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+                {({ close }) => (
+                  <div role="listbox" aria-label="Sort books">
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      onClick={() => { setBooksSort('series_asc'); close(); }}
+                      role="option"
+                      aria-selected={booksSort === 'series_asc'}
+                    >
+                      Series (A–Z)
+                    </button>
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      onClick={() => { setBooksSort('series_desc'); close(); }}
+                      role="option"
+                      aria-selected={booksSort === 'series_desc'}
+                    >
+                      Series (Z–A)
+                    </button>
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      onClick={() => { setBooksSort('year_desc'); close(); }}
+                      role="option"
+                      aria-selected={booksSort === 'year_desc'}
+                    >
+                      Year (newest)
+                    </button>
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      onClick={() => { setBooksSort('year_asc'); close(); }}
+                      role="option"
+                      aria-selected={booksSort === 'year_asc'}
+                    >
+                      Year (oldest)
+                    </button>
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'title_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      onClick={() => { setBooksSort('title_asc'); close(); }}
+                      role="option"
+                      aria-selected={booksSort === 'title_asc'}
+                    >
+                      Title (A–Z)
+                    </button>
+                  </div>
+                )}
+              </Dropdown>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                aria-label="Close author details"
+              >
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </header>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6">
@@ -519,26 +585,37 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                           {booksCount != null ? `${booksCount} books` : 'Unknown'}
                           {providerLabel ? ` • ${providerLabel}` : ''}
                         </div>
-                        {resolvedUrl ? (
-                          <a
-                            href={resolvedUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-1 inline-block text-xs text-gray-600 dark:text-gray-300 hover:underline"
-                          >
-                            View on provider
-                          </a>
-                        ) : null}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setShowMoreDetails((v) => !v)}
-                        className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100 flex-shrink-0"
-                      >
-                        {showMoreDetails ? 'Hide details' : 'Show details'}
-                      </button>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(author.name)}`))}
+                          className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                        >
+                          Open in main search
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowMoreDetails((v) => !v)}
+                          className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                        >
+                          {showMoreDetails ? 'Hide details' : 'Show details'}
+                        </button>
+                      </div>
                     </div>
+
+                    {!showMoreDetails ? (
+                      <div className="mt-2 min-h-[1.25rem]">
+                        {resolvedBio ? (
+                          <p className="text-xs text-gray-600 dark:text-gray-300 line-clamp-2">
+                            {resolvedBio.length > 100 ? `${resolvedBio.slice(0, 100)}…` : resolvedBio}
+                          </p>
+                        ) : isLoadingDetails ? (
+                          <p className="text-xs text-gray-500 dark:text-gray-500">Loading bio…</p>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {showMoreDetails ? (
                       <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg)]/40 px-3 py-2">
@@ -558,6 +635,19 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                         </div>
                       </div>
                     ) : null}
+
+                    <div className="mt-2 h-4">
+                      {resolvedUrl ? (
+                        <a
+                          href={resolvedUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-block text-xs text-gray-500 dark:text-gray-400 hover:underline"
+                        >
+                          View on provider ↗
+                        </a>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -565,105 +655,6 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
               <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
                 <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)]">
                   <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Books</p>
-                  <div className="flex items-center gap-1 flex-wrap justify-end">
-                    <Dropdown
-                      align="right"
-                      widthClassName="w-48"
-                      renderTrigger={({ isOpen, toggle }) => (
-                        <button
-                          type="button"
-                          onClick={toggle}
-                          className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
-                            isOpen
-                              ? 'bg-white text-gray-900 dark:bg-white/20 dark:text-gray-100'
-                              : 'bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100'
-                          }`}
-                          aria-haspopup="listbox"
-                          aria-expanded={isOpen}
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" />
-                            </svg>
-                            <span>Filters</span>
-                          </span>
-                        </button>
-                      )}
-                    >
-                      {({ close }) => (
-                        <div role="listbox" aria-label="Sort books">
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksSort('series_asc');
-                              close();
-                            }}
-                            role="option"
-                            aria-selected={booksSort === 'series_asc'}
-                          >
-                            Series (A–Z)
-                          </button>
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'series_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksSort('series_desc');
-                              close();
-                            }}
-                            role="option"
-                            aria-selected={booksSort === 'series_desc'}
-                          >
-                            Series (Z–A)
-                          </button>
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksSort('year_desc');
-                              close();
-                            }}
-                            role="option"
-                            aria-selected={booksSort === 'year_desc'}
-                          >
-                            Year (newest)
-                          </button>
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksSort('year_asc');
-                              close();
-                            }}
-                            role="option"
-                            aria-selected={booksSort === 'year_asc'}
-                          >
-                            Year (oldest)
-                          </button>
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'title_asc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksSort('title_asc');
-                              close();
-                            }}
-                            role="option"
-                            aria-selected={booksSort === 'title_asc'}
-                          >
-                            Title (A–Z)
-                          </button>
-                        </div>
-                      )}
-                    </Dropdown>
-
-                    <button
-                      type="button"
-                      onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(author.name)}`))}
-                      className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                    >
-                      Open in main search
-                    </button>
-                  </div>
                 </div>
 
                 <div className="px-4 py-3">
