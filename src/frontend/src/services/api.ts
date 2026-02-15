@@ -48,6 +48,7 @@ const API = {
   activityDismiss: `${API_BASE}/activity/dismiss`,
   activityDismissMany: `${API_BASE}/activity/dismiss-many`,
   activityHistory: `${API_BASE}/activity/history`,
+  monitored: `${API_BASE}/monitored`,
 };
 
 // Custom error class for authentication failures
@@ -333,6 +334,68 @@ export const getMetadataAuthorInfo = async (provider: string, authorId: string):
     supportsAuthors: response.supports_authors,
     author: response.author,
   };
+};
+
+export interface MonitoredEntity {
+  id: number;
+  user_id: number;
+  kind: 'author' | 'book';
+  provider: string | null;
+  provider_id: string | null;
+  name: string;
+  enabled: number;
+  last_checked_at?: string | null;
+  last_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  settings?: Record<string, unknown>;
+}
+
+export interface MonitoredBookRow {
+  id: number;
+  entity_id: number;
+  provider: string | null;
+  provider_book_id: string | null;
+  title: string;
+  authors?: string | null;
+  publish_year?: number | null;
+  isbn_13?: string | null;
+  cover_url?: string | null;
+  state: string;
+  first_seen_at: string;
+}
+
+export const listMonitoredEntities = async (): Promise<MonitoredEntity[]> => {
+  return fetchJSON<MonitoredEntity[]>(API.monitored);
+};
+
+export const createMonitoredEntity = async (payload: {
+  kind: 'author' | 'book';
+  name: string;
+  provider?: string;
+  provider_id?: string;
+  settings?: Record<string, unknown>;
+}): Promise<MonitoredEntity> => {
+  return fetchJSON<MonitoredEntity>(API.monitored, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const deleteMonitoredEntity = async (entityId: number): Promise<{ ok: boolean }> => {
+  return fetchJSON<{ ok: boolean }>(`${API.monitored}/${entityId}`, {
+    method: 'DELETE',
+  });
+};
+
+export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boolean; discovered?: number }> => {
+  return fetchJSON<{ ok: boolean; discovered?: number }>(`${API.monitored}/${entityId}/sync`, {
+    method: 'POST',
+  });
+};
+
+export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBookRow[]> => {
+  return fetchJSON<MonitoredBookRow[]>(`${API.monitored}/${entityId}/books`);
 };
 
 export const getBookInfo = async (id: string): Promise<Book> => {

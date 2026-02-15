@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, CSSProperties } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import {
   Book,
   Release,
@@ -117,6 +117,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 };
 
 function App() {
+  const navigate = useNavigate();
   const { toasts, showToast, removeToast } = useToast();
   const { socket } = useSocket();
 
@@ -264,7 +265,6 @@ function App() {
     };
   }, [currentStatus, dismissedDownloadTaskIds]);
   const monitoredPath = useMemo(() => withBasePath('/monitored'), []);
-
   const showRequestsTab = useMemo(() => {
     if (requestRoleIsAdmin) {
       return true;
@@ -1205,9 +1205,7 @@ function App() {
           searchInput={searchInput}
           onSearchChange={setSearchInput}
           onDownloadsClick={() => setDownloadsSidebarOpen((prev) => !prev)}
-          onMonitoredClick={() => {
-            window.location.assign(monitoredPath);
-          }}
+          onMonitoredClick={() => navigate('/monitored')}
           onSettingsClick={() => {
             if (config?.settings_enabled) {
               if (authIsAdmin) {
@@ -1527,9 +1525,7 @@ function App() {
             <MonitoredPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
               onGetReleases={openReleasesForBook}
-              onBack={() => {
-                window.location.assign(withBasePath('/'));
-              }}
+              onBack={() => navigate('/')}
             />
           )
         }

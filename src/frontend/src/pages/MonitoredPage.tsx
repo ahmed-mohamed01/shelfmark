@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/Header';
-import { searchMetadata, searchMetadataAuthors, MetadataAuthor } from '../services/api';
+import {
+  createMonitoredEntity,
+  deleteMonitoredEntity,
+  listMonitoredEntities,
+  MetadataAuthor,
+  MonitoredEntity,
+  searchMetadata,
+  searchMetadataAuthors,
+} from '../services/api';
 import { AuthorModal } from '../components/AuthorModal';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
 import { Book, ContentType } from '../types';
 
 interface MonitoredAuthor {
+  id: number;
   name: string;
   provider?: string;
   provider_id?: string;
   photo_url?: string;
   books_count?: number;
-  monitoredAt: number;
 }
 
 interface MonitoredPageProps {
@@ -20,8 +28,6 @@ interface MonitoredPageProps {
   onGetReleases?: (book: Book, contentType: ContentType) => Promise<void>;
   onBack?: () => void;
 }
-
-const STORAGE_KEY = 'monitored-authors';
 
 const normalizeAuthor = (value: string): string => {
   return value
@@ -74,6 +80,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
   const [authorQuery, setAuthorQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [monitoredError, setMonitoredError] = useState<string | null>(null);
   const [authorResults, setAuthorResults] = useState<string[]>([]);
   const [authorCards, setAuthorCards] = useState<MetadataAuthor[]>([]);
   const [authorViewMode, setAuthorViewMode] = useState<'card' | 'compact' | 'list'>(() => {
@@ -113,40 +120,60 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
   }, []);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        setMonitored([]);
-        return;
+    let alive = true;
+
+    const toMonitoredAuthor = (entity: MonitoredEntity): MonitoredAuthor | null => {
+      if (entity.kind !== 'author') {
+        return null;
       }
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        setMonitored([]);
-        return;
+      const name = normalizeAuthor(entity.name);
+      if (!name) {
+        return null;
       }
-      const cleaned = parsed
-        .filter((item): item is { name?: unknown; monitoredAt?: unknown; provider?: unknown; provider_id?: unknown } => Boolean(item && typeof item === 'object'))
-        .map((record): MonitoredAuthor | null => {
-          const name = typeof record.name === 'string' ? normalizeAuthor(record.name) : '';
-          if (!name) {
-            return null;
-          }
-          const monitoredAt = typeof record.monitoredAt === 'number' ? record.monitoredAt : Date.now();
-          const provider = typeof record.provider === 'string' ? record.provider : undefined;
-          const provider_id = typeof record.provider_id === 'string' ? record.provider_id : undefined;
-          const photo_url = typeof (record as { photo_url?: unknown }).photo_url === 'string'
-            ? (record as { photo_url: string }).photo_url
-            : undefined;
-          const books_count = typeof (record as { books_count?: unknown }).books_count === 'number'
-            ? (record as { books_count: number }).books_count
-            : undefined;
-          return { name, provider, provider_id, photo_url, books_count, monitoredAt };
-        })
-        .filter((item): item is MonitoredAuthor => item !== null);
-      setMonitored(cleaned);
-    } catch {
-      setMonitored([]);
-    }
+
+      const settings = entity.settings && typeof entity.settings === 'object' ? entity.settings : {};
+      const photo_url = typeof (settings as Record<string, unknown>).photo_url === 'string'
+        ? ((settings as Record<string, unknown>).photo_url as string)
+        : undefined;
+      const books_count = typeof (settings as Record<string, unknown>).books_count === 'number'
+        ? ((settings as Record<string, unknown>).books_count as number)
+        : undefined;
+
+      return {
+        id: entity.id,
+        name,
+        provider: entity.provider || undefined,
+        provider_id: entity.provider_id || undefined,
+        photo_url,
+        books_count,
+      };
+    };
+
+    const load = async () => {
+      setMonitoredError(null);
+      try {
+        const entities = await listMonitoredEntities();
+        const next = entities
+          .map(toMonitoredAuthor)
+          .filter((item): item is MonitoredAuthor => item !== null);
+        if (!alive) {
+          return;
+        }
+        setMonitored(next);
+      } catch (e) {
+        if (!alive) {
+          return;
+        }
+        const message = e instanceof Error ? e.message : 'Failed to load monitored authors';
+        setMonitoredError(message);
+        setMonitored([]);
+      }
+    };
+
+    void load();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const monitoredAuthorsForCards: MetadataAuthor[] = useMemo(() => {
@@ -159,14 +186,6 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
         books_count: typeof item.books_count === 'number' ? item.books_count : null,
       },
     }));
-  }, [monitored]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(monitored));
-    } catch {
-      // ignore
-    }
   }, [monitored]);
 
   useEffect(() => {
@@ -234,23 +253,42 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
     }
   }, [authorQuery]);
 
-  const addMonitored = useCallback((payload: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number }) => {
+  const addMonitored = useCallback(async (payload: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number }) => {
     const normalized = normalizeAuthor(payload.name);
     if (!normalized) {
       return;
     }
-    setMonitored((prev) => {
-      const next = prev.filter((item) => item.name.toLowerCase() !== normalized.toLowerCase());
-      next.unshift({
+
+    setMonitoredError(null);
+    try {
+      const created = await createMonitoredEntity({
+        kind: 'author',
         name: normalized,
         provider: payload.provider,
         provider_id: payload.provider_id,
-        photo_url: payload.photo_url,
-        books_count: payload.books_count,
-        monitoredAt: Date.now(),
+        settings: {
+          photo_url: payload.photo_url,
+          books_count: payload.books_count,
+        },
       });
-      return next;
-    });
+
+      setMonitored((prev) => {
+        const next = prev.filter((item) => item.id !== created.id);
+        next.unshift({
+          id: created.id,
+          name: normalized,
+          provider: created.provider || payload.provider,
+          provider_id: created.provider_id || payload.provider_id,
+          photo_url: payload.photo_url,
+          books_count: payload.books_count,
+        });
+        return next;
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to monitor author';
+      setMonitoredError(message);
+      return;
+    }
 
     setAuthorQuery('');
     setAuthorResults([]);
@@ -259,10 +297,22 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
     setView('landing');
   }, []);
 
-  const removeMonitored = useCallback((name: string) => {
+  const removeMonitored = useCallback(async (name: string) => {
     const normalized = normalizeAuthor(name);
-    setMonitored((prev) => prev.filter((item) => item.name.toLowerCase() !== normalized.toLowerCase()));
-  }, []);
+    const match = monitored.find((item) => item.name.toLowerCase() === normalized.toLowerCase());
+    if (!match) {
+      return;
+    }
+
+    setMonitoredError(null);
+    try {
+      await deleteMonitoredEntity(match.id);
+      setMonitored((prev) => prev.filter((item) => item.id !== match.id));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to remove monitored author';
+      setMonitoredError(message);
+    }
+  }, [monitored]);
 
   const openAuthorModal = useCallback((payload: { name: string; provider?: string | null; provider_id?: string | null; source_url?: string | null; photo_url?: string | null }) => {
     const normalized = normalizeAuthor(payload.name);
@@ -287,7 +337,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
   }, []);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
       <div className="fixed top-0 left-0 right-0 z-40">
         <Header
           showSearch={false}
@@ -334,6 +384,10 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
 
             {searchError && (
               <div className="text-sm text-red-500">{searchError}</div>
+            )}
+
+            {monitoredError && (
+              <div className="text-sm text-red-500">{monitoredError}</div>
             )}
           </div>
 
