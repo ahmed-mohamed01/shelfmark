@@ -20,6 +20,7 @@ interface HeaderProps {
   onAdvancedToggle?: () => void;
   isLoading?: boolean;
   onDownloadsClick?: () => void;
+  onMonitoredClick?: () => void;
   onSettingsClick?: () => void;
   isAdmin?: boolean;
   canAccessSettings?: boolean;
@@ -48,6 +49,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onAdvancedToggle,
   isLoading = false,
   onDownloadsClick,
+  onMonitoredClick,
   onSettingsClick,
   isAdmin = false,
   canAccessSettings,
@@ -238,6 +240,32 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
             )}
           </div>
           <span className="hidden sm:inline text-sm font-medium">Activity</span>
+        </button>
+      )}
+
+      {/* Monitored Button */}
+      {onMonitoredClick && (
+        <button
+          onClick={onMonitoredClick}
+          className="relative flex items-center gap-2 px-3 py-2 rounded-full hover-action transition-all duration-200 text-gray-900 dark:text-gray-100"
+          aria-label="View monitored"
+          title="Monitored"
+        >
+          <svg
+            className="w-5 h-5"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth="1.5"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          <span className="hidden sm:inline text-sm font-medium">Monitored</span>
         </button>
       )}
 
