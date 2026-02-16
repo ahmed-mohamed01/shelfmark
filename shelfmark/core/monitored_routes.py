@@ -148,6 +148,30 @@ def register_monitored_routes(
         re.compile(r"\{[^\}]+\}"),
     ]
 
+    _WORD_NUMBER_MAP = {
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+        "ten": "10",
+    }
+
+    def _normalize_match_text(raw: str) -> str:
+        s = (raw or "").strip().lower()
+        if not s:
+            return ""
+        s = s.replace("_", " ").replace(":", " ")
+        s = re.sub(r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\b", lambda m: _WORD_NUMBER_MAP.get(m.group(1), m.group(1)), s)
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        s = re.sub(r"\b(\d{1,3})\s+\1\b", r"\1", s)
+        return s
+
     def _normalize_candidate_title(raw: str, author_name: str) -> str:
         s = (raw or "").strip()
         if not s:
@@ -188,8 +212,8 @@ def register_monitored_routes(
         return out
 
     def _score_title_match(candidate: str, title: str) -> float:
-        c = (candidate or "").strip().lower()
-        t = (title or "").strip().lower()
+        c = _normalize_match_text(candidate)
+        t = _normalize_match_text(title)
         if not c or not t:
             return 0.0
         if c == t:
@@ -212,6 +236,16 @@ def register_monitored_routes(
                 bonus = max(bonus, 0.22)
             else:
                 penalty = max(penalty, 0.35)
+
+        # This prevents drifting to late entries when names are otherwise very similar.
+        for kind in ("arc", "book", "vol"):
+            if kind in c_markers:
+                continue
+            tn = t_markers.get(kind)
+            if tn is None:
+                continue
+            # ARC/Book/Vol 1 should be close to neutral; higher numbers get a small penalty.
+            penalty += min(0.16, 0.04 * max(0, int(tn) - 1))
 
         score = base + bonus - penalty
         if score < 0.0:
@@ -419,21 +453,45 @@ def register_monitored_routes(
         ebook_dir_raw = settings.get("ebook_author_dir")
         ebook_dir = str(ebook_dir_raw).strip() if isinstance(ebook_dir_raw, str) else ""
         ebook_dir = ebook_dir.rstrip('/')
-        if not ebook_dir or not ebook_dir.startswith('/'):
-            return jsonify({"error": "ebook_author_dir is not set"}), 400
+        audiobook_dir_raw = settings.get("audiobook_author_dir")
+        audiobook_dir = str(audiobook_dir_raw).strip() if isinstance(audiobook_dir_raw, str) else ""
+        audiobook_dir = audiobook_dir.rstrip('/')
+        if (not ebook_dir or not ebook_dir.startswith('/')) and (not audiobook_dir or not audiobook_dir.startswith('/')):
+            return jsonify({"error": "ebook_author_dir or audiobook_author_dir must be set"}), 400
 
         roots = _resolve_allowed_roots(db_user_id=int(db_user_id or 0))
         if not roots:
             return jsonify({"error": "No allowed roots configured"}), 400
 
-        try:
-            ebook_path = Path(ebook_dir).resolve()
-        except Exception:
-            return jsonify({"error": "Invalid ebook_author_dir"}), 400
+        ebook_path: Path | None = None
+        audiobook_path: Path | None = None
+        dir_warnings: dict[str, str] = {}
 
-        if not _path_within_allowed_roots(path=ebook_path, roots=roots):
-            return jsonify({"error": "Path not allowed"}), 403
-        if not ebook_path.exists() or not ebook_path.is_dir():
+        if ebook_dir:
+            try:
+                ebook_path = Path(ebook_dir).resolve()
+            except Exception:
+                return jsonify({"error": "Invalid ebook_author_dir"}), 400
+            if not _path_within_allowed_roots(path=ebook_path, roots=roots):
+                return jsonify({"error": "Path not allowed"}), 403
+            if not ebook_path.exists() or not ebook_path.is_dir():
+                dir_warnings["ebook_author_dir"] = "Directory not found"
+                ebook_path = None
+
+        if audiobook_dir:
+            try:
+                audiobook_path = Path(audiobook_dir).resolve()
+            except Exception:
+                return jsonify({"error": "Invalid audiobook_author_dir"}), 400
+            if not _path_within_allowed_roots(path=audiobook_path, roots=roots):
+                return jsonify({"error": "Path not allowed"}), 403
+            if not audiobook_path.exists() or not audiobook_path.is_dir():
+                dir_warnings["audiobook_author_dir"] = "Directory not found"
+                audiobook_path = None
+
+        if ebook_path is None and audiobook_path is None:
+            if dir_warnings:
+                return jsonify({"error": "Directory not found", "details": dir_warnings}), 404
             return jsonify({"error": "Directory not found"}), 404
 
         books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
@@ -446,12 +504,15 @@ def register_monitored_routes(
             if title:
                 known_titles.append((row, title))
 
-        allowed_ext = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
+        allowed_ebook_ext = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
+        allowed_audio_ext = {".m4b", ".m4a", ".mp3", ".flac"}
         max_files = 4000
-        scanned_files = 0
+        scanned_ebook_files = 0
+        scanned_audio_folders = 0
         matched: list[dict[str, Any]] = []
         unmatched: list[dict[str, Any]] = []
         best_by_book_and_type: dict[tuple[str, str, str], float] = {}
+        seen_paths: set[str] = set()
 
         def _iso_mtime(p: Path) -> str | None:
             try:
@@ -460,109 +521,321 @@ def register_monitored_routes(
             except Exception:
                 return None
 
-        try:
-            for p in ebook_path.rglob('*'):
-                if scanned_files >= max_files:
-                    break
-                try:
-                    if not p.is_file():
-                        continue
-                    if p.is_symlink():
-                        continue
-                except Exception:
-                    continue
+        def _pick_best_audio_file(files: list[Path]) -> Path | None:
+            if not files:
+                return None
+            # Prefer single-file audiobooks (m4b/m4a) over mp3, then by size.
+            priority = {".m4b": 0, ".m4a": 1, ".mp3": 2, ".flac": 3}
 
+            def _key(p: Path) -> tuple[int, int]:
                 ext = p.suffix.lower()
-                if ext not in allowed_ext:
-                    continue
-
-                scanned_files += 1
+                pr = priority.get(ext, 99)
                 try:
-                    st = p.stat()
-                    size_bytes = int(st.st_size)
+                    sz = int(p.stat().st_size)
                 except Exception:
-                    size_bytes = None
+                    sz = 0
+                return (pr, -sz)
 
-                candidate = _normalize_candidate_title(p.stem, author_name)
-                best_score = 0.0
-                best_row: dict[str, Any] | None = None
-                scored: list[tuple[float, dict[str, Any], str]] = []
-                for row, title in known_titles:
-                    score = _score_title_match(candidate, title)
-                    scored.append((score, row, title))
-                    if score > best_score:
-                        best_score = score
-                        best_row = row
+            return sorted(files, key=_key)[0]
 
-                scored.sort(key=lambda x: x[0], reverse=True)
-                top_matches = [
-                    {
-                        "title": t,
-                        "provider": r.get("provider"),
-                        "provider_book_id": r.get("provider_book_id"),
-                        "score": float(s),
-                    }
-                    for (s, r, t) in scored[:5]
-                    if t
-                ]
+        try:
+            if ebook_path is not None:
+                for p in ebook_path.rglob('*'):
+                    if scanned_ebook_files >= max_files:
+                        break
+                    try:
+                        if not p.is_file():
+                            continue
+                        if p.is_symlink():
+                            continue
+                    except Exception:
+                        continue
 
-                file_type = ext.lstrip('.')
-                mtime = _iso_mtime(p)
+                    ext = p.suffix.lower()
+                    if ext not in allowed_ebook_ext:
+                        continue
 
-                # Aggressive threshold
-                if best_row is not None and best_score >= 0.55:
-                    provider = best_row.get("provider")
-                    provider_book_id = best_row.get("provider_book_id")
-                    provider = str(provider) if provider is not None else None
-                    provider_book_id = str(provider_book_id) if provider_book_id is not None else None
+                    seen_paths.add(str(p))
 
-                    match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
-                    prev = best_by_book_and_type.get(match_key)
-                    if prev is None or best_score >= prev:
-                        best_by_book_and_type[match_key] = float(best_score)
-                        user_db.upsert_monitored_book_file(
-                            user_id=db_user_id,
-                            entity_id=entity_id,
-                            provider=provider,
-                            provider_book_id=provider_book_id,
-                            path=str(p),
-                            ext=ext.lstrip('.'),
-                            file_type=file_type,
-                            size_bytes=size_bytes,
-                            mtime=mtime,
-                            confidence=float(best_score),
-                            match_reason="filename_title_fuzzy",
-                        )
+                    scanned_ebook_files += 1
+                    try:
+                        st = p.stat()
+                        size_bytes = int(st.st_size)
+                    except Exception:
+                        size_bytes = None
 
-                    matched.append({
-                        "path": str(p),
-                        "ext": ext.lstrip('.'),
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "match": {
-                            "provider": provider,
-                            "provider_book_id": provider_book_id,
-                            "title": best_row.get("title"),
-                            "confidence": float(best_score),
-                            "reason": "filename_title_fuzzy",
+                    candidate = _normalize_candidate_title(p.stem, author_name)
+
+                    best_score = 0.0
+                    best_row: dict[str, Any] | None = None
+                    scored: list[tuple[float, dict[str, Any], str]] = []
+                    for row, title in known_titles:
+                        score = _score_title_match(candidate, title)
+                        scored.append((score, row, title))
+                        if score > best_score:
+                            best_score = score
+                            best_row = row
+
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    top_matches = [
+                        {
+                            "title": t,
+                            "provider": r.get("provider"),
+                            "provider_book_id": r.get("provider_book_id"),
+                            "score": float(s),
+                        }
+                        for (s, r, t) in scored[:5]
+                        if t
+                    ]
+
+                    file_type = ext.lstrip('.')
+                    mtime = _iso_mtime(p)
+
+                    # Aggressive threshold
+                    if best_row is not None and best_score >= 0.55:
+                        provider = best_row.get("provider")
+                        provider_book_id = best_row.get("provider_book_id")
+                        provider = str(provider) if provider is not None else None
+                        provider_book_id = str(provider_book_id) if provider_book_id is not None else None
+
+                        match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
+                        prev = best_by_book_and_type.get(match_key)
+                        if prev is None or best_score >= prev:
+                            best_by_book_and_type[match_key] = float(best_score)
+                            user_db.upsert_monitored_book_file(
+                                user_id=db_user_id,
+                                entity_id=entity_id,
+                                provider=provider,
+                                provider_book_id=provider_book_id,
+                                path=str(p),
+                                ext=ext.lstrip('.'),
+                                file_type=file_type,
+                                size_bytes=size_bytes,
+                                mtime=mtime,
+                                confidence=float(best_score),
+                                match_reason="filename_title_fuzzy",
+                            )
+
+                        matched.append({
+                            "path": str(p),
+                            "ext": ext.lstrip('.'),
+                            "file_type": file_type,
+                            "size_bytes": size_bytes,
+                            "mtime": mtime,
+                            "candidate": candidate,
+                            "match": {
+                                "provider": provider,
+                                "provider_book_id": provider_book_id,
+                                "title": best_row.get("title"),
+                                "confidence": float(best_score),
+                                "reason": "filename_title_fuzzy",
+                                "top_matches": top_matches,
+                            },
+                        })
+                    else:
+                        unmatched.append({
+                            "path": str(p),
+                            "ext": ext.lstrip('.'),
+                            "file_type": file_type,
+                            "size_bytes": size_bytes,
+                            "mtime": mtime,
+                            "candidate": candidate,
+                            "best_score": float(best_score),
                             "top_matches": top_matches,
-                        },
-                    })
-                else:
-                    unmatched.append({
-                        "path": str(p),
-                        "ext": ext.lstrip('.'),
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "best_score": float(best_score),
-                        "top_matches": top_matches,
-                    })
+                        })
+
+            if audiobook_path is not None:
+                # Folder-oriented scan: each folder with audio files is a candidate "book".
+                # This mirrors how many libraries (and Audiobookshelf) organize one audiobook per directory.
+                seen_dirs: set[str] = set()
+                for p in audiobook_path.rglob('*'):
+                    try:
+                        if not p.is_file():
+                            continue
+                        if p.is_symlink():
+                            continue
+                    except Exception:
+                        continue
+
+                    ext = p.suffix.lower()
+                    if ext not in allowed_audio_ext:
+                        continue
+
+                    parent = p.parent
+                    parent_key = str(parent)
+                    if parent_key in seen_dirs:
+                        continue
+
+                    try:
+                        audio_files = [
+                            fp
+                            for fp in parent.iterdir()
+                            if fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in allowed_audio_ext
+                        ]
+                    except Exception:
+                        continue
+
+                    best_file = _pick_best_audio_file(audio_files)
+                    if best_file is None:
+                        continue
+
+                    seen_dirs.add(parent_key)
+                    scanned_audio_folders += 1
+
+                    # Candidate construction:
+                    # - Common case: one book per folder -> folder name is the title (often has "1. Title" / "Book 2").
+                    # - Edge case: series container folder contains audio file directly (e.g. Mistborn/Final Empire.m4b)
+                    #   -> use the filename stem as the title, and keep folder name as series hint.
+                    folder_name = parent.name
+                    series_name = parent.parent.name if parent.parent and parent.parent != audiobook_path else ""
+
+                    # Detect "series container" folder: it contains subdirectories with audio files.
+                    is_series_container = False
+                    try:
+                        for child in parent.iterdir():
+                            if not child.is_dir():
+                                continue
+                            try:
+                                has_audio = any(
+                                    fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in allowed_audio_ext
+                                    for fp in child.iterdir()
+                                )
+                            except Exception:
+                                has_audio = False
+                            if has_audio:
+                                is_series_container = True
+                                break
+                    except Exception:
+                        is_series_container = False
+
+                    if is_series_container:
+                        combined = best_file.stem
+                        if folder_name:
+                            combined = f"{combined} {folder_name}"
+                    else:
+                        combined = folder_name
+                        if series_name and not re.match(r"^\d+\.?\s*", folder_name):
+                            combined = f"{folder_name} {series_name}"
+
+                    candidate = _normalize_candidate_title(combined, author_name)
+
+                    best_score = 0.0
+                    best_row: dict[str, Any] | None = None
+                    scored: list[tuple[float, dict[str, Any], str]] = []
+                    for row, title in known_titles:
+                        score = _score_title_match(candidate, title)
+                        scored.append((score, row, title))
+                        if score > best_score:
+                            best_score = score
+                            best_row = row
+
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    top_matches = [
+                        {
+                            "title": t,
+                            "provider": r.get("provider"),
+                            "provider_book_id": r.get("provider_book_id"),
+                            "score": float(s),
+                        }
+                        for (s, r, t) in scored[:5]
+                        if t
+                    ]
+
+                    ext = best_file.suffix.lower()
+                    file_type = ext.lstrip('.')
+                    mtime = _iso_mtime(best_file)
+                    try:
+                        size_bytes = int(best_file.stat().st_size)
+                    except Exception:
+                        size_bytes = None
+
+                    seen_paths.add(str(best_file))
+
+                    if best_row is not None and best_score >= 0.55:
+                        provider = best_row.get("provider")
+                        provider_book_id = best_row.get("provider_book_id")
+                        provider = str(provider) if provider is not None else None
+                        provider_book_id = str(provider_book_id) if provider_book_id is not None else None
+
+                        match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
+                        prev = best_by_book_and_type.get(match_key)
+                        if prev is None or best_score >= prev:
+                            best_by_book_and_type[match_key] = float(best_score)
+                            user_db.upsert_monitored_book_file(
+                                user_id=db_user_id,
+                                entity_id=entity_id,
+                                provider=provider,
+                                provider_book_id=provider_book_id,
+                                path=str(best_file),
+                                ext=ext.lstrip('.'),
+                                file_type=file_type,
+                                size_bytes=size_bytes,
+                                mtime=mtime,
+                                confidence=float(best_score),
+                                match_reason="folder_title_fuzzy",
+                            )
+
+                        matched.append({
+                            "path": str(best_file),
+                            "ext": ext.lstrip('.'),
+                            "file_type": file_type,
+                            "size_bytes": size_bytes,
+                            "mtime": mtime,
+                            "candidate": candidate,
+                            "match": {
+                                "provider": provider,
+                                "provider_book_id": provider_book_id,
+                                "title": best_row.get("title"),
+                                "confidence": float(best_score),
+                                "reason": "folder_title_fuzzy",
+                                "top_matches": top_matches,
+                            },
+                        })
+                    else:
+                        unmatched.append({
+                            "path": str(best_file),
+                            "ext": ext.lstrip('.'),
+                            "file_type": file_type,
+                            "size_bytes": size_bytes,
+                            "mtime": mtime,
+                            "candidate": candidate,
+                            "best_score": float(best_score),
+                            "top_matches": top_matches,
+                        })
 
             # Determine missing books (best-effort): books with no matching file rows for epub
+            # Prune DB rows for files that no longer exist on disk.
+            # Only prune within the roots used for this scan (ebook_path/audiobook_path).
+            try:
+                if ebook_path is not None or audiobook_path is not None:
+                    existing_files_before = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+                    keep: list[str] = []
+                    for row in existing_files_before:
+                        path = row.get("path")
+                        if not isinstance(path, str) or not path:
+                            continue
+                        should_consider = False
+                        if ebook_path is not None:
+                            try:
+                                Path(path).resolve().relative_to(ebook_path)
+                                should_consider = True
+                            except Exception:
+                                pass
+                        if audiobook_path is not None and not should_consider:
+                            try:
+                                Path(path).resolve().relative_to(audiobook_path)
+                                should_consider = True
+                            except Exception:
+                                pass
+                        if not should_consider:
+                            keep.append(path)
+                            continue
+                        if path in seen_paths and Path(path).exists():
+                            keep.append(path)
+                    user_db.prune_monitored_book_files(user_id=db_user_id, entity_id=entity_id, keep_paths=keep)
+            except Exception as exc:
+                logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
+
             existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
             have_book_ids: set[tuple[str, str]] = set()
             for row in existing_files:
@@ -587,8 +860,12 @@ def register_monitored_routes(
             # Update settings with scan timestamp
             scan_at = datetime.utcnow().isoformat() + "Z"
             merged_settings = dict(settings)
-            merged_settings["last_ebook_scan_at"] = scan_at
+            if ebook_path is not None:
+                merged_settings["last_ebook_scan_at"] = scan_at
+            if audiobook_path is not None:
+                merged_settings["last_audiobook_scan_at"] = scan_at
             merged_settings.pop("last_ebook_scan_error", None)
+            merged_settings.pop("last_audiobook_scan_error", None)
             user_db.create_monitored_entity(
                 user_id=db_user_id,
                 kind=str(entity.get("kind") or "author"),
@@ -603,24 +880,29 @@ def register_monitored_routes(
                 "ok": True,
                 "entity_id": entity_id,
                 "scanned": {
-                    "ebook_author_dir": str(ebook_path),
+                    "ebook_author_dir": str(ebook_path) if ebook_path is not None else None,
+                    "audiobook_author_dir": str(audiobook_path) if audiobook_path is not None else None,
                 },
+                "warnings": dir_warnings,
                 "stats": {
-                    "files_scanned": scanned_files,
+                    "ebook_files_scanned": scanned_ebook_files,
+                    "audiobook_folders_scanned": scanned_audio_folders,
                     "matched": len(matched),
                     "unmatched": len(unmatched),
                 },
                 "matched": matched,
                 "unmatched": unmatched,
                 "missing_books": missing_books,
-                "last_ebook_scan_at": scan_at,
             })
 
         except Exception as exc:
-            logger.warning("Scan files failed entity_id=%s: %s", entity_id, exc)
+            logger.warning("Monitored scan failed entity_id=%s: %s", entity_id, exc)
             try:
                 merged_settings = dict(settings)
-                merged_settings["last_ebook_scan_error"] = str(exc)
+                if ebook_dir:
+                    merged_settings["last_ebook_scan_error"] = str(exc)
+                if audiobook_dir:
+                    merged_settings["last_audiobook_scan_error"] = str(exc)
                 user_db.create_monitored_entity(
                     user_id=db_user_id,
                     kind=str(entity.get("kind") or "author"),

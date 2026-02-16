@@ -233,6 +233,47 @@ class UserDB:
             finally:
                 conn.close()
 
+    def prune_monitored_book_files(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        keep_paths: list[str],
+    ) -> int:
+        """Delete monitored_book_files for an entity that are not in keep_paths.
+
+        Returns the number of deleted rows.
+        """
+
+        keep_paths = [p for p in keep_paths if isinstance(p, str) and p]
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not keep_paths:
+                    cur = conn.execute(
+                        """
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                        """,
+                        (entity_id,),
+                    )
+                    conn.commit()
+                    return int(cur.rowcount or 0)
+
+                placeholders = ",".join(["?"] * len(keep_paths))
+                cur = conn.execute(
+                    f"""
+                    DELETE FROM monitored_book_files
+                    WHERE entity_id = ?
+                      AND path NOT IN ({placeholders})
+                    """,
+                    (entity_id, *keep_paths),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)
+            finally:
+                conn.close()
+
     def list_monitored_entities(self, *, user_id: int | None) -> List[Dict[str, Any]]:
         """List monitored entities scoped to a user_id."""
         conn = self._connect()
