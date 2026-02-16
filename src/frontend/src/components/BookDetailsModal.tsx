@@ -1,0 +1,418 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Book, ContentType } from '../types';
+import { getMetadataBookInfo, MonitoredBookFileRow } from '../services/api';
+import { getFormatColor } from '../utils/colorMaps';
+
+interface BookDetailsModalProps {
+  book: Book | null;
+  files: MonitoredBookFileRow[];
+  onClose: () => void;
+  onOpenSearch: (contentType: ContentType) => void;
+}
+
+type TabKey = 'files' | 'ebooks' | 'audiobooks';
+
+export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDetailsModalProps) => {
+  const [isClosing, setIsClosing] = useState(false);
+  const [tab, setTab] = useState<TabKey>('files');
+
+  const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
+
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [descriptionOverflows, setDescriptionOverflows] = useState(false);
+  const [descriptionEl, setDescriptionEl] = useState<HTMLParagraphElement | null>(null);
+
+  const handleClose = useCallback(() => {
+    setIsClosing(true);
+    setTimeout(() => {
+      onClose();
+      setIsClosing(false);
+    }, 150);
+  }, [onClose]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [handleClose]);
+
+  useEffect(() => {
+    if (book) {
+      const previousOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = previousOverflow;
+      };
+    }
+  }, [book]);
+
+  useEffect(() => {
+    if (book) setTab('files');
+  }, [book?.id]);
+
+  useEffect(() => {
+    if (!book) {
+      setEnrichedBook(null);
+      return;
+    }
+
+    setEnrichedBook(book);
+
+    const provider = book.provider || '';
+    const providerId = book.provider_id || '';
+    if (!provider || !providerId) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const full = await getMetadataBookInfo(provider, providerId);
+        if (cancelled) return;
+        setEnrichedBook((current) => {
+          if (!current) return full;
+          return {
+            ...current,
+            publisher: full.publisher ?? current.publisher,
+            language: full.language ?? current.language,
+            genres: full.genres ?? current.genres,
+            description: full.description ?? current.description,
+            display_fields: full.display_fields ?? current.display_fields,
+            source_url: full.source_url ?? current.source_url,
+            isbn_10: full.isbn_10 ?? current.isbn_10,
+            isbn_13: full.isbn_13 ?? current.isbn_13,
+            series_name: full.series_name ?? current.series_name,
+            series_position: full.series_position ?? current.series_position,
+            series_count: full.series_count ?? current.series_count,
+          };
+        });
+      } catch {
+        // best-effort
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [book]);
+
+  useEffect(() => {
+    setDescriptionExpanded(false);
+    setDescriptionOverflows(false);
+  }, [enrichedBook?.id]);
+
+  useEffect(() => {
+    if (!descriptionEl || descriptionExpanded) return;
+    setDescriptionOverflows(descriptionEl.scrollHeight > descriptionEl.clientHeight);
+  }, [descriptionEl, descriptionExpanded, enrichedBook?.description]);
+
+  const matchedFileTypes = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of files) {
+      const t = typeof f.file_type === 'string' ? f.file_type.trim().toLowerCase() : '';
+      if (t) set.add(t);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [files]);
+
+  const displayFields = useMemo(() => {
+    const fields: Array<{ label: string; value: string }> = [];
+
+    if (enrichedBook?.publisher) {
+      fields.push({ label: 'Publisher', value: enrichedBook.publisher });
+    }
+
+    if (enrichedBook?.language) {
+      fields.push({ label: 'Language', value: enrichedBook.language });
+    }
+
+    if (Array.isArray(enrichedBook?.genres) && enrichedBook.genres.length > 0) {
+      fields.push({ label: 'Genres', value: enrichedBook.genres.slice(0, 5).join(', ') });
+    }
+
+    if (Array.isArray(enrichedBook?.display_fields)) {
+      for (const field of enrichedBook.display_fields) {
+        if (!field || typeof field.label !== 'string' || typeof field.value !== 'string') {
+          continue;
+        }
+        const label = field.label.trim();
+        const value = field.value.trim();
+        if (!label || !value) {
+          continue;
+        }
+        fields.push({ label, value });
+      }
+    }
+
+    const seen = new Set<string>();
+    return fields.filter((field) => {
+      const key = `${field.label.toLowerCase()}::${field.value.toLowerCase()}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }, [enrichedBook?.publisher, enrichedBook?.language, enrichedBook?.genres, enrichedBook?.display_fields]);
+
+  if (!book && !isClosing) return null;
+  if (!book) return null;
+  if (!enrichedBook) return null;
+
+  const titleId = `book-details-modal-title-${enrichedBook.id}`;
+
+  return (
+    <div
+      className="modal-overlay active sm:px-6 sm:py-6"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleClose();
+      }}
+    >
+      <div
+        className={`details-container w-full max-w-4xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
+          <header className="flex items-start gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+            <div className="flex-1 space-y-1 min-w-0">
+              <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
+              <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
+                {enrichedBook.title || 'Untitled'}
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{enrichedBook.author || 'Unknown author'}</p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleClose}
+                className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                aria-label="Close"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </header>
+
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <div className="flex gap-4 px-5 py-4 border-b border-[var(--border-muted)]">
+              {enrichedBook.preview ? (
+                <img
+                  src={enrichedBook.preview}
+                  alt="Book cover"
+                  className="rounded-lg shadow-md object-cover object-top flex-shrink-0 w-20 h-[120px]"
+                />
+              ) : (
+                <div className="rounded-lg border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[10px] text-gray-500 flex-shrink-0 w-20 h-[120px]">
+                  No cover
+                </div>
+              )}
+
+              <div className="flex-1 min-w-0 space-y-2">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
+                  {enrichedBook.year ? <span>{enrichedBook.year}</span> : null}
+                  {enrichedBook.series_name ? (
+                    <span className="truncate">
+                      {enrichedBook.series_position != null ? (
+                        <>
+                          #{enrichedBook.series_position}
+                          {enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}
+                        </>
+                      ) : (
+                        <>Part of {enrichedBook.series_name}</>
+                      )}
+                    </span>
+                  ) : null}
+                  {matchedFileTypes.length > 0 ? (
+                    <span className="inline-flex items-center gap-1">
+                      {matchedFileTypes.slice(0, 3).map((t) => (
+                        <span
+                          key={t}
+                          className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
+                        >
+                          {t.toUpperCase()}
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-gray-500 dark:text-gray-400">No matched files</span>
+                  )}
+                </div>
+
+                {enrichedBook.description ? (
+                  <div className="text-sm text-gray-600 dark:text-gray-400 relative">
+                    <p
+                      ref={(el) => setDescriptionEl(el)}
+                      className={descriptionExpanded ? '' : 'line-clamp-3'}
+                    >
+                      {enrichedBook.description}
+                      {descriptionExpanded && descriptionOverflows ? (
+                        <>
+                          {' '}
+                          <button
+                            type="button"
+                            onClick={() => setDescriptionExpanded(false)}
+                            className="text-emerald-600 dark:text-emerald-400 hover:underline font-medium inline"
+                          >
+                            Show less
+                          </button>
+                        </>
+                      ) : null}
+                    </p>
+                    {!descriptionExpanded && descriptionOverflows ? (
+                      <button
+                        type="button"
+                        onClick={() => setDescriptionExpanded(true)}
+                        className="absolute bottom-0 right-0 text-emerald-600 dark:text-emerald-400 hover:underline font-medium pl-8 bg-gradient-to-r from-transparent via-[var(--bg)] to-[var(--bg)] sm:via-[var(--bg-soft)] sm:to-[var(--bg-soft)]"
+                      >
+                        more
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {displayFields.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                    {displayFields.slice(0, 8).map((field) => (
+                      <div key={`${field.label}:${field.value}`} className="min-w-0 truncate">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">{field.label}:</span>{' '}
+                        <span>{field.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap items-center gap-3 text-xs">
+                  {(enrichedBook.isbn_13 || enrichedBook.isbn_10) ? (
+                    <span className="text-gray-500 dark:text-gray-400">ISBN: {enrichedBook.isbn_13 || enrichedBook.isbn_10}</span>
+                  ) : null}
+                  {enrichedBook.source_url ? (
+                    <a
+                      href={enrichedBook.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline"
+                    >
+                      View source
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="sticky top-0 z-10 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5">
+              <div className="relative flex gap-1">
+                <div
+                  className="absolute bottom-0 h-0.5 bg-emerald-600 transition-all duration-300 ease-out"
+                  style={{
+                    left: tab === 'files' ? 0 : tab === 'ebooks' ? 84 : 188,
+                    width: tab === 'files' ? 64 : tab === 'ebooks' ? 88 : 120,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setTab('files')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
+                    tab === 'files' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                  }`}
+                >
+                  Files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('ebooks')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
+                    tab === 'ebooks' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                  }`}
+                >
+                  Search eBooks
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('audiobooks')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
+                    tab === 'audiobooks' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                  }`}
+                >
+                  Search Audiobooks
+                </button>
+              </div>
+            </div>
+
+            <div className="px-5 py-4">
+              {tab === 'files' ? (
+                <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
+                  <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
+                  <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                    {files.length === 0 ? (
+                      <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
+                    ) : (
+                      files.map((f) => (
+                        <div key={f.id} className="px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
+                                {f.path}
+                              </div>
+                              <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {f.file_type ? f.file_type.toUpperCase() : 'FILE'}
+                                {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
+                              </div>
+                            </div>
+                            {f.file_type ? (
+                              <span className={`${getFormatColor(f.file_type).bg} ${getFormatColor(f.file_type).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
+                                {f.file_type.toUpperCase()}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              ) : tab === 'ebooks' ? (
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                    Search providers for ebook releases for this book.
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => onOpenSearch('ebook')}
+                      className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
+                    >
+                      Open eBook search
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                    Search providers for audiobook releases for this book.
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => onOpenSearch('audiobook')}
+                      className="px-4 py-2 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium"
+                    >
+                      Open audiobook search
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

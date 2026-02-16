@@ -1395,33 +1395,6 @@ function App() {
       </div>
       </div>
 
-      <ActivitySidebar
-        isOpen={downloadsSidebarOpen}
-        onClose={() => setDownloadsSidebarOpen(false)}
-        status={currentStatus}
-        isAdmin={requestRoleIsAdmin}
-        onClearCompleted={handleClearCompleted}
-        onCancel={handleCancel}
-        onDownloadDismiss={handleDownloadDismiss}
-        requestItems={requestItems}
-        dismissedItemKeys={dismissedActivityKeys}
-        historyItems={historyItems}
-        historyHasMore={activityHistoryHasMore}
-        historyLoading={activityHistoryLoading}
-        onHistoryLoadMore={handleActivityHistoryLoadMore}
-        onClearHistory={handleClearHistory}
-        onActiveTabChange={handleActivityTabChange}
-        pendingRequestCount={pendingRequestCount}
-        showRequestsTab={showRequestsTab}
-        isRequestsLoading={isRequestsLoading || isActivitySnapshotLoading}
-        onRequestCancel={showRequestsTab ? handleRequestCancel : undefined}
-        onRequestApprove={requestRoleIsAdmin ? handleRequestApprove : undefined}
-        onRequestReject={requestRoleIsAdmin ? handleRequestReject : undefined}
-        onRequestDismiss={showRequestsTab ? handleRequestDismiss : undefined}
-        onPinnedOpenChange={setSidebarPinnedOpen}
-        pinnedTopOffset={headerHeight}
-      />
-
       <ToastContainer toasts={toasts} />
 
       <SettingsModal
@@ -1533,12 +1506,60 @@ function App() {
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
               onGetReleases={openReleasesForBook}
               onBack={() => navigate('/')}
+              status={currentStatus}
+              debug={config?.debug || false}
+              onSettingsClick={() => {
+                if (config?.settings_enabled) {
+                  if (authIsAdmin) {
+                    setSettingsOpen(true);
+                  } else {
+                    setSelfSettingsOpen(true);
+                  }
+                } else {
+                  setConfigBannerOpen(true);
+                }
+              }}
+              statusCounts={statusCounts}
+              isAdmin={requestRoleIsAdmin}
+              canAccessSettings={isAuthenticated}
+              authRequired={authRequired}
+              isAuthenticated={isAuthenticated}
+              username={username}
+              displayName={displayName}
+              onLogout={handleLogoutWithCleanup}
             />
           )
         }
       />
       <Route path="/*" element={appElement} />
     </Routes>
+
+    <ActivitySidebar
+      isOpen={downloadsSidebarOpen}
+      onClose={() => setDownloadsSidebarOpen(false)}
+      status={currentStatus}
+      isAdmin={requestRoleIsAdmin}
+      onClearCompleted={handleClearCompleted}
+      onCancel={handleCancel}
+      onDownloadDismiss={handleDownloadDismiss}
+      requestItems={requestItems}
+      dismissedItemKeys={dismissedActivityKeys}
+      historyItems={historyItems}
+      historyHasMore={activityHistoryHasMore}
+      historyLoading={activityHistoryLoading}
+      onHistoryLoadMore={handleActivityHistoryLoadMore}
+      onClearHistory={handleClearHistory}
+      onActiveTabChange={handleActivityTabChange}
+      pendingRequestCount={pendingRequestCount}
+      showRequestsTab={showRequestsTab}
+      isRequestsLoading={isRequestsLoading || isActivitySnapshotLoading}
+      onRequestCancel={showRequestsTab ? handleRequestCancel : undefined}
+      onRequestApprove={requestRoleIsAdmin ? handleRequestApprove : undefined}
+      onRequestReject={requestRoleIsAdmin ? handleRequestReject : undefined}
+      onRequestDismiss={showRequestsTab ? handleRequestDismiss : undefined}
+      onPinnedOpenChange={setSidebarPinnedOpen}
+      pinnedTopOffset={headerHeight}
+    />
 
     {activeReleaseBook && (
       <ReleaseModal

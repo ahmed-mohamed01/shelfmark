@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/Header';
+import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
   createMonitoredEntity,
   deleteMonitoredEntity,
@@ -16,7 +17,7 @@ import { AuthorModal } from '../components/AuthorModal';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
-import { Book, ContentType } from '../types';
+import { Book, ContentType, StatusData } from '../types';
 
 interface MonitoredAuthor {
   id: number;
@@ -33,6 +34,19 @@ interface MonitoredPageProps {
   onActivityClick?: () => void;
   onGetReleases?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
   onBack?: () => void;
+
+  status?: StatusData;
+
+  debug?: boolean;
+  onSettingsClick?: () => void;
+  statusCounts?: ActivityStatusCounts;
+  isAdmin?: boolean;
+  canAccessSettings?: boolean;
+  authRequired?: boolean;
+  isAuthenticated?: boolean;
+  username?: string | null;
+  displayName?: string | null;
+  onLogout?: () => void;
 }
 
 const normalizeAuthor = (value: string): string => {
@@ -81,7 +95,22 @@ const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: str
   );
 };
 
-export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: MonitoredPageProps) => {
+export const MonitoredPage = ({
+  onActivityClick,
+  onGetReleases,
+  onBack,
+  status,
+  debug,
+  onSettingsClick,
+  statusCounts,
+  isAdmin,
+  canAccessSettings,
+  authRequired,
+  isAuthenticated,
+  username,
+  displayName,
+  onLogout,
+}: MonitoredPageProps) => {
   const [view, setView] = useState<'landing' | 'search'>('landing');
   const [authorQuery, setAuthorQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -570,6 +599,17 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
           showSearch={false}
           onDownloadsClick={onActivityClick}
           onLogoClick={onBack}
+          debug={debug}
+          onMonitoredClick={undefined}
+          onSettingsClick={onSettingsClick}
+          statusCounts={statusCounts}
+          isAdmin={isAdmin}
+          canAccessSettings={canAccessSettings}
+          authRequired={authRequired}
+          isAuthenticated={isAuthenticated}
+          username={username}
+          displayName={displayName}
+          onLogout={onLogout}
         />
       </div>
 
@@ -972,6 +1012,7 @@ export const MonitoredPage = ({ onActivityClick, onGetReleases, onBack }: Monito
           onGetReleases={onGetReleases}
           onClose={() => setActiveAuthor(null)}
           monitoredEntityId={activeAuthor.monitoredEntityId}
+          status={status}
         />
       )}
 

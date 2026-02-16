@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Book, ContentType } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, MonitoredFilesScanResult } from '../services/api';
+import { Book, ContentType, StatusData } from '../types';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
 import { withBasePath } from '../utils/basePath';
+import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
 import { FolderBrowserModal } from './FolderBrowserModal';
+import { BookDetailsModal } from './BookDetailsModal';
 
 const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -63,9 +65,10 @@ interface AuthorModalProps {
   onClose: () => void;
   onGetReleases?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
   monitoredEntityId?: number | null;
+  status?: StatusData;
 }
 
-export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId }: AuthorModalProps) => {
+export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId, status }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
   const [supportsDetails, setSupportsDetails] = useState<boolean | null>(null);
@@ -101,7 +104,11 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
-  const [lastScanResult, setLastScanResult] = useState<MonitoredFilesScanResult | null>(null);
+
+  const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
+
+  const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
+  const lastAutoRefreshKeyRef = useMemo(() => ({ value: '' }), []);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -144,7 +151,6 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       setFilesLoading(false);
       setFilesError(null);
       setFiles([]);
-      setLastScanResult(null);
       return;
     }
 
@@ -188,7 +194,10 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
       } catch (e) {
         if (!alive) return;
         const message = e instanceof Error ? e.message : 'Failed to load matched files';
-        setFilesError(message);
+        console.warn('AuthorModal: Failed to load matched files', message);
+        if (!String(message).toLowerCase().includes('directory not found')) {
+          setFilesError(message);
+        }
         setFiles([]);
       } finally {
         if (alive) setFilesLoading(false);
@@ -211,17 +220,121 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
     try {
       setRefreshKey((k) => k + 1);
       await syncMonitoredEntity(monitoredEntityId);
-      const scan = await scanMonitoredEntityFiles(monitoredEntityId);
-      setLastScanResult(scan);
+      await scanMonitoredEntityFiles(monitoredEntityId);
       const resp = await listMonitoredBookFiles(monitoredEntityId);
       setFiles(resp.files || []);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Refresh & scan failed';
-      setFilesError(message);
+      console.warn('AuthorModal: Refresh & scan failed', message);
+      if (!String(message).toLowerCase().includes('directory not found')) {
+        setFilesError(message);
+      }
     } finally {
       setIsRefreshing(false);
     }
   }, [monitoredEntityId]);
+
+  const statusByProviderKey = useMemo(() => {
+    const map = new Map<string, { bucket: string; progress?: number }>();
+    if (!status) return map;
+
+    const addBucket = (bucketName: string, bucket: Record<string, Book> | undefined) => {
+      if (!bucket) return;
+      for (const b of Object.values(bucket)) {
+        const progress = typeof b.progress === 'number' ? b.progress : undefined;
+
+        const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
+        if (idKey && !map.has(idKey)) {
+          map.set(idKey, { bucket: bucketName, progress });
+        }
+
+        const prov = b.provider || '';
+        const bid = b.provider_id || '';
+        const providerKey = prov && bid ? `${prov}:${bid}` : '';
+        if (providerKey && !map.has(providerKey)) {
+          map.set(providerKey, { bucket: bucketName, progress });
+        }
+      }
+    };
+
+    addBucket('queued', status.queued);
+    addBucket('resolving', status.resolving);
+    addBucket('locating', status.locating);
+    addBucket('downloading', status.downloading);
+    addBucket('complete', status.complete);
+    addBucket('error', status.error);
+    addBucket('cancelled', status.cancelled);
+
+    return map;
+  }, [status]);
+
+  useEffect(() => {
+    if (!monitoredEntityId || !status || autoRefreshBusy) {
+      return;
+    }
+
+    const authorBookKeys = new Set(
+      books
+        .map((b) => {
+          const prov = b.provider || '';
+          const bid = b.provider_id || '';
+          const providerKey = prov && bid ? `${prov}:${bid}` : '';
+          const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
+          return [providerKey, idKey].filter(Boolean).join('|');
+        })
+        .filter(Boolean)
+    );
+
+    if (authorBookKeys.size === 0) {
+      return;
+    }
+
+    const completed = status.complete ? Object.values(status.complete) : [];
+    const relevantCompleted = completed.filter((b) => {
+      const prov = b.provider || '';
+      const bid = b.provider_id || '';
+      const providerKey = prov && bid ? `${prov}:${bid}` : '';
+      const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
+      const composite = [providerKey, idKey].filter(Boolean).join('|');
+      if (!composite) return false;
+      return authorBookKeys.has(composite);
+    });
+
+    if (relevantCompleted.length === 0) {
+      return;
+    }
+
+    const newestKey = relevantCompleted
+      .map((b) => {
+        const prov = b.provider || '';
+        const bid = b.provider_id || '';
+        const providerKey = prov && bid ? `${prov}:${bid}` : '';
+        const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
+        const ts = typeof b.added_time === 'number' ? b.added_time : 0;
+        return `${ts}:${providerKey}:${idKey}`;
+      })
+      .sort((a, b) => b.localeCompare(a))[0];
+
+    if (!newestKey || newestKey === lastAutoRefreshKeyRef.value) {
+      return;
+    }
+
+    lastAutoRefreshKeyRef.value = newestKey;
+
+    setAutoRefreshBusy(true);
+    void (async () => {
+      try {
+        await scanMonitoredEntityFiles(monitoredEntityId);
+        const resp = await listMonitoredBookFiles(monitoredEntityId);
+        setFiles(resp.files || []);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Auto refresh failed';
+        console.warn('AuthorModal: auto refresh after download complete failed', message);
+      } finally {
+        setAutoRefreshBusy(false);
+      }
+    })();
+  }, [monitoredEntityId, status, autoRefreshBusy, books, lastAutoRefreshKeyRef]);
 
   useEffect(() => {
     try {
@@ -588,6 +701,14 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
     }
     return map;
   }, [files]);
+
+  const activeBookFiles = useMemo(() => {
+    if (!activeBookDetails) return [];
+    const prov = activeBookDetails.provider || '';
+    const bid = activeBookDetails.provider_id || '';
+    if (!prov || !bid) return [];
+    return files.filter((f) => f.provider === prov && f.provider_book_id === bid);
+  }, [activeBookDetails, files]);
 
   const filteredGroupedBooks = useMemo(() => {
     const q = booksQuery.trim().toLowerCase();
@@ -962,55 +1083,6 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                   <div className="px-4 pb-3">
                     {filesError ? <div className="text-sm text-red-500">{filesError}</div> : null}
                     {filesLoading ? <div className="text-sm text-gray-600 dark:text-gray-300">Loading files…</div> : null}
-                    {lastScanResult ? (
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        Last scan: {lastScanResult.last_ebook_scan_at || '—'} · matched {lastScanResult.stats?.matched ?? 0} of {lastScanResult.stats?.files_scanned ?? 0}
-                      </div>
-                    ) : null}
-
-                    {lastScanResult?.matched && lastScanResult.matched.length > 0 ? (
-                      <div className="mt-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
-                        <div className="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Last scan matches</div>
-                        <div className="max-h-48 overflow-auto divide-y divide-black/10 dark:divide-white/10">
-                          {lastScanResult.matched.slice(0, 20).map((m) => (
-                            <div key={m.path} className="px-3 py-2 text-sm">
-                              <div className="truncate">{m.path}</div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {(m.candidate || '').trim() ? `candidate: ${m.candidate}` : null}
-                                {(m.match?.title || '').trim() ? ` → ${m.match.title}` : ''}
-                                {typeof m.match?.confidence === 'number' ? ` · ${(m.match.confidence * 100).toFixed(0)}%` : ''}
-                              </div>
-                              {m.match?.top_matches && m.match.top_matches.length > 0 ? (
-                                <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                                  {m.match.top_matches.slice(0, 3).map((t, idx) => (
-                                    <span key={`${t.provider || ''}:${t.provider_book_id || ''}:${t.title}:${idx}`}>
-                                      {idx === 0 ? '' : ' · '}
-                                      {(t.score * 100).toFixed(0)}% {t.title}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {!filesLoading && files.length > 0 ? (
-                      <div className="mt-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
-                        <div className="px-3 py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
-                        <div className="max-h-40 overflow-auto divide-y divide-black/10 dark:divide-white/10">
-                          {files.slice(0, 10).map((f) => (
-                            <div key={f.id} className="px-3 py-2 text-sm">
-                              <div className="truncate">{f.path}</div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {f.provider && f.provider_book_id ? `${f.provider}:${f.provider_book_id}` : 'unlinked'}{f.file_type ? ` · ${f.file_type}` : ''}{typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 ) : null}
 
@@ -1062,15 +1134,46 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                         animationFillMode: 'both',
                                       }}
                                     >
-                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_auto]">
+                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(72px,72px)_auto]">
                                         <div className="flex items-center pl-1 sm:pl-3">
-                                          <BooksListThumbnail preview={book.preview} title={book.title} />
+                                          {(() => {
+                                            const prov = book.provider || '';
+                                            const bid = book.provider_id || '';
+                                            const providerKey = prov && bid ? `${prov}:${bid}` : '';
+                                            const activity =
+                                              (providerKey ? statusByProviderKey.get(providerKey) : undefined) ||
+                                              (book.id === null || book.id === undefined
+                                                ? undefined
+                                                : statusByProviderKey.get(String(book.id)));
+                                            const bucket = activity?.bucket;
+                                            const showSpinner = bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
+                                            const ringColor =
+                                              bucket === 'error'
+                                                ? 'border-red-500'
+                                                : bucket === 'complete'
+                                                  ? 'border-emerald-500'
+                                                  : 'border-blue-500';
+                                            const title = bucket ? `Status: ${bucket}` : undefined;
+
+                                            return (
+                                              <div className="relative" title={title}>
+                                                <BooksListThumbnail preview={book.preview} title={book.title} />
+                                                {showSpinner ? (
+                                                  <span
+                                                    className={`pointer-events-none absolute -inset-1 rounded-md border-2 ${ringColor} animate-spin`}
+                                                    style={{ borderTopColor: 'transparent', borderRightColor: 'transparent' }}
+                                                    aria-hidden="true"
+                                                  />
+                                                ) : null}
+                                              </div>
+                                            );
+                                          })()}
                                         </div>
 
                                         <button
                                           type="button"
                                           className="min-w-0 flex flex-col justify-center sm:pl-3 text-left"
-                                          onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(book.title)}&author=${encodeURIComponent(author.name)}`))}
+                                          onClick={() => setActiveBookDetails(book)}
                                         >
                                           <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight line-clamp-1 sm:line-clamp-2" title={book.title || 'Untitled'}>
                                             <span className="truncate">{book.title || 'Untitled'}</span>
@@ -1096,7 +1199,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                           ) : null}
                                         </button>
 
-                                        <div className="hidden sm:flex text-xs text-gray-700 dark:text-gray-200 justify-center">
+                                        <div className="hidden sm:flex text-xs text-gray-700 dark:text-gray-200 justify-end tabular-nums pr-1">
                                           {book.year || '-'}
                                         </div>
 
@@ -1114,7 +1217,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                                 {sorted.slice(0, 2).map((t) => (
                                                   <span
                                                     key={t}
-                                                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800"
+                                                    className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
                                                     title={`Matched file: ${t.toUpperCase()}`}
                                                   >
                                                     {t.toUpperCase()}
@@ -1132,7 +1235,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                                   const bid = book.provider_id || '';
                                                   const key = prov && bid ? `${prov}:${bid}` : '';
                                                   const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                                  const hasMatch = Boolean(types && types.size > 0);
+                                                  const hasMatch = Boolean(types && ['epub', 'pdf', 'mobi', 'azw', 'azw3'].some((t) => types.has(t)));
                                                   return hasMatch ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-200';
                                                 })()}`}
                                                 onClick={() => void onGetReleases(book, 'ebook', monitoredEntityId)}
@@ -1142,7 +1245,14 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
                                               </button>
                                               <button
                                                 type="button"
-                                                className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
+                                                className={`flex items-center justify-center p-1.5 sm:p-2 rounded-full hover-action transition-all duration-200 ${(() => {
+                                                  const prov = book.provider || '';
+                                                  const bid = book.provider_id || '';
+                                                  const key = prov && bid ? `${prov}:${bid}` : '';
+                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                                  const hasMatch = Boolean(types && ['m4b', 'm4a', 'mp3', 'flac'].some((t) => types.has(t)));
+                                                  return hasMatch ? 'text-violet-600 dark:text-violet-400' : 'text-gray-600 dark:text-gray-200';
+                                                })()}`}
                                                 onClick={() => void onGetReleases(book, 'audiobook', monitoredEntityId)}
                                                 aria-label={`Search providers for audiobook: ${book.title || 'this book'}`}
                                               >
@@ -1204,6 +1314,16 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId 
           } else {
             setEbookAuthorDir(suggested);
           }
+        }}
+      />
+
+      <BookDetailsModal
+        book={activeBookDetails}
+        files={activeBookFiles}
+        onClose={() => setActiveBookDetails(null)}
+        onOpenSearch={(contentType) => {
+          if (!activeBookDetails || !onGetReleases) return;
+          void onGetReleases(activeBookDetails, contentType, monitoredEntityId);
         }}
       />
 

@@ -448,10 +448,12 @@ export interface MonitoredFilesScanResult {
   ok: boolean;
   entity_id: number;
   scanned: {
-    ebook_author_dir: string;
+    ebook_author_dir: string | null;
+    audiobook_author_dir?: string | null;
   };
   stats: {
-    files_scanned: number;
+    ebook_files_scanned?: number;
+    audiobook_folders_scanned?: number;
     matched: number;
     unmatched: number;
   };
@@ -496,7 +498,7 @@ export interface MonitoredFilesScanResult {
     provider_book_id: string;
     title: string | null;
   }>;
-  last_ebook_scan_at?: string;
+  last_scan_at?: string;
 }
 
 export const scanMonitoredEntityFiles = async (entityId: number): Promise<MonitoredFilesScanResult> => {
