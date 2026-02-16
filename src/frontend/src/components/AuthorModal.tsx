@@ -6,6 +6,7 @@ import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { BookDetailsModal } from './BookDetailsModal';
+import { getProgressConfig } from './activity/activityStyles';
 
 const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -68,6 +69,23 @@ interface AuthorModalProps {
   status?: StatusData;
 }
 
+type DownloadStatusBucket = 'queued' | 'resolving' | 'locating' | 'downloading' | 'complete' | 'error' | 'cancelled';
+
+const isDownloadStatusBucket = (value: string | undefined): value is DownloadStatusBucket => (
+  value === 'queued'
+  || value === 'resolving'
+  || value === 'locating'
+  || value === 'downloading'
+  || value === 'complete'
+  || value === 'error'
+  || value === 'cancelled'
+);
+
+const progressColorToBorderColor = (progressColorClass: string): string => {
+  if (!progressColorClass) return 'border-sky-600';
+  return progressColorClass.replace(/^bg-/, 'border-');
+};
+
 export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId, status }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -104,10 +122,40 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
-
+  const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
 
-  const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
+  const normalizeStatusKeyPart = (value: string | null | undefined): string => {
+    const s = String(value || '').trim().toLowerCase();
+    if (!s) return '';
+    return s.replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  };
+
+  const buildBookStatusKeys = (b: Book): string[] => {
+    const keys: string[] = [];
+
+    const prov = b.provider || '';
+    const bid = b.provider_id || '';
+    if (prov && bid) {
+      keys.push(`p:${prov}:${bid}`);
+    }
+
+    if (b.id !== null && b.id !== undefined) {
+      keys.push(`id:${String(b.id)}`);
+    }
+
+    const t = normalizeStatusKeyPart(b.title);
+    const a = normalizeStatusKeyPart(b.author);
+    if (t && a) {
+      keys.push(`ta:${t}|${a}`);
+    }
+    if (t) {
+      keys.push(`t:${t}`);
+    }
+
+    return keys;
+  };
+
   const lastAutoRefreshKeyRef = useMemo(() => ({ value: '' }), []);
 
   const handleClose = useCallback(() => {
@@ -234,7 +282,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
     }
   }, [monitoredEntityId]);
 
-  const statusByProviderKey = useMemo(() => {
+  const statusByBookKey = useMemo(() => {
     const map = new Map<string, { bucket: string; progress?: number }>();
     if (!status) return map;
 
@@ -243,16 +291,10 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
       for (const b of Object.values(bucket)) {
         const progress = typeof b.progress === 'number' ? b.progress : undefined;
 
-        const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
-        if (idKey && !map.has(idKey)) {
-          map.set(idKey, { bucket: bucketName, progress });
-        }
-
-        const prov = b.provider || '';
-        const bid = b.provider_id || '';
-        const providerKey = prov && bid ? `${prov}:${bid}` : '';
-        if (providerKey && !map.has(providerKey)) {
-          map.set(providerKey, { bucket: bucketName, progress });
+        for (const key of buildBookStatusKeys(b)) {
+          if (!map.has(key)) {
+            map.set(key, { bucket: bucketName, progress });
+          }
         }
       }
     };
@@ -273,17 +315,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
       return;
     }
 
-    const authorBookKeys = new Set(
-      books
-        .map((b) => {
-          const prov = b.provider || '';
-          const bid = b.provider_id || '';
-          const providerKey = prov && bid ? `${prov}:${bid}` : '';
-          const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
-          return [providerKey, idKey].filter(Boolean).join('|');
-        })
-        .filter(Boolean)
-    );
+    const authorBookKeys = new Set(books.flatMap((b) => buildBookStatusKeys(b)));
 
     if (authorBookKeys.size === 0) {
       return;
@@ -291,13 +323,8 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
     const completed = status.complete ? Object.values(status.complete) : [];
     const relevantCompleted = completed.filter((b) => {
-      const prov = b.provider || '';
-      const bid = b.provider_id || '';
-      const providerKey = prov && bid ? `${prov}:${bid}` : '';
-      const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
-      const composite = [providerKey, idKey].filter(Boolean).join('|');
-      if (!composite) return false;
-      return authorBookKeys.has(composite);
+      const keys = buildBookStatusKeys(b);
+      return keys.some((k) => authorBookKeys.has(k));
     });
 
     if (relevantCompleted.length === 0) {
@@ -306,12 +333,9 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
     const newestKey = relevantCompleted
       .map((b) => {
-        const prov = b.provider || '';
-        const bid = b.provider_id || '';
-        const providerKey = prov && bid ? `${prov}:${bid}` : '';
-        const idKey = b.id === null || b.id === undefined ? '' : String(b.id);
+        const keyPart = buildBookStatusKeys(b).join(',');
         const ts = typeof b.added_time === 'number' ? b.added_time : 0;
-        return `${ts}:${providerKey}:${idKey}`;
+        return `${ts}:${keyPart}`;
       })
       .sort((a, b) => b.localeCompare(a))[0];
 
@@ -1136,38 +1160,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                     >
                                       <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(72px,72px)_auto]">
                                         <div className="flex items-center pl-1 sm:pl-3">
-                                          {(() => {
-                                            const prov = book.provider || '';
-                                            const bid = book.provider_id || '';
-                                            const providerKey = prov && bid ? `${prov}:${bid}` : '';
-                                            const activity =
-                                              (providerKey ? statusByProviderKey.get(providerKey) : undefined) ||
-                                              (book.id === null || book.id === undefined
-                                                ? undefined
-                                                : statusByProviderKey.get(String(book.id)));
-                                            const bucket = activity?.bucket;
-                                            const showSpinner = bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
-                                            const ringColor =
-                                              bucket === 'error'
-                                                ? 'border-red-500'
-                                                : bucket === 'complete'
-                                                  ? 'border-emerald-500'
-                                                  : 'border-blue-500';
-                                            const title = bucket ? `Status: ${bucket}` : undefined;
-
-                                            return (
-                                              <div className="relative" title={title}>
-                                                <BooksListThumbnail preview={book.preview} title={book.title} />
-                                                {showSpinner ? (
-                                                  <span
-                                                    className={`pointer-events-none absolute -inset-1 rounded-md border-2 ${ringColor} animate-spin`}
-                                                    style={{ borderTopColor: 'transparent', borderRightColor: 'transparent' }}
-                                                    aria-hidden="true"
-                                                  />
-                                                ) : null}
-                                              </div>
-                                            );
-                                          })()}
+                                          <BooksListThumbnail preview={book.preview} title={book.title} />
                                         </div>
 
                                         <button
@@ -1241,7 +1234,28 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                                 onClick={() => void onGetReleases(book, 'ebook', monitoredEntityId)}
                                                 aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
                                               >
-                                                <BookIcon />
+                                                {(() => {
+                                                  const activity = buildBookStatusKeys(book)
+                                                    .map((statusKey) => statusByBookKey.get(statusKey))
+                                                    .find((item) => Boolean(item));
+                                                  const bucket = activity?.bucket;
+                                                  const showSpinner = bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
+                                                  const ringColor = isDownloadStatusBucket(bucket)
+                                                    ? progressColorToBorderColor(getProgressConfig(bucket, activity?.progress).color)
+                                                    : 'border-sky-600';
+
+                                                  return (
+                                                    <span className="relative inline-flex items-center justify-center" title={bucket ? `Status: ${bucket}` : undefined}>
+                                                      <BookIcon />
+                                                      {showSpinner ? (
+                                                        <span
+                                                          className={`pointer-events-none absolute -inset-1 rounded-full border-[3px] border-t-transparent ${ringColor} animate-spin`}
+                                                          aria-hidden="true"
+                                                        />
+                                                      ) : null}
+                                                    </span>
+                                                  );
+                                                })()}
                                               </button>
                                               <button
                                                 type="button"
