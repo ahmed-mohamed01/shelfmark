@@ -226,6 +226,43 @@ function App() {
     socket,
   });
 
+  const dismissedDownloadTaskIds = useMemo(() => {
+    const result = new Set<string>();
+    for (const key of dismissedActivityKeys) {
+      if (typeof key !== 'string' || !key.startsWith('download:')) {
+        continue;
+      }
+      const taskId = key.substring('download:'.length).trim();
+      if (taskId) {
+        result.add(taskId);
+      }
+    }
+    return result;
+  }, [dismissedActivityKeys]);
+
+  const isDownloadTaskDismissed = useCallback((taskId: string) => {
+    return dismissedDownloadTaskIds.has(taskId);
+  }, [dismissedDownloadTaskIds]);
+
+  const statusForButtonState = useMemo(() => {
+    if (!currentStatus.complete || dismissedDownloadTaskIds.size === 0) {
+      return currentStatus;
+    }
+
+    const filteredComplete = Object.fromEntries(
+      Object.entries(currentStatus.complete).filter(([taskId]) => !dismissedDownloadTaskIds.has(taskId))
+    ) as Record<string, Book>;
+
+    if (Object.keys(filteredComplete).length === Object.keys(currentStatus.complete).length) {
+      return currentStatus;
+    }
+
+    return {
+      ...currentStatus,
+      complete: filteredComplete,
+    };
+  }, [currentStatus, dismissedDownloadTaskIds]);
+
   const showRequestsTab = useMemo(() => {
     if (requestRoleIsAdmin) {
       return true;
@@ -947,6 +984,23 @@ function App() {
     [openRequestConfirmation, refreshRequestPolicy]
   );
 
+  const handleReleaseBookRequest = useCallback(
+    async (book: Book, modalContentType: ContentType): Promise<void> => {
+      void refreshRequestPolicy();
+      const normalizedContentType = toContentType(modalContentType);
+      openRequestConfirmation({
+        book_data: buildMetadataBookRequestData(book, normalizedContentType),
+        release_data: null,
+        context: {
+          source: '*',
+          content_type: normalizedContentType,
+          request_level: 'book',
+        },
+      });
+    },
+    [openRequestConfirmation, refreshRequestPolicy]
+  );
+
   const handleReleaseModalPolicyRefresh = useCallback(() => {
     return refreshRequestPolicy({ force: true });
   }, [refreshRequestPolicy]);
@@ -1044,19 +1098,38 @@ function App() {
   const getDirectActionButtonState = useCallback(
     (bookId: string): ButtonStateInfo => {
       const baseState = getButtonState(bookId);
+      if (baseState.state === 'complete' && isDownloadTaskDismissed(bookId)) {
+        return applyDirectPolicyModeToButtonState(
+          { text: 'Download', state: 'download' },
+          getDirectPolicyMode()
+        );
+      }
       const mode = getDirectPolicyMode();
       return applyDirectPolicyModeToButtonState(baseState, mode);
     },
-    [getButtonState, getDirectPolicyMode]
+    [getButtonState, getDirectPolicyMode, isDownloadTaskDismissed]
   );
 
   const getUniversalActionButtonState = useCallback(
     (bookId: string): ButtonStateInfo => {
       const baseState = getUniversalButtonState(bookId);
+      const trackedReleaseIds = bookToReleaseMap[bookId] || [];
+      const allTrackedReleasesDismissed = trackedReleaseIds.length > 0 &&
+        trackedReleaseIds.every((releaseId) => isDownloadTaskDismissed(releaseId));
+
+      if (
+        baseState.state === 'complete' &&
+        (isDownloadTaskDismissed(bookId) || allTrackedReleasesDismissed)
+      ) {
+        return applyUniversalPolicyModeToButtonState(
+          { text: 'Get', state: 'download' },
+          getUniversalDefaultPolicyMode()
+        );
+      }
       const mode = getUniversalDefaultPolicyMode();
       return applyUniversalPolicyModeToButtonState(baseState, mode);
     },
-    [getUniversalButtonState, getUniversalDefaultPolicyMode]
+    [bookToReleaseMap, getUniversalButtonState, getUniversalDefaultPolicyMode, isDownloadTaskDismissed]
   );
 
   const bookLanguages = config?.book_languages || DEFAULT_LANGUAGES;
@@ -1263,6 +1336,11 @@ function App() {
             onClose={handleReleaseModalClose}
             onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
             onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
+            onRequestBook={
+              isBrowseFulfilMode || !requestRoleIsAdmin
+                ? undefined
+                : handleReleaseBookRequest
+            }
             getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
             onPolicyRefresh={handleReleaseModalPolicyRefresh}
             supportedFormats={supportedFormats}
@@ -1270,7 +1348,7 @@ function App() {
             contentType={activeReleaseContentType}
             defaultLanguages={defaultLanguageCodes}
             bookLanguages={bookLanguages}
-            currentStatus={currentStatus}
+            currentStatus={statusForButtonState}
             defaultReleaseSource={config?.default_release_source}
             onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
           />
