@@ -1149,6 +1149,14 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
                               {!isCollapsed ? (
                                 <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_minmax(0,2fr)_minmax(184px,184px)_minmax(84px,84px)]">
+                                    <div />
+                                    <div />
+                                    <div className="flex justify-center">
+                                      <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Available</span>
+                                    </div>
+                                    <div />
+                                  </div>
                                   {group.books.map((book, index) => (
                                     <div
                                       key={book.id}
@@ -1158,7 +1166,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                         animationFillMode: 'both',
                                       }}
                                     >
-                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(72px,72px)_auto]">
+                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(184px,184px)_minmax(84px,84px)]">
                                         <div className="flex items-center pl-1 sm:pl-3">
                                           <BooksListThumbnail preview={book.preview} title={book.title} />
                                         </div>
@@ -1173,12 +1181,12 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                           </h3>
                                           <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
                                             {book.author || resolvedName || 'Unknown author'}
-                                            {book.year && <span className="sm:hidden"> • {book.year}</span>}
+                                            {book.year ? <span> • {book.year}</span> : null}
                                           </p>
                                           {group.key !== '__standalone__' && book.series_position != null ? (
                                             <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-2">
                                               <span
-                                                className="inline-flex px-1.5 py-0.5 text-[10px] sm:text-xs font-bold text-white bg-emerald-600 rounded border border-emerald-700 flex-shrink-0"
+                                                className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0"
                                                 style={{
                                                   boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
                                                   textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
@@ -1188,37 +1196,37 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                                 #{book.series_position}
                                                 {book.series_count != null ? `/${book.series_count}` : ''}
                                               </span>
+                                              <span className="truncate" title={group.title}>{group.title}</span>
                                             </div>
                                           ) : null}
                                         </button>
 
-                                        <div className="hidden sm:flex text-xs text-gray-700 dark:text-gray-200 justify-end tabular-nums pr-1">
-                                          {book.year || '-'}
-                                        </div>
+                                        {(() => {
+                                          const prov = book.provider || '';
+                                          const bid = book.provider_id || '';
+                                          const key = prov && bid ? `${prov}:${bid}` : '';
+                                          const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                          if (!types || types.size === 0) {
+                                            return <div className="hidden sm:flex" />;
+                                          }
+
+                                          const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
+                                          return (
+                                            <div className="hidden sm:flex items-center justify-center gap-1">
+                                              {sorted.slice(0, 2).map((t) => (
+                                                <span
+                                                  key={t}
+                                                  className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
+                                                  title={`Matched file: ${t.toUpperCase()}`}
+                                                >
+                                                  {t.toUpperCase()}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          );
+                                        })()}
 
                                         <div className="flex flex-row justify-end gap-0.5 sm:gap-1 sm:pr-3">
-                                          {(() => {
-                                            const prov = book.provider || '';
-                                            const bid = book.provider_id || '';
-                                            const key = prov && bid ? `${prov}:${bid}` : '';
-                                            const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                            if (!types || types.size === 0) return null;
-
-                                            const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
-                                            return (
-                                              <div className="hidden sm:flex items-center gap-1 mr-1">
-                                                {sorted.slice(0, 2).map((t) => (
-                                                  <span
-                                                    key={t}
-                                                    className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
-                                                    title={`Matched file: ${t.toUpperCase()}`}
-                                                  >
-                                                    {t.toUpperCase()}
-                                                  </span>
-                                                ))}
-                                              </div>
-                                            );
-                                          })()}
                                           {onGetReleases ? (
                                             <>
                                               <button
