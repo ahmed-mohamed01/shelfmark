@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from shelfmark.core.auth_modes import AUTH_SOURCE_BUILTIN, AUTH_SOURCE_SET
@@ -839,7 +840,40 @@ class UserDB:
                 """,
                 (entity_id,),
             ).fetchall()
-            return [dict(r) for r in rows]
+
+            stale_ids: list[int] = []
+            existing_rows: list[dict[str, Any]] = []
+
+            for row in rows:
+                row_dict = dict(row)
+                path = row_dict.get("path")
+                file_id = row_dict.get("id")
+
+                path_exists = False
+                if isinstance(path, str) and path.strip():
+                    try:
+                        path_exists = Path(path).exists()
+                    except Exception:
+                        path_exists = False
+
+                if path_exists:
+                    existing_rows.append(row_dict)
+                elif isinstance(file_id, int):
+                    stale_ids.append(file_id)
+
+            if stale_ids:
+                placeholders = ",".join(["?"] * len(stale_ids))
+                conn.execute(
+                    f"""
+                    DELETE FROM monitored_book_files
+                    WHERE entity_id = ?
+                      AND id IN ({placeholders})
+                    """,
+                    (entity_id, *stale_ids),
+                )
+                conn.commit()
+
+            return existing_rows
         finally:
             conn.close()
 
