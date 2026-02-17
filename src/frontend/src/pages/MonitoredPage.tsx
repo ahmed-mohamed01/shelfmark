@@ -3,7 +3,6 @@ import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
   createMonitoredEntity,
-  deleteMonitoredEntity,
   listMonitoredEntities,
   getSelfUserEditContext,
   fsListDirectories,
@@ -72,8 +71,12 @@ const normalizeAuthor = (value: string): string => {
 const GRID_CLASSES = {
   mobile: 'grid-cols-1 items-start',
   card: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 items-stretch',
-  compact: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 items-start',
+  compact: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 items-stretch',
 } as const;
+
+const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
+const MONITORED_COMPACT_MIN_WIDTH_MAX = 220;
+const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
 
 const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -142,6 +145,14 @@ export const MonitoredPage = ({
   const [monitoredViewMode, setMonitoredViewMode] = useState<'card' | 'compact' | 'list'>(() => {
     const saved = localStorage.getItem('monitoredAuthorViewMode');
     return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'compact';
+  });
+  const [monitoredCompactMinWidth, setMonitoredCompactMinWidth] = useState<number>(() => {
+    const raw = localStorage.getItem('monitoredCompactMinWidth');
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed)) {
+      return MONITORED_COMPACT_MIN_WIDTH_DEFAULT;
+    }
+    return Math.max(MONITORED_COMPACT_MIN_WIDTH_MIN, Math.min(MONITORED_COMPACT_MIN_WIDTH_MAX, parsed));
   });
   const [monitored, setMonitored] = useState<MonitoredAuthor[]>([]);
   const [activeAuthor, setActiveAuthor] = useState<{
@@ -389,6 +400,14 @@ export const MonitoredPage = ({
     }
   }, [monitoredViewMode]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('monitoredCompactMinWidth', String(monitoredCompactMinWidth));
+    } catch {
+      // ignore
+    }
+  }, [monitoredCompactMinWidth]);
+
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);
 
   const monitoredEntityIdByName = useMemo(() => {
@@ -398,6 +417,15 @@ export const MonitoredPage = ({
     }
     return map;
   }, [monitored]);
+
+  const monitoredCompactGridStyle = useMemo(() => {
+    if (!isDesktop || monitoredViewMode !== 'compact') {
+      return undefined;
+    }
+    return {
+      gridTemplateColumns: `repeat(auto-fill, minmax(${monitoredCompactMinWidth}px, 1fr))`,
+    };
+  }, [isDesktop, monitoredViewMode, monitoredCompactMinWidth]);
 
   const runAuthorSearch = useCallback(async () => {
     const q = normalizeAuthor(authorQuery);
@@ -568,23 +596,6 @@ export const MonitoredPage = ({
     setView('landing');
   }, [closeMonitorModal, deriveRootFromAuthorDir, monitorModalState, normalizeAbsolutePath, persistLearnedRoots]);
 
-  const removeMonitored = useCallback(async (name: string) => {
-    const normalized = normalizeAuthor(name);
-    const match = monitored.find((item) => item.name.toLowerCase() === normalized.toLowerCase());
-    if (!match) {
-      return;
-    }
-
-    setMonitoredError(null);
-    try {
-      await deleteMonitoredEntity(match.id);
-      setMonitored((prev) => prev.filter((item) => item.id !== match.id));
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to remove monitored author';
-      setMonitoredError(message);
-    }
-  }, [monitored]);
-
   const openAuthorModal = useCallback((payload: { name: string; provider?: string | null; provider_id?: string | null; source_url?: string | null; photo_url?: string | null; monitoredEntityId?: number | null }) => {
     const normalized = normalizeAuthor(payload.name);
     if (!normalized) {
@@ -707,6 +718,25 @@ export const MonitoredPage = ({
                 <div className="flex items-center justify-between mb-3 relative z-10">
                   <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Monitored Authors</h2>
                   <div className="flex items-center gap-2">
+                    {monitoredViewMode === 'compact' ? (
+                      <div className="hidden md:flex items-center gap-2 mr-1 pr-2 border-r border-black/10 dark:border-white/10">
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">Size</span>
+                        <input
+                          type="range"
+                          min={MONITORED_COMPACT_MIN_WIDTH_MIN}
+                          max={MONITORED_COMPACT_MIN_WIDTH_MAX}
+                          step={5}
+                          value={monitoredCompactMinWidth}
+                          onChange={(e) => setMonitoredCompactMinWidth(Number(e.target.value))}
+                          className="w-24 accent-emerald-600"
+                          aria-label="Compact card size"
+                          title="Compact card size"
+                        />
+                        <span className="w-9 text-right text-[10px] text-gray-500 dark:text-gray-400 tabular-nums">
+                          {monitoredCompactMinWidth}
+                        </span>
+                      </div>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => setMonitoredViewMode('card')}
@@ -791,39 +821,36 @@ export const MonitoredPage = ({
                               </div>
                             </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => removeMonitored(author.name)}
-                            className="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-medium"
-                          >
-                            Remove
-                          </button>
                         </div>
                       );
                     })}
                   </div>
                 ) : (
-                  <div className={`grid gap-8 ${!isDesktop ? GRID_CLASSES.mobile : GRID_CLASSES[monitoredViewMode]}`}>
+                  <div
+                    className={`grid ${monitoredViewMode === 'compact' ? 'gap-4' : 'gap-8'} ${
+                      !isDesktop
+                        ? GRID_CLASSES.mobile
+                        : monitoredViewMode === 'compact'
+                          ? 'items-stretch'
+                          : GRID_CLASSES[monitoredViewMode]
+                    }`}
+                    style={monitoredCompactGridStyle}
+                  >
                     {monitoredAuthorsForCards.map((author, index) => {
                       const shouldUseCardLayout = isDesktop && monitoredViewMode === 'card';
                       return shouldUseCardLayout ? (
                         <AuthorCardView
                           key={`${author.provider}:${author.provider_id}`}
                           author={author}
-                          actionLabel="Remove"
-                          actionDisabled={false}
-                          onAction={() => removeMonitored(author.name)}
+                          showAction={false}
                           onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
-                          onRemove={() => removeMonitored(author.name)}
                           animationDelay={index * 50}
                         />
                       ) : (
                         <AuthorCompactView
                           key={`${author.provider}:${author.provider_id}`}
                           author={author}
-                          actionLabel="Remove"
-                          actionDisabled={false}
-                          onAction={() => removeMonitored(author.name)}
+                          showAction={false}
                           onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                           animationDelay={index * 50}
                         />
