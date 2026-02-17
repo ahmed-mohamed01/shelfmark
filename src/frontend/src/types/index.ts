@@ -161,6 +161,16 @@ export type MetadataSearchField =
 // Content type for search (ebook vs audiobook)
 export type ContentType = 'ebook' | 'audiobook';
 
+export interface OpenReleasesOptions {
+  batchAutoDownload?: {
+    batchId: string;
+    index: number;
+    total: number;
+    contentType: ContentType;
+  };
+  suppressPerBookAutoSearchToasts?: boolean;
+}
+
 export type RequestPolicyMode = 'download' | 'request_release' | 'request_book' | 'blocked';
 export type ReleasePrimaryAction = 'interactive_search' | 'auto_search_download';
 export type ReleasePrimaryDefaultAction =

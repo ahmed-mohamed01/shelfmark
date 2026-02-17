@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ActivityStatusCounts } from '../utils/activityBadge';
-import { Book, ContentType, ReleasePrimaryAction, StatusData } from '../types';
+import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 
 interface AuthorDetailsPageProps {
   onActivityClick?: () => void;
@@ -12,6 +12,7 @@ interface AuthorDetailsPageProps {
     contentType: ContentType,
     monitoredEntityId?: number | null,
     actionOverride?: ReleasePrimaryAction,
+    options?: OpenReleasesOptions,
   ) => Promise<void>;
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;

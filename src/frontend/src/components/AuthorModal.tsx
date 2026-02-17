@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Book, ContentType, ReleasePrimaryAction, StatusData } from '../types';
+import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
@@ -70,6 +70,7 @@ interface AuthorModalProps {
     contentType: ContentType,
     monitoredEntityId?: number | null,
     actionOverride?: ReleasePrimaryAction,
+    options?: OpenReleasesOptions,
   ) => Promise<void>;
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
@@ -260,7 +261,12 @@ export const AuthorModal = ({
   );
 
   const triggerReleaseSearch = useCallback(
-    async (book: Book, contentType: ContentType, actionOverride?: ReleasePrimaryAction) => {
+    async (
+      book: Book,
+      contentType: ContentType,
+      actionOverride?: ReleasePrimaryAction,
+      options?: OpenReleasesOptions,
+    ) => {
       if (!onGetReleases) return;
       const effectiveAction = actionOverride || resolvePrimaryActionForContentType(contentType);
       const actionKey = buildReleaseActionKey(book, contentType);
@@ -271,7 +277,7 @@ export const AuthorModal = ({
       }
 
       try {
-        await onGetReleases(book, contentType, monitoredEntityId, actionOverride);
+        await onGetReleases(book, contentType, monitoredEntityId, actionOverride, options);
       } finally {
         if (shouldShowImmediateSpinner) {
           setPendingAutoSearchByKey((prev) => {
@@ -1024,14 +1030,26 @@ export const AuthorModal = ({
       return;
     }
 
+    const batchId = `${contentType}:${Date.now()}`;
+    const batchTotal = selectedBooks.length;
+
     setBulkDownloadRunningByType((prev) => ({
       ...prev,
       [contentType]: true,
     }));
 
     try {
-      for (const book of selectedBooks) {
-        await triggerReleaseSearch(book, contentType, 'auto_search_download');
+      for (let idx = 0; idx < selectedBooks.length; idx += 1) {
+        const book = selectedBooks[idx];
+        await triggerReleaseSearch(book, contentType, 'auto_search_download', {
+          suppressPerBookAutoSearchToasts: true,
+          batchAutoDownload: {
+            batchId,
+            index: idx + 1,
+            total: batchTotal,
+            contentType,
+          },
+        });
       }
     } finally {
       setBulkDownloadRunningByType((prev) => ({
