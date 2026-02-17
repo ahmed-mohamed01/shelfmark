@@ -1201,6 +1201,99 @@ def _get_slow_source_defaults():
     ]
 
 
+def _get_release_priority_source_options(content_type: str) -> list[dict[str, str]]:
+    """Return release source options for the given content type."""
+    from shelfmark.release_sources import list_available_sources
+
+    options: list[dict[str, str]] = []
+    for source in list_available_sources():
+        supported = source.get("supported_content_types") or []
+        if content_type not in supported:
+            continue
+
+        source_name = str(source.get("name") or "").strip()
+        display_name = str(source.get("display_name") or source_name).strip()
+        if not source_name or not display_name:
+            continue
+
+        state_text = "enabled" if source.get("enabled") else "disabled"
+        options.append(
+            {
+                "id": f"source:{source_name}",
+                "label": f"Source · {display_name}",
+                "description": f"Release source ({state_text}).",
+            }
+        )
+    return options
+
+
+def _get_release_priority_prowlarr_indexer_options() -> list[dict[str, str]]:
+    """Return Prowlarr indexer options for release priority controls."""
+    from shelfmark.core.config import config
+    from shelfmark.core.utils import normalize_http_url
+
+    raw_url = config.get("PROWLARR_URL", "")
+    api_key = config.get("PROWLARR_API_KEY", "")
+    if not raw_url or not api_key:
+        return []
+
+    url = normalize_http_url(raw_url)
+    if not url:
+        return []
+
+    try:
+        from shelfmark.release_sources.prowlarr.api import ProwlarrClient
+
+        client = ProwlarrClient(url, api_key)
+        indexers = client.get_enabled_indexers_detailed()
+    except Exception:
+        return []
+
+    options: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for idx in indexers:
+        name = str(idx.get("name") or "").strip()
+        if not name:
+            continue
+
+        option_id = f"indexer:{name}"
+        option_key = option_id.lower()
+        if option_key in seen_ids:
+            continue
+        seen_ids.add(option_key)
+
+        protocol = str(idx.get("protocol") or "").strip().lower()
+        has_books = bool(idx.get("has_books", False))
+        detail_bits = [bit for bit in [protocol if protocol else None, "books" if has_books else None] if bit]
+        detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
+
+        options.append(
+            {
+                "id": option_id,
+                "label": f"Indexer · {name}",
+                "description": f"Prowlarr indexer{detail}.",
+            }
+        )
+
+    options.sort(key=lambda item: item["label"].lower())
+    return options
+
+
+def _get_release_priority_options(content_type: str) -> list[dict[str, str]]:
+    """Build combined source + indexer options for release priority settings."""
+    source_options = _get_release_priority_source_options(content_type)
+    indexer_options = _get_release_priority_prowlarr_indexer_options()
+    return [*source_options, *indexer_options]
+
+
+def _get_ebook_release_priority_options() -> list[dict[str, str]]:
+    return _get_release_priority_options("ebook")
+
+
+def _get_audiobook_release_priority_options() -> list[dict[str, str]]:
+    return _get_release_priority_options("audiobook")
+
+
 @register_settings("download_sources", "Download Sources", icon="download", order=21, group="direct_download")
 def download_source_settings():
     """Settings for download source behavior."""
@@ -1555,6 +1648,20 @@ def release_scoring_settings():
             default=75,
             min_value=0,
             max_value=100,
+        ),
+        OrderableListField(
+            key="EBOOK_RELEASE_PRIORITY",
+            label="eBook Source & Indexer Priority",
+            description="Boost preferred eBook sources/indexers when ranking close matches. Drag to reorder.",
+            options=_get_ebook_release_priority_options,
+            default=[],
+        ),
+        OrderableListField(
+            key="AUDIOBOOK_RELEASE_PRIORITY",
+            label="Audiobook Source & Indexer Priority",
+            description="Boost preferred audiobook sources/indexers when ranking close matches. Drag to reorder.",
+            options=_get_audiobook_release_priority_options,
+            default=[],
         ),
         TagListField(
             key="RELEASE_MATCH_FORBIDDEN_TERMS",

@@ -18,6 +18,8 @@ type DropPosition = { index: number; position: 'before' | 'after' } | null;
 // Merged item type with all properties
 type MergedItem = OrderableListItem & OrderableListOption;
 
+const PRIORITY_BOOST_BY_RANK = [12, 9, 6, 3, 1];
+
 /**
  * Merge current value with options to get full item info.
  * Items in value take precedence; any options not in value are appended.
@@ -55,9 +57,30 @@ export const OrderableListField = ({
   const isDisabled = disabled ?? false;
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dropPosition, setDropPosition] = useState<DropPosition>(null);
+  const [chipDropIndex, setChipDropIndex] = useState<number | null>(null);
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
 
   const items = mergeValueWithOptions(value ?? [], field.options);
+  const isCompactChipMode =
+    field.key === 'EBOOK_RELEASE_PRIORITY' ||
+    field.key === 'AUDIOBOOK_RELEASE_PRIORITY' ||
+    field.key === 'AUDIOBOOK_INDEXER_PRIORITY';
+  const enabledBoostEntries: string[] = [];
+  let enabledRank = 0;
+  items.forEach((item) => {
+    if (!item.enabled) {
+      return;
+    }
+    const boost = enabledRank < PRIORITY_BOOST_BY_RANK.length ? PRIORITY_BOOST_BY_RANK[enabledRank] : 0;
+    if (boost <= 0) {
+      return;
+    }
+    enabledBoostEntries.push(`${item.label} +${boost}`);
+    enabledRank += 1;
+  });
+  const boostPreviewLimit = 5;
+  const boostPreview = enabledBoostEntries.slice(0, boostPreviewLimit).join(' · ');
+  const boostRemainingCount = Math.max(0, enabledBoostEntries.length - boostPreviewLimit);
 
   // Check if a move is valid (not crossing pinned items)
   const isValidMove = (fromIndex: number): boolean => {
@@ -90,6 +113,7 @@ export const OrderableListField = ({
     }
     setDraggedIndex(null);
     setDropPosition(null);
+    setChipDropIndex(null);
     dragNodeRef.current = null;
   };
 
@@ -166,6 +190,48 @@ export const OrderableListField = ({
     onChange(newValue);
   };
 
+  const reorderItems = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || toIndex >= items.length) {
+      return;
+    }
+    if (!isValidMove(fromIndex)) {
+      return;
+    }
+
+    const newItems = [...items];
+    const [removed] = newItems.splice(fromIndex, 1);
+    newItems.splice(toIndex, 0, removed);
+
+    const newValue: OrderableListItem[] = newItems.map((item) => ({
+      id: item.id,
+      enabled: item.enabled,
+    }));
+    onChange(newValue);
+  };
+
+  const handleChipDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) {
+      setChipDropIndex(null);
+      return;
+    }
+    if (items[index]?.isPinned) {
+      setChipDropIndex(null);
+      return;
+    }
+    setChipDropIndex(index);
+  };
+
+  const handleChipDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null) {
+      handleDragEnd();
+      return;
+    }
+    reorderItems(draggedIndex, index);
+    handleDragEnd();
+  };
+
   const moveItem = (fromIndex: number, direction: 'up' | 'down') => {
     const toIndex = direction === 'up' ? fromIndex - 1 : fromIndex + 1;
     if (toIndex < 0 || toIndex >= items.length) return;
@@ -205,6 +271,53 @@ export const OrderableListField = ({
   };
 
   const dropGapIndex = getDropGapIndex();
+
+  if (isCompactChipMode) {
+    return (
+      <div className="rounded-xl border border-[var(--border-muted)] p-2.5">
+        <div className="flex flex-wrap gap-2">
+          {items.map((item, index) => {
+            const isDragging = draggedIndex === index;
+            const isItemDisabled = isDisabled || item.isLocked;
+            const chipDisabled = !item.enabled;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                draggable={!isItemDisabled}
+                onDragStart={(e) => handleDragStart(e, index)}
+                onDragEnd={handleDragEnd}
+                onDragOver={(e) => handleChipDragOver(e, index)}
+                onDrop={(e) => handleChipDrop(e, index)}
+                onClick={() => {
+                  if (isItemDisabled) return;
+                  toggleItem(index);
+                }}
+                title={chipDisabled ? 'Disabled (click to enable)' : 'Enabled (click to disable)'}
+                className={`
+                  inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm
+                  transition-colors
+                  ${isDragging ? 'opacity-50' : ''}
+                  ${chipDropIndex === index ? 'border-sky-500 ring-1 ring-sky-500/40' : 'border-[var(--border-muted)]'}
+                  ${chipDisabled ? 'opacity-45' : ''}
+                  ${isItemDisabled ? 'cursor-not-allowed' : 'cursor-grab hover:bg-[var(--hover-surface)]'}
+                `}
+              >
+                <span className="font-medium">{item.label}</span>
+                <span className="text-base leading-none text-[var(--text-muted)]">×</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-xs text-[var(--text-muted)]">
+          {enabledBoostEntries.length > 0
+            ? `Current boost: ${boostPreview}${boostRemainingCount > 0 ? ` · +${boostRemainingCount} more` : ''}`
+            : 'No enabled priorities (no ranking boost applied).'}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1">

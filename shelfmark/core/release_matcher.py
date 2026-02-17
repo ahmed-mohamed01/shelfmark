@@ -77,6 +77,10 @@ _SERIES_NUM_TOKEN_RE = (
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
 )
 
+# Stronger priority boosts so preferred sources/indexers win close calls.
+# Rank 0 => +12, rank 1 => +9, rank 2 => +6, rank 3 => +3, rank 4 => +1.
+_PRIORITY_BOOST_BY_RANK = [12, 9, 6, 3, 1]
+
 
 @dataclass
 class ReleaseMatchScore:
@@ -92,6 +96,8 @@ class ReleaseScoringConfig:
     forbidden_words: set[str]
     min_title_score: int
     min_author_score: int
+    ebook_release_priority: Dict[str, int]
+    audiobook_release_priority: Dict[str, int]
 
 
 def _normalize_text(value: str) -> str:
@@ -357,6 +363,64 @@ def _score_quality_tiebreak(release: Release) -> int:
     return 0
 
 
+def _normalize_priority_token(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _build_release_priority_map(raw_priority: object) -> Dict[str, int]:
+    priority: Dict[str, int] = {}
+    if not isinstance(raw_priority, list):
+        return priority
+
+    rank = 0
+    for item in raw_priority:
+        if not isinstance(item, dict):
+            continue
+        if item.get("enabled") is False:
+            continue
+
+        raw_id = str(item.get("id") or "").strip()
+        if not raw_id:
+            continue
+        normalized = _normalize_priority_token(raw_id)
+        if not normalized or normalized in priority:
+            continue
+
+        priority[normalized] = rank
+        rank += 1
+
+    return priority
+
+
+def _score_indexer_priority_tiebreak(release: Release, priority: Dict[str, int]) -> int:
+    if not priority:
+        return 0
+
+    candidates = [
+        _normalize_priority_token(f"indexer:{release.indexer or ''}"),
+        _normalize_priority_token(f"source:{release.source or ''}"),
+        _normalize_priority_token(release.indexer or ""),  # backward compatibility
+        _normalize_priority_token(release.source or ""),   # backward compatibility
+    ]
+
+    best_rank: Optional[int] = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        rank = priority.get(candidate)
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+
+    if best_rank is None:
+        return 0
+
+    if best_rank < len(_PRIORITY_BOOST_BY_RANK):
+        return _PRIORITY_BOOST_BY_RANK[best_rank]
+    return 0
+
+
 def _get_release_scoring_config() -> ReleaseScoringConfig:
     raw_forbidden = app_config.get("RELEASE_MATCH_FORBIDDEN_TERMS", list(_FORBIDDEN_WORDS))
     forbidden_words: set[str] = set()
@@ -379,10 +443,21 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
     min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
     min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
 
+    ebook_release_priority = _build_release_priority_map(app_config.get("EBOOK_RELEASE_PRIORITY", []))
+    audiobook_release_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_RELEASE_PRIORITY", []))
+
+    # Backward compatibility with initial setting key from early rollout.
+    if not audiobook_release_priority:
+        audiobook_release_priority = _build_release_priority_map(
+            app_config.get("AUDIOBOOK_INDEXER_PRIORITY", [])
+        )
+
     return ReleaseScoringConfig(
         forbidden_words=forbidden_words,
         min_title_score=max(0, min(60, min_title_score)),
         min_author_score=max(0, min(30, min_author_score)),
+        ebook_release_priority=ebook_release_priority,
+        audiobook_release_priority=audiobook_release_priority,
     )
 
 
@@ -435,8 +510,31 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
     # Quality should not rescue weak metadata matches.
     has_strong_metadata = title_score >= 34 or (series_score >= 11 and series_num_score > 0)
     quality_score = _score_quality_tiebreak(release) if has_strong_metadata else 0
+    content_type = (release.content_type or "ebook").strip().lower()
+    release_priority_map = (
+        scoring_config.audiobook_release_priority
+        if content_type == "audiobook"
+        else scoring_config.ebook_release_priority
+    )
+    indexer_priority_score = (
+        _score_indexer_priority_tiebreak(release, release_priority_map)
+        if has_strong_metadata
+        else 0
+    )
 
-    total = max(0, min(100, title_score + author_score + series_score + series_num_score + year_score + quality_score))
+    total = max(
+        0,
+        min(
+            100,
+            title_score
+            + author_score
+            + series_score
+            + series_num_score
+            + year_score
+            + quality_score
+            + indexer_priority_score,
+        ),
+    )
 
     if total >= 75:
         confidence = "high"
@@ -457,6 +555,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
             "series_number": series_num_score,
             "year": year_score,
             "quality": quality_score,
+            "indexer_priority": indexer_priority_score,
         },
     )
 
