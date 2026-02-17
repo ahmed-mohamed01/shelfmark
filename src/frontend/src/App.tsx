@@ -45,6 +45,7 @@ import { Footer } from './components/Footer';
 import { ActivitySidebar } from './components/activity';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoredPage } from './pages/MonitoredPage';
+import { AuthorDetailsPage } from './pages/AuthorDetailsPage';
 import { SelfSettingsModal, SettingsModal } from './components/settings';
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -1558,6 +1559,41 @@ function App() {
             <Navigate to="/login" replace />
           ) : (
             <MonitoredPage
+              onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+              onBack={() => navigate('/')}
+              onMonitoredClick={() => navigate('/monitored')}
+              logoUrl={logoUrl}
+              debug={config?.debug || false}
+              onSettingsClick={() => {
+                if (config?.settings_enabled) {
+                  if (authIsAdmin) {
+                    setSettingsOpen(true);
+                  } else {
+                    setSelfSettingsOpen(true);
+                  }
+                } else {
+                  setConfigBannerOpen(true);
+                }
+              }}
+              statusCounts={statusCounts}
+              isAdmin={requestRoleIsAdmin}
+              canAccessSettings={isAuthenticated}
+              authRequired={authRequired}
+              isAuthenticated={isAuthenticated}
+              username={username}
+              displayName={displayName}
+              onLogout={handleLogoutWithCleanup}
+            />
+          )
+        }
+      />
+      <Route
+        path="/monitored/author"
+        element={
+          authRequired && !isAuthenticated ? (
+            <Navigate to="/login" replace />
+          ) : (
+            <AuthorDetailsPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
               onGetReleases={openReleasesForBook}
               defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}

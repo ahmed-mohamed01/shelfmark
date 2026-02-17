@@ -64,6 +64,7 @@ export interface AuthorModalAuthor {
 interface AuthorModalProps {
   author: AuthorModalAuthor | null;
   onClose: () => void;
+  displayMode?: 'modal' | 'page';
   onGetReleases?: (
     book: Book,
     contentType: ContentType,
@@ -78,6 +79,8 @@ interface AuthorModalProps {
   initialBookProviderId?: string | null;
   monitoredEntityId?: number | null;
   status?: StatusData;
+  booksSearchQuery?: string;
+  onBooksSearchQueryChange?: (value: string) => void;
 }
 
 type DownloadStatusBucket = 'queued' | 'resolving' | 'locating' | 'downloading' | 'complete' | 'error' | 'cancelled';
@@ -119,6 +122,7 @@ const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
 export const AuthorModal = ({
   author,
   onClose,
+  displayMode = 'modal',
   onGetReleases,
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
@@ -128,6 +132,8 @@ export const AuthorModal = ({
   initialBookProviderId,
   monitoredEntityId,
   status,
+  booksSearchQuery,
+  onBooksSearchQueryChange,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -168,6 +174,15 @@ export const AuthorModal = ({
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
   const [pendingAutoSearchByKey, setPendingAutoSearchByKey] = useState<Record<string, boolean>>({});
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
+  const isPageMode = displayMode === 'page';
+  const activeBooksQuery = booksSearchQuery ?? booksQuery;
+  const updateBooksQuery = (value: string) => {
+    if (onBooksSearchQueryChange) {
+      onBooksSearchQueryChange(value);
+      return;
+    }
+    setBooksQuery(value);
+  };
 
   const normalizeStatusKeyPart = (value: string | null | undefined): string => {
     const s = String(value || '').trim().toLowerCase();
@@ -269,14 +284,21 @@ export const AuthorModal = ({
   const lastAutoRefreshKeyRef = useMemo(() => ({ value: '' }), []);
 
   const handleClose = useCallback(() => {
+    if (isPageMode) {
+      onClose();
+      return;
+    }
     setIsClosing(true);
     setTimeout(() => {
       onClose();
       setIsClosing(false);
     }, 150);
-  }, [onClose]);
+  }, [isPageMode, onClose]);
 
   useEffect(() => {
+    if (isPageMode) {
+      return;
+    }
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         handleClose();
@@ -285,17 +307,17 @@ export const AuthorModal = ({
 
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
-  }, [handleClose]);
+  }, [handleClose, isPageMode]);
 
   useEffect(() => {
-    if (author) {
+    if (author && !isPageMode) {
       const previousOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
       return () => {
         document.body.style.overflow = previousOverflow;
       };
     }
-  }, [author]);
+  }, [author, isPageMode]);
 
   useEffect(() => {
     if (!author || !monitoredEntityId) {
@@ -341,8 +363,13 @@ export const AuthorModal = ({
 
   useEffect(() => {
     setHasAppliedInitialBookSelection(false);
-    setBooksQuery((initialBooksQuery || '').trim());
-  }, [author?.name, initialBooksQuery, initialBookProvider, initialBookProviderId]);
+    const nextQuery = (initialBooksQuery || '').trim();
+    if (onBooksSearchQueryChange) {
+      onBooksSearchQueryChange(nextQuery);
+      return;
+    }
+    setBooksQuery(nextQuery);
+  }, [author?.name, initialBooksQuery, initialBookProvider, initialBookProviderId, onBooksSearchQueryChange]);
 
   useEffect(() => {
     if (!author || !monitoredEntityId) return;
@@ -877,7 +904,7 @@ export const AuthorModal = ({
   }, [activeBookDetails, files]);
 
   const filteredGroupedBooks = useMemo(() => {
-    const q = booksQuery.trim().toLowerCase();
+    const q = activeBooksQuery.trim().toLowerCase();
     if (!q) return groupedBooks;
 
     return groupedBooks
@@ -889,7 +916,7 @@ export const AuthorModal = ({
         return { ...g, books: matching };
       })
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, booksQuery]);
+  }, [groupedBooks, activeBooksQuery]);
 
   const allGroupsCollapsed = useMemo(() => {
     if (groupedBooks.length === 0) return false;
@@ -1063,49 +1090,115 @@ export const AuthorModal = ({
   return (
     <>
       <div
-        className="modal-overlay active sm:px-6 sm:py-6"
-        style={isEditModalOpen ? { pointerEvents: 'none' } : undefined}
+        className={isPageMode ? 'w-full' : 'modal-overlay active sm:px-6 sm:py-6'}
+        style={!isPageMode && isEditModalOpen ? { pointerEvents: 'none' } : undefined}
         onClick={e => {
-          if (e.target === e.currentTarget) handleClose();
+          if (!isPageMode && e.target === e.currentTarget) handleClose();
         }}
       >
         <div
-          className={`details-container w-full max-w-5xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
-          role="dialog"
-          aria-modal="true"
+          className={isPageMode ? 'w-full' : `details-container w-full max-w-5xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
+          role={isPageMode ? 'region' : 'dialog'}
+          aria-modal={isPageMode ? undefined : true}
           aria-labelledby={titleId}
         >
-          <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
-            <header className="flex items-start gap-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5 py-4">
-              <div className="flex-1 space-y-1 min-w-0">
-                <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Author</p>
-                <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
-                  {resolvedName || 'Unknown author'}
-                </h3>
+          <div className={isPageMode
+            ? 'flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl'
+            : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
+            <header className={`flex items-start gap-4 px-5 py-4 ${isPageMode ? 'border-b border-black/10 dark:border-white/10 bg-transparent' : 'border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
+              <div className="flex-1 min-w-0">
+                {isPageMode ? (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={handleClose}
+                      className="rounded-full p-1.5 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                      aria-label="Back to monitored authors"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
+                      </svg>
+                    </button>
+                    <p className="text-base font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">
+                      <button
+                        type="button"
+                        onClick={handleClose}
+                        className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                      >
+                        Monitored Authors
+                      </button>
+                      <span className="mx-2 text-gray-500 dark:text-gray-400">/</span>
+                      <span id={titleId}>{resolvedName || 'Unknown author'}</span>
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Author</p>
+                    <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
+                      {resolvedName || 'Unknown author'}
+                    </h3>
+                  </>
+                )}
               </div>
+
               <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={handleClose}
-                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-                  aria-label="Close author details"
-                >
-                  <svg
-                    className="h-5 w-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1.5}
+                {isPageMode ? (
+                  <>
+                    <div className="hidden sm:flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5 bg-white/70 dark:bg-white/10">
+                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                      </svg>
+                      <input
+                        value={activeBooksQuery}
+                        onChange={(e) => updateBooksQuery(e.target.value)}
+                        placeholder="Search monitored books"
+                        className="w-44 bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
+                        aria-label="Search monitored books"
+                      />
+                      {activeBooksQuery ? (
+                        <button
+                          type="button"
+                          onClick={() => updateBooksQuery('')}
+                          className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action"
+                          aria-label="Clear search"
+                          title="Clear"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      ) : null}
+                    </div>
+                    {monitoredEntityId ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPathsError(null);
+                          setIsEditModalOpen(true);
+                        }}
+                        className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                      >
+                        Edit
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                    aria-label="Close author details"
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </header>
 
-            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6">
-              <div className="flex flex-col gap-6">
-              <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] p-4">
+            <div className="px-3 pb-3 sm:px-4 sm:pb-4">
+              <div className="mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] p-4">
                 <div className="flex items-start gap-4">
                   <div className="flex-shrink-0">
                     {resolvedPhoto ? (
@@ -1133,7 +1226,7 @@ export const AuthorModal = ({
                       </div>
 
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        {monitoredEntityId ? (
+                        {monitoredEntityId && !isPageMode ? (
                           <button
                             type="button"
                             onClick={() => {
@@ -1145,20 +1238,24 @@ export const AuthorModal = ({
                             Edit
                           </button>
                         ) : null}
-                        <button
-                          type="button"
-                          onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(author.name)}`))}
-                          className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                        >
-                          Open in main search
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowMoreDetails((v) => !v)}
-                          className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                        >
-                          {showMoreDetails ? 'Hide details' : 'Show details'}
-                        </button>
+                        {!isPageMode ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => window.location.assign(withBasePath(`/?q=${encodeURIComponent(author.name)}`))}
+                              className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              Open in main search
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setShowMoreDetails((v) => !v)}
+                              className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              {showMoreDetails ? 'Hide details' : 'Show details'}
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     </div>
 
@@ -1190,11 +1287,31 @@ export const AuthorModal = ({
                             <p className="text-gray-600 dark:text-gray-300">Details not supported by this provider.</p>
                           )}
                         </div>
+                        {isPageMode && resolvedUrl ? (
+                          <div className="mt-2">
+                            <a
+                              href={resolvedUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-block text-xs text-gray-500 dark:text-gray-400 hover:underline"
+                            >
+                              View on provider ↗
+                            </a>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
 
                     <div className="mt-2 h-4">
-                      {resolvedUrl ? (
+                      {isPageMode ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowMoreDetails((v) => !v)}
+                          className="inline-block text-xs text-gray-500 dark:text-gray-400 hover:underline"
+                        >
+                          {showMoreDetails ? 'Hide details ↗' : 'Show details ↘'}
+                        </button>
+                      ) : resolvedUrl ? (
                         <a
                           href={resolvedUrl}
                           target="_blank"
@@ -1209,7 +1326,7 @@ export const AuthorModal = ({
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
+              <div className="mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
                 <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)]">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
@@ -1231,31 +1348,33 @@ export const AuthorModal = ({
                     </p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
-                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-                      </svg>
-                      <input
-                        value={booksQuery}
-                        onChange={(e) => setBooksQuery(e.target.value)}
-                        placeholder="Search books or series"
-                        className="bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500 w-44"
-                        aria-label="Search books"
-                      />
-                      {booksQuery ? (
-                        <button
-                          type="button"
-                          onClick={() => setBooksQuery('')}
-                          className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action"
-                          aria-label="Clear search"
-                          title="Clear"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      ) : null}
-                    </div>
+                    {!isPageMode ? (
+                      <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
+                        <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                        </svg>
+                        <input
+                          value={activeBooksQuery}
+                          onChange={(e) => updateBooksQuery(e.target.value)}
+                          placeholder="Search books or series"
+                          className="bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500 w-44"
+                          aria-label="Search books"
+                        />
+                        {activeBooksQuery ? (
+                          <button
+                            type="button"
+                            onClick={() => updateBooksQuery('')}
+                            className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action"
+                            aria-label="Clear search"
+                            title="Clear"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <Dropdown
                       align="right"
                       widthClassName="w-auto flex-shrink-0"
@@ -1504,7 +1623,6 @@ export const AuthorModal = ({
           </div>
         </div>
       </div>
-    </div>
       <FolderBrowserModal
         open={pathsBrowserState.open}
         title={pathsBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
@@ -1512,7 +1630,7 @@ export const AuthorModal = ({
         overlayZIndex={2100}
         onClose={() => setPathsBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
-          const authorName = (resolvedName || author.name || '').trim();
+          const authorName = (resolvedName || author?.name || '').trim();
           const suggested = authorName ? `${normalizePath(path)}/${authorName}` : path;
           if (pathsBrowserState.kind === 'audiobook') {
             setAudiobookAuthorDir(suggested);

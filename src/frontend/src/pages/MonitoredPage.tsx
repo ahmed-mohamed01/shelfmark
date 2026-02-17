@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
@@ -14,17 +15,10 @@ import {
   searchMetadata,
   searchMetadataAuthors,
 } from '../services/api';
-import { AuthorModal } from '../components/AuthorModal';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { Dropdown } from '../components/Dropdown';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
-import {
-  Book,
-  ContentType,
-  ReleasePrimaryAction,
-  StatusData,
-} from '../types';
 
 interface MonitoredAuthor {
   id: number;
@@ -40,20 +34,9 @@ interface MonitoredAuthor {
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
-  onGetReleases?: (
-    book: Book,
-    contentType: ContentType,
-    monitoredEntityId?: number | null,
-    actionOverride?: ReleasePrimaryAction,
-  ) => Promise<void>;
-  defaultReleaseContentType?: ContentType;
-  defaultReleaseActionEbook?: ReleasePrimaryAction;
-  defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   onBack?: () => void;
   onMonitoredClick?: () => void;
   logoUrl?: string;
-
-  status?: StatusData;
 
   debug?: boolean;
   onSettingsClick?: () => void;
@@ -119,14 +102,9 @@ const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: str
 
 export const MonitoredPage = ({
   onActivityClick,
-  onGetReleases,
-  defaultReleaseContentType = 'ebook',
-  defaultReleaseActionEbook = 'interactive_search',
-  defaultReleaseActionAudiobook = 'interactive_search',
   onBack,
   onMonitoredClick,
   logoUrl,
-  status,
   debug,
   onSettingsClick,
   statusCounts,
@@ -171,19 +149,7 @@ export const MonitoredPage = ({
     return Math.max(MONITORED_COMPACT_MIN_WIDTH_MIN, Math.min(MONITORED_COMPACT_MIN_WIDTH_MAX, parsed));
   });
   const [monitored, setMonitored] = useState<MonitoredAuthor[]>([]);
-  const [activeAuthor, setActiveAuthor] = useState<{
-    name: string;
-    provider?: string | null;
-    provider_id?: string | null;
-    source_url?: string | null;
-    photo_url?: string | null;
-    monitoredEntityId?: number | null;
-  } | null>(null);
-  const [activeAuthorInitialBookSelection, setActiveAuthorInitialBookSelection] = useState<{
-    query?: string;
-    provider?: string | null;
-    providerId?: string | null;
-  } | null>(null);
+  const navigate = useNavigate();
   const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState('');
   const [monitoredBooksSearchResults, setMonitoredBooksSearchResults] = useState<MonitoredAuthorBookSearchRow[]>([]);
   const [monitoredBooksSearchLoading, setMonitoredBooksSearchLoading] = useState(false);
@@ -716,7 +682,7 @@ export const MonitoredPage = ({
     setView('landing');
   }, [closeMonitorModal, deriveRootFromAuthorDir, monitorModalState, normalizeAbsolutePath, persistLearnedRoots]);
 
-  const openAuthorModal = useCallback((payload: {
+  const navigateToAuthorPage = useCallback((payload: {
     name: string;
     provider?: string | null;
     provider_id?: string | null;
@@ -731,34 +697,34 @@ export const MonitoredPage = ({
     if (!normalized) {
       return;
     }
-    setActiveAuthor({
-      name: normalized,
-      provider: payload.provider || null,
-      provider_id: payload.provider_id || null,
-      source_url: payload.source_url || null,
-      photo_url: payload.photo_url || null,
-      monitoredEntityId: payload.monitoredEntityId ?? null,
-    });
+
+    const params = new URLSearchParams();
+    params.set('name', normalized);
+
+    if (payload.provider) params.set('provider', payload.provider);
+    if (payload.provider_id) params.set('provider_id', payload.provider_id);
+    if (payload.source_url) params.set('source_url', payload.source_url);
+    if (payload.photo_url) params.set('photo_url', payload.photo_url);
+    if (typeof payload.monitoredEntityId === 'number' && Number.isFinite(payload.monitoredEntityId)) {
+      params.set('entity_id', String(payload.monitoredEntityId));
+    }
+
     const initialBookQuery = (payload.initialBookQuery || '').trim();
     const initialBookProvider = (payload.initialBookProvider || '').trim();
     const initialBookProviderId = (payload.initialBookProviderId || '').trim();
-    if (initialBookQuery || (initialBookProvider && initialBookProviderId)) {
-      setActiveAuthorInitialBookSelection({
-        query: initialBookQuery || undefined,
-        provider: initialBookProvider || undefined,
-        providerId: initialBookProviderId || undefined,
-      });
-    } else {
-      setActiveAuthorInitialBookSelection(null);
-    }
-  }, []);
+    if (initialBookQuery) params.set('initial_query', initialBookQuery);
+    if (initialBookProvider) params.set('initial_provider', initialBookProvider);
+    if (initialBookProviderId) params.set('initial_provider_id', initialBookProviderId);
+
+    navigate(`/monitored/author?${params.toString()}`);
+  }, [navigate]);
 
   const handleMonitoredBookResultSelect = useCallback((row: MonitoredAuthorBookSearchRow) => {
     const matchingAuthor = monitored.find((item) => item.id === row.entity_id);
     const resolvedAuthorName = matchingAuthor?.name || row.author_name;
     if (!resolvedAuthorName) return;
 
-    openAuthorModal({
+    navigateToAuthorPage({
       name: resolvedAuthorName,
       provider: matchingAuthor?.provider || row.author_provider || null,
       provider_id: matchingAuthor?.provider_id || row.author_provider_id || null,
@@ -772,7 +738,7 @@ export const MonitoredPage = ({
 
     setMonitoredBooksSearchQuery('');
     setMonitoredBooksSearchOpen(false);
-  }, [monitored, openAuthorModal]);
+  }, [monitored, navigateToAuthorPage]);
 
   const clearSearchAndReturn = useCallback(() => {
     setAuthorQuery('');
@@ -818,23 +784,21 @@ export const MonitoredPage = ({
 
       <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-32 lg:pt-24">
         <div className="flex flex-col gap-6">
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Monitored</h1>
-          </div>
+          {searchError || monitoredError || rootsError ? (
+            <div className="flex flex-col gap-3">
+              {searchError && (
+                <div className="text-sm text-red-500">{searchError}</div>
+              )}
 
-          <div className="flex flex-col gap-3">
-            {searchError && (
-              <div className="text-sm text-red-500">{searchError}</div>
-            )}
+              {monitoredError && (
+                <div className="text-sm text-red-500">{monitoredError}</div>
+              )}
 
-            {monitoredError && (
-              <div className="text-sm text-red-500">{monitoredError}</div>
-            )}
-
-            {rootsError && (
-              <div className="text-sm text-red-500">{rootsError}</div>
-            )}
-          </div>
+              {rootsError && (
+                <div className="text-sm text-red-500">{rootsError}</div>
+              )}
+            </div>
+          ) : null}
 
           {view === 'landing' ? (
             monitored.length === 0 ? (
@@ -862,8 +826,30 @@ export const MonitoredPage = ({
               </div>
             ) : (
               <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
-                <div className="flex items-center justify-between mb-3 relative z-10 gap-3">
-                  <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Monitored Authors</h2>
+                <div className="flex items-center justify-between mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onBack) {
+                          onBack();
+                          return;
+                        }
+                        navigate('/');
+                      }}
+                      className="rounded-full p-1.5 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                      aria-label="Back to home"
+                      title="Back"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
+                      </svg>
+                    </button>
+                    <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">Monitored Authors</h2>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+                      {monitored.length}
+                    </span>
+                  </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
                     <div ref={monitoredBooksSearchRef} className="relative w-full sm:w-auto sm:min-w-[260px]">
                       <div className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5 bg-white/70 dark:bg-white/10">
@@ -1106,7 +1092,7 @@ export const MonitoredPage = ({
                             <AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name} />
                             <button
                               type="button"
-                              onClick={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
+                              onClick={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                               className="text-left flex-1 min-w-0"
                             >
                               <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{author.name}</div>
@@ -1131,7 +1117,7 @@ export const MonitoredPage = ({
                           key={`${author.provider}:${author.provider_id}`}
                           author={author}
                           showAction={false}
-                          onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
+                          onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                           animationDelay={index * 50}
                         />
                       );
@@ -1142,8 +1128,12 @@ export const MonitoredPage = ({
             )
           ) : (
             <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
-              <div className="flex items-center justify-between mb-3 relative z-10">
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">New Authors</h2>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+                    {authorResults.length}
+                  </span>
                   <button
                     type="button"
                     className="px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
@@ -1152,7 +1142,6 @@ export const MonitoredPage = ({
                   >
                     Most relevant
                   </button>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">{authorResults.length}</div>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1244,7 +1233,7 @@ export const MonitoredPage = ({
                             <AuthorRowThumbnail photo_url={author.photo_url || undefined} name={name} />
                             <button
                               type="button"
-                              onClick={() => openAuthorModal(author)}
+                              onClick={() => navigateToAuthorPage(author)}
                               className="text-left flex-1 min-w-0"
                             >
                               <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{name}</div>
@@ -1300,7 +1289,7 @@ export const MonitoredPage = ({
                             photo_url: author.photo_url || undefined,
                             books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
                           })}
-                          onOpen={() => openAuthorModal(author)}
+                          onOpen={() => navigateToAuthorPage(author)}
                           animationDelay={index * 50}
                         />
                       ) : (
@@ -1316,7 +1305,7 @@ export const MonitoredPage = ({
                             photo_url: author.photo_url || undefined,
                             books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
                           })}
-                          onOpen={() => openAuthorModal(author)}
+                          onOpen={() => navigateToAuthorPage(author)}
                           animationDelay={index * 50}
                         />
                       );
@@ -1329,28 +1318,10 @@ export const MonitoredPage = ({
         </div>
       </main>
 
-      {activeAuthor && (
-        <AuthorModal
-          author={activeAuthor}
-          onGetReleases={onGetReleases}
-          defaultReleaseContentType={defaultReleaseContentType}
-          defaultReleaseActionEbook={defaultReleaseActionEbook}
-          defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
-          initialBooksQuery={activeAuthorInitialBookSelection?.query}
-          initialBookProvider={activeAuthorInitialBookSelection?.provider}
-          initialBookProviderId={activeAuthorInitialBookSelection?.providerId}
-          onClose={() => {
-            setActiveAuthor(null);
-            setActiveAuthorInitialBookSelection(null);
-          }}
-          monitoredEntityId={activeAuthor.monitoredEntityId}
-          status={status}
-        />
-      )}
-
-      {monitorModalState.open && monitorModalState.author && (
+      {monitorModalState.open && monitorModalState.author ? (
         <div
           className="modal-overlay active sm:px-6 sm:py-6"
+          style={{ zIndex: 1200 }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               closeMonitorModal();
@@ -1592,7 +1563,7 @@ export const MonitoredPage = ({
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
       <FolderBrowserModal
         open={folderBrowserState.open}
