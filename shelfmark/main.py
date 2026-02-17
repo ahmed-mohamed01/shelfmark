@@ -975,6 +975,15 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
             "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True),
+            "release_primary_content_type": app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook"),
+            "release_primary_action_ebook": app_config.get(
+                "RELEASE_PRIMARY_ACTION_EBOOK",
+                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+            ),
+            "release_primary_action_audiobook": app_config.get(
+                "RELEASE_PRIMARY_ACTION_AUDIOBOOK",
+                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+            ),
             "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75),
             "search_mode": app_config.get("SEARCH_MODE", "direct"),
             "metadata_sort_options": get_provider_sort_options(),

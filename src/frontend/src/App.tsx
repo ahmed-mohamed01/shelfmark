@@ -10,10 +10,12 @@ import {
   ButtonStateInfo,
   RequestPolicyMode,
   CreateRequestPayload,
+  ReleasePrimaryAction,
 } from './types';
 import {
   getBookInfo,
   getMetadataBookInfo,
+  getReleases,
   downloadBook,
   downloadRelease,
   cancelDownload,
@@ -114,6 +116,11 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
     return error.message;
   }
   return fallback;
+};
+
+const getReleaseMatchScore = (release: Release): number | null => {
+  const raw = release.extra?.match_score;
+  return typeof raw === 'number' ? raw : null;
 };
 
 function App() {
@@ -802,8 +809,31 @@ function App() {
     }
   };
 
+  const fetchAutoSearchReleases = async (
+    provider: string,
+    providerId: string,
+    contentType: ContentType,
+  ) => {
+    // Keep auto-search strict: provider + provider_id lookup only, no title/author/manual query expansion.
+    return getReleases(
+      provider,
+      providerId,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      defaultLanguageCodes,
+      contentType,
+    );
+  };
+
   // Universal-mode "Get" action (open releases, request-book, or block by policy).
-  const openReleasesForBook = async (book: Book, releaseContentType: ContentType, monitoredEntityId?: number | null) => {
+  const openReleasesForBook = async (
+    book: Book,
+    releaseContentType: ContentType,
+    monitoredEntityId?: number | null,
+    actionOverride?: ReleasePrimaryAction,
+  ) => {
     let mode = getUniversalDefaultPolicyMode();
     const normalizedContentType = toContentType(releaseContentType);
     policyTrace('universal.get:start', {
@@ -861,6 +891,68 @@ function App() {
       return;
     }
 
+    const configuredPrimaryAction = normalizedContentType === 'audiobook'
+      ? config?.release_primary_action_audiobook
+      : config?.release_primary_action_ebook;
+    const releasePrimaryAction = actionOverride || configuredPrimaryAction || 'interactive_search';
+    const autoDownloadMinMatchScore = typeof config?.auto_download_min_match_score === 'number'
+      ? config.auto_download_min_match_score
+      : 75;
+
+    if (releasePrimaryAction === 'auto_search_download') {
+      if (!book.provider || !book.provider_id) {
+        showToast('Auto search requires provider-linked book metadata. Opening interactive search instead.', 'info');
+      } else {
+        try {
+          policyTrace('universal.get:auto_search:start', {
+            bookId: book.id,
+            contentType: normalizedContentType,
+            minMatchScore: autoDownloadMinMatchScore,
+          });
+          const response = await fetchAutoSearchReleases(
+            book.provider,
+            book.provider_id,
+            normalizedContentType,
+          );
+
+          const bestRelease = [...(response.releases || [])].sort((a, b) => {
+            return (getReleaseMatchScore(b) || 0) - (getReleaseMatchScore(a) || 0);
+          })[0];
+
+          const bestMatchScore = bestRelease ? getReleaseMatchScore(bestRelease) : null;
+          if (bestRelease && bestMatchScore !== null && bestMatchScore >= autoDownloadMinMatchScore) {
+            policyTrace('universal.get:auto_search:queue_best', {
+              bookId: book.id,
+              releaseId: bestRelease.source_id,
+              source: bestRelease.source,
+              contentType: normalizedContentType,
+              matchScore: bestMatchScore,
+            });
+            await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null);
+            showToast(`Queued top match (score ${bestMatchScore})`, 'success');
+            return;
+          }
+
+          policyTrace('universal.get:auto_search:fallback_interactive', {
+            bookId: book.id,
+            contentType: normalizedContentType,
+            reason: bestRelease ? 'below_threshold' : 'no_results',
+            bestMatchScore,
+            minMatchScore: autoDownloadMinMatchScore,
+          });
+          showToast('No release met auto-download cutoff. Opening interactive search.', 'info');
+        } catch (error) {
+          console.error('Auto search + download failed, falling back to interactive search:', error);
+          policyTrace('universal.get:auto_search:error', {
+            bookId: book.id,
+            contentType: normalizedContentType,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          showToast('Auto search failed. Opening interactive search.', 'error');
+        }
+      }
+    }
+
     if (book.provider && book.provider_id) {
       try {
         policyTrace('universal.get:open_release_modal', {
@@ -904,7 +996,12 @@ function App() {
   };
 
   // Handle download from ReleaseModal (universal mode release rows).
-  const handleReleaseDownload = async (book: Book, release: Release, releaseContentType: ContentType) => {
+  const handleReleaseDownload = async (
+    book: Book,
+    release: Release,
+    releaseContentType: ContentType,
+    monitoredEntityIdOverride?: number | null,
+  ) => {
     try {
       policyTrace('release.action:start', {
         bookId: book.id,
@@ -933,7 +1030,7 @@ function App() {
         series_name: book.series_name,
         series_position: book.series_position,
         subtitle: book.subtitle,
-        monitored_entity_id: releaseMonitoredEntityId ?? undefined,
+        monitored_entity_id: monitoredEntityIdOverride ?? releaseMonitoredEntityId ?? undefined,
       });
       await fetchStatus();
     } catch (error) {
@@ -1463,6 +1560,9 @@ function App() {
             <MonitoredPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
               onGetReleases={openReleasesForBook}
+              defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
+              defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
+              defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
               onBack={() => navigate('/')}
               status={currentStatus}
               debug={config?.debug || false}

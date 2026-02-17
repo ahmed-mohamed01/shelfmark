@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Book, ContentType, StatusData } from '../types';
+import { Book, ContentType, ReleasePrimaryAction, StatusData } from '../types';
 import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
@@ -64,7 +64,15 @@ export interface AuthorModalAuthor {
 interface AuthorModalProps {
   author: AuthorModalAuthor | null;
   onClose: () => void;
-  onGetReleases?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
+  onGetReleases?: (
+    book: Book,
+    contentType: ContentType,
+    monitoredEntityId?: number | null,
+    actionOverride?: ReleasePrimaryAction,
+  ) => Promise<void>;
+  defaultReleaseContentType?: ContentType;
+  defaultReleaseActionEbook?: ReleasePrimaryAction;
+  defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   monitoredEntityId?: number | null;
   status?: StatusData;
 }
@@ -86,7 +94,35 @@ const progressColorToBorderColor = (progressColorClass: string): string => {
   return progressColorClass.replace(/^bg-/, 'border-');
 };
 
-export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId, status }: AuthorModalProps) => {
+const EBOOK_MATCH_FORMATS = ['epub', 'pdf', 'mobi', 'azw', 'azw3'];
+const AUDIOBOOK_MATCH_FORMATS = ['m4b', 'm4a', 'mp3', 'flac'];
+
+const SEARCH_DROPDOWN_OPTIONS: Array<{
+  contentType: ContentType;
+  action: ReleasePrimaryAction;
+  label: string;
+}> = [
+  { contentType: 'ebook', action: 'interactive_search', label: 'eBook — Interactive Search' },
+  { contentType: 'ebook', action: 'auto_search_download', label: 'eBook — Auto Search + Download' },
+  { contentType: 'audiobook', action: 'interactive_search', label: 'Audiobook — Interactive Search' },
+  { contentType: 'audiobook', action: 'auto_search_download', label: 'Audiobook — Auto Search + Download' },
+];
+
+const getContentTypeLabel = (contentType: ContentType): string => (contentType === 'audiobook' ? 'Audiobook' : 'eBook');
+const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
+  action === 'auto_search_download' ? 'Auto Search + Download' : 'Interactive Search'
+);
+
+export const AuthorModal = ({
+  author,
+  onClose,
+  onGetReleases,
+  defaultReleaseContentType = 'ebook',
+  defaultReleaseActionEbook = 'interactive_search',
+  defaultReleaseActionAudiobook = 'interactive_search',
+  monitoredEntityId,
+  status,
+}: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
   const [supportsDetails, setSupportsDetails] = useState<boolean | null>(null);
@@ -124,6 +160,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
+  const [pendingAutoSearchByKey, setPendingAutoSearchByKey] = useState<Record<string, boolean>>({});
 
   const normalizeStatusKeyPart = (value: string | null | undefined): string => {
     const s = String(value || '').trim().toLowerCase();
@@ -180,6 +217,47 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
     return keys;
   };
+
+  const buildReleaseActionKey = (b: Book, contentType: ContentType): string => {
+    const provider = b.provider || '';
+    const providerId = b.provider_id || '';
+    const fallbackId = b.id != null ? String(b.id) : '';
+    return `${contentType}:${provider}:${providerId}:${fallbackId}`;
+  };
+
+  const resolvePrimaryActionForContentType = useCallback(
+    (contentType: ContentType): ReleasePrimaryAction => {
+      return contentType === 'audiobook' ? defaultReleaseActionAudiobook : defaultReleaseActionEbook;
+    },
+    [defaultReleaseActionAudiobook, defaultReleaseActionEbook]
+  );
+
+  const triggerReleaseSearch = useCallback(
+    async (book: Book, contentType: ContentType, actionOverride?: ReleasePrimaryAction) => {
+      if (!onGetReleases) return;
+      const effectiveAction = actionOverride || resolvePrimaryActionForContentType(contentType);
+      const actionKey = buildReleaseActionKey(book, contentType);
+      const shouldShowImmediateSpinner = effectiveAction === 'auto_search_download';
+
+      if (shouldShowImmediateSpinner) {
+        setPendingAutoSearchByKey((prev) => ({ ...prev, [actionKey]: true }));
+      }
+
+      try {
+        await onGetReleases(book, contentType, monitoredEntityId, actionOverride);
+      } finally {
+        if (shouldShowImmediateSpinner) {
+          setPendingAutoSearchByKey((prev) => {
+            if (!prev[actionKey]) return prev;
+            const next = { ...prev };
+            delete next[actionKey];
+            return next;
+          });
+        }
+      }
+    },
+    [onGetReleases, monitoredEntityId, resolvePrimaryActionForContentType]
+  );
 
   const lastAutoRefreshKeyRef = useMemo(() => ({ value: '' }), []);
 
@@ -801,6 +879,105 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
     }));
   }, []);
 
+  const renderBookSearchActionMenu = (book: Book) => {
+    if (!onGetReleases) return null;
+
+    const prov = book.provider || '';
+    const bid = book.provider_id || '';
+    const key = prov && bid ? `${prov}:${bid}` : '';
+    const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+    const hasEbookMatch = Boolean(types && EBOOK_MATCH_FORMATS.some((format) => types.has(format)));
+    const hasAudioMatch = Boolean(types && AUDIOBOOK_MATCH_FORMATS.some((format) => types.has(format)));
+
+    const primaryContentType: ContentType = defaultReleaseContentType === 'audiobook' ? 'audiobook' : 'ebook';
+    const primaryAction = resolvePrimaryActionForContentType(primaryContentType);
+    const primaryActionLabel = getPrimaryActionLabel(primaryAction);
+    const primaryContentLabel = getContentTypeLabel(primaryContentType);
+    const primaryTitle = `Primary action: ${primaryContentLabel} · ${primaryActionLabel}`;
+
+    const primaryActionKey = buildReleaseActionKey(book, primaryContentType);
+    const primaryPendingAuto = Boolean(pendingAutoSearchByKey[primaryActionKey]);
+    const primaryHasMatch = primaryContentType === 'audiobook' ? hasAudioMatch : hasEbookMatch;
+    const primaryColor = primaryHasMatch
+      ? (primaryContentType === 'audiobook' ? 'text-violet-600 dark:text-violet-400' : 'text-emerald-600 dark:text-emerald-400')
+      : 'text-gray-600 dark:text-gray-200';
+
+    const activity = buildBookStatusKeys(book)
+      .map((statusKey) => statusByBookKey.get(statusKey))
+      .find((item) => Boolean(item));
+    const bucket = activity?.bucket;
+    const showSpinner = primaryPendingAuto || bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
+    const ringColor = isDownloadStatusBucket(bucket)
+      ? progressColorToBorderColor(getProgressConfig(bucket, activity?.progress).color)
+      : 'border-sky-600';
+
+    const isDefault = (contentType: ContentType, action: ReleasePrimaryAction): boolean => {
+      return primaryContentType === contentType && resolvePrimaryActionForContentType(contentType) === action;
+    };
+
+    return (
+      <div className="inline-flex items-stretch rounded-lg border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
+        <button
+          type="button"
+          className={`flex h-9 w-9 items-center justify-center transition-colors duration-200 hover-surface ${primaryColor}`}
+          onClick={() => void triggerReleaseSearch(book, primaryContentType)}
+          aria-label={`Run primary search action for ${book.title || 'this book'}`}
+          title={primaryTitle}
+        >
+          <span className="relative inline-flex items-center justify-center" title={bucket ? `Status: ${bucket}` : primaryPendingAuto ? 'Status: auto searching' : undefined}>
+            {primaryContentType === 'audiobook' ? <AudiobookIcon className="w-4 h-4" /> : <BookIcon className="w-4 h-4" />}
+            {showSpinner ? (
+              <span
+                className={`pointer-events-none absolute -inset-1 rounded-full border-[3px] border-t-transparent ${ringColor} animate-spin`}
+                aria-hidden="true"
+              />
+            ) : null}
+          </span>
+        </button>
+        <Dropdown
+          widthClassName="w-auto"
+          align="right"
+          panelClassName="z-[2200] min-w-[240px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          renderTrigger={({ isOpen, toggle }) => (
+            <button
+              type="button"
+              onClick={toggle}
+              className={`h-9 w-8 border-l border-[var(--border-muted)] inline-flex items-center justify-center transition-colors duration-200 hover-surface ${primaryColor}`}
+              aria-label="Choose search mode and content type"
+              title={`Choose mode (current: ${primaryContentLabel} · ${primaryActionLabel})`}
+            >
+              <svg className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+          )}
+        >
+          {({ close }) => (
+            <div className="py-1">
+              {SEARCH_DROPDOWN_OPTIONS.map((option) => {
+                const optionIsDefault = isDefault(option.contentType, option.action);
+                return (
+                  <button
+                    type="button"
+                    key={`${option.contentType}:${option.action}`}
+                    onClick={() => {
+                      close();
+                      void triggerReleaseSearch(book, option.contentType, option.action);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${optionIsDefault ? 'text-sky-600 dark:text-sky-400 font-medium' : ''}`}
+                  >
+                    <span>{option.label}</span>
+                    {optionIsDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </Dropdown>
+      </div>
+    );
+  };
+
   if (!author && !isClosing) return null;
   if (!author) return null;
 
@@ -1178,7 +1355,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
                               {!isCollapsed ? (
                                 <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_minmax(0,2fr)_minmax(184px,184px)_minmax(84px,84px)]">
+                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                     <div />
                                     <div />
                                     <div className="flex justify-center">
@@ -1186,16 +1363,12 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                     </div>
                                     <div />
                                   </div>
-                                  {group.books.map((book, index) => (
+                                  {group.books.map((book) => (
                                     <div
                                       key={book.id}
-                                      className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full animate-pop-up will-change-transform"
-                                      style={{
-                                        animationDelay: `${Math.min((groupIndex * 30) + (index * 30), 1500)}ms`,
-                                        animationFillMode: 'both',
-                                      }}
+                                      className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full"
                                     >
-                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-0.5 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(184px,184px)_minmax(84px,84px)]">
+                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                         <div className="flex items-center pl-1 sm:pl-3">
                                           <BooksListThumbnail preview={book.preview} title={book.title} />
                                         </div>
@@ -1255,62 +1428,8 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
                                           );
                                         })()}
 
-                                        <div className="flex flex-row justify-end gap-0.5 sm:gap-1 sm:pr-3">
-                                          {onGetReleases ? (
-                                            <>
-                                              <button
-                                                type="button"
-                                                className={`flex items-center justify-center p-1.5 sm:p-2 rounded-full hover-action transition-all duration-200 ${(() => {
-                                                  const prov = book.provider || '';
-                                                  const bid = book.provider_id || '';
-                                                  const key = prov && bid ? `${prov}:${bid}` : '';
-                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                                  const hasMatch = Boolean(types && ['epub', 'pdf', 'mobi', 'azw', 'azw3'].some((t) => types.has(t)));
-                                                  return hasMatch ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-200';
-                                                })()}`}
-                                                onClick={() => void onGetReleases(book, 'ebook', monitoredEntityId)}
-                                                aria-label={`Search providers for ebook: ${book.title || 'this book'}`}
-                                              >
-                                                {(() => {
-                                                  const activity = buildBookStatusKeys(book)
-                                                    .map((statusKey) => statusByBookKey.get(statusKey))
-                                                    .find((item) => Boolean(item));
-                                                  const bucket = activity?.bucket;
-                                                  const showSpinner = bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
-                                                  const ringColor = isDownloadStatusBucket(bucket)
-                                                    ? progressColorToBorderColor(getProgressConfig(bucket, activity?.progress).color)
-                                                    : 'border-sky-600';
-
-                                                  return (
-                                                    <span className="relative inline-flex items-center justify-center" title={bucket ? `Status: ${bucket}` : undefined}>
-                                                      <BookIcon />
-                                                      {showSpinner ? (
-                                                        <span
-                                                          className={`pointer-events-none absolute -inset-1 rounded-full border-[3px] border-t-transparent ${ringColor} animate-spin`}
-                                                          aria-hidden="true"
-                                                        />
-                                                      ) : null}
-                                                    </span>
-                                                  );
-                                                })()}
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className={`flex items-center justify-center p-1.5 sm:p-2 rounded-full hover-action transition-all duration-200 ${(() => {
-                                                  const prov = book.provider || '';
-                                                  const bid = book.provider_id || '';
-                                                  const key = prov && bid ? `${prov}:${bid}` : '';
-                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                                  const hasMatch = Boolean(types && ['m4b', 'm4a', 'mp3', 'flac'].some((t) => types.has(t)));
-                                                  return hasMatch ? 'text-violet-600 dark:text-violet-400' : 'text-gray-600 dark:text-gray-200';
-                                                })()}`}
-                                                onClick={() => void onGetReleases(book, 'audiobook', monitoredEntityId)}
-                                                aria-label={`Search providers for audiobook: ${book.title || 'this book'}`}
-                                              >
-                                                <AudiobookIcon />
-                                              </button>
-                                            </>
-                                          ) : null}
+                                        <div className="relative flex flex-row justify-end gap-1 sm:gap-1.5 sm:pr-3">
+                                          {renderBookSearchActionMenu(book)}
                                           {book.source_url ? (
                                             <a
                                               className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
@@ -1374,7 +1493,7 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
         onClose={() => setActiveBookDetails(null)}
         onOpenSearch={(contentType) => {
           if (!activeBookDetails || !onGetReleases) return;
-          void onGetReleases(activeBookDetails, contentType, monitoredEntityId);
+          void triggerReleaseSearch(activeBookDetails, contentType);
         }}
       />
 

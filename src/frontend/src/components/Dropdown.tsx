@@ -141,7 +141,7 @@ export const Dropdown = ({
   }, [isOpen, updatePanelDirection]);
 
   return (
-    <div className={widthClassName} ref={containerRef}>
+    <div className={`${widthClassName} relative ${isOpen ? 'z-[2600]' : 'z-0'}`} ref={containerRef}>
       {label && (
         <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5" onClick={toggleOpen}>
           {label}

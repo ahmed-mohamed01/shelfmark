@@ -1494,6 +1494,60 @@ def release_scoring_settings():
             description="Display the Match score badge in release rows.",
             default=True,
         ),
+        SelectField(
+            key="RELEASE_PRIMARY_CONTENT_TYPE",
+            label="Primary Search Content Type",
+            description="For the unified search button, choose whether the main click targets eBook or audiobook by default.",
+            options=[
+                {
+                    "value": "ebook",
+                    "label": "eBook",
+                    "description": "Main click targets eBook search actions.",
+                },
+                {
+                    "value": "audiobook",
+                    "label": "Audiobook",
+                    "description": "Main click targets audiobook search actions.",
+                },
+            ],
+            default="ebook",
+        ),
+        SelectField(
+            key="RELEASE_PRIMARY_ACTION_EBOOK",
+            label="Default eBook Search Action",
+            description="Choose what happens by default when eBook search is triggered from the unified button.",
+            options=[
+                {
+                    "value": "interactive_search",
+                    "label": "Interactive Search",
+                    "description": "Open the release picker so you can choose manually.",
+                },
+                {
+                    "value": "auto_search_download",
+                    "label": "Auto Search + Download",
+                    "description": "Automatically download the top release that meets the match score cutoff.",
+                },
+            ],
+            default="interactive_search",
+        ),
+        SelectField(
+            key="RELEASE_PRIMARY_ACTION_AUDIOBOOK",
+            label="Default Audiobook Search Action",
+            description="Choose what happens by default when audiobook search is triggered from the unified button.",
+            options=[
+                {
+                    "value": "interactive_search",
+                    "label": "Interactive Search",
+                    "description": "Open the release picker so you can choose manually.",
+                },
+                {
+                    "value": "auto_search_download",
+                    "label": "Auto Search + Download",
+                    "description": "Automatically download the top release that meets the match score cutoff.",
+                },
+            ],
+            default="interactive_search",
+        ),
         NumberField(
             key="AUTO_DOWNLOAD_MIN_MATCH_SCORE",
             label="Auto-Download Minimum Match Score",

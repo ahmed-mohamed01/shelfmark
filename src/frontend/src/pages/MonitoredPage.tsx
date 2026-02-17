@@ -17,7 +17,12 @@ import { AuthorModal } from '../components/AuthorModal';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
-import { Book, ContentType, StatusData } from '../types';
+import {
+  Book,
+  ContentType,
+  ReleasePrimaryAction,
+  StatusData,
+} from '../types';
 
 interface MonitoredAuthor {
   id: number;
@@ -32,7 +37,15 @@ interface MonitoredAuthor {
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
-  onGetReleases?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
+  onGetReleases?: (
+    book: Book,
+    contentType: ContentType,
+    monitoredEntityId?: number | null,
+    actionOverride?: ReleasePrimaryAction,
+  ) => Promise<void>;
+  defaultReleaseContentType?: ContentType;
+  defaultReleaseActionEbook?: ReleasePrimaryAction;
+  defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   onBack?: () => void;
 
   status?: StatusData;
@@ -98,6 +111,9 @@ const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: str
 export const MonitoredPage = ({
   onActivityClick,
   onGetReleases,
+  defaultReleaseContentType = 'ebook',
+  defaultReleaseActionEbook = 'interactive_search',
+  defaultReleaseActionAudiobook = 'interactive_search',
   onBack,
   status,
   debug,
@@ -1010,6 +1026,9 @@ export const MonitoredPage = ({
         <AuthorModal
           author={activeAuthor}
           onGetReleases={onGetReleases}
+          defaultReleaseContentType={defaultReleaseContentType}
+          defaultReleaseActionEbook={defaultReleaseActionEbook}
+          defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
           onClose={() => setActiveAuthor(null)}
           monitoredEntityId={activeAuthor.monitoredEntityId}
           status={status}
