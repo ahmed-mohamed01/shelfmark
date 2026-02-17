@@ -14,6 +14,7 @@ import {
 } from '../services/api';
 import { AuthorModal } from '../components/AuthorModal';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
+import { Dropdown } from '../components/Dropdown';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
 import {
@@ -30,6 +31,7 @@ interface MonitoredAuthor {
   provider_id?: string;
   photo_url?: string;
   books_count?: number;
+  created_at?: string;
   cached_bio?: string;
   cached_source_url?: string;
 }
@@ -75,7 +77,7 @@ const GRID_CLASSES = {
 } as const;
 
 const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
-const MONITORED_COMPACT_MIN_WIDTH_MAX = 220;
+const MONITORED_COMPACT_MIN_WIDTH_MAX = 185;
 const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
 
 const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: string }) => {
@@ -142,9 +144,17 @@ export const MonitoredPage = ({
     const saved = localStorage.getItem('authorViewMode');
     return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'card';
   });
-  const [monitoredViewMode, setMonitoredViewMode] = useState<'card' | 'compact' | 'list'>(() => {
+  const [monitoredViewMode, setMonitoredViewMode] = useState<'compact' | 'table'>(() => {
     const saved = localStorage.getItem('monitoredAuthorViewMode');
-    return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'compact';
+    if (saved === 'table' || saved === 'list') return 'table';
+    if (saved === 'compact' || saved === 'card') return 'compact';
+    return 'compact';
+  });
+  const [monitoredSortBy, setMonitoredSortBy] = useState<'alphabetical' | 'date_added' | 'books_count'>(() => {
+    const saved = localStorage.getItem('monitoredAuthorSortBy');
+    return saved === 'date_added' || saved === 'books_count' || saved === 'alphabetical'
+      ? saved
+      : 'alphabetical';
   });
   const [monitoredCompactMinWidth, setMonitoredCompactMinWidth] = useState<number>(() => {
     const raw = localStorage.getItem('monitoredCompactMinWidth');
@@ -249,6 +259,7 @@ export const MonitoredPage = ({
         provider_id: entity.provider_id || undefined,
         photo_url,
         books_count,
+        created_at: entity.created_at || undefined,
         cached_bio: entity.cached_bio || undefined,
         cached_source_url: entity.cached_source_url || undefined,
       };
@@ -371,7 +382,33 @@ export const MonitoredPage = ({
   }, [monitoredEbookRoots, monitoredAudiobookRoots, normalizeAbsolutePath]);
 
   const monitoredAuthorsForCards: MetadataAuthor[] = useMemo(() => {
-    return monitored.map((item) => ({
+    const sorted = [...monitored].sort((a, b) => {
+      if (monitoredSortBy === 'date_added') {
+        const aDate = a.created_at ? Date.parse(a.created_at) : NaN;
+        const bDate = b.created_at ? Date.parse(b.created_at) : NaN;
+        const aHasDate = Number.isFinite(aDate);
+        const bHasDate = Number.isFinite(bDate);
+        if (aHasDate && bHasDate && aDate !== bDate) {
+          return bDate - aDate;
+        }
+        if (aHasDate !== bHasDate) {
+          return aHasDate ? -1 : 1;
+        }
+        return b.id - a.id;
+      }
+
+      if (monitoredSortBy === 'books_count') {
+        const aCount = typeof a.books_count === 'number' ? a.books_count : -1;
+        const bCount = typeof b.books_count === 'number' ? b.books_count : -1;
+        if (bCount !== aCount) {
+          return bCount - aCount;
+        }
+      }
+
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    return sorted.map((item) => ({
       provider: item.provider || 'hardcover',
       provider_id: item.provider_id || item.name,
       name: item.name,
@@ -382,7 +419,7 @@ export const MonitoredPage = ({
         books_count: typeof item.books_count === 'number' ? item.books_count : null,
       },
     }));
-  }, [monitored]);
+  }, [monitored, monitoredSortBy]);
 
   useEffect(() => {
     try {
@@ -399,6 +436,14 @@ export const MonitoredPage = ({
       // ignore
     }
   }, [monitoredViewMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
+    } catch {
+      // ignore
+    }
+  }, [monitoredSortBy]);
 
   useEffect(() => {
     try {
@@ -718,88 +763,130 @@ export const MonitoredPage = ({
                 <div className="flex items-center justify-between mb-3 relative z-10">
                   <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Monitored Authors</h2>
                   <div className="flex items-center gap-2">
-                    {monitoredViewMode === 'compact' ? (
-                      <div className="hidden md:flex items-center gap-2 mr-1 pr-2 border-r border-black/10 dark:border-white/10">
-                        <span className="text-[11px] text-gray-500 dark:text-gray-400">Size</span>
-                        <input
-                          type="range"
-                          min={MONITORED_COMPACT_MIN_WIDTH_MIN}
-                          max={MONITORED_COMPACT_MIN_WIDTH_MAX}
-                          step={5}
-                          value={monitoredCompactMinWidth}
-                          onChange={(e) => setMonitoredCompactMinWidth(Number(e.target.value))}
-                          className="w-24 accent-emerald-600"
-                          aria-label="Compact card size"
-                          title="Compact card size"
-                        />
-                        <span className="w-9 text-right text-[10px] text-gray-500 dark:text-gray-400 tabular-nums">
-                          {monitoredCompactMinWidth}
-                        </span>
-                      </div>
-                    ) : null}
+                    <Dropdown
+                      align="right"
+                      widthClassName="w-auto"
+                      panelClassName="min-w-[220px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${isOpen ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
+                          title="Sort monitored authors"
+                          aria-label="Sort monitored authors"
+                          aria-haspopup="listbox"
+                          aria-expanded={isOpen}
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h7.5M4.5 12h10.5M4.5 17.25h13.5" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 5.25v13.5m0 0-2.25-2.25m2.25 2.25 2.25-2.25" />
+                          </svg>
+                        </button>
+                      )}
+                    >
+                      {({ close }) => (
+                        <div role="listbox" aria-label="Sort monitored authors">
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${monitoredSortBy === 'alphabetical' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setMonitoredSortBy('alphabetical'); close(); }}
+                            role="option"
+                            aria-selected={monitoredSortBy === 'alphabetical'}
+                          >
+                            Alphabetical (A–Z)
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${monitoredSortBy === 'date_added' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setMonitoredSortBy('date_added'); close(); }}
+                            role="option"
+                            aria-selected={monitoredSortBy === 'date_added'}
+                          >
+                            Date added
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${monitoredSortBy === 'books_count' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setMonitoredSortBy('books_count'); close(); }}
+                            role="option"
+                            aria-selected={monitoredSortBy === 'books_count'}
+                          >
+                            Number of books
+                          </button>
+                        </div>
+                      )}
+                    </Dropdown>
+                    <Dropdown
+                      align="right"
+                      widthClassName="w-auto"
+                      panelClassName="min-w-[260px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${isOpen ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
+                          title="View settings"
+                          aria-label="View settings"
+                          aria-expanded={isOpen}
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.7">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9m-9 6h9m-9 6h9M4.5 6h.008v.008H4.5V6Zm0 6h.008v.008H4.5V12Zm0 6h.008v.008H4.5V18Z" />
+                          </svg>
+                        </button>
+                      )}
+                    >
+                      {() => (
+                        <div className="px-3 py-3">
+                          <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Grid item size</div>
+                          <input
+                            type="range"
+                            min={MONITORED_COMPACT_MIN_WIDTH_MIN}
+                            max={MONITORED_COMPACT_MIN_WIDTH_MAX}
+                            step={5}
+                            value={monitoredCompactMinWidth}
+                            onChange={(e) => setMonitoredCompactMinWidth(Number(e.target.value))}
+                            className="w-full accent-emerald-600"
+                            aria-label="Compact card size"
+                            title="Compact card size"
+                            disabled={monitoredViewMode !== 'compact'}
+                          />
+                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tabular-nums text-right">
+                            {monitoredCompactMinWidth}px
+                          </div>
+                          {monitoredViewMode !== 'compact' ? (
+                            <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust grid size.</div>
+                          ) : null}
+                        </div>
+                      )}
+                    </Dropdown>
                     <button
                       type="button"
-                      onClick={() => setMonitoredViewMode('card')}
-                      className={`p-2 rounded-full transition-all duration-200 ${
-                        monitoredViewMode === 'card'
-                          ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                          : 'hover-action text-gray-900 dark:text-gray-100'
-                      }`}
-                      title="Card view"
-                      aria-label="Card view"
-                      aria-pressed={monitoredViewMode === 'card'}
+                      onClick={() => setMonitoredViewMode(monitoredViewMode === 'table' ? 'compact' : 'table')}
+                      className="p-2 rounded-full transition-all duration-200 hover-action text-gray-900 dark:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                      title={monitoredViewMode === 'table' ? 'Switch to card view' : 'Switch to table view'}
+                      aria-label={monitoredViewMode === 'table' ? 'Switch to card view' : 'Switch to table view'}
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
-                        />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMonitoredViewMode('compact')}
-                      className={`p-2 rounded-full transition-all duration-200 ${
-                        monitoredViewMode === 'compact'
-                          ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                          : 'hover-action text-gray-900 dark:text-gray-100'
-                      }`}
-                      title="Compact view"
-                      aria-label="Compact view"
-                      aria-pressed={monitoredViewMode === 'compact'}
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                        <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
-                        <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMonitoredViewMode('list')}
-                      className={`p-2 rounded-full transition-all duration-200 ${
-                        monitoredViewMode === 'list'
-                          ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                          : 'hover-action text-gray-900 dark:text-gray-100'
-                      }`}
-                      title="List view"
-                      aria-label="List view"
-                      aria-pressed={monitoredViewMode === 'list'}
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                        />
-                      </svg>
+                      {monitoredViewMode === 'table' ? (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
+                          <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
+                          <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
+                          />
+                        </svg>
+                      )}
                     </button>
                   </div>
                 </div>
 
-                {monitoredViewMode === 'list' ? (
+                {monitoredViewMode === 'table' ? (
                   <div className="flex flex-col gap-2">
                     {monitoredAuthorsForCards.map((author) => {
                       return (
@@ -827,26 +914,11 @@ export const MonitoredPage = ({
                   </div>
                 ) : (
                   <div
-                    className={`grid ${monitoredViewMode === 'compact' ? 'gap-4' : 'gap-8'} ${
-                      !isDesktop
-                        ? GRID_CLASSES.mobile
-                        : monitoredViewMode === 'compact'
-                          ? 'items-stretch'
-                          : GRID_CLASSES[monitoredViewMode]
-                    }`}
+                    className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
                     style={monitoredCompactGridStyle}
                   >
                     {monitoredAuthorsForCards.map((author, index) => {
-                      const shouldUseCardLayout = isDesktop && monitoredViewMode === 'card';
-                      return shouldUseCardLayout ? (
-                        <AuthorCardView
-                          key={`${author.provider}:${author.provider_id}`}
-                          author={author}
-                          showAction={false}
-                          onOpen={() => openAuthorModal({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
-                          animationDelay={index * 50}
-                        />
-                      ) : (
+                      return (
                         <AuthorCompactView
                           key={`${author.provider}:${author.provider_id}`}
                           author={author}
