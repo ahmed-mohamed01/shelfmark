@@ -455,6 +455,96 @@ class UserDB:
         finally:
             conn.close()
 
+    def search_monitored_author_books(
+        self,
+        *,
+        user_id: int | None,
+        query: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search monitored author book entries with epub/m4b availability flags."""
+
+        normalized_query = (query or "").strip().lower()
+        if not normalized_query:
+            return []
+
+        safe_limit = max(1, min(int(limit or 20), 100))
+        like = f"%{normalized_query}%"
+        prefix_like = f"{normalized_query}%"
+
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    me.id AS entity_id,
+                    me.name AS author_name,
+                    me.provider AS author_provider,
+                    me.provider_id AS author_provider_id,
+                    json_extract(me.settings_json, '$.photo_url') AS author_photo_url,
+                    mb.provider AS book_provider,
+                    mb.provider_book_id AS book_provider_id,
+                    mb.title AS book_title,
+                    mb.authors AS book_authors,
+                    mb.publish_year AS publish_year,
+                    mb.cover_url AS cover_url,
+                    mb.series_name AS series_name,
+                    mb.series_position AS series_position,
+                    mb.series_count AS series_count,
+                    MAX(CASE WHEN LOWER(COALESCE(mbf.file_type, '')) = 'epub' THEN 1 ELSE 0 END) AS has_epub,
+                    MAX(CASE WHEN LOWER(COALESCE(mbf.file_type, '')) = 'm4b' THEN 1 ELSE 0 END) AS has_m4b
+                FROM monitored_entities me
+                JOIN monitored_books mb
+                  ON mb.entity_id = me.id
+                LEFT JOIN monitored_book_files mbf
+                  ON mbf.entity_id = mb.entity_id
+                 AND mbf.provider = mb.provider
+                 AND mbf.provider_book_id = mb.provider_book_id
+                WHERE me.user_id = :user_id
+                  AND me.kind = 'author'
+                  AND (
+                    LOWER(mb.title) LIKE :like
+                    OR LOWER(COALESCE(mb.authors, '')) LIKE :like
+                    OR LOWER(COALESCE(mb.series_name, '')) LIKE :like
+                    OR LOWER(me.name) LIKE :like
+                  )
+                GROUP BY
+                    me.id,
+                    me.name,
+                    me.provider,
+                    me.provider_id,
+                    author_photo_url,
+                    mb.provider,
+                    mb.provider_book_id,
+                    mb.title,
+                    mb.authors,
+                    mb.publish_year,
+                    mb.cover_url,
+                    mb.series_name,
+                    mb.series_position,
+                    mb.series_count
+                ORDER BY
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN LOWER(COALESCE(mb.series_name, '')) END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN CASE WHEN mb.series_position IS NULL THEN 1 ELSE 0 END END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN mb.series_position END ASC,
+                    CASE WHEN LOWER(mb.title) LIKE :prefix_like THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(me.name) LIKE :prefix_like THEN 0 ELSE 1 END,
+                    mb.first_seen_at DESC,
+                    mb.id DESC
+                LIMIT :limit
+                """,
+                {
+                    "user_id": user_id,
+                    "like": like,
+                    "prefix_like": prefix_like,
+                    "limit": safe_limit,
+                },
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def upsert_monitored_book(
         self,
         *,

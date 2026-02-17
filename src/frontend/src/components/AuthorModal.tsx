@@ -73,6 +73,9 @@ interface AuthorModalProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  initialBooksQuery?: string;
+  initialBookProvider?: string | null;
+  initialBookProviderId?: string | null;
   monitoredEntityId?: number | null;
   status?: StatusData;
 }
@@ -120,6 +123,9 @@ export const AuthorModal = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  initialBooksQuery,
+  initialBookProvider,
+  initialBookProviderId,
   monitoredEntityId,
   status,
 }: AuthorModalProps) => {
@@ -161,6 +167,7 @@ export const AuthorModal = ({
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
   const [pendingAutoSearchByKey, setPendingAutoSearchByKey] = useState<Record<string, boolean>>({});
+  const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
 
   const normalizeStatusKeyPart = (value: string | null | undefined): string => {
     const s = String(value || '').trim().toLowerCase();
@@ -333,6 +340,11 @@ export const AuthorModal = ({
   }, [author, monitoredEntityId]);
 
   useEffect(() => {
+    setHasAppliedInitialBookSelection(false);
+    setBooksQuery((initialBooksQuery || '').trim());
+  }, [author?.name, initialBooksQuery, initialBookProvider, initialBookProviderId]);
+
+  useEffect(() => {
     if (!author || !monitoredEntityId) return;
     let alive = true;
     const load = async () => {
@@ -359,6 +371,29 @@ export const AuthorModal = ({
       alive = false;
     };
   }, [author, monitoredEntityId]);
+
+  useEffect(() => {
+    if (hasAppliedInitialBookSelection) {
+      return;
+    }
+
+    const provider = (initialBookProvider || '').trim();
+    const providerId = (initialBookProviderId || '').trim();
+    if (!provider || !providerId) {
+      setHasAppliedInitialBookSelection(true);
+      return;
+    }
+
+    if (isLoadingBooks) {
+      return;
+    }
+
+    const match = books.find((book) => (book.provider || '') === provider && (book.provider_id || '') === providerId);
+    if (match) {
+      setActiveBookDetails(match);
+    }
+    setHasAppliedInitialBookSelection(true);
+  }, [books, hasAppliedInitialBookSelection, initialBookProvider, initialBookProviderId, isLoadingBooks]);
 
   const handleRefreshAndScan = useCallback(async () => {
     if (!monitoredEntityId) {

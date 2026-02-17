@@ -339,6 +339,25 @@ def register_monitored_routes(
 
         return jsonify(rows)
 
+    @app.route("/api/monitored/search/books", methods=["GET"])
+    def api_search_monitored_author_books():
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        query = str(request.args.get("q") or "").strip()
+        if not query:
+            return jsonify({"results": []})
+
+        raw_limit = request.args.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else 20
+        except (TypeError, ValueError):
+            limit = 20
+
+        rows = user_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
+        return jsonify({"results": rows})
+
     @app.route("/api/monitored", methods=["POST"])
     def api_create_monitored():
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

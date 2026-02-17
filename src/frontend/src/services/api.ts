@@ -440,6 +440,35 @@ export interface MonitoredBookFileRow {
   updated_at?: string;
 }
 
+export interface MonitoredAuthorBookSearchRow {
+  entity_id: number;
+  author_name: string;
+  author_provider?: string | null;
+  author_provider_id?: string | null;
+  author_photo_url?: string | null;
+  book_provider?: string | null;
+  book_provider_id?: string | null;
+  book_title: string;
+  book_authors?: string | null;
+  publish_year?: number | null;
+  cover_url?: string | null;
+  series_name?: string | null;
+  series_position?: number | null;
+  series_count?: number | null;
+  has_epub?: number | boolean;
+  has_m4b?: number | boolean;
+}
+
+export const searchMonitoredAuthorBooks = async (
+  query: string,
+  limit: number = 20,
+): Promise<{ results: MonitoredAuthorBookSearchRow[] }> => {
+  const params = new URLSearchParams();
+  params.set('q', query);
+  params.set('limit', String(limit));
+  return fetchJSON<{ results: MonitoredAuthorBookSearchRow[] }>(`${API.monitored}/search/books?${params.toString()}`);
+};
+
 export const listMonitoredBookFiles = async (entityId: number): Promise<{ files: MonitoredBookFileRow[] }> => {
   return fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API.monitored}/${entityId}/files`);
 };

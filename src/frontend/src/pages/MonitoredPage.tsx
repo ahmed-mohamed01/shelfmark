@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
@@ -9,6 +9,8 @@ import {
   updateSelfUser,
   MetadataAuthor,
   MonitoredEntity,
+  MonitoredAuthorBookSearchRow,
+  searchMonitoredAuthorBooks,
   searchMetadata,
   searchMetadataAuthors,
 } from '../services/api';
@@ -173,6 +175,17 @@ export const MonitoredPage = ({
     photo_url?: string | null;
     monitoredEntityId?: number | null;
   } | null>(null);
+  const [activeAuthorInitialBookSelection, setActiveAuthorInitialBookSelection] = useState<{
+    query?: string;
+    provider?: string | null;
+    providerId?: string | null;
+  } | null>(null);
+  const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState('');
+  const [monitoredBooksSearchResults, setMonitoredBooksSearchResults] = useState<MonitoredAuthorBookSearchRow[]>([]);
+  const [monitoredBooksSearchLoading, setMonitoredBooksSearchLoading] = useState(false);
+  const [monitoredBooksSearchError, setMonitoredBooksSearchError] = useState<string | null>(null);
+  const [monitoredBooksSearchOpen, setMonitoredBooksSearchOpen] = useState(false);
+  const monitoredBooksSearchRef = useRef<HTMLDivElement | null>(null);
 
   const [monitorModalState, setMonitorModalState] = useState<{
     open: boolean;
@@ -472,6 +485,64 @@ export const MonitoredPage = ({
     };
   }, [isDesktop, monitoredViewMode, monitoredCompactMinWidth]);
 
+  useEffect(() => {
+    const q = monitoredBooksSearchQuery.trim();
+    if (!q) {
+      setMonitoredBooksSearchResults([]);
+      setMonitoredBooksSearchLoading(false);
+      setMonitoredBooksSearchError(null);
+      return;
+    }
+
+    let alive = true;
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        setMonitoredBooksSearchLoading(true);
+        setMonitoredBooksSearchError(null);
+        try {
+          const response = await searchMonitoredAuthorBooks(q, 20);
+          if (!alive) {
+            return;
+          }
+          setMonitoredBooksSearchResults(Array.isArray(response.results) ? response.results : []);
+        } catch (e) {
+          if (!alive) {
+            return;
+          }
+          const message = e instanceof Error ? e.message : 'Failed to search monitored books';
+          setMonitoredBooksSearchError(message);
+          setMonitoredBooksSearchResults([]);
+        } finally {
+          if (alive) {
+            setMonitoredBooksSearchLoading(false);
+          }
+        }
+      })();
+    }, 160);
+
+    return () => {
+      alive = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [monitoredBooksSearchQuery]);
+
+  useEffect(() => {
+    if (!monitoredBooksSearchOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (monitoredBooksSearchRef.current && !monitoredBooksSearchRef.current.contains(event.target as Node)) {
+        setMonitoredBooksSearchOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [monitoredBooksSearchOpen]);
+
   const runAuthorSearch = useCallback(async () => {
     const q = normalizeAuthor(authorQuery);
     setSearchError(null);
@@ -641,7 +712,17 @@ export const MonitoredPage = ({
     setView('landing');
   }, [closeMonitorModal, deriveRootFromAuthorDir, monitorModalState, normalizeAbsolutePath, persistLearnedRoots]);
 
-  const openAuthorModal = useCallback((payload: { name: string; provider?: string | null; provider_id?: string | null; source_url?: string | null; photo_url?: string | null; monitoredEntityId?: number | null }) => {
+  const openAuthorModal = useCallback((payload: {
+    name: string;
+    provider?: string | null;
+    provider_id?: string | null;
+    source_url?: string | null;
+    photo_url?: string | null;
+    monitoredEntityId?: number | null;
+    initialBookQuery?: string;
+    initialBookProvider?: string | null;
+    initialBookProviderId?: string | null;
+  }) => {
     const normalized = normalizeAuthor(payload.name);
     if (!normalized) {
       return;
@@ -654,7 +735,40 @@ export const MonitoredPage = ({
       photo_url: payload.photo_url || null,
       monitoredEntityId: payload.monitoredEntityId ?? null,
     });
+    const initialBookQuery = (payload.initialBookQuery || '').trim();
+    const initialBookProvider = (payload.initialBookProvider || '').trim();
+    const initialBookProviderId = (payload.initialBookProviderId || '').trim();
+    if (initialBookQuery || (initialBookProvider && initialBookProviderId)) {
+      setActiveAuthorInitialBookSelection({
+        query: initialBookQuery || undefined,
+        provider: initialBookProvider || undefined,
+        providerId: initialBookProviderId || undefined,
+      });
+    } else {
+      setActiveAuthorInitialBookSelection(null);
+    }
   }, []);
+
+  const handleMonitoredBookResultSelect = useCallback((row: MonitoredAuthorBookSearchRow) => {
+    const matchingAuthor = monitored.find((item) => item.id === row.entity_id);
+    const resolvedAuthorName = matchingAuthor?.name || row.author_name;
+    if (!resolvedAuthorName) return;
+
+    openAuthorModal({
+      name: resolvedAuthorName,
+      provider: matchingAuthor?.provider || row.author_provider || null,
+      provider_id: matchingAuthor?.provider_id || row.author_provider_id || null,
+      source_url: matchingAuthor?.cached_source_url || null,
+      photo_url: matchingAuthor?.photo_url || row.author_photo_url || null,
+      monitoredEntityId: matchingAuthor?.id ?? row.entity_id,
+      initialBookQuery: row.book_title,
+      initialBookProvider: row.book_provider || null,
+      initialBookProviderId: row.book_provider_id || null,
+    });
+
+    setMonitoredBooksSearchQuery('');
+    setMonitoredBooksSearchOpen(false);
+  }, [monitored, openAuthorModal]);
 
   const clearSearchAndReturn = useCallback(() => {
     setAuthorQuery('');
@@ -760,9 +874,115 @@ export const MonitoredPage = ({
               </div>
             ) : (
               <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
-                <div className="flex items-center justify-between mb-3 relative z-10">
+                <div className="flex items-center justify-between mb-3 relative z-10 gap-3">
                   <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Monitored Authors</h2>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    <div ref={monitoredBooksSearchRef} className="relative w-full sm:w-auto sm:min-w-[260px]">
+                      <div className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5 bg-white/70 dark:bg-white/10">
+                        <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                        </svg>
+                        <input
+                          value={monitoredBooksSearchQuery}
+                          onChange={(e) => {
+                            setMonitoredBooksSearchQuery(e.target.value);
+                            setMonitoredBooksSearchOpen(true);
+                          }}
+                          onFocus={() => setMonitoredBooksSearchOpen(true)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') {
+                              setMonitoredBooksSearchOpen(false);
+                              return;
+                            }
+                            if (e.key === 'Enter' && monitoredBooksSearchResults.length > 0) {
+                              e.preventDefault();
+                              handleMonitoredBookResultSelect(monitoredBooksSearchResults[0]);
+                            }
+                          }}
+                          placeholder="Search monitored books"
+                          className="w-full sm:w-52 bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
+                          aria-label="Search monitored books"
+                        />
+                        {monitoredBooksSearchQuery ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMonitoredBooksSearchQuery('');
+                              setMonitoredBooksSearchOpen(false);
+                            }}
+                            className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action"
+                            aria-label="Clear monitored books search"
+                            title="Clear"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {monitoredBooksSearchOpen && monitoredBooksSearchQuery.trim() ? (
+                        <div className="absolute right-0 mt-2 w-full sm:w-[420px] max-h-72 overflow-y-auto rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-2xl z-[120]">
+                          {monitoredBooksSearchLoading ? (
+                            <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Searching…</div>
+                          ) : monitoredBooksSearchError ? (
+                            <div className="px-3 py-2 text-xs text-red-500">{monitoredBooksSearchError}</div>
+                          ) : monitoredBooksSearchResults.length === 0 ? (
+                            <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">No monitored database matches.</div>
+                          ) : (
+                            <div className="py-1">
+                              {monitoredBooksSearchResults.map((row) => {
+                                const hasEpub = row.has_epub === true || row.has_epub === 1;
+                                const hasM4b = row.has_m4b === true || row.has_m4b === 1;
+                                const hasDownload = hasEpub || hasM4b;
+                                const hasSeries = Boolean(row.series_name);
+                                const seriesLabel = hasSeries
+                                  ? `${row.series_name}${row.series_position != null ? ` #${row.series_position}` : ''}${row.series_count != null ? `/${row.series_count}` : ''}`
+                                  : '';
+                                const authorYearLine = row.publish_year
+                                  ? `${row.author_name} • ${row.publish_year}`
+                                  : row.author_name;
+                                return (
+                                  <button
+                                    key={`${row.entity_id}:${row.book_provider || 'unknown'}:${row.book_provider_id || row.book_title}:${row.publish_year ?? 'na'}:${row.series_position ?? 'na'}`}
+                                    type="button"
+                                    onClick={() => handleMonitoredBookResultSelect(row)}
+                                    className={`w-full text-left px-3 py-2 border-b last:border-b-0 border-black/5 dark:border-white/5 hover-surface ${hasDownload ? 'bg-emerald-500/[0.07] dark:bg-emerald-500/[0.09]' : ''}`}
+                                  >
+                                    <div className="min-h-[84px] flex items-center justify-between gap-3">
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{row.book_title}</div>
+                                        <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate italic">
+                                          {authorYearLine}
+                                        </div>
+                                        <div className="mt-1.5 h-5 flex items-center gap-2 text-[11px]">
+                                          {hasSeries ? (
+                                            <span className="inline-flex items-center truncate max-w-full text-sky-700 dark:text-sky-300" title={seriesLabel}>
+                                              {seriesLabel}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                      <div className="w-[92px] flex items-center justify-end gap-1 shrink-0">
+                                        {hasEpub ? (
+                                          <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">EPUB</span>
+                                        ) : null}
+                                        {hasM4b ? (
+                                          <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-violet-500/20 text-violet-700 dark:text-violet-300">M4B</span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                    {(hasEpub || hasM4b) ? null : (
+                                      <div className="sr-only">No downloaded files found</div>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
                     <Dropdown
                       align="right"
                       widthClassName="w-auto"
@@ -1128,7 +1348,13 @@ export const MonitoredPage = ({
           defaultReleaseContentType={defaultReleaseContentType}
           defaultReleaseActionEbook={defaultReleaseActionEbook}
           defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
-          onClose={() => setActiveAuthor(null)}
+          initialBooksQuery={activeAuthorInitialBookSelection?.query}
+          initialBookProvider={activeAuthorInitialBookSelection?.provider}
+          initialBookProviderId={activeAuthorInitialBookSelection?.providerId}
+          onClose={() => {
+            setActiveAuthor(null);
+            setActiveAuthorInitialBookSelection(null);
+          }}
           monitoredEntityId={activeAuthor.monitoredEntityId}
           status={status}
         />
