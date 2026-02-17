@@ -96,6 +96,7 @@ class ReleaseScoringConfig:
     forbidden_words: set[str]
     min_title_score: int
     min_author_score: int
+    prefer_freeleech_or_direct: bool
     ebook_release_priority: Dict[str, int]
     audiobook_release_priority: Dict[str, int]
 
@@ -363,6 +364,17 @@ def _score_quality_tiebreak(release: Release) -> int:
     return 0
 
 
+def _score_freeleech_direct_tiebreak(release: Release, enabled: bool) -> int:
+    if not enabled:
+        return 0
+
+    is_direct_download = (release.source or "").strip().lower() == "direct_download"
+    is_freeleech = bool(release.extra.get("freeleech")) if isinstance(release.extra, dict) else False
+    if is_direct_download or is_freeleech:
+        return 10
+    return 0
+
+
 def _normalize_priority_token(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().lower())
 
@@ -442,6 +454,7 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
 
     min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
     min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
+    prefer_freeleech_or_direct = bool(app_config.get("RELEASE_PREFER_FREELEECH_OR_DIRECT", False))
 
     ebook_release_priority = _build_release_priority_map(app_config.get("EBOOK_RELEASE_PRIORITY", []))
     audiobook_release_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_RELEASE_PRIORITY", []))
@@ -456,6 +469,7 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
         forbidden_words=forbidden_words,
         min_title_score=max(0, min(60, min_title_score)),
         min_author_score=max(0, min(30, min_author_score)),
+        prefer_freeleech_or_direct=prefer_freeleech_or_direct,
         ebook_release_priority=ebook_release_priority,
         audiobook_release_priority=audiobook_release_priority,
     )
@@ -510,6 +524,11 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
     # Quality should not rescue weak metadata matches.
     has_strong_metadata = title_score >= 34 or (series_score >= 11 and series_num_score > 0)
     quality_score = _score_quality_tiebreak(release) if has_strong_metadata else 0
+    freeleech_direct_score = (
+        _score_freeleech_direct_tiebreak(release, scoring_config.prefer_freeleech_or_direct)
+        if has_strong_metadata
+        else 0
+    )
     content_type = (release.content_type or "ebook").strip().lower()
     release_priority_map = (
         scoring_config.audiobook_release_priority
@@ -532,6 +551,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
             + series_num_score
             + year_score
             + quality_score
+            + freeleech_direct_score
             + indexer_priority_score,
         ),
     )
@@ -555,6 +575,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
             "series_number": series_num_score,
             "year": year_score,
             "quality": quality_score,
+            "freeleech_or_direct": freeleech_direct_score,
             "indexer_priority": indexer_priority_score,
         },
     )

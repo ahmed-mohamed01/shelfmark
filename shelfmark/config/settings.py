@@ -1649,6 +1649,12 @@ def release_scoring_settings():
             min_value=0,
             max_value=100,
         ),
+        CheckboxField(
+            key="RELEASE_PREFER_FREELEECH_OR_DIRECT",
+            label="Prioritize FreeLeech or Direct Download",
+            description="Add +10 ranking boost to releases marked freeleech or from Direct Download, after title/author cutoffs are met.",
+            default=False,
+        ),
         OrderableListField(
             key="EBOOK_RELEASE_PRIORITY",
             label="eBook Source & Indexer Priority",
