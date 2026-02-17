@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from shelfmark.core.config import config as app_config
 from shelfmark.metadata_providers import BookMetadata
 from shelfmark.release_sources import Release
 
@@ -84,6 +85,13 @@ class ReleaseMatchScore:
     confidence: str
     hard_reject: bool = False
     reject_reason: Optional[str] = None
+
+
+@dataclass
+class ReleaseScoringConfig:
+    forbidden_words: set[str]
+    min_title_score: int
+    min_author_score: int
 
 
 def _normalize_text(value: str) -> str:
@@ -349,9 +357,39 @@ def _score_quality_tiebreak(release: Release) -> int:
     return 0
 
 
+def _get_release_scoring_config() -> ReleaseScoringConfig:
+    raw_forbidden = app_config.get("RELEASE_MATCH_FORBIDDEN_TERMS", list(_FORBIDDEN_WORDS))
+    forbidden_words: set[str] = set()
+
+    if isinstance(raw_forbidden, str):
+        terms = [term.strip() for term in raw_forbidden.split(",") if term.strip()]
+    elif isinstance(raw_forbidden, list):
+        terms = [str(term).strip() for term in raw_forbidden if str(term).strip()]
+    else:
+        terms = list(_FORBIDDEN_WORDS)
+
+    for term in terms:
+        normalized = _normalize_text(term)
+        if normalized:
+            forbidden_words.add(normalized)
+
+    if not forbidden_words:
+        forbidden_words = set(_FORBIDDEN_WORDS)
+
+    min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
+    min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
+
+    return ReleaseScoringConfig(
+        forbidden_words=forbidden_words,
+        min_title_score=max(0, min(60, min_title_score)),
+        min_author_score=max(0, min(30, min_author_score)),
+    )
+
+
 def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchScore:
+    scoring_config = _get_release_scoring_config()
     title_norm = _normalize_text(release.title)
-    for forbidden in _FORBIDDEN_WORDS:
+    for forbidden in scoring_config.forbidden_words:
         if forbidden in title_norm:
             return ReleaseMatchScore(
                 score=0,
@@ -365,7 +403,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
     author_score = _score_author(book, release)
     has_release_author = _has_release_author_signal(release)
 
-    if title_score < 24:
+    if title_score < scoring_config.min_title_score:
         return ReleaseMatchScore(
             score=title_score + author_score,
             breakdown={"title": title_score, "author": author_score},
@@ -376,7 +414,11 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
 
     # Only hard-reject author mismatch when release actually provides author info.
     # If author is missing from a source payload, treat it as unknown/neutral.
-    if (book.authors or book.search_author) and has_release_author and author_score < 8:
+    if (
+        (book.authors or book.search_author)
+        and has_release_author
+        and author_score < scoring_config.min_author_score
+    ):
         return ReleaseMatchScore(
             score=max(0, title_score + author_score - 20),
             breakdown={"title": title_score, "author": author_score, "author_mismatch_penalty": -20},

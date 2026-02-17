@@ -230,6 +230,8 @@ export interface AppConfig {
   default_language: string[];
   supported_formats: string[];
   supported_audiobook_formats: string[];  // Audiobook formats (m4b, mp3)
+  show_release_match_score?: boolean;
+  auto_download_min_match_score?: number;
   search_mode: SearchMode;
   metadata_sort_options: SortOption[];
   metadata_search_fields: MetadataSearchField[];

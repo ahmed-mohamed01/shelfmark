@@ -1371,6 +1371,7 @@ function App() {
             bookLanguages={bookLanguages}
             currentStatus={statusForButtonState}
             defaultReleaseSource={config?.default_release_source}
+            showMatchScore={config?.show_release_match_score !== false}
             onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
           />
         )}
@@ -1533,6 +1534,7 @@ function App() {
         bookLanguages={bookLanguages}
         currentStatus={currentStatus}
         defaultReleaseSource={config?.default_release_source}
+        showMatchScore={config?.show_release_match_score !== false}
         onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
       />
     )}

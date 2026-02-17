@@ -1479,6 +1479,55 @@ def mirror_settings():
     ]
 
 
+@register_settings("release_scoring", "Release Scoring", icon="wrench", order=14)
+def release_scoring_settings():
+    """Release matching and scoring behavior."""
+    return [
+        HeadingField(
+            key="release_scoring_heading",
+            title="Release Scoring",
+            description="Control how release matches are scored and rejected for universal-mode release searches.",
+        ),
+        CheckboxField(
+            key="SHOW_RELEASE_MATCH_SCORE",
+            label="Show Match Score in Release List",
+            description="Display the Match score badge in release rows.",
+            default=True,
+        ),
+        NumberField(
+            key="AUTO_DOWNLOAD_MIN_MATCH_SCORE",
+            label="Auto-Download Minimum Match Score",
+            description="Minimum match score required before auto-download should accept a release.",
+            default=75,
+            min_value=0,
+            max_value=100,
+        ),
+        TagListField(
+            key="RELEASE_MATCH_FORBIDDEN_TERMS",
+            label="Rejected Terms",
+            description="Release titles containing these terms are hard-rejected.",
+            default=["abridged", "sample", "excerpt", "summary", "book summary"],
+            normalize_urls=False,
+        ),
+        NumberField(
+            key="RELEASE_MATCH_MIN_TITLE_SCORE",
+            label="Minimum Title Score",
+            description="Hard-reject releases when title match score is below this value.",
+            default=24,
+            min_value=0,
+            max_value=60,
+        ),
+        NumberField(
+            key="RELEASE_MATCH_MIN_AUTHOR_SCORE",
+            label="Minimum Author Score",
+            description="Hard-reject releases when author match score is below this value (if author exists on release).",
+            default=8,
+            min_value=0,
+            max_value=30,
+        ),
+    ]
+
+
 @register_settings("advanced", "Advanced", icon="cog", order=15)
 def advanced_settings():
     """Advanced settings for power users."""

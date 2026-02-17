@@ -368,6 +368,7 @@ interface ReleaseModalProps {
   bookLanguages: Language[];
   currentStatus: StatusData;
   defaultReleaseSource?: string;  // Default tab to show (e.g., 'direct_download')
+  showMatchScore?: boolean;
   onSearchSeries?: (seriesName: string) => void;  // Callback to search for series
 }
 
@@ -495,6 +496,7 @@ const ReleaseRow = ({
   gridTemplate,
   leadingCell,
   onlineServers,
+  showMatchScore,
 }: {
   release: Release;
   index: number;
@@ -504,6 +506,7 @@ const ReleaseRow = ({
   gridTemplate: string;
   leadingCell?: LeadingCellConfig;
   onlineServers?: string[];
+  showMatchScore: boolean;
 }) => {
   const author = release.extra?.author as string | undefined;
   const matchScore = getReleaseMatchScore(release);
@@ -562,7 +565,7 @@ const ReleaseRow = ({
               {author}
             </p>
           )}
-          {matchScore !== null && (
+          {showMatchScore && matchScore !== null && (
             <span className="mt-1 inline-flex items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
               Match {matchScore}
             </span>
@@ -803,6 +806,7 @@ export const ReleaseModal = ({
   bookLanguages,
   currentStatus,
   defaultReleaseSource,
+  showMatchScore = true,
   onSearchSeries,
 }: ReleaseModalProps) => {
   // Use audiobook formats when in audiobook mode
@@ -2132,6 +2136,7 @@ export const ReleaseModal = ({
                         gridTemplate={columnConfig.grid_template}
                         leadingCell={columnConfig.leading_cell}
                         onlineServers={columnConfig.online_servers}
+                        showMatchScore={showMatchScore}
                       />
                     ))}
                   </div>

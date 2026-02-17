@@ -974,6 +974,8 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "default_language": app_config.BOOK_LANGUAGE,
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
+            "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True),
+            "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75),
             "search_mode": app_config.get("SEARCH_MODE", "direct"),
             "metadata_sort_options": get_provider_sort_options(),
             "metadata_search_fields": get_provider_search_fields(),
