@@ -1200,7 +1200,7 @@ function App() {
   }, [isBrowseFulfilMode]);
 
   const mainAppContent = (
-    <SearchModeProvider searchMode={searchMode}>
+    <>
       <div ref={headerRef} className="fixed top-0 left-0 right-0 z-40">
         <Header
           calibreWebUrl={config?.calibre_web_url || ''}
@@ -1394,50 +1394,7 @@ function App() {
       </div>
       </div>
 
-      <ToastContainer toasts={toasts} />
-
-      <SettingsModal
-        isOpen={settingsOpen}
-        authMode={authMode}
-        onClose={() => setSettingsOpen(false)}
-        onShowToast={showToast}
-        onSettingsSaved={handleSettingsSaved}
-      />
-
-      <SelfSettingsModal
-        isOpen={selfSettingsOpen}
-        onClose={() => setSelfSettingsOpen(false)}
-        onShowToast={showToast}
-      />
-
-      {/* Auto-show banner on startup for users without config */}
-      {config && (
-        <ConfigSetupBanner settingsEnabled={config.settings_enabled} />
-      )}
-
-      {/* Controlled banner shown when clicking settings without config */}
-      <ConfigSetupBanner
-        isOpen={configBannerOpen}
-        onClose={() => setConfigBannerOpen(false)}
-        onContinue={() => {
-          setConfigBannerOpen(false);
-          if (authIsAdmin) {
-            setSettingsOpen(true);
-          } else {
-            setSelfSettingsOpen(true);
-          }
-        }}
-      />
-
-      {/* Onboarding wizard shown on first run */}
-      <OnboardingModal
-        isOpen={onboardingOpen}
-        onClose={() => setOnboardingOpen(false)}
-        onComplete={() => loadConfig('settings-saved')}
-        onShowToast={showToast}
-      />
-
-    </SearchModeProvider>
+    </>
   );
 
   const visuallyHiddenStyle: CSSProperties = {
@@ -1477,6 +1434,7 @@ function App() {
   );
 
   return (
+    <SearchModeProvider searchMode={searchMode}>
     <>
     <Routes>
       <Route
@@ -1578,7 +1536,51 @@ function App() {
         onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
       />
     )}
+
+    <ToastContainer toasts={toasts} />
+
+    <SettingsModal
+      isOpen={settingsOpen}
+      authMode={authMode}
+      onClose={() => setSettingsOpen(false)}
+      onShowToast={showToast}
+      onSettingsSaved={handleSettingsSaved}
+    />
+
+    <SelfSettingsModal
+      isOpen={selfSettingsOpen}
+      onClose={() => setSelfSettingsOpen(false)}
+      onShowToast={showToast}
+    />
+
+    {/* Auto-show banner on startup for users without config */}
+    {config && (
+      <ConfigSetupBanner settingsEnabled={config.settings_enabled} />
+    )}
+
+    {/* Controlled banner shown when clicking settings without config */}
+    <ConfigSetupBanner
+      isOpen={configBannerOpen}
+      onClose={() => setConfigBannerOpen(false)}
+      onContinue={() => {
+        setConfigBannerOpen(false);
+        if (authIsAdmin) {
+          setSettingsOpen(true);
+        } else {
+          setSelfSettingsOpen(true);
+        }
+      }}
+    />
+
+    {/* Onboarding wizard shown on first run */}
+    <OnboardingModal
+      isOpen={onboardingOpen}
+      onClose={() => setOnboardingOpen(false)}
+      onComplete={() => loadConfig('settings-saved')}
+      onShowToast={showToast}
+    />
     </>
+    </SearchModeProvider>
   );
 }
 
