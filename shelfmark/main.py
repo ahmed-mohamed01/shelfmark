@@ -2528,6 +2528,7 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
             get_provider_kwargs,
         )
         from shelfmark.release_sources import get_source, list_available_sources, serialize_column_config
+        from shelfmark.core.release_matcher import rank_releases_for_book
         from dataclasses import asdict
 
         provider = request.args.get('provider', '').strip()
@@ -2613,6 +2614,10 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
             except Exception as e:
                 logger.warning(f"Release search failed for source {source_name}: {e}")
                 errors.append(f"{source_name}: {str(e)}")
+
+        # Rank by metadata match quality and annotate releases with score details
+        scored_releases = rank_releases_for_book(book, all_releases)
+        all_releases = [release for release, _ in scored_releases]
 
         # Convert Release objects to dicts
         releases_data = [asdict(release) for release in all_releases]

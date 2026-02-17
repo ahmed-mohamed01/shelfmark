@@ -308,6 +308,11 @@ function sortReleasesByBookMatch(
     .map(({ release }) => release);
 }
 
+function getReleaseMatchScore(release: Release): number | null {
+  const rawScore = release.extra?.match_score;
+  return typeof rawScore === 'number' ? rawScore : null;
+}
+
 // Default column configuration (fallback when backend doesn't provide one)
 const DEFAULT_COLUMN_CONFIG: ReleaseColumnConfig = {
   columns: [
@@ -501,6 +506,7 @@ const ReleaseRow = ({
   onlineServers?: string[];
 }) => {
   const author = release.extra?.author as string | undefined;
+  const matchScore = getReleaseMatchScore(release);
 
   // Filter columns visible on mobile
   const mobileColumns = columns.filter((c) => !c.hide_mobile);
@@ -555,6 +561,11 @@ const ReleaseRow = ({
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
               {author}
             </p>
+          )}
+          {matchScore !== null && (
+            <span className="mt-1 inline-flex items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+              Match {matchScore}
+            </span>
           )}
         </div>
 
@@ -1384,14 +1395,19 @@ export const ReleaseModal = ({
       return true;
     });
 
-    // Then, sort by explicit column, or default to book-title relevance with exact author boost
+    // Then, sort by explicit column, backend-provided match_score, or local title/author fallback
     if (currentSort && sortableColumns.length > 0) {
       filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
     } else {
-      const responseBook = releasesBySource[activeTab]?.book;
-      const titleCandidates = getBookTitleCandidates(book, responseBook);
-      const authorCandidates = getBookAuthorCandidates(book, responseBook);
-      filtered = sortReleasesByBookMatch(filtered, titleCandidates, authorCandidates);
+      const hasBackendScores = filtered.some((release) => getReleaseMatchScore(release) !== null);
+      if (hasBackendScores) {
+        filtered = [...filtered].sort((a, b) => (getReleaseMatchScore(b) || 0) - (getReleaseMatchScore(a) || 0));
+      } else {
+        const responseBook = releasesBySource[activeTab]?.book;
+        const titleCandidates = getBookTitleCandidates(book, responseBook);
+        const authorCandidates = getBookAuthorCandidates(book, responseBook);
+        filtered = sortReleasesByBookMatch(filtered, titleCandidates, authorCandidates);
+      }
     }
 
     return filtered;
