@@ -1588,58 +1588,32 @@ def release_scoring_settings():
             default=True,
         ),
         SelectField(
-            key="RELEASE_PRIMARY_CONTENT_TYPE",
-            label="Primary Search Content Type",
-            description="For the unified search button, choose whether the main click targets eBook or audiobook by default.",
+            key="RELEASE_PRIMARY_DEFAULT_ACTION",
+            label="Default Download Button Action",
+            description="Set the default action for the main download button. Uses the same options as the action dropdown.",
             options=[
                 {
-                    "value": "ebook",
-                    "label": "eBook",
-                    "description": "Main click targets eBook search actions.",
+                    "value": "ebook_interactive_search",
+                    "label": "eBook — Interactive Search",
+                    "description": "Main button opens eBook interactive release picker.",
                 },
                 {
-                    "value": "audiobook",
-                    "label": "Audiobook",
-                    "description": "Main click targets audiobook search actions.",
+                    "value": "ebook_auto_search_download",
+                    "label": "eBook — Auto Search + Download",
+                    "description": "Main button runs eBook auto search and downloads when match score passes cutoff.",
+                },
+                {
+                    "value": "audiobook_interactive_search",
+                    "label": "Audiobook — Interactive Search",
+                    "description": "Main button opens audiobook interactive release picker.",
+                },
+                {
+                    "value": "audiobook_auto_search_download",
+                    "label": "Audiobook — Auto Search + Download",
+                    "description": "Main button runs audiobook auto search and downloads when match score passes cutoff.",
                 },
             ],
-            default="ebook",
-        ),
-        SelectField(
-            key="RELEASE_PRIMARY_ACTION_EBOOK",
-            label="Default eBook Search Action",
-            description="Choose what happens by default when eBook search is triggered from the unified button.",
-            options=[
-                {
-                    "value": "interactive_search",
-                    "label": "Interactive Search",
-                    "description": "Open the release picker so you can choose manually.",
-                },
-                {
-                    "value": "auto_search_download",
-                    "label": "Auto Search + Download",
-                    "description": "Automatically download the top release that meets the match score cutoff.",
-                },
-            ],
-            default="interactive_search",
-        ),
-        SelectField(
-            key="RELEASE_PRIMARY_ACTION_AUDIOBOOK",
-            label="Default Audiobook Search Action",
-            description="Choose what happens by default when audiobook search is triggered from the unified button.",
-            options=[
-                {
-                    "value": "interactive_search",
-                    "label": "Interactive Search",
-                    "description": "Open the release picker so you can choose manually.",
-                },
-                {
-                    "value": "auto_search_download",
-                    "label": "Auto Search + Download",
-                    "description": "Automatically download the top release that meets the match score cutoff.",
-                },
-            ],
-            default="interactive_search",
+            default="ebook_interactive_search",
         ),
         NumberField(
             key="AUTO_DOWNLOAD_MIN_MATCH_SCORE",

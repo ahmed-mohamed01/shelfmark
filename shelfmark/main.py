@@ -964,6 +964,33 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         from shelfmark.config.env import _is_config_dir_writable
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
 
+        default_action_raw = str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
+
+        default_action_map = {
+            "ebook_interactive_search": ("ebook", "interactive_search"),
+            "ebook_auto_search_download": ("ebook", "auto_search_download"),
+            "audiobook_interactive_search": ("audiobook", "interactive_search"),
+            "audiobook_auto_search_download": ("audiobook", "auto_search_download"),
+        }
+
+        default_content_type, default_action = default_action_map.get(default_action_raw, (None, None))
+        if default_content_type is None or default_action is None:
+            # Backward compatibility for legacy split settings.
+            fallback_content_type = app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook")
+            fallback_content_type = "audiobook" if str(fallback_content_type).strip().lower() == "audiobook" else "ebook"
+            fallback_action = app_config.get(
+                "RELEASE_PRIMARY_ACTION_AUDIOBOOK"
+                if fallback_content_type == "audiobook"
+                else "RELEASE_PRIMARY_ACTION_EBOOK",
+                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+            )
+            fallback_action = (
+                "auto_search_download"
+                if str(fallback_action).strip().lower() == "auto_search_download"
+                else "interactive_search"
+            )
+            default_content_type, default_action = fallback_content_type, fallback_action
+
         config = {
             "calibre_web_url": app_config.get("CALIBRE_WEB_URL", ""),
             "audiobook_library_url": app_config.get("AUDIOBOOK_LIBRARY_URL", ""),
@@ -975,14 +1002,13 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
             "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True),
-            "release_primary_content_type": app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook"),
-            "release_primary_action_ebook": app_config.get(
-                "RELEASE_PRIMARY_ACTION_EBOOK",
-                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+            "release_primary_default_action": f"{default_content_type}_{default_action}",
+            "release_primary_content_type": default_content_type,
+            "release_primary_action_ebook": (
+                default_action if default_content_type == "ebook" else "interactive_search"
             ),
-            "release_primary_action_audiobook": app_config.get(
-                "RELEASE_PRIMARY_ACTION_AUDIOBOOK",
-                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+            "release_primary_action_audiobook": (
+                default_action if default_content_type == "audiobook" else "interactive_search"
             ),
             "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75),
             "search_mode": app_config.get("SEARCH_MODE", "direct"),

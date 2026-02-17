@@ -163,6 +163,11 @@ export type ContentType = 'ebook' | 'audiobook';
 
 export type RequestPolicyMode = 'download' | 'request_release' | 'request_book' | 'blocked';
 export type ReleasePrimaryAction = 'interactive_search' | 'auto_search_download';
+export type ReleasePrimaryDefaultAction =
+  | 'ebook_interactive_search'
+  | 'ebook_auto_search_download'
+  | 'audiobook_interactive_search'
+  | 'audiobook_auto_search_download';
 
 export interface RequestPolicyDefaults {
   ebook: RequestPolicyMode;
@@ -232,6 +237,7 @@ export interface AppConfig {
   supported_formats: string[];
   supported_audiobook_formats: string[];  // Audiobook formats (m4b, mp3)
   show_release_match_score?: boolean;
+  release_primary_default_action?: ReleasePrimaryDefaultAction;
   release_primary_content_type?: ContentType;
   release_primary_action_ebook?: ReleasePrimaryAction;
   release_primary_action_audiobook?: ReleasePrimaryAction;
