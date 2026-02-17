@@ -72,6 +72,19 @@ _GENERIC_TITLE_TOKENS = {
     "novel",
 }
 
+_LOW_INFORMATION_TITLE_TOKENS = {
+    *_GENERIC_TITLE_TOKENS,
+    "bk",
+    "vol",
+    "volume",
+    "part",
+    "edition",
+    *set(_WORD_NUMBER_MAP.keys()),
+    *set(_ROMAN_MAP.keys()),
+}
+
+_LOW_INFORMATION_TITLE_MAX_SCORE = 20
+
 _SERIES_NUM_TOKEN_RE = (
     r"([0-9]+(?:\.[0-9]+)?|[ivx]+|zero|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
@@ -158,6 +171,20 @@ def _extract_release_author(release: Release) -> str:
     return ""
 
 
+def _author_variants(value: str) -> List[str]:
+    """Extract plausible author fragments from noisy source strings."""
+    raw = re.sub(r"\s+", " ", (value or "").strip())
+    if not raw:
+        return []
+
+    variants: List[str] = [raw]
+    for part in re.split(r"\s*(?:,|;|\||/|&|\band\b)\s*", raw, flags=re.IGNORECASE):
+        token = part.strip()
+        if token and token not in variants:
+            variants.append(token)
+    return variants
+
+
 def _extract_release_year(release: Release) -> Optional[int]:
     value = release.extra.get("year") if isinstance(release.extra, dict) else None
     if value is not None:
@@ -217,6 +244,13 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     if not candidate_norm or not release_norm:
         return 0
 
+    candidate_tokens = _tokens(candidate_norm)
+    is_low_information_candidate = (
+        bool(candidate_tokens)
+        and len(candidate_tokens) <= 3
+        and all(token.isdigit() or token in _LOW_INFORMATION_TITLE_TOKENS for token in candidate_tokens)
+    )
+
     ratio = _sequence_ratio(candidate_norm, release_norm)
     overlap = _token_overlap_ratio(candidate_norm, release_norm)
 
@@ -229,21 +263,26 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     # If the canonical metadata title appears as a full phrase inside the
     # release title, treat it as a top-quality title match.
     if candidate_norm == release_norm:
-        return 60
+        return _LOW_INFORMATION_TITLE_MAX_SCORE if is_low_information_candidate else 60
     if candidate_norm and f" {candidate_norm} " in f" {release_norm} ":
-        return 60
+        return _LOW_INFORMATION_TITLE_MAX_SCORE if is_low_information_candidate else 60
 
+    score = 0
     if ratio >= 0.98:
-        return 58
-    if ratio >= 0.92 and overlap >= 0.55:
-        return 52
-    if ratio >= 0.85 and overlap >= 0.45:
-        return 44
-    if ratio >= 0.78 and overlap >= 0.35:
-        return 34
-    if ratio >= 0.70 and overlap >= 0.25:
-        return 24
-    return 0
+        score = 58
+    elif ratio >= 0.92 and overlap >= 0.55:
+        score = 52
+    elif ratio >= 0.85 and overlap >= 0.45:
+        score = 44
+    elif ratio >= 0.78 and overlap >= 0.35:
+        score = 34
+    elif ratio >= 0.70 and overlap >= 0.25:
+        score = 24
+
+    # Generic candidates like "book one" should not dominate scoring.
+    if is_low_information_candidate:
+        score = min(score, _LOW_INFORMATION_TITLE_MAX_SCORE)
+    return score
 
 
 def _score_title(book: BookMetadata, release: Release) -> int:
@@ -265,7 +304,11 @@ def _score_author(book: BookMetadata, release: Release) -> int:
         candidates.append(book.search_author)
     candidates.extend(book.authors or [])
 
-    ratio = _best_ratio(candidates, release_author)
+    release_author_candidates = _author_variants(release_author)
+    if not release_author_candidates:
+        return 0
+
+    ratio = max(_best_ratio(candidates, variant) for variant in release_author_candidates)
     if ratio >= 0.98:
         return 30
     if ratio >= 0.9:
@@ -518,11 +561,17 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
 
     series_score = _score_series_name(book, release)
     series_num_score = _score_series_number(book, release)
-    should_use_year = title_score >= 34 or series_num_score > 0
+
+    # Series number only has meaning when series name also matches.
+    # e.g. "Book 1" should not help if the release is from a different series.
+    if series_score <= 0:
+        series_num_score = 0
+
+    should_use_year = title_score >= 34 or (series_score > 0 and series_num_score > 0)
     year_score = _score_year(book, release) if should_use_year else 0
 
     # Quality should not rescue weak metadata matches.
-    has_strong_metadata = title_score >= 34 or (series_score >= 11 and series_num_score > 0)
+    has_strong_metadata = title_score >= 34 or (series_score >= 10 and series_num_score > 0)
     quality_score = _score_quality_tiebreak(release) if has_strong_metadata else 0
     freeleech_direct_score = (
         _score_freeleech_direct_tiebreak(release, scoring_config.prefer_freeleech_or_direct)
