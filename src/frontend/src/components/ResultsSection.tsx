@@ -87,7 +87,7 @@ export const ResultsSection = ({
     <section id="results-section" className="mb-4 sm:mb-8 w-full">
       <div className="flex items-center justify-between mb-2 sm:mb-3 relative z-10">
         <SortControl value={sortValue} onChange={onSortChange} metadataSortOptions={metadataSortOptions} />
-        
+
         {/* View toggle buttons - Desktop: show all 3, Mobile: show Compact and List only */}
         <div className="flex items-center gap-2">
           {isDesktop && (
@@ -175,7 +175,15 @@ export const ResultsSection = ({
         </div>
       </div>
       {viewMode === 'list' ? (
-        <ListView books={books} onDetails={onDetails} onDownload={onDownload} onGetReleases={onGetReleases} getButtonState={getButtonState} getUniversalButtonState={getUniversalButtonState} showSeriesPosition={sortValue === 'series_order'} />
+        <ListView
+          books={books}
+          onDetails={onDetails}
+          onDownload={onDownload}
+          onGetReleases={onGetReleases}
+          getButtonState={getButtonState}
+          getUniversalButtonState={getUniversalButtonState}
+          showSeriesPosition={sortValue === 'series_order'}
+        />
       ) : (
         <div
           id="results-grid"

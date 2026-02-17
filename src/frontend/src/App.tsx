@@ -898,13 +898,22 @@ function App() {
       ? config?.release_primary_action_audiobook
       : config?.release_primary_action_ebook;
     const releasePrimaryAction = actionOverride || configuredPrimaryAction || 'interactive_search';
+    const isForcedAutoAction = actionOverride === 'auto_search_download';
     const autoDownloadMinMatchScore = typeof config?.auto_download_min_match_score === 'number'
       ? config.auto_download_min_match_score
       : 75;
 
     if (releasePrimaryAction === 'auto_search_download') {
       if (!book.provider || !book.provider_id) {
-        showToast('Auto search requires provider-linked book metadata. Opening interactive search instead.', 'info');
+        showToast(
+          isForcedAutoAction
+            ? 'Auto search requires provider-linked metadata. Skipping this selected book.'
+            : 'Auto search requires provider-linked book metadata. Opening interactive search instead.',
+          'info'
+        );
+        if (isForcedAutoAction) {
+          return;
+        }
       } else {
         const processingActivityId = `auto-search:${book.id}:${Date.now()}`;
         setTransientDownloadActivityItems((prev) => [
@@ -968,7 +977,15 @@ function App() {
             bestMatchScore,
             minMatchScore: autoDownloadMinMatchScore,
           });
-          showToast('No release met auto-download cutoff. Opening interactive search.', 'info');
+          showToast(
+            isForcedAutoAction
+              ? 'No release met auto-download cutoff for selected book.'
+              : 'No release met auto-download cutoff. Opening interactive search.',
+            'info'
+          );
+          if (isForcedAutoAction) {
+            return;
+          }
         } catch (error) {
           console.error('Auto search + download failed, falling back to interactive search:', error);
           policyTrace('universal.get:auto_search:error', {
@@ -976,7 +993,15 @@ function App() {
             contentType: normalizedContentType,
             message: error instanceof Error ? error.message : String(error),
           });
-          showToast('Auto search failed. Opening interactive search.', 'error');
+          showToast(
+            isForcedAutoAction
+              ? 'Auto search failed for selected book.'
+              : 'Auto search failed. Opening interactive search.',
+            'error'
+          );
+          if (isForcedAutoAction) {
+            return;
+          }
         } finally {
           setTransientDownloadActivityItems((prev) => prev.filter((item) => item.id !== processingActivityId));
           removeToast(processingToastId);

@@ -153,6 +153,11 @@ export const AuthorModal = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [booksQuery, setBooksQuery] = useState('');
+  const [selectedBookIds, setSelectedBookIds] = useState<Record<string, boolean>>({});
+  const [bulkDownloadRunningByType, setBulkDownloadRunningByType] = useState<Record<ContentType, boolean>>({
+    ebook: false,
+    audiobook: false,
+  });
 
   const [pathsEntity, setPathsEntity] = useState<MonitoredEntity | null>(null);
   const [pathsLoading, setPathsLoading] = useState(false);
@@ -281,7 +286,7 @@ export const AuthorModal = ({
     [onGetReleases, monitoredEntityId, resolvePrimaryActionForContentType]
   );
 
-  const lastAutoRefreshKeyRef = useMemo(() => ({ value: '' }), []);
+  const lastAutoRefreshSignatureRef = useMemo(() => ({ value: '' }), []);
 
   const handleClose = useCallback(() => {
     if (isPageMode) {
@@ -490,8 +495,8 @@ export const AuthorModal = ({
       return;
     }
 
-    const completed = status.complete ? Object.values(status.complete) : [];
-    const relevantCompleted = completed.filter((b) => {
+    const completedEntries = status.complete ? Object.entries(status.complete) : [];
+    const relevantCompleted = completedEntries.filter(([, b]) => {
       const keys = buildBookStatusKeys(b);
       return keys.some((k) => authorBookKeys.has(k));
     });
@@ -500,19 +505,20 @@ export const AuthorModal = ({
       return;
     }
 
-    const newestKey = relevantCompleted
-      .map((b) => {
-        const keyPart = buildBookStatusKeys(b).join(',');
+    const completionSignature = relevantCompleted
+      .map(([recordKey, b]) => {
+        const keyPart = buildBookStatusKeys(b).sort().join(',');
         const ts = typeof b.added_time === 'number' ? b.added_time : 0;
-        return `${ts}:${keyPart}`;
+        return `${recordKey}:${ts}:${keyPart}`;
       })
-      .sort((a, b) => b.localeCompare(a))[0];
+      .sort()
+      .join('|');
 
-    if (!newestKey || newestKey === lastAutoRefreshKeyRef.value) {
+    if (!completionSignature || completionSignature === lastAutoRefreshSignatureRef.value) {
       return;
     }
 
-    lastAutoRefreshKeyRef.value = newestKey;
+    lastAutoRefreshSignatureRef.value = completionSignature;
 
     setAutoRefreshBusy(true);
     void (async () => {
@@ -527,7 +533,7 @@ export const AuthorModal = ({
         setAutoRefreshBusy(false);
       }
     })();
-  }, [monitoredEntityId, status, autoRefreshBusy, books, lastAutoRefreshKeyRef]);
+  }, [monitoredEntityId, status, autoRefreshBusy, books, lastAutoRefreshSignatureRef]);
 
   useEffect(() => {
     try {
@@ -918,6 +924,20 @@ export const AuthorModal = ({
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
   }, [groupedBooks, activeBooksQuery]);
 
+  const visibleBooks = useMemo(() => {
+    return filteredGroupedBooks.flatMap((group) => group.books);
+  }, [filteredGroupedBooks]);
+
+  const allVisibleBooksSelected = useMemo(() => {
+    return visibleBooks.length > 0 && visibleBooks.every((book) => Boolean(selectedBookIds[book.id]));
+  }, [visibleBooks, selectedBookIds]);
+
+  const selectedBooks = useMemo(() => {
+    return books.filter((book) => Boolean(selectedBookIds[book.id]));
+  }, [books, selectedBookIds]);
+
+  const showIndividualBookSelectors = selectedBooks.length > 0;
+
   const allGroupsCollapsed = useMemo(() => {
     if (groupedBooks.length === 0) return false;
     return groupedBooks.every((g) => (collapsedGroups[g.key] ?? false) === true);
@@ -939,6 +959,104 @@ export const AuthorModal = ({
       ...prev,
       [key]: !(prev[key] ?? false),
     }));
+  }, []);
+
+  useEffect(() => {
+    setSelectedBookIds((prev) => {
+      const next: Record<string, boolean> = {};
+      let changed = false;
+
+      for (const book of books) {
+        if (prev[book.id]) {
+          next[book.id] = true;
+        }
+      }
+
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length !== nextKeys.length) {
+        changed = true;
+      } else {
+        for (const key of prevKeys) {
+          if (!next[key]) {
+            changed = true;
+            break;
+          }
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [books]);
+
+  const toggleBookSelection = useCallback((bookId: string) => {
+    setSelectedBookIds((prev) => {
+      const next = { ...prev };
+      if (next[bookId]) {
+        delete next[bookId];
+      } else {
+        next[bookId] = true;
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllVisibleBooks = useCallback(() => {
+    if (visibleBooks.length === 0) return;
+    setSelectedBookIds((prev) => {
+      const allSelected = visibleBooks.every((book) => Boolean(prev[book.id]));
+      const next = { ...prev };
+      if (allSelected) {
+        for (const book of visibleBooks) {
+          delete next[book.id];
+        }
+      } else {
+        for (const book of visibleBooks) {
+          next[book.id] = true;
+        }
+      }
+      return next;
+    });
+  }, [visibleBooks]);
+
+  const runBulkDownloadForSelection = useCallback(async (contentType: ContentType) => {
+    if (!onGetReleases || selectedBooks.length === 0 || bulkDownloadRunningByType[contentType]) {
+      return;
+    }
+
+    setBulkDownloadRunningByType((prev) => ({
+      ...prev,
+      [contentType]: true,
+    }));
+
+    try {
+      for (const book of selectedBooks) {
+        await triggerReleaseSearch(book, contentType, 'auto_search_download');
+      }
+    } finally {
+      setBulkDownloadRunningByType((prev) => ({
+        ...prev,
+        [contentType]: false,
+      }));
+    }
+  }, [onGetReleases, selectedBooks, bulkDownloadRunningByType, triggerReleaseSearch]);
+
+  const toggleSelectAllInGroup = useCallback((groupBooks: Book[]) => {
+    if (groupBooks.length === 0) return;
+    setSelectedBookIds((prev) => {
+      const allSelected = groupBooks.every((book) => Boolean(prev[book.id]));
+      const next = { ...prev };
+      if (allSelected) {
+        for (const book of groupBooks) {
+          delete next[book.id];
+        }
+      } else {
+        for (const book of groupBooks) {
+          next[book.id] = true;
+        }
+      }
+      return next;
+    });
   }, []);
 
   const renderBookSearchActionMenu = (book: Book) => {
@@ -1348,6 +1466,48 @@ export const AuthorModal = ({
                     </p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
+                    {onGetReleases && selectedBooks.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void runBulkDownloadForSelection('ebook')}
+                          disabled={selectedBooks.length === 0 || bulkDownloadRunningByType.ebook}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 hover-action disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Automatically search/download eBooks for selected books"
+                        >
+                          <BookIcon className="w-3.5 h-3.5" />
+                          Download selected
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void runBulkDownloadForSelection('audiobook')}
+                          disabled={selectedBooks.length === 0 || bulkDownloadRunningByType.audiobook}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 hover-action disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Automatically search/download audiobooks for selected books"
+                        >
+                          <AudiobookIcon className="w-3.5 h-3.5" />
+                          Download selected
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={toggleSelectAllVisibleBooks}
+                      className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200"
+                      aria-label={allVisibleBooksSelected ? 'Unselect all visible books' : 'Select all visible books'}
+                      title={allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}
+                    >
+                      {allVisibleBooksSelected ? (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <rect x="4" y="4" width="16" height="16" rx="3" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <rect x="4" y="4" width="16" height="16" rx="3" />
+                        </svg>
+                      )}
+                    </button>
                     {!isPageMode ? (
                       <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
                         <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -1482,34 +1642,51 @@ export const AuthorModal = ({
                       <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
                         {filteredGroupedBooks.map((group, groupIndex) => {
                           const isCollapsed = collapsedGroups[group.key] ?? false;
+                          const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
                           return (
                             <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
-                              <button
-                                type="button"
-                                onClick={() => toggleGroupCollapsed(group.key)}
-                                className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 hover-action"
-                                aria-expanded={!isCollapsed}
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <svg
-                                      className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                      strokeWidth={2}
-                                    >
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center justify-between gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleGroupCollapsed(group.key)}
+                                  className="flex items-center gap-2 min-w-0 hover-action"
+                                  aria-expanded={!isCollapsed}
+                                >
+                                  <svg
+                                    className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={2}
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                  </svg>
+                                  <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSelectAllInGroup(group.books)}
+                                  className="text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+                                  aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`}
+                                  title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}
+                                >
+                                  {allSelectedInGroup ? (
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
                                     </svg>
-                                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
-                                  </div>
-                                  <p className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">{group.books.length}</p>
-                                </div>
-                              </button>
+                                  ) : (
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                    </svg>
+                                  )}
+                                </button>
+                              </div>
 
                               {!isCollapsed ? (
                                 <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                                    <div />
                                     <div />
                                     <div />
                                     <div className="flex justify-center">
@@ -1522,7 +1699,21 @@ export const AuthorModal = ({
                                       key={book.id}
                                       className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full"
                                     >
-                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                                        <div className="flex items-center justify-center pl-0.5 sm:pl-1">
+                                          {showIndividualBookSelectors ? (
+                                            <input
+                                              type="checkbox"
+                                              checked={Boolean(selectedBookIds[book.id])}
+                                              onChange={() => toggleBookSelection(book.id)}
+                                              className="h-4 w-4 rounded border-gray-400 text-emerald-600 focus:ring-emerald-500"
+                                              aria-label={`Select ${book.title || 'book'}`}
+                                            />
+                                          ) : (
+                                            <span className="inline-block h-4 w-4" aria-hidden="true" />
+                                          )}
+                                        </div>
+
                                         <div className="flex items-center pl-1 sm:pl-3">
                                           <BooksListThumbnail preview={book.preview} title={book.title} />
                                         </div>

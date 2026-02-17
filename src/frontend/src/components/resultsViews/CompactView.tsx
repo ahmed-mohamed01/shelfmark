@@ -19,7 +19,16 @@ interface CompactViewProps {
   showSeriesPosition?: boolean;
 }
 
-export const CompactView = ({ book, onDetails, onDownload, onGetReleases, buttonState, showDetailsButton = false, animationDelay = 0, showSeriesPosition = false }: CompactViewProps) => {
+export const CompactView = ({
+  book,
+  onDetails,
+  onDownload,
+  onGetReleases,
+  buttonState,
+  showDetailsButton = false,
+  animationDelay = 0,
+  showSeriesPosition = false,
+}: CompactViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingReleases, setIsLoadingReleases] = useState(false);

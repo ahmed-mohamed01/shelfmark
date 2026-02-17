@@ -112,6 +112,8 @@ class ReleaseScoringConfig:
     prefer_freeleech_or_direct: bool
     ebook_release_priority: Dict[str, int]
     audiobook_release_priority: Dict[str, int]
+    ebook_format_priority: Dict[str, int]
+    audiobook_format_priority: Dict[str, int]
 
 
 def _normalize_text(value: str) -> str:
@@ -388,23 +390,21 @@ def _score_year(book: BookMetadata, release: Release) -> int:
     return -5
 
 
-def _score_quality_tiebreak(release: Release) -> int:
+def _score_format_priority_tiebreak(release: Release, priority: Dict[str, int]) -> int:
+    if not priority:
+        return 0
+
     fmt = (release.format or "").strip().lower()
     if not fmt:
         return 0
 
-    # Small tie-break only after metadata match gates are passed.
-    if fmt == "m4b":
-        return 8
-    if fmt in {"mp3", "m4a", "opus"}:
-        return 5
-    if fmt == "flac":
-        return 4
-    if fmt in {"epub", "azw3", "mobi"}:
-        return 5
-    if fmt == "pdf":
-        return 1
-    return 0
+    rank = priority.get(_normalize_priority_token(fmt))
+    if rank is None:
+        return 0
+
+    # Every priority step is worth +5. Higher-ranked (earlier) formats get larger boosts.
+    enabled_count = len(priority)
+    return max(0, (enabled_count - rank) * 5)
 
 
 def _score_freeleech_direct_tiebreak(release: Release, enabled: bool) -> int:
@@ -501,6 +501,8 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
 
     ebook_release_priority = _build_release_priority_map(app_config.get("EBOOK_RELEASE_PRIORITY", []))
     audiobook_release_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_RELEASE_PRIORITY", []))
+    ebook_format_priority = _build_release_priority_map(app_config.get("EBOOK_FORMAT_PRIORITY", []))
+    audiobook_format_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_FORMAT_PRIORITY", []))
 
     # Backward compatibility with initial setting key from early rollout.
     if not audiobook_release_priority:
@@ -515,6 +517,8 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
         prefer_freeleech_or_direct=prefer_freeleech_or_direct,
         ebook_release_priority=ebook_release_priority,
         audiobook_release_priority=audiobook_release_priority,
+        ebook_format_priority=ebook_format_priority,
+        audiobook_format_priority=audiobook_format_priority,
     )
 
 
@@ -570,9 +574,8 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
     should_use_year = title_score >= 34 or (series_score > 0 and series_num_score > 0)
     year_score = _score_year(book, release) if should_use_year else 0
 
-    # Quality should not rescue weak metadata matches.
+    # Tie-break bonuses should not rescue weak metadata matches.
     has_strong_metadata = title_score >= 34 or (series_score >= 10 and series_num_score > 0)
-    quality_score = _score_quality_tiebreak(release) if has_strong_metadata else 0
     freeleech_direct_score = (
         _score_freeleech_direct_tiebreak(release, scoring_config.prefer_freeleech_or_direct)
         if has_strong_metadata
@@ -584,8 +587,18 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
         if content_type == "audiobook"
         else scoring_config.ebook_release_priority
     )
+    format_priority_map = (
+        scoring_config.audiobook_format_priority
+        if content_type == "audiobook"
+        else scoring_config.ebook_format_priority
+    )
     indexer_priority_score = (
         _score_indexer_priority_tiebreak(release, release_priority_map)
+        if has_strong_metadata
+        else 0
+    )
+    format_priority_score = (
+        _score_format_priority_tiebreak(release, format_priority_map)
         if has_strong_metadata
         else 0
     )
@@ -599,7 +612,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
             + series_score
             + series_num_score
             + year_score
-            + quality_score
+            + format_priority_score
             + freeleech_direct_score
             + indexer_priority_score,
         ),
@@ -623,7 +636,7 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
             "series": series_score,
             "series_number": series_num_score,
             "year": year_score,
-            "quality": quality_score,
+            "format_priority": format_priority_score,
             "freeleech_or_direct": freeleech_direct_score,
             "indexer_priority": indexer_priority_score,
         },

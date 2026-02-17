@@ -1294,6 +1294,42 @@ def _get_audiobook_release_priority_options() -> list[dict[str, str]]:
     return _get_release_priority_options("audiobook")
 
 
+def _get_ebook_format_priority_options() -> list[dict[str, str]]:
+    """Return configurable ebook format priority options for release scoring."""
+    excluded = {"zip", "rar"}
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for fmt in _FORMAT_OPTIONS:
+        value = str(fmt.get("value") or "").strip().lower()
+        if not value or value in excluded or value in seen:
+            continue
+        seen.add(value)
+        label = str(fmt.get("label") or value.upper())
+        options.append(
+            {
+                "id": value,
+                "label": label,
+                "description": "Preferred ebook format when ranking close matches.",
+            }
+        )
+    return options
+
+
+def _get_audiobook_format_priority_options() -> list[dict[str, str]]:
+    """Return configurable audiobook format priority options for release scoring."""
+    ordered_formats = ["m4b", "mp3", "m4a", "flac", "opus"]
+    options: list[dict[str, str]] = []
+    for fmt in ordered_formats:
+        options.append(
+            {
+                "id": fmt,
+                "label": fmt.upper(),
+                "description": "Preferred audiobook format when ranking close matches.",
+            }
+        )
+    return options
+
+
 @register_settings("download_sources", "Download Sources", icon="download", order=21, group="direct_download")
 def download_source_settings():
     """Settings for download source behavior."""
@@ -1641,6 +1677,20 @@ def release_scoring_settings():
             label="Audiobook Source & Indexer Priority",
             description="Boost preferred audiobook sources/indexers when ranking close matches. Drag to reorder.",
             options=_get_audiobook_release_priority_options,
+            default=[],
+        ),
+        OrderableListField(
+            key="EBOOK_FORMAT_PRIORITY",
+            label="eBook Format Priority",
+            description="Boost preferred eBook formats by priority order (+5 per rank step). Applied only after strong metadata matching.",
+            options=_get_ebook_format_priority_options,
+            default=[],
+        ),
+        OrderableListField(
+            key="AUDIOBOOK_FORMAT_PRIORITY",
+            label="Audiobook Format Priority",
+            description="Boost preferred audiobook formats by priority order (+5 per rank step). Applied only after strong metadata matching.",
+            options=_get_audiobook_format_priority_options,
             default=[],
         ),
         TagListField(

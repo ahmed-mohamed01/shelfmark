@@ -48,7 +48,15 @@ const ListViewThumbnail = ({ preview, title }: { preview?: string; title?: strin
   );
 };
 
-export const ListView = ({ books, onDetails, onDownload, onGetReleases, getButtonState, getUniversalButtonState, showSeriesPosition = false }: ListViewProps) => {
+export const ListView = ({
+  books,
+  onDetails,
+  onDownload,
+  onGetReleases,
+  getButtonState,
+  getUniversalButtonState,
+  showSeriesPosition = false,
+}: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
   const [releasesLoadingId, setReleasesLoadingId] = useState<string | null>(null);

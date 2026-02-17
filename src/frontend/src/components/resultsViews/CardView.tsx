@@ -18,7 +18,15 @@ interface CardViewProps {
   showSeriesPosition?: boolean;
 }
 
-export const CardView = ({ book, onDetails, onDownload, onGetReleases, buttonState, animationDelay = 0, showSeriesPosition = false }: CardViewProps) => {
+export const CardView = ({
+  book,
+  onDetails,
+  onDownload,
+  onGetReleases,
+  buttonState,
+  animationDelay = 0,
+  showSeriesPosition = false,
+}: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingReleases, setIsLoadingReleases] = useState(false);

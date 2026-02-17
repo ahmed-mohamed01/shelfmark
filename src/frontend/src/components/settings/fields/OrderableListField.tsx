@@ -61,22 +61,31 @@ export const OrderableListField = ({
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
 
   const items = mergeValueWithOptions(value ?? [], field.options);
+  const isFormatPriorityField =
+    field.key === 'EBOOK_FORMAT_PRIORITY' ||
+    field.key === 'AUDIOBOOK_FORMAT_PRIORITY';
   const isCompactChipMode =
     field.key === 'EBOOK_RELEASE_PRIORITY' ||
     field.key === 'AUDIOBOOK_RELEASE_PRIORITY' ||
-    field.key === 'AUDIOBOOK_INDEXER_PRIORITY';
-  const enabledBoostEntries: string[] = [];
-  let enabledRank = 0;
-  items.forEach((item) => {
-    if (!item.enabled) {
-      return;
+    field.key === 'AUDIOBOOK_INDEXER_PRIORITY' ||
+    isFormatPriorityField;
+
+  const enabledItems = items.filter((item) => item.enabled);
+
+  const getBoostForRank = (rank: number): number => {
+    if (isFormatPriorityField) {
+      return Math.max(0, (enabledItems.length - rank) * 5);
     }
-    const boost = enabledRank < PRIORITY_BOOST_BY_RANK.length ? PRIORITY_BOOST_BY_RANK[enabledRank] : 0;
+    return rank < PRIORITY_BOOST_BY_RANK.length ? PRIORITY_BOOST_BY_RANK[rank] : 0;
+  };
+
+  const enabledBoostEntries: string[] = [];
+  enabledItems.forEach((item, enabledRank) => {
+    const boost = getBoostForRank(enabledRank);
     if (boost <= 0) {
       return;
     }
     enabledBoostEntries.push(`${item.label} +${boost}`);
-    enabledRank += 1;
   });
   const boostPreviewLimit = 5;
   const boostPreview = enabledBoostEntries.slice(0, boostPreviewLimit).join(' · ');
