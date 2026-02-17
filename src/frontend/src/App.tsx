@@ -1564,6 +1564,8 @@ function App() {
               defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
               defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
               onBack={() => navigate('/')}
+              onMonitoredClick={() => navigate('/monitored')}
+              logoUrl={logoUrl}
               status={currentStatus}
               debug={config?.debug || false}
               onSettingsClick={() => {

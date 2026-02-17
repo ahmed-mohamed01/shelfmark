@@ -50,6 +50,8 @@ interface MonitoredPageProps {
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   onBack?: () => void;
+  onMonitoredClick?: () => void;
+  logoUrl?: string;
 
   status?: StatusData;
 
@@ -122,6 +124,8 @@ export const MonitoredPage = ({
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
   onBack,
+  onMonitoredClick,
+  logoUrl,
   status,
   debug,
   onSettingsClick,
@@ -778,15 +782,28 @@ export const MonitoredPage = ({
     setView('landing');
   }, []);
 
+  const handleHeaderAuthorSearchChange = useCallback((value: string) => {
+    setAuthorQuery(value);
+    if (!value.trim()) {
+      clearSearchAndReturn();
+    }
+  }, [clearSearchAndReturn]);
+
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
       <div className="fixed top-0 left-0 right-0 z-40">
         <Header
-          showSearch={false}
+          showSearch
+          logoUrl={logoUrl}
+          searchInput={authorQuery}
+          searchPlaceholder="Search authors to monitor.."
+          onSearchChange={handleHeaderAuthorSearchChange}
+          onSearch={() => void runAuthorSearch()}
+          isLoading={isSearching}
           onDownloadsClick={onActivityClick}
           onLogoClick={onBack}
           debug={debug}
-          onMonitoredClick={undefined}
+          onMonitoredClick={onMonitoredClick}
           onSettingsClick={onSettingsClick}
           statusCounts={statusCounts}
           isAdmin={isAdmin}
@@ -799,42 +816,13 @@ export const MonitoredPage = ({
         />
       </div>
 
-      <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6" style={{ paddingTop: '5rem' }}>
+      <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-32 lg:pt-24">
         <div className="flex flex-col gap-6">
           <div>
             <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Monitored</h1>
           </div>
 
           <div className="flex flex-col gap-3">
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                value={authorQuery}
-                onChange={(e) => setAuthorQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    void runAuthorSearch();
-                  }
-                }}
-                placeholder="Search authors (Hardcover)"
-                className="w-full sm:flex-1 px-4 py-2 rounded-full bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-gray-900 dark:text-gray-100"
-              />
-              <button
-                onClick={() => void runAuthorSearch()}
-                disabled={isSearching}
-                className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
-              >
-                {isSearching ? 'Searching…' : 'Search'}
-              </button>
-              {view === 'search' && (
-                <button
-                  onClick={clearSearchAndReturn}
-                  className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-gray-900 font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                >
-                  Back
-                </button>
-              )}
-            </div>
-
             {searchError && (
               <div className="text-sm text-red-500">{searchError}</div>
             )}

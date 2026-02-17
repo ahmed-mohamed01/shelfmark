@@ -15,6 +15,7 @@ interface HeaderProps {
   logoUrl?: string;
   showSearch?: boolean;
   searchInput?: string;
+  searchPlaceholder?: string;
   onSearchChange?: (value: string) => void;
   onSearch?: () => void;
   onAdvancedToggle?: () => void;
@@ -44,6 +45,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   logoUrl,
   showSearch = false,
   searchInput = '',
+  searchPlaceholder,
   onSearchChange,
   onSearch,
   onAdvancedToggle,
@@ -518,6 +520,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 value={searchInput}
                 onChange={handleSearchChange}
                 onSubmit={handleHeaderSearch}
+                placeholder={searchPlaceholder}
                 onAdvancedToggle={onAdvancedToggle}
                 isLoading={isLoading}
                 contentType={contentType}
