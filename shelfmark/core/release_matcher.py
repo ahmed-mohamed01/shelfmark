@@ -201,6 +201,93 @@ def _extract_release_year(release: Release) -> Optional[int]:
     return None
 
 
+def _extract_series_number_after_series_name(series_name: str, release_title: str) -> Optional[float]:
+    """Extract a number that appears immediately after the matched series name."""
+    if not series_name or not release_title:
+        return None
+
+    series_norm = _normalize_text(series_name)
+    release_norm = _normalize_text(release_title)
+    if not series_norm or not release_norm:
+        return None
+
+    marker = f" {series_norm} "
+    haystack = f" {release_norm} "
+    if marker not in haystack:
+        return None
+
+    tail = haystack.split(marker, 1)[1].strip()
+    if not tail:
+        return None
+
+    # Handle titles like:
+    # - "Dungeon Life 2: ..."
+    # - "Dungeon Life Book 2"
+    # - "Dungeon Life #2"
+    match = re.match(
+        rf"^(?:book|bk|volume|vol|part|#|no|number)?\s*{_SERIES_NUM_TOKEN_RE}\b",
+        tail,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    number = _word_to_number(match.group(1))
+    if number is None:
+        return None
+
+    # Guard against years/large unrelated numbers.
+    if number > 200:
+        return None
+    return number
+
+
+def _extract_release_series_number(release: Release, series_name: Optional[str]) -> Optional[float]:
+    """Best-effort series number extraction from source metadata first, then title."""
+    extra = release.extra if isinstance(release.extra, dict) else {}
+
+    # Prefer explicit metadata fields when available.
+    direct_keys = [
+        "series_position",
+        "series_number",
+        "book_number",
+        "book_num",
+        "volume",
+        "vol",
+        "part",
+        "book",
+        "number",
+    ]
+    for key in direct_keys:
+        value = extra.get(key)
+        if value is None:
+            continue
+        parsed = _word_to_number(str(value).strip().lower())
+        if parsed is not None and parsed <= 200:
+            return parsed
+        parsed = _extract_series_number(str(value))
+        if parsed is not None and parsed <= 200:
+            return parsed
+
+    torznab_attrs = extra.get("torznab_attrs") if isinstance(extra.get("torznab_attrs"), dict) else {}
+    for key in ("series", "seriesnumber", "book", "booknumber", "volume", "vol", "part"):
+        value = torznab_attrs.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        parsed = _word_to_number(value.strip().lower())
+        if parsed is not None and parsed <= 200:
+            return parsed
+        parsed = _extract_series_number(value)
+        if parsed is not None and parsed <= 200:
+            return parsed
+
+    release_num = _extract_series_number(release.title)
+    if release_num is not None:
+        return release_num
+
+    return _extract_series_number_after_series_name(series_name or "", release.title)
+
+
 def _word_to_number(token: str) -> Optional[float]:
     if not token:
         return None
@@ -296,6 +383,25 @@ def _score_title(book: BookMetadata, release: Release) -> int:
     return max(_score_single_title_candidate(candidate, release.title) for candidate in candidates if candidate)
 
 
+def _has_distinctive_title_overlap(book: BookMetadata, release: Release) -> bool:
+    release_distinct = set(_distinctive_tokens(release.title))
+    if not release_distinct:
+        return False
+
+    candidates = [book.title, book.search_title or ""]
+    if book.subtitle:
+        candidates.append(f"{book.title} {book.subtitle}")
+    candidates.extend(list((book.titles_by_language or {}).values()))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_distinct = set(_distinctive_tokens(candidate))
+        if candidate_distinct and (candidate_distinct & release_distinct):
+            return True
+    return False
+
+
 def _score_author(book: BookMetadata, release: Release) -> int:
     release_author = _extract_release_author(release)
     if not release_author:
@@ -362,15 +468,15 @@ def _score_series_number(book: BookMetadata, release: Release) -> int:
     if target is None:
         return 0
 
-    release_num = _extract_series_number(release.title)
+    release_num = _extract_release_series_number(release, book.series_name)
     if release_num is None:
         return 0
 
     if abs(target - release_num) < 0.001:
         return 22
     if abs(target - release_num) <= 1:
-        return -10
-    return -35
+        return -60
+    return -75
 
 
 def _score_year(book: BookMetadata, release: Release) -> int:
@@ -387,7 +493,7 @@ def _score_year(book: BookMetadata, release: Release) -> int:
         return 6
     if delta <= 2:
         return 3
-    return -5
+    return -15
 
 
 def _score_format_priority_tiebreak(release: Release, priority: Dict[str, int]) -> int:
@@ -538,6 +644,18 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
     title_score = _score_title(book, release)
     author_score = _score_author(book, release)
     has_release_author = _has_release_author_signal(release)
+    has_distinctive_title_overlap = _has_distinctive_title_overlap(book, release)
+
+    # Guardrail: if title match is only coming from low-information tokens
+    # (e.g. "book six") with no distinctive overlap, reject as unrelated.
+    if title_score <= _LOW_INFORMATION_TITLE_MAX_SCORE and not has_distinctive_title_overlap:
+        return ReleaseMatchScore(
+            score=title_score + author_score,
+            breakdown={"title": title_score, "author": author_score},
+            confidence="none",
+            hard_reject=True,
+            reject_reason="low_information_title_match",
+        )
 
     if title_score < scoring_config.min_title_score:
         return ReleaseMatchScore(

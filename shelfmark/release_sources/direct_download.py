@@ -495,12 +495,68 @@ def _extract_book_metadata(metadata_divs) -> Dict[str, List[str]]:
             info[key] = set()
         info[key].add(value)
 
-    relevant_prefixes = ("isbn-", "alternative", "asin", "goodreads", "language", "year")
+    relevant_prefixes = ("isbn-", "alternative", "asin", "goodreads", "language", "year", "series")
     return {
         k.strip(): list(v)
         for k, v in info.items()
         if k.lower().startswith(relevant_prefixes) and "filename" not in k.lower()
     }
+
+
+def _parse_series_number_from_text(value: str) -> Optional[float]:
+    text = (value or "").strip().lower()
+    if not text:
+        return None
+
+    match = re.search(r"(?:book|bk|volume|vol|part|#|no|number)\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    # Fallback for values like "Dungeon Life 4" where number is at the end.
+    tail = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*$", text)
+    if tail:
+        try:
+            return float(tail.group(1))
+        except ValueError:
+            return None
+
+    return None
+
+
+def _extract_series_from_info(info: Optional[Dict[str, List[str]]]) -> tuple[Optional[str], Optional[float]]:
+    if not isinstance(info, dict):
+        return None, None
+
+    for key, values in info.items():
+        if not key.lower().startswith("series"):
+            continue
+
+        if not isinstance(values, list):
+            continue
+
+        for raw in values:
+            value = str(raw or "").strip()
+            if not value:
+                continue
+
+            num = _parse_series_number_from_text(value)
+            if num is None:
+                # Keep a series name signal when number is missing.
+                return value, None
+
+            # Remove trailing numeric marker from common formats.
+            name = re.sub(
+                r"(?:\s*(?:book|bk|volume|vol|part|#|no|number)?\s*[0-9]+(?:\.[0-9]+)?\s*)$",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            ).strip(" -:#")
+            return (name or value), num
+
+    return None, None
 
 
 def _get_source_info(link: str) -> tuple[str, str]:
@@ -1051,6 +1107,8 @@ def _book_info_to_release(book_info: BookInfo) -> Release:
     This bridges the existing BookInfo model (which combines metadata + release info)
     to the new Release model (release info only).
     """
+    series_name, series_number = _extract_series_from_info(book_info.info)
+
     return Release(
         source="direct_download",
         source_id=book_info.id,
@@ -1068,6 +1126,9 @@ def _book_info_to_release(book_info: BookInfo) -> Release:
             "publisher": book_info.publisher,
             "year": book_info.year,
             "language": book_info.language,
+            "series_name": series_name,
+            "series_number": series_number,
+            "series_position": series_number,
             "preview": book_info.preview,
             "description": book_info.description,
             "download_urls": book_info.download_urls,

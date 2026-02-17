@@ -313,6 +313,11 @@ function getReleaseMatchScore(release: Release): number | null {
   return typeof rawScore === 'number' ? rawScore : null;
 }
 
+function getReleaseRejectReason(release: Release): string | null {
+  const raw = release.extra?.match_reject_reason;
+  return typeof raw === 'string' && raw.trim() ? raw : null;
+}
+
 // Default column configuration (fallback when backend doesn't provide one)
 const DEFAULT_COLUMN_CONFIG: ReleaseColumnConfig = {
   columns: [
@@ -510,6 +515,8 @@ const ReleaseRow = ({
 }) => {
   const author = release.extra?.author as string | undefined;
   const matchScore = getReleaseMatchScore(release);
+  const rejectReason = getReleaseRejectReason(release);
+  const isRejectedMatch = Boolean(rejectReason);
 
   // Filter columns visible on mobile
   const mobileColumns = columns.filter((c) => !c.hide_mobile);
@@ -566,8 +573,13 @@ const ReleaseRow = ({
             </p>
           )}
           {showMatchScore && matchScore !== null && (
-            <span className="mt-1 inline-flex items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
-              Match {matchScore}
+            <span
+              className={isRejectedMatch
+                ? 'mt-1 inline-flex items-center rounded-full border border-red-500/35 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:text-red-300'
+                : 'mt-1 inline-flex items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300'}
+              title={isRejectedMatch ? `Rejected: ${rejectReason}` : undefined}
+            >
+              {isRejectedMatch ? `Rejected ${matchScore}` : `Match ${matchScore}`}
             </span>
           )}
         </div>
