@@ -266,7 +266,6 @@ function App() {
       complete: filteredComplete,
     };
   }, [currentStatus, dismissedDownloadTaskIds]);
-  const monitoredPath = useMemo(() => withBasePath('/monitored'), []);
   const showRequestsTab = useMemo(() => {
     if (requestRoleIsAdmin) {
       return true;
