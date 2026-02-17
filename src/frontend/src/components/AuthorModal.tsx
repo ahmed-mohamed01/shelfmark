@@ -136,21 +136,46 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
     const prov = b.provider || '';
     const bid = b.provider_id || '';
+    const providerBookId = String((b as Book & { provider_book_id?: string }).provider_book_id || '');
     if (prov && bid) {
       keys.push(`p:${prov}:${bid}`);
     }
+    if (prov && providerBookId) {
+      keys.push(`p:${prov}:${providerBookId}`);
+    }
 
     if (b.id !== null && b.id !== undefined) {
-      keys.push(`id:${String(b.id)}`);
+      const sid = String(b.id);
+      keys.push(`id:${sid}`);
+      keys.push(`rk:${normalizeStatusKeyPart(sid)}`);
+    }
+
+    if (bid) {
+      keys.push(`rk:${normalizeStatusKeyPart(bid)}`);
+    }
+    if (providerBookId) {
+      keys.push(`rk:${normalizeStatusKeyPart(providerBookId)}`);
     }
 
     const t = normalizeStatusKeyPart(b.title);
     const a = normalizeStatusKeyPart(b.author);
+    const st = normalizeStatusKeyPart(b.search_title);
+    const sa = normalizeStatusKeyPart(b.search_author);
+    const firstAuthor = normalizeStatusKeyPart(Array.isArray(b.authors) ? b.authors[0] : '');
     if (t && a) {
       keys.push(`ta:${t}|${a}`);
     }
+    if (st && sa) {
+      keys.push(`ta:${st}|${sa}`);
+    }
+    if (t && firstAuthor) {
+      keys.push(`ta:${t}|${firstAuthor}`);
+    }
     if (t) {
       keys.push(`t:${t}`);
+    }
+    if (st) {
+      keys.push(`t:${st}`);
     }
 
     return keys;
@@ -288,8 +313,12 @@ export const AuthorModal = ({ author, onClose, onGetReleases, monitoredEntityId,
 
     const addBucket = (bucketName: string, bucket: Record<string, Book> | undefined) => {
       if (!bucket) return;
-      for (const b of Object.values(bucket)) {
+      for (const [recordKey, b] of Object.entries(bucket)) {
         const progress = typeof b.progress === 'number' ? b.progress : undefined;
+        const normalizedRecordKey = normalizeStatusKeyPart(recordKey);
+        if (normalizedRecordKey && !map.has(`rk:${normalizedRecordKey}`)) {
+          map.set(`rk:${normalizedRecordKey}`, { bucket: bucketName, progress });
+        }
 
         for (const key of buildBookStatusKeys(b)) {
           if (!map.has(key)) {
