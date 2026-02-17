@@ -12,6 +12,7 @@ from shelfmark.release_sources.prowlarr.source import (
     _parse_size,
     _extract_format,
     _detect_content_type_from_categories,
+    _prowlarr_result_to_release,
 )
 from shelfmark.release_sources.prowlarr.utils import get_protocol_display, sanitize_download_url
 from shelfmark.metadata_providers import BookMetadata
@@ -383,3 +384,33 @@ class TestProwlarrLocalizedQueries:
         assert "The Final Empire" in fake_client.queries
         assert "A végső birodalom" in fake_client.queries
         assert "Mistborn: The Final Empire" not in fake_client.queries
+
+
+class TestProwlarrReleaseMetadataMapping:
+    def test_series_related_torznab_attrs_are_preserved_in_release_extra(self):
+        result = {
+            "guid": "guid-1",
+            "title": "Dungeon Life 2 by Khenal [EPUB]",
+            "bookTitle": "Dungeon Life 2",
+            "author": "Khenal",
+            "indexer": "MAM",
+            "protocol": "torrent",
+            "size": 1234567,
+            "downloadUrl": "magnet:?xt=urn:btih:abc",
+            "categories": [7020],
+            "torznabAttrs": {
+                "series": "Dungeon Life",
+                "seriesnumber": "2",
+                "booknumber": "2",
+            },
+        }
+
+        release = _prowlarr_result_to_release(result, search_content_type="ebook", enable_format_detection=True)
+
+        assert release.extra.get("author") == "Khenal"
+        assert release.extra.get("book_title") == "Dungeon Life 2"
+        assert release.extra.get("torznab_attrs") == {
+            "series": "Dungeon Life",
+            "seriesnumber": "2",
+            "booknumber": "2",
+        }
