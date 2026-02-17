@@ -9,6 +9,7 @@ interface ActivitySidebarProps {
   isOpen: boolean;
   onClose: () => void;
   status: StatusData;
+  transientDownloadItems?: ActivityItem[];
   isAdmin: boolean;
   onClearCompleted: (items: ActivityDismissTarget[]) => void;
   onCancel: (id: string) => void;
@@ -237,6 +238,7 @@ export const ActivitySidebar = ({
   isOpen,
   onClose,
   status,
+  transientDownloadItems = [],
   isAdmin,
   onClearCompleted,
   onCancel,
@@ -326,7 +328,7 @@ export const ActivitySidebar = ({
   }, [isOpen, isPinnedOpen, onClose]);
 
   const downloadItems = useMemo(() => {
-    const items: ActivityItem[] = [];
+    const items: ActivityItem[] = [...transientDownloadItems];
 
     DOWNLOAD_STATUS_KEYS.forEach((statusKey) => {
       const bucket = status[statusKey];
@@ -345,7 +347,7 @@ export const ActivitySidebar = ({
     });
 
     return items.sort((left, right) => right.timestamp - left.timestamp);
-  }, [dismissedKeySet, status]);
+  }, [dismissedKeySet, status, transientDownloadItems]);
 
   const visibleRequestItems = useMemo(
     () =>

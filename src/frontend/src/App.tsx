@@ -43,6 +43,7 @@ import { RequestConfirmationModal } from './components/RequestConfirmationModal'
 import { ToastContainer } from './components/ToastContainer';
 import { Footer } from './components/Footer';
 import { ActivitySidebar } from './components/activity';
+import { ActivityItem } from './components/activity/activityTypes';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoredPage } from './pages/MonitoredPage';
 import { AuthorDetailsPage } from './pages/AuthorDetailsPage';
@@ -128,6 +129,7 @@ function App() {
   const navigate = useNavigate();
   const { toasts, showToast, removeToast } = useToast();
   const { socket } = useSocket();
+  const [transientDownloadActivityItems, setTransientDownloadActivityItems] = useState<ActivityItem[]>([]);
 
   // Realtime status with WebSocket and polling fallback
   // Socket connection is managed by SocketProvider in main.tsx
@@ -904,6 +906,30 @@ function App() {
       if (!book.provider || !book.provider_id) {
         showToast('Auto search requires provider-linked book metadata. Opening interactive search instead.', 'info');
       } else {
+        const processingActivityId = `auto-search:${book.id}:${Date.now()}`;
+        setTransientDownloadActivityItems((prev) => [
+          {
+            id: processingActivityId,
+            kind: 'download',
+            visualStatus: 'resolving',
+            title: book.title || 'Unknown title',
+            author: book.author || 'Unknown author',
+            preview: book.preview,
+            metaLine: [
+              normalizedContentType === 'audiobook' ? 'AUDIOBOOK' : 'EBOOK',
+              book.format?.toUpperCase(),
+              username || undefined,
+            ].filter(Boolean).join(' · '),
+            statusLabel: 'Resolving',
+            statusDetail: `Processing releases for ${book.title || 'selected book'}...`,
+            progress: 15,
+            progressAnimated: true,
+            timestamp: Date.now() / 1000,
+            username: username || undefined,
+          },
+          ...prev,
+        ]);
+        const processingToastId = showToast(`Processing releases for ${book.title || 'selected book'}...`, 'info', true);
         try {
           policyTrace('universal.get:auto_search:start', {
             bookId: book.id,
@@ -929,6 +955,7 @@ function App() {
               contentType: normalizedContentType,
               matchScore: bestMatchScore,
             });
+            showToast(`Starting download (match ${bestMatchScore})`, 'info');
             await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null);
             showToast(`Queued top match (score ${bestMatchScore})`, 'success');
             return;
@@ -950,6 +977,9 @@ function App() {
             message: error instanceof Error ? error.message : String(error),
           });
           showToast('Auto search failed. Opening interactive search.', 'error');
+        } finally {
+          setTransientDownloadActivityItems((prev) => prev.filter((item) => item.id !== processingActivityId));
+          removeToast(processingToastId);
         }
       }
     }
@@ -1634,6 +1664,7 @@ function App() {
       isOpen={downloadsSidebarOpen}
       onClose={() => setDownloadsSidebarOpen(false)}
       status={currentStatus}
+      transientDownloadItems={transientDownloadActivityItems}
       isAdmin={requestRoleIsAdmin}
       onClearCompleted={handleClearCompleted}
       onCancel={handleCancel}
