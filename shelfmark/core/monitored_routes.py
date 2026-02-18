@@ -189,6 +189,30 @@ def register_monitored_routes(
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
+    def _title_match_variants(raw_title: str) -> list[str]:
+        title = (raw_title or "").strip()
+        if not title:
+            return []
+
+        variants: list[str] = [title]
+
+        # Files often omit subtitle after colon, e.g.
+        # "Beware of Chicken 4 - Author (2024).epub" vs
+        # "Beware of Chicken 4: A Xianxia Cultivation Novel".
+        colon_base = title.split(":", 1)[0].strip()
+        if colon_base and colon_base.lower() != title.lower():
+            variants.append(colon_base)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in variants:
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(value)
+        return deduped
+
     _VOLUME_MARKER_RE = re.compile(
         r"\b(?:(arc|book|vol(?:ume)?)\s*[-:#]?\s*)(\d{1,3})\b",
         re.IGNORECASE,
@@ -253,6 +277,36 @@ def register_monitored_routes(
         if score > 1.0:
             return 1.0
         return float(score)
+
+    def _prefer_row_on_tie(
+        *,
+        candidate: str,
+        row: dict[str, Any],
+        display_title: str,
+        best_row: dict[str, Any],
+        best_display_title: str,
+    ) -> bool:
+        candidate_norm = _normalize_match_text(candidate)
+        title_norm = _normalize_match_text(display_title)
+        best_norm = _normalize_match_text(best_display_title)
+
+        # Prefer richer title variant when both are equivalent prefix matches.
+        title_extends_candidate = bool(candidate_norm and title_norm.startswith(f"{candidate_norm} "))
+        best_extends_candidate = bool(candidate_norm and best_norm.startswith(f"{candidate_norm} "))
+        if title_extends_candidate != best_extends_candidate:
+            return title_extends_candidate
+
+        # Prefer rows with explicit series metadata.
+        row_has_series = row.get("series_position") is not None or bool(str(row.get("series_name") or "").strip())
+        best_has_series = best_row.get("series_position") is not None or bool(str(best_row.get("series_name") or "").strip())
+        if row_has_series != best_has_series:
+            return row_has_series
+
+        # Prefer more specific (longer normalized) display title.
+        if len(title_norm) != len(best_norm):
+            return len(title_norm) > len(best_norm)
+
+        return False
 
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
@@ -517,11 +571,13 @@ def register_monitored_routes(
         if books is None:
             return jsonify({"error": "Not found"}), 404
 
-        known_titles: list[tuple[dict[str, Any], str]] = []
+        known_titles: list[tuple[dict[str, Any], str, str]] = []
         for row in books:
             title = str(row.get("title") or "").strip()
-            if title:
-                known_titles.append((row, title))
+            if not title:
+                continue
+            for match_title in _title_match_variants(title):
+                known_titles.append((row, match_title, title))
 
         allowed_ebook_ext = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
         allowed_audio_ext = {".m4b", ".m4a", ".mp3", ".flac"}
@@ -587,13 +643,28 @@ def register_monitored_routes(
 
                     best_score = 0.0
                     best_row: dict[str, Any] | None = None
+                    best_title = ""
                     scored: list[tuple[float, dict[str, Any], str]] = []
-                    for row, title in known_titles:
-                        score = _score_title_match(candidate, title)
-                        scored.append((score, row, title))
+                    for row, match_title, display_title in known_titles:
+                        score = _score_title_match(candidate, match_title)
+                        scored.append((score, row, display_title))
                         if score > best_score:
                             best_score = score
                             best_row = row
+                            best_title = display_title
+                        elif (
+                            best_row is not None
+                            and abs(score - best_score) < 1e-9
+                            and _prefer_row_on_tie(
+                                candidate=candidate,
+                                row=row,
+                                display_title=display_title,
+                                best_row=best_row,
+                                best_display_title=best_title,
+                            )
+                        ):
+                            best_row = row
+                            best_title = display_title
 
                     scored.sort(key=lambda x: x[0], reverse=True)
                     top_matches = [
@@ -740,13 +811,28 @@ def register_monitored_routes(
 
                     best_score = 0.0
                     best_row: dict[str, Any] | None = None
+                    best_title = ""
                     scored: list[tuple[float, dict[str, Any], str]] = []
-                    for row, title in known_titles:
-                        score = _score_title_match(candidate, title)
-                        scored.append((score, row, title))
+                    for row, match_title, display_title in known_titles:
+                        score = _score_title_match(candidate, match_title)
+                        scored.append((score, row, display_title))
                         if score > best_score:
                             best_score = score
                             best_row = row
+                            best_title = display_title
+                        elif (
+                            best_row is not None
+                            and abs(score - best_score) < 1e-9
+                            and _prefer_row_on_tie(
+                                candidate=candidate,
+                                row=row,
+                                display_title=display_title,
+                                best_row=best_row,
+                                best_display_title=best_title,
+                            )
+                        ):
+                            best_row = row
+                            best_title = display_title
 
                     scored.sort(key=lambda x: x[0], reverse=True)
                     top_matches = [
