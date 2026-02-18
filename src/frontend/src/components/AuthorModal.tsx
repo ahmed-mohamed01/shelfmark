@@ -813,6 +813,33 @@ export const AuthorModal = ({
       const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
       if (isCancelled) return;
 
+      const providerSeriesUpdates = allFreshBooks
+        .filter((book) => Boolean(book.provider && book.provider_id && (book.series_name || '').trim()))
+        .map((book) => ({
+          provider: String(book.provider),
+          provider_book_id: String(book.provider_id),
+          series_name: String(book.series_name).trim(),
+          series_position: book.series_position,
+          series_count: book.series_count,
+        }));
+
+      const mergedSeriesUpdatesByKey = new Map<string, {
+        provider: string;
+        provider_book_id: string;
+        series_name: string;
+        series_position?: number;
+        series_count?: number;
+      }>();
+
+      for (const update of providerSeriesUpdates) {
+        mergedSeriesUpdatesByKey.set(`${update.provider}:${update.provider_book_id}`, update);
+      }
+      for (const update of seriesUpdates) {
+        mergedSeriesUpdatesByKey.set(`${update.provider}:${update.provider_book_id}`, update);
+      }
+
+      const mergedSeriesUpdates = Array.from(mergedSeriesUpdatesByKey.values());
+
       const freshById = new Map(allFreshBooks.map((book) => [book.id, book]));
 
       if (!hasCachedDisplay) {
@@ -873,8 +900,8 @@ export const AuthorModal = ({
       if (monitoredEntityId) {
         try {
           await syncMonitoredEntity(monitoredEntityId);
-          if (seriesUpdates.length > 0) {
-            await updateMonitoredBooksSeries(monitoredEntityId, seriesUpdates);
+          if (mergedSeriesUpdates.length > 0) {
+            await updateMonitoredBooksSeries(monitoredEntityId, mergedSeriesUpdates);
           }
         } catch {
           // Best-effort sync, don't block UI
