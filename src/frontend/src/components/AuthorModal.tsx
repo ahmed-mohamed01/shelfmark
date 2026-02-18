@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, deleteMonitoredEntity } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
@@ -166,6 +166,7 @@ export const AuthorModal = ({
   const [ebookAuthorDir, setEbookAuthorDir] = useState('');
   const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
   const [pathsSaving, setPathsSaving] = useState(false);
+  const [authorDeleting, setAuthorDeleting] = useState(false);
   const [pathsBrowserState, setPathsBrowserState] = useState<{ open: boolean; kind: 'ebook' | 'audiobook' | null; initialPath: string | null }>({
     open: false,
     kind: null,
@@ -1223,6 +1224,30 @@ export const AuthorModal = ({
     }
   };
 
+  const handleDeleteAuthor = async () => {
+    if (!monitoredEntityId || authorDeleting) return;
+
+    const confirmed = window.confirm(
+      `Delete monitored author "${resolvedName || 'Unknown author'}"?\n\n` +
+      'This removes monitored author data from Shelfmark database only (books, file matches, and settings for this monitored author).\n' +
+      'Files on disk will NOT be deleted.'
+    );
+    if (!confirmed) return;
+
+    setAuthorDeleting(true);
+    setPathsError(null);
+    try {
+      await deleteMonitoredEntity(monitoredEntityId);
+      setIsEditModalOpen(false);
+      handleClose();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to delete monitored author';
+      setPathsError(message);
+    } finally {
+      setAuthorDeleting(false);
+    }
+  };
+
   return (
     <>
       <div
@@ -1941,7 +1966,17 @@ export const AuthorModal = ({
                 </div>
               </div>
 
-              <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+              <footer className="flex items-center justify-between gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteAuthor()}
+                  disabled={authorDeleting || pathsSaving || !monitoredEntityId}
+                  className="px-4 py-2 rounded-full bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-medium"
+                  title="Deletes monitored author records from database only. Files on disk are not deleted."
+                >
+                  {authorDeleting ? 'Deleting…' : 'Delete Author'}
+                </button>
+                <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -1957,12 +1992,13 @@ export const AuthorModal = ({
                 </button>
                 <button
                   type="button"
-                  disabled={pathsSaving}
+                  disabled={pathsSaving || authorDeleting}
                   onClick={() => void handleSavePaths()}
                   className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
                 >
                   {pathsSaving ? 'Saving…' : 'Save'}
                 </button>
+                </div>
               </footer>
             </div>
           </div>
