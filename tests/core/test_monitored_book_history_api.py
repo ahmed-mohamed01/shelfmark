@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import importlib
+import uuid
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.fixture(scope="module")
+def main_module():
+    with patch("shelfmark.download.orchestrator.start"):
+        import shelfmark.main as main
+
+        importlib.reload(main)
+        return main
+
+
+@pytest.fixture
+def client(main_module):
+    return main_module.app.test_client()
+
+
+def _set_session(client, *, user_id: str, db_user_id: int, is_admin: bool = False) -> None:
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+        sess["db_user_id"] = db_user_id
+        sess["is_admin"] = is_admin
+
+
+def test_monitored_book_history_endpoint_returns_rows(main_module, client):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.user_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="CasualFarmer",
+        settings={},
+    )
+
+    provider = "hardcover"
+    provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
+
+    main_module.user_db.insert_monitored_book_download_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        downloaded_at="2026-02-18T00:00:00Z",
+        source="direct_download",
+        source_display_name="Direct Download",
+        title_after_rename="Harvest of Time",
+        match_score=94.0,
+        downloaded_filename="elantris_2011_sanderson_brandon_TOR_books.epub",
+        final_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013).epub",
+        overwritten_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013)_1.epub",
+    )
+
+    response = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={"provider": provider, "provider_book_id": provider_book_id, "limit": "20"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json() or {}
+    rows = payload.get("history") or []
+    assert len(rows) >= 1
+    row = rows[0]
+    assert row["provider"] == provider
+    assert row["provider_book_id"] == provider_book_id
+    assert row["downloaded_filename"] == "elantris_2011_sanderson_brandon_TOR_books.epub"
+    assert row["title_after_rename"] == "Harvest of Time"
+    assert row["source_display_name"] == "Direct Download"
+    assert row["final_path"].endswith(".epub")
+
+
+def test_monitored_book_history_endpoint_requires_provider_params(main_module, client):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.user_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Someone",
+        settings={},
+    )
+
+    response = client.get(f"/api/monitored/{entity['id']}/books/history")
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "provider and provider_book_id are required"

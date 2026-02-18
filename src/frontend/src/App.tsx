@@ -1217,6 +1217,7 @@ function App() {
         source: release.source,
         source_id: release.source_id,
         title: book.title,    // Use book metadata title, not release/torrent title
+        release_title: release.title,
         author: book.author,  // Pass author from metadata
         year: book.year,      // Pass year from metadata
         format: release.format,
@@ -1233,6 +1234,9 @@ function App() {
         series_position: book.series_position,
         subtitle: book.subtitle,
         monitored_entity_id: monitoredEntityIdOverride ?? releaseMonitoredEntityId ?? undefined,
+        monitored_book_provider: book.provider,
+        monitored_book_provider_id: book.provider_id,
+        match_score: typeof release.extra?.match_score === 'number' ? release.extra.match_score : undefined,
       });
       await fetchStatus();
     } catch (error) {

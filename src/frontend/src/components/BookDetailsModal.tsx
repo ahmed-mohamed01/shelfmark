@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataBookInfo, MonitoredBookFileRow } from '../services/api';
+import { getMetadataBookInfo, listMonitoredBookDownloadHistory, MonitoredBookDownloadHistoryRow, MonitoredBookFileRow } from '../services/api';
 import { getFormatColor } from '../utils/colorMaps';
 
 interface BookDetailsModalProps {
   book: Book | null;
   files: MonitoredBookFileRow[];
+  monitoredEntityId?: number | null;
   onClose: () => void;
   onOpenSearch: (contentType: ContentType) => void;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
-export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
 
   const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
+  const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [descriptionOverflows, setDescriptionOverflows] = useState(false);
@@ -49,12 +53,57 @@ export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDet
   }, [book]);
 
   useEffect(() => {
+    if (!book || !monitoredEntityId) {
+      setHistoryRows([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      return;
+    }
+
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) {
+      setHistoryRows([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    void (async () => {
+      try {
+        const resp = await listMonitoredBookDownloadHistory(monitoredEntityId, provider, providerId, 30);
+        if (cancelled) return;
+        setHistoryRows(resp.history || []);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Failed to load history';
+        setHistoryError(message);
+        setHistoryRows([]);
+      } finally {
+        if (!cancelled) {
+          setHistoryLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [book?.id, book?.provider, book?.provider_id, monitoredEntityId]);
+
+  useEffect(() => {
     if (book) setTab('files');
   }, [book?.id]);
 
   useEffect(() => {
     if (!book) {
       setEnrichedBook(null);
+      setHistoryRows([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
       return;
     }
 
@@ -162,6 +211,12 @@ export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDet
   if (!enrichedBook) return null;
 
   const titleId = `book-details-modal-title-${enrichedBook.id}`;
+  const formatHistoryDate = (value?: string | null): string => {
+    if (!value) return 'Unknown date';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
+  };
 
   return (
     <div
@@ -305,6 +360,7 @@ export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDet
                     </a>
                   ) : null}
                 </div>
+
               </div>
             </div>
 
@@ -349,33 +405,67 @@ export const BookDetailsModal = ({ book, files, onClose, onOpenSearch }: BookDet
 
             <div className="px-5 py-4">
               {tab === 'files' ? (
-                <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                  <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
-                  <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                    {files.length === 0 ? (
-                      <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
-                    ) : (
-                      files.map((f) => (
-                        <div key={f.id} className="px-4 py-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
-                                {f.path}
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
+                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
+                    <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                      {files.length === 0 ? (
+                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
+                      ) : (
+                        files.map((f) => (
+                          <div key={f.id} className="px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
+                                  {f.path}
+                                </div>
+                                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
+                                  {f.file_type ? f.file_type.toUpperCase() : 'FILE'}
+                                  {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
+                                </div>
                               </div>
-                              <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {f.file_type ? f.file_type.toUpperCase() : 'FILE'}
-                                {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                              </div>
+                              {f.file_type ? (
+                                <span className={`${getFormatColor(f.file_type).bg} ${getFormatColor(f.file_type).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
+                                  {f.file_type.toUpperCase()}
+                                </span>
+                              ) : null}
                             </div>
-                            {f.file_type ? (
-                              <span className={`${getFormatColor(f.file_type).bg} ${getFormatColor(f.file_type).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
-                                {f.file_type.toUpperCase()}
-                              </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
+                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">History</div>
+                    <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                      {historyLoading ? (
+                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading history…</div>
+                      ) : historyError ? (
+                        <div className="px-4 py-4 text-sm text-red-500">{historyError}</div>
+                      ) : historyRows.length === 0 ? (
+                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No download/rename history yet.</div>
+                      ) : (
+                        historyRows.map((row) => (
+                          <div key={row.id} className="px-4 py-3">
+                            <div className="text-xs text-gray-500 dark:text-gray-400">{formatHistoryDate(row.downloaded_at)}</div>
+                            <div className="mt-1 text-xs text-gray-700 dark:text-gray-200 break-words">
+                              <span className="font-medium">{row.downloaded_filename || 'Unknown file'}</span>
+                              {row.source_display_name ? ` (${row.source_display_name})` : row.source ? ` (${row.source})` : ''}
+                              {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
+                            </div>
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">
+                              renamed → {row.final_path || 'Unknown location'}
+                            </div>
+                            {row.overwritten_path ? (
+                              <div className="mt-1 text-xs text-amber-600 dark:text-amber-400 break-words">
+                                overwrote: {row.overwritten_path}
+                              </div>
                             ) : null}
                           </div>
-                        </div>
-                      ))
-                    )}
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : tab === 'ebooks' ? (

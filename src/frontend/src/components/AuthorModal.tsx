@@ -1890,6 +1890,7 @@ export const AuthorModal = ({
       <BookDetailsModal
         book={activeBookDetails}
         files={activeBookFiles}
+        monitoredEntityId={monitoredEntityId}
         onClose={() => setActiveBookDetails(null)}
         onOpenSearch={(contentType) => {
           if (!activeBookDetails || !onGetReleases) return;

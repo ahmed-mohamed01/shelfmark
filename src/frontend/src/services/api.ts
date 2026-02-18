@@ -440,6 +440,22 @@ export interface MonitoredBookFileRow {
   updated_at?: string;
 }
 
+export interface MonitoredBookDownloadHistoryRow {
+  id: number;
+  entity_id: number;
+  provider: string;
+  provider_book_id: string;
+  downloaded_at: string;
+  source?: string | null;
+  source_display_name?: string | null;
+  title_after_rename?: string | null;
+  match_score?: number | null;
+  downloaded_filename?: string | null;
+  final_path?: string | null;
+  overwritten_path?: string | null;
+  created_at?: string;
+}
+
 export interface MonitoredAuthorBookSearchRow {
   entity_id: number;
   author_name: string;
@@ -471,6 +487,21 @@ export const searchMonitoredAuthorBooks = async (
 
 export const listMonitoredBookFiles = async (entityId: number): Promise<{ files: MonitoredBookFileRow[] }> => {
   return fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API.monitored}/${entityId}/files`);
+};
+
+export const listMonitoredBookDownloadHistory = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+  limit: number = 50,
+): Promise<{ history: MonitoredBookDownloadHistoryRow[] }> => {
+  const params = new URLSearchParams();
+  params.set('provider', provider);
+  params.set('provider_book_id', providerBookId);
+  params.set('limit', String(limit));
+  return fetchJSON<{ history: MonitoredBookDownloadHistoryRow[] }>(
+    `${API.monitored}/${entityId}/books/history?${params.toString()}`
+  );
 };
 
 export interface MonitoredFilesScanResult {
@@ -602,6 +633,10 @@ export const downloadRelease = async (release: {
   subtitle?: string;
   search_author?: string;
   monitored_entity_id?: number;
+  monitored_book_provider?: string;
+  monitored_book_provider_id?: string;
+  release_title?: string;
+  match_score?: number;
 }): Promise<void> => {
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',

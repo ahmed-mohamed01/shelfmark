@@ -71,10 +71,15 @@ def test_queue_release_uses_user_specific_books_output_mode(monkeypatch):
         "source": "direct_download",
         "source_id": "release-1",
         "title": "Release Title",
+        "release_title": "Release Title [Retail EPUB]",
         "content_type": "book (fiction)",
         "format": "epub",
         "size": "1 MB",
         "download_url": "https://audiobookbay.lu/abss/release-title/",
+        "monitored_entity_id": 17,
+        "monitored_book_provider": "hardcover",
+        "monitored_book_provider_id": "hc-42",
+        "match_score": 96,
     }
 
     success, error = orchestrator.queue_release(release_data, user_id=42, username="alice")
@@ -83,8 +88,16 @@ def test_queue_release_uses_user_specific_books_output_mode(monkeypatch):
     assert error is None
     task = captured["task"]
     assert task.output_mode == "email"
-    assert task.output_args == {"to": "alice@example.com"}
+    assert task.output_args.get("to") == "alice@example.com"
+    history_context = task.output_args.get("history_context")
+    assert isinstance(history_context, dict)
+    assert history_context.get("entity_id") == 17
+    assert history_context.get("provider") == "hardcover"
+    assert history_context.get("provider_book_id") == "hc-42"
+    assert history_context.get("release_title") == "Release Title [Retail EPUB]"
+    assert history_context.get("match_score") == 96.0
     assert task.source_url == "https://audiobookbay.lu/abss/release-title/"
+    assert task.monitored_entity_id == 17
     assert ("BOOKS_OUTPUT_MODE", 42) in config_calls
 
 

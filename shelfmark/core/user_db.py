@@ -156,6 +156,25 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
 
 CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
 ON monitored_book_files (entity_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_book_download_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_book_id TEXT NOT NULL,
+    downloaded_at TIMESTAMP NOT NULL,
+    source TEXT,
+    source_display_name TEXT,
+    title_after_rename TEXT,
+    match_score REAL,
+    downloaded_filename TEXT,
+    final_path TEXT,
+    overwritten_path TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_book_download_history_lookup
+ON monitored_book_download_history (entity_id, provider, provider_book_id, downloaded_at DESC, id DESC);
 """
 
 
@@ -228,6 +247,7 @@ class UserDB:
                 self._migrate_activity_tables(conn)
                 self._migrate_monitored_books_series_columns(conn)
                 self._migrate_monitored_book_files_table(conn)
+                self._migrate_monitored_book_download_history_table(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -877,6 +897,157 @@ class UserDB:
         finally:
             conn.close()
 
+    def get_monitored_book_file_match(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the most recent matched file row for a monitored book, if any."""
+
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return None
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM monitored_book_files
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (entity_id, provider, provider_book_id),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def insert_monitored_book_download_history(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        downloaded_at: str,
+        source: str | None,
+        source_display_name: str | None,
+        title_after_rename: str | None,
+        match_score: float | None,
+        downloaded_filename: str | None,
+        final_path: str | None,
+        overwritten_path: str | None,
+    ) -> None:
+        """Insert a monitored-book download history event."""
+
+        if not provider or not provider_book_id:
+            return
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return
+
+                conn.execute(
+                    """
+                    INSERT INTO monitored_book_download_history (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        downloaded_at,
+                        source,
+                        source_display_name,
+                        title_after_rename,
+                        match_score,
+                        downloaded_filename,
+                        final_path,
+                        overwritten_path
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        downloaded_at,
+                        source,
+                        source_display_name,
+                        title_after_rename,
+                        match_score,
+                        downloaded_filename,
+                        final_path,
+                        overwritten_path,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_monitored_book_download_history(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]] | None:
+        """List download history entries for a monitored book."""
+
+        safe_limit = max(1, min(int(limit or 50), 200))
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    downloaded_at,
+                    source,
+                    source_display_name,
+                    title_after_rename,
+                    match_score,
+                    downloaded_filename,
+                    final_path,
+                    overwritten_path,
+                    created_at
+                FROM monitored_book_download_history
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                ORDER BY downloaded_at DESC, id DESC
+                LIMIT ?
+                """,
+                (entity_id, provider, provider_book_id, safe_limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
         """Ensure users.auth_source exists and backfill historical rows."""
         columns = conn.execute("PRAGMA table_info(users)").fetchall()
@@ -938,6 +1109,53 @@ class UserDB:
             WHERE delivery_state = 'cleared'
             """
         )
+
+    def _migrate_monitored_book_download_history_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_book_download_history exists for older DBs."""
+
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_download_history'"
+        ).fetchone()
+        if not exists:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS monitored_book_download_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL,
+                    provider_book_id TEXT NOT NULL,
+                    downloaded_at TIMESTAMP NOT NULL,
+                    source TEXT,
+                    source_display_name TEXT,
+                    title_after_rename TEXT,
+                    match_score REAL,
+                    downloaded_filename TEXT,
+                    final_path TEXT,
+                    overwritten_path TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_monitored_book_download_history_lookup
+                ON monitored_book_download_history (entity_id, provider, provider_book_id, downloaded_at DESC, id DESC);
+                """
+            )
+            return
+
+        columns = conn.execute("PRAGMA table_info(monitored_book_download_history)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+        if "downloaded_filename" not in column_names:
+            conn.execute("ALTER TABLE monitored_book_download_history ADD COLUMN downloaded_filename TEXT")
+
+        # Canonicalize legacy rows so downloaded_filename is the only pre-rename source of truth.
+        if "title_before_rename" in column_names:
+            conn.execute(
+                """
+                UPDATE monitored_book_download_history
+                SET downloaded_filename = title_before_rename
+                WHERE (downloaded_filename IS NULL OR TRIM(downloaded_filename) = '')
+                  AND title_before_rename IS NOT NULL
+                  AND TRIM(title_before_rename) != ''
+                """
+            )
 
     def _migrate_activity_tables(self, conn: sqlite3.Connection) -> None:
         """Ensure activity log and dismissal tables exist with current columns/indexes."""

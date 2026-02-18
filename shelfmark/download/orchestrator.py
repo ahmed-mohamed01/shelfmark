@@ -9,6 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from email.utils import parseaddr
 from pathlib import Path
 from threading import Event, Lock
@@ -26,6 +27,67 @@ from shelfmark.release_sources import direct_download, get_handler, get_source_d
 from shelfmark.release_sources.direct_download import SearchUnavailable
 
 logger = setup_logger(__name__)
+
+# Optional UserDB handle injected from main for monitored download history writes.
+_history_user_db: Any = None
+
+
+def set_history_user_db(user_db: Any) -> None:
+    """Inject UserDB dependency for monitored download history recording."""
+    global _history_user_db
+    _history_user_db = user_db
+
+
+def _record_monitored_download_history(task: DownloadTask, *, final_path: str) -> None:
+    if _history_user_db is None:
+        return
+
+    history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    if not isinstance(history_context, dict):
+        return
+
+    entity_id = history_context.get("entity_id")
+    provider = str(history_context.get("provider") or "").strip()
+    provider_book_id = str(history_context.get("provider_book_id") or "").strip()
+    user_id = task.user_id
+    if entity_id is None or not provider or not provider_book_id or user_id is None:
+        return
+
+    previous = _history_user_db.get_monitored_book_file_match(
+        user_id=int(user_id),
+        entity_id=int(entity_id),
+        provider=provider,
+        provider_book_id=provider_book_id,
+    )
+
+    overwrite_path = None
+    if isinstance(previous, dict):
+        previous_path = previous.get("path")
+        if isinstance(previous_path, str) and previous_path.strip():
+            overwrite_path = previous_path.strip()
+
+    raw_match_score = history_context.get("match_score")
+    try:
+        match_score = float(raw_match_score) if raw_match_score is not None else None
+    except (TypeError, ValueError):
+        match_score = None
+
+    downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
+
+    _history_user_db.insert_monitored_book_download_history(
+        user_id=int(user_id),
+        entity_id=int(entity_id),
+        provider=provider,
+        provider_book_id=provider_book_id,
+        downloaded_at=datetime.utcnow().isoformat() + "Z",
+        source=str(task.source or ""),
+        source_display_name=get_source_display_name(task.source),
+        title_after_rename=str(task.title or "").strip() or None,
+        match_score=match_score,
+        downloaded_filename=downloaded_filename,
+        final_path=str(final_path or "").strip(),
+        overwritten_path=overwrite_path,
+    )
 
 
 # =============================================================================
@@ -205,6 +267,16 @@ def queue_release(
         subtitle = release_data.get('subtitle') or extra.get('subtitle')
 
         monitored_entity_id = release_data.get('monitored_entity_id')
+        monitored_book_provider = release_data.get('monitored_book_provider')
+        monitored_book_provider_id = release_data.get('monitored_book_provider_id')
+        release_title = release_data.get('release_title') or release_data.get('raw_title') or release_data.get('display_title')
+        raw_match_score = release_data.get('match_score')
+        if raw_match_score is None and isinstance(extra, dict):
+            raw_match_score = extra.get('match_score')
+        try:
+            release_match_score = float(raw_match_score) if raw_match_score is not None else None
+        except (TypeError, ValueError):
+            release_match_score = None
         destination_override = release_data.get('destination_override')
         file_organization_override = release_data.get('file_organization_override')
         template_override = release_data.get('template_override')
@@ -223,6 +295,23 @@ def queue_release(
                 return False, email_error
             if email_to:
                 output_args = {"to": email_to}
+
+        history_context: Dict[str, Any] | None = None
+        if monitored_entity_id is not None:
+            try:
+                history_context = {
+                    "entity_id": int(monitored_entity_id),
+                    "provider": str(monitored_book_provider or "").strip() or None,
+                    "provider_book_id": str(monitored_book_provider_id or "").strip() or None,
+                    "release_title": str(release_title or "").strip() or None,
+                    "match_score": release_match_score,
+                }
+            except (TypeError, ValueError):
+                history_context = None
+
+        if history_context and history_context.get("provider") and history_context.get("provider_book_id"):
+            output_args = dict(output_args)
+            output_args["history_context"] = history_context
 
         # Create a source-agnostic download task from release data
         task = DownloadTask(
@@ -401,6 +490,11 @@ def _download_task(task_id: str, cancel_flag: Event) -> Optional[str]:
             logger.error(f"Handler returned non-existent path: {temp_path}")
             return None
 
+        if isinstance(task.output_args, dict):
+            history_context = task.output_args.get("history_context")
+            if isinstance(history_context, dict):
+                history_context["downloaded_filename"] = temp_file.name
+
         # Check cancellation before post-processing
         if cancel_flag.is_set():
             logger.info("Task %s: cancelled before post-processing", task_id)
@@ -419,6 +513,10 @@ def _download_task(task_id: str, cancel_flag: Event) -> Optional[str]:
         elif result:
             logger.info("Task %s: post-processing complete", task_id)
             logger.debug("Task %s: post-processing result: %s", task_id, result)
+            try:
+                _record_monitored_download_history(task, final_path=result)
+            except Exception as hist_exc:
+                logger.warning("Task %s: failed to record monitored download history: %s", task_id, hist_exc)
         else:
             logger.warning("Task %s: post-processing failed", task_id)
 

@@ -502,6 +502,34 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
         return jsonify({"files": rows})
 
+    @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
+    def api_list_monitored_book_history(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        provider = str(request.args.get("provider") or "").strip()
+        provider_book_id = str(request.args.get("provider_book_id") or "").strip()
+        if not provider or not provider_book_id:
+            return jsonify({"error": "provider and provider_book_id are required"}), 400
+
+        raw_limit = request.args.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else 50
+        except (TypeError, ValueError):
+            limit = 50
+
+        rows = user_db.list_monitored_book_download_history(
+            user_id=db_user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            limit=limit,
+        )
+        if rows is None:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"history": rows})
+
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

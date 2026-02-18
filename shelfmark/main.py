@@ -141,6 +141,8 @@ except (sqlite3.OperationalError, OSError) as e:
     user_db = None
 
 # Start download coordinator
+if user_db is not None:
+    backend.set_history_user_db(user_db)
 backend.start()
 
 # Rate limiting for login attempts
