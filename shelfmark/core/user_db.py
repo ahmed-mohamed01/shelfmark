@@ -128,6 +128,9 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     series_name TEXT,
     series_position REAL,
     series_count INTEGER,
+    rating REAL,
+    ratings_count INTEGER,
+    readers_count INTEGER,
     state TEXT NOT NULL DEFAULT 'discovered',
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, provider, provider_book_id)
@@ -246,6 +249,7 @@ class UserDB:
                 self._migrate_request_delivery_columns(conn)
                 self._migrate_activity_tables(conn)
                 self._migrate_monitored_books_series_columns(conn)
+                self._migrate_monitored_books_popularity_columns(conn)
                 self._migrate_monitored_book_files_table(conn)
                 self._migrate_monitored_book_download_history_table(conn)
                 conn.commit()
@@ -581,6 +585,9 @@ class UserDB:
         series_name: str | None = None,
         series_position: float | None = None,
         series_count: int | None = None,
+        rating: float | None = None,
+        ratings_count: int | None = None,
+        readers_count: int | None = None,
         state: str = "discovered",
     ) -> None:
         """Upsert a monitored book snapshot."""
@@ -598,6 +605,27 @@ class UserDB:
                 year_value = int(publish_year)
             except (TypeError, ValueError):
                 year_value = None
+
+        rating_value: float | None = None
+        if rating is not None:
+            try:
+                rating_value = float(rating)
+            except (TypeError, ValueError):
+                rating_value = None
+
+        ratings_count_value: int | None = None
+        if ratings_count is not None:
+            try:
+                ratings_count_value = int(ratings_count)
+            except (TypeError, ValueError):
+                ratings_count_value = None
+
+        readers_count_value: int | None = None
+        if readers_count is not None:
+            try:
+                readers_count_value = int(readers_count)
+            except (TypeError, ValueError):
+                readers_count_value = None
 
         with self._lock:
             conn = self._connect()
@@ -624,9 +652,12 @@ class UserDB:
                         series_name,
                         series_position,
                         series_count,
+                        rating,
+                        ratings_count,
+                        readers_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
@@ -637,6 +668,9 @@ class UserDB:
                         series_name=excluded.series_name,
                         series_position=excluded.series_position,
                         series_count=excluded.series_count,
+                        rating=excluded.rating,
+                        ratings_count=excluded.ratings_count,
+                        readers_count=excluded.readers_count,
                         state=excluded.state
                     """,
                     (
@@ -651,6 +685,9 @@ class UserDB:
                         series_name,
                         series_position,
                         series_count,
+                        rating_value,
+                        ratings_count_value,
+                        readers_count_value,
                         normalized_state,
                     ),
                 )
@@ -1213,6 +1250,19 @@ class UserDB:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN series_position REAL")
         if "series_count" not in column_names:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN series_count INTEGER")
+
+    def _migrate_monitored_books_popularity_columns(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has rating, ratings_count, readers_count columns."""
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return
+        column_names = {str(col["name"]) for col in rows}
+        if "rating" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN rating REAL")
+        if "ratings_count" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN ratings_count INTEGER")
+        if "readers_count" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN readers_count INTEGER")
 
     def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
         """Ensure monitored_book_files table exists for older DBs."""

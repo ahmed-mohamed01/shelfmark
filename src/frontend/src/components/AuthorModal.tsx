@@ -120,6 +120,72 @@ const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
   action === 'auto_search_download' ? 'Auto Search + Download' : 'Interactive Search'
 );
 
+type AuthorBooksSort = 'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc' | 'popular' | 'rating';
+
+const parseFloatFromText = (value: string): number | null => {
+  const match = value.match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseIntFromText = (value: string): number | null => {
+  const digitsOnly = value.replace(/[^\d]/g, '');
+  if (!digitsOnly) return null;
+  const parsed = Number.parseInt(digitsOnly, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractBookPopularity = (book: Book): {
+  rating: number | null;
+  ratingsCount: number | null;
+  readersCount: number | null;
+} => {
+  const fields = Array.isArray(book.display_fields) ? book.display_fields : [];
+  let rating: number | null = null;
+  let ratingsCount: number | null = null;
+  let readersCount: number | null = null;
+
+  for (const field of fields) {
+    const icon = (field.icon || '').toLowerCase();
+    const label = (field.label || '').toLowerCase();
+    const value = String(field.value || '');
+
+    if (rating === null && (icon === 'star' || /rating/.test(label))) {
+      const maybeRating = parseFloatFromText(value);
+      if (maybeRating !== null && maybeRating <= 10) {
+        rating = maybeRating;
+      }
+
+      const parenCount = value.match(/\(([^)]+)\)/);
+      if (parenCount) {
+        const parsedCount = parseIntFromText(parenCount[1]);
+        if (parsedCount !== null) {
+          ratingsCount = parsedCount;
+        }
+      }
+      continue;
+    }
+
+    if (ratingsCount === null && /ratings?/.test(label)) {
+      const parsedCount = parseIntFromText(value);
+      if (parsedCount !== null) {
+        ratingsCount = parsedCount;
+      }
+      continue;
+    }
+
+    if (readersCount === null && (icon === 'users' || /readers?|users?|followers?|people/.test(label))) {
+      const parsedReaders = parseIntFromText(value);
+      if (parsedReaders !== null) {
+        readersCount = parsedReaders;
+      }
+    }
+  }
+
+  return { rating, ratingsCount, readersCount };
+};
+
 export const AuthorModal = ({
   author,
   onClose,
@@ -142,9 +208,17 @@ export const AuthorModal = ({
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [showMoreDetails, setShowMoreDetails] = useState(false);
-  const [booksSort, setBooksSort] = useState<'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc'>(() => {
+  const [booksSort, setBooksSort] = useState<AuthorBooksSort>(() => {
     const saved = localStorage.getItem('authorBooksSort');
-    return saved === 'year_desc' || saved === 'year_asc' || saved === 'title_asc' || saved === 'series_asc' || saved === 'series_desc' ? saved : 'year_desc';
+    return saved === 'year_desc'
+      || saved === 'year_asc'
+      || saved === 'title_asc'
+      || saved === 'series_asc'
+      || saved === 'series_desc'
+      || saved === 'popular'
+      || saved === 'rating'
+      ? saved
+      : 'series_asc';
   });
 
   const [books, setBooks] = useState<Book[]>([]);
@@ -626,6 +700,22 @@ export const AuthorModal = ({
       series_name: row.series_name || undefined,
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
+      display_fields: [
+        ...(typeof row.rating === 'number'
+          ? [{
+              label: 'Rating',
+              value: `${row.rating.toFixed(1)}${typeof row.ratings_count === 'number' ? ` (${row.ratings_count.toLocaleString()})` : ''}`,
+              icon: 'star',
+            }]
+          : []),
+        ...(typeof row.readers_count === 'number'
+          ? [{
+              label: 'Readers',
+              value: row.readers_count.toLocaleString(),
+              icon: 'users',
+            }]
+          : []),
+      ],
     });
 
     const enrichSeriesInfo = async (allBooks: Book[]): Promise<Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>> => {
@@ -723,6 +813,22 @@ export const AuthorModal = ({
       const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
       if (isCancelled) return;
 
+      const freshById = new Map(allFreshBooks.map((book) => [book.id, book]));
+
+      if (!hasCachedDisplay) {
+        setBooks((current) => current.map((book) => {
+          const fresh = freshById.get(book.id);
+          if (!fresh) return book;
+          return {
+            ...book,
+            ...fresh,
+            series_name: book.series_name || fresh.series_name,
+            series_position: book.series_position ?? fresh.series_position,
+            series_count: book.series_count ?? fresh.series_count,
+          };
+        }));
+      }
+
       // Single merge after all provider data + series enrichment is done.
       if (hasCachedDisplay) {
         setBooks((current) => {
@@ -734,18 +840,28 @@ export const AuthorModal = ({
           for (const book of current) {
             seen.add(book.id);
             const cached = cachedById.get(book.id);
+            const fresh = freshById.get(book.id);
             merged.push({
               ...book,
-              series_name: book.series_name || cached?.series_name,
-              series_position: book.series_position ?? cached?.series_position,
-              series_count: book.series_count ?? cached?.series_count,
+              ...fresh,
+              series_name: book.series_name || fresh?.series_name || cached?.series_name,
+              series_position: book.series_position ?? fresh?.series_position ?? cached?.series_position,
+              series_count: book.series_count ?? fresh?.series_count ?? cached?.series_count,
             });
           }
 
           for (const book of cachedBooks) {
             if (!seen.has(book.id)) {
               const cur = currentById.get(book.id);
-              merged.push(cur || book);
+              const fresh = freshById.get(book.id);
+              merged.push(cur || fresh || book);
+            }
+          }
+
+          for (const fresh of allFreshBooks) {
+            if (!seen.has(fresh.id)) {
+              seen.add(fresh.id);
+              merged.push(fresh);
             }
           }
 
@@ -785,10 +901,15 @@ export const AuthorModal = ({
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
 
+              const cachedHasPopularity = cachedBooks.some((book) => {
+                const popularity = extractBookPopularity(book);
+                return popularity.rating !== null || popularity.ratingsCount !== null || popularity.readersCount !== null;
+              });
+
               // Skip provider refresh if last sync was <24hrs ago and not a forced refresh
               if (!forceRefresh && resp.last_checked_at) {
                 const lastChecked = new Date(resp.last_checked_at + 'Z').getTime();
-                if (Date.now() - lastChecked < REFRESH_TTL_MS) {
+                if (Date.now() - lastChecked < REFRESH_TTL_MS && cachedHasPopularity) {
                   skipProviderRefresh = true;
                 }
               }
@@ -851,6 +972,41 @@ export const AuthorModal = ({
 
     const withinGroupSort = (a: Book, b: Book) => {
       if (booksSort === 'title_asc') {
+        return (a.title || '').localeCompare(b.title || '');
+      }
+
+      if (booksSort === 'popular' || booksSort === 'rating') {
+        const aPopularity = extractBookPopularity(a);
+        const bPopularity = extractBookPopularity(b);
+
+        if (booksSort === 'popular') {
+          const aReaders = aPopularity.readersCount ?? -1;
+          const bReaders = bPopularity.readersCount ?? -1;
+          if (bReaders !== aReaders) return bReaders - aReaders;
+
+          const aRatingsCount = aPopularity.ratingsCount ?? -1;
+          const bRatingsCount = bPopularity.ratingsCount ?? -1;
+          if (bRatingsCount !== aRatingsCount) return bRatingsCount - aRatingsCount;
+
+          const aRating = aPopularity.rating ?? -1;
+          const bRating = bPopularity.rating ?? -1;
+          if (bRating !== aRating) return bRating - aRating;
+
+          return (a.title || '').localeCompare(b.title || '');
+        }
+
+        const aRating = aPopularity.rating ?? -1;
+        const bRating = bPopularity.rating ?? -1;
+        if (bRating !== aRating) return bRating - aRating;
+
+        const aRatingsCount = aPopularity.ratingsCount ?? -1;
+        const bRatingsCount = bPopularity.ratingsCount ?? -1;
+        if (bRatingsCount !== aRatingsCount) return bRatingsCount - aRatingsCount;
+
+        const aReaders = aPopularity.readersCount ?? -1;
+        const bReaders = bPopularity.readersCount ?? -1;
+        if (bReaders !== aReaders) return bReaders - aReaders;
+
         return (a.title || '').localeCompare(b.title || '');
       }
 
@@ -1626,6 +1782,24 @@ export const AuthorModal = ({
                           </button>
                           <button
                             type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'popular' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('popular'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'popular'}
+                          >
+                            Most popular
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'rating' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => { setBooksSort('rating'); close(); }}
+                            role="option"
+                            aria-selected={booksSort === 'rating'}
+                          >
+                            Highest rated
+                          </button>
+                          <button
+                            type="button"
                             className={`w-full px-3 py-2 text-left text-sm hover-surface ${booksSort === 'year_desc' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
                             onClick={() => { setBooksSort('year_desc'); close(); }}
                             role="option"
@@ -1761,6 +1935,14 @@ export const AuthorModal = ({
                                       key={book.id}
                                       className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full"
                                     >
+                                      {(() => {
+                                        const popularity = extractBookPopularity(book);
+                                        const hasPopularity = popularity.rating !== null || popularity.readersCount !== null;
+                                        const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
+                                        const showSeriesInfo = Boolean(seriesLabel) && group.key !== '__standalone__';
+                                        const hasSeriesPosition = book.series_position != null;
+
+                                        return (
                                       <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                         <div className="flex items-center justify-center pl-0.5 sm:pl-1">
                                           {showIndividualBookSelectors ? (
@@ -1785,27 +1967,54 @@ export const AuthorModal = ({
                                           className="min-w-0 flex flex-col justify-center sm:pl-3 text-left"
                                           onClick={() => setActiveBookDetails(book)}
                                         >
-                                          <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight line-clamp-1 sm:line-clamp-2" title={book.title || 'Untitled'}>
-                                            <span className="truncate">{book.title || 'Untitled'}</span>
-                                          </h3>
-                                          <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                                            {book.author || resolvedName || 'Unknown author'}
-                                            {book.year ? <span> • {book.year}</span> : null}
-                                          </p>
-                                          {group.key !== '__standalone__' && book.series_position != null ? (
-                                            <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-2">
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>
+                                              {book.title || 'Untitled'}
+                                            </h3>
+                                            {showSeriesInfo ? (
+                                              <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
+                                                • {seriesLabel}
+                                              </span>
+                                            ) : null}
+                                            {hasSeriesPosition ? (
                                               <span
                                                 className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0"
                                                 style={{
                                                   boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
                                                   textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
                                                 }}
-                                                title={`${group.title}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}`}
+                                                title={seriesLabel ? `${seriesLabel}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}` : undefined}
                                               >
                                                 #{book.series_position}
                                                 {book.series_count != null ? `/${book.series_count}` : ''}
                                               </span>
-                                              <span className="truncate" title={group.title}>{group.title}</span>
+                                            ) : null}
+                                          </div>
+                                          <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
+                                            {book.author || resolvedName || 'Unknown author'}
+                                            {book.year ? <span> • {book.year}</span> : null}
+                                          </p>
+                                          {hasPopularity ? (
+                                            <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                                              {popularity.rating !== null ? (
+                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" />
+                                                  </svg>
+                                                  <span>
+                                                    {popularity.rating.toFixed(1)}
+                                                    {popularity.ratingsCount !== null ? ` (${popularity.ratingsCount.toLocaleString()})` : ''}
+                                                  </span>
+                                                </span>
+                                              ) : null}
+                                              {popularity.readersCount !== null ? (
+                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0-3-.479c-1.07 0-2.098.18-3 .512m6 0a7.5 7.5 0 1 0-6 0m6 0a9.372 9.372 0 0 1 3 .512M9 10.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0Z" />
+                                                  </svg>
+                                                  <span>{popularity.readersCount.toLocaleString()}</span>
+                                                </span>
+                                              ) : null}
                                             </div>
                                           ) : null}
                                         </button>
@@ -1853,6 +2062,8 @@ export const AuthorModal = ({
                                           ) : null}
                                         </div>
                                       </div>
+                                        );
+                                      })()}
                                     </div>
                                   ))}
                                 </div>

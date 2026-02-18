@@ -80,6 +80,65 @@ def register_monitored_routes(
     resolve_auth_mode: Callable[[], str],
 ) -> None:
 
+    def _parse_float_from_text(value: str) -> float | None:
+        match = re.search(r"-?\d+(?:\.\d+)?", value or "")
+        if not match:
+            return None
+        try:
+            parsed = float(match.group(0))
+        except Exception:
+            return None
+        return parsed if parsed == parsed else None
+
+    def _parse_int_from_text(value: str) -> int | None:
+        digits_only = re.sub(r"[^\d]", "", value or "")
+        if not digits_only:
+            return None
+        try:
+            return int(digits_only)
+        except Exception:
+            return None
+
+    def _extract_book_popularity(display_fields: Any) -> tuple[float | None, int | None, int | None]:
+        if not isinstance(display_fields, list):
+            return None, None, None
+
+        rating: float | None = None
+        ratings_count: int | None = None
+        readers_count: int | None = None
+
+        for raw in display_fields:
+            if not isinstance(raw, dict):
+                continue
+            icon = str(raw.get("icon") or "").strip().lower()
+            label = str(raw.get("label") or "").strip().lower()
+            value = str(raw.get("value") or "")
+
+            if rating is None and (icon == "star" or "rating" in label):
+                maybe_rating = _parse_float_from_text(value)
+                if maybe_rating is not None and maybe_rating <= 10:
+                    rating = maybe_rating
+
+                paren_match = re.search(r"\(([^)]+)\)", value)
+                if paren_match and ratings_count is None:
+                    parsed_count = _parse_int_from_text(paren_match.group(1))
+                    if parsed_count is not None:
+                        ratings_count = parsed_count
+                continue
+
+            if ratings_count is None and re.search(r"ratings?", label):
+                parsed_count = _parse_int_from_text(value)
+                if parsed_count is not None:
+                    ratings_count = parsed_count
+                continue
+
+            if readers_count is None and (icon == "users" or re.search(r"readers?|users?|followers?|people", label)):
+                parsed_readers = _parse_int_from_text(value)
+                if parsed_readers is not None:
+                    readers_count = parsed_readers
+
+        return rating, ratings_count, readers_count
+
     def _resolve_allowed_roots(*, db_user_id: int) -> list[Path]:
         # Mirror the safety model in /api/fs/list: only allow browsing/scanning inside
         # configured destinations + remembered monitored roots.
@@ -1128,6 +1187,7 @@ def register_monitored_routes(
                     payload = asdict(book)
                     authors = payload.get("authors")
                     authors_str = ", ".join(authors) if isinstance(authors, list) else None
+                    rating, ratings_count, readers_count = _extract_book_popularity(payload.get("display_fields"))
                     user_db.upsert_monitored_book(
                         user_id=db_user_id,
                         entity_id=entity_id,
@@ -1141,6 +1201,9 @@ def register_monitored_routes(
                         series_name=payload.get("series_name"),
                         series_position=payload.get("series_position"),
                         series_count=payload.get("series_count"),
+                        rating=rating,
+                        ratings_count=ratings_count,
+                        readers_count=readers_count,
                         state="discovered",
                     )
                     discovered += 1
