@@ -1487,10 +1487,11 @@ export const AuthorModal = ({
                 </div>
               </div>
 
-              <div className={`mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] ${isPageMode ? 'overflow-visible' : 'overflow-hidden'}`}>
+              <div className="mt-4">
                 <div
-                  className={`sticky z-20 flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)] bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
+                  className={`sticky z-20 rounded-t-2xl border border-[var(--border-muted)] border-b-0 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
                 >
+                  <div className="flex items-center justify-between gap-3 px-4 py-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
@@ -1667,6 +1668,9 @@ export const AuthorModal = ({
                     </button>
                   </div>
                 </div>
+                </div>
+
+                <div className="rounded-b-2xl border border-[var(--border-muted)] border-t-0 bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
 
                 {monitoredEntityId ? (
                   <div className="px-4 pb-3">
@@ -1871,6 +1875,7 @@ export const AuthorModal = ({
             </div>
           </div>
         </div>
+      </div>
       </div>
       <FolderBrowserModal
         open={pathsBrowserState.open}
