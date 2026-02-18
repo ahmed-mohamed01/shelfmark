@@ -1515,6 +1515,8 @@ function App() {
           onSearchChange={setSearchInput}
           onDownloadsClick={() => setDownloadsSidebarOpen((prev) => !prev)}
           onMonitoredClick={() => navigate('/monitored')}
+          activeTopNav="standalone"
+          isActivityOpen={downloadsSidebarOpen}
           onSettingsClick={() => {
             if (config?.settings_enabled) {
               if (authIsAdmin) {
@@ -1765,6 +1767,7 @@ function App() {
           ) : (
             <MonitoredPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+              isActivityOpen={downloadsSidebarOpen}
               onBack={() => navigate('/')}
               onMonitoredClick={() => navigate('/monitored')}
               logoUrl={logoUrl}
@@ -1800,6 +1803,7 @@ function App() {
           ) : (
             <AuthorDetailsPage
               onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+              isActivityOpen={downloadsSidebarOpen}
               onGetReleases={openReleasesForBook}
               defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
               defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}

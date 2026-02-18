@@ -36,6 +36,8 @@ interface HeaderProps {
   onRemoveToast?: (id: string) => void;
   contentType?: ContentType;
   onContentTypeChange?: (type: ContentType) => void;
+  activeTopNav?: 'standalone' | 'monitoring' | 'activity';
+  isActivityOpen?: boolean;
 }
 
 export const Header = forwardRef<HeaderHandle, HeaderProps>(({
@@ -66,6 +68,8 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onRemoveToast,
   contentType = 'ebook',
   onContentTypeChange,
+  activeTopNav,
+  isActivityOpen = false,
 }, ref) => {
   const activityBadge = getActivityBadgeState(statusCounts, isAdmin);
   const settingsEnabled = canAccessSettings ?? isAdmin;
@@ -171,6 +175,15 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
 
   // Determine if we should show icons only (both URLs configured)
   const showIconsOnly = Boolean(calibreWebUrl && audiobookLibraryUrl);
+  const isActivityActive = isActivityOpen || activeTopNav === 'activity';
+  const isStandaloneActive = !isActivityActive && activeTopNav === 'standalone';
+  const isMonitoringActive = !isActivityActive && activeTopNav === 'monitoring';
+  const navButtonClass = (active: boolean) =>
+    `relative flex items-center gap-2 px-3 py-2 rounded-full transition-all duration-200 ${
+      active
+        ? 'text-white bg-emerald-600 hover:bg-emerald-700'
+        : 'text-gray-900 dark:text-gray-100 hover-action'
+    }`;
 
   // Icon buttons component - reused for both states
   const IconButtons = () => (
@@ -209,11 +222,52 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
         </a>
       )}
 
+      {/* Standalone Button */}
+      {onLogoClick && (
+        <button
+          onClick={onLogoClick}
+          className={navButtonClass(isStandaloneActive)}
+          aria-label="View standalone"
+          title="Standalone"
+        >
+          <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          <span className="hidden sm:inline text-sm font-medium">Standalone</span>
+        </button>
+      )}
+
+      {/* Monitoring Button */}
+      {onMonitoredClick && (
+        <button
+          onClick={onMonitoredClick}
+          className={navButtonClass(isMonitoringActive)}
+          aria-label="View monitoring"
+          title="Monitoring"
+        >
+          <svg
+            className="w-5 h-5"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth="1.5"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          <span className="hidden sm:inline text-sm font-medium">Monitoring</span>
+        </button>
+      )}
+
       {/* Activity Button */}
       {onDownloadsClick && (
         <button
           onClick={onDownloadsClick}
-          className="relative flex items-center gap-2 px-3 py-2 rounded-full hover-action transition-all duration-200 text-gray-900 dark:text-gray-100"
+          className={navButtonClass(isActivityActive)}
           aria-label="View activity"
           title="Activity"
         >
@@ -242,32 +296,6 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
             )}
           </div>
           <span className="hidden sm:inline text-sm font-medium">Activity</span>
-        </button>
-      )}
-
-      {/* Monitored Button */}
-      {onMonitoredClick && (
-        <button
-          onClick={onMonitoredClick}
-          className="relative flex items-center gap-2 px-3 py-2 rounded-full hover-action transition-all duration-200 text-gray-900 dark:text-gray-100"
-          aria-label="View monitored"
-          title="Monitored"
-        >
-          <svg
-            className="w-5 h-5"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth="1.5"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
-          <span className="hidden sm:inline text-sm font-medium">Monitored</span>
         </button>
       )}
 

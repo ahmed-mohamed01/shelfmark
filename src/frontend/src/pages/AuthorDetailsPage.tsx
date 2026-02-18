@@ -7,6 +7,7 @@ import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusDat
 
 interface AuthorDetailsPageProps {
   onActivityClick?: () => void;
+  isActivityOpen?: boolean;
   onGetReleases?: (
     book: Book,
     contentType: ContentType,
@@ -35,6 +36,7 @@ interface AuthorDetailsPageProps {
 
 export const AuthorDetailsPage = ({
   onActivityClick,
+  isActivityOpen = false,
   onGetReleases,
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
@@ -99,9 +101,11 @@ export const AuthorDetailsPage = ({
             navigate(q ? `/monitored?q=${encodeURIComponent(q)}` : '/monitored');
           }}
           onDownloadsClick={onActivityClick}
+          isActivityOpen={isActivityOpen}
           onLogoClick={onBack}
           debug={debug}
           onMonitoredClick={onMonitoredClick}
+          activeTopNav="monitoring"
           onSettingsClick={onSettingsClick}
           statusCounts={statusCounts}
           isAdmin={isAdmin}

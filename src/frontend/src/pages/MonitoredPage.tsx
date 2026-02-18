@@ -34,6 +34,7 @@ interface MonitoredAuthor {
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
+  isActivityOpen?: boolean;
   onBack?: () => void;
   onMonitoredClick?: () => void;
   logoUrl?: string;
@@ -102,6 +103,7 @@ const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: str
 
 export const MonitoredPage = ({
   onActivityClick,
+  isActivityOpen = false,
   onBack,
   onMonitoredClick,
   logoUrl,
@@ -767,9 +769,11 @@ export const MonitoredPage = ({
           onSearch={() => void runAuthorSearch()}
           isLoading={isSearching}
           onDownloadsClick={onActivityClick}
+          isActivityOpen={isActivityOpen}
           onLogoClick={onBack}
           debug={debug}
           onMonitoredClick={onMonitoredClick}
+          activeTopNav="monitoring"
           onSettingsClick={onSettingsClick}
           statusCounts={statusCounts}
           isAdmin={isAdmin}
