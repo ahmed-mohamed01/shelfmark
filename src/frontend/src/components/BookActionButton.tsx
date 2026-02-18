@@ -12,7 +12,10 @@ interface BookActionButtonProps {
   buttonState: ButtonStateInfo;
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => void;
+  onGetReleasesAuto?: (book: Book) => void;
   isLoadingReleases?: boolean;
+  isLoadingAutoReleases?: boolean;
+  showDualGetButtons?: boolean;
   size?: ButtonSize;
   variant?: ButtonVariant;
   fullWidth?: boolean;
@@ -25,7 +28,10 @@ export function BookActionButton({
   buttonState,
   onDownload,
   onGetReleases,
+  onGetReleasesAuto,
   isLoadingReleases,
+  isLoadingAutoReleases,
+  showDualGetButtons = false,
   size,
   variant = 'default',
   fullWidth,
@@ -39,8 +45,11 @@ export function BookActionButton({
       <BookGetButton
         book={book}
         onGetReleases={onGetReleases}
+        onGetReleasesAuto={onGetReleasesAuto}
         buttonState={buttonState}
         isLoading={isLoadingReleases}
+        isAutoLoading={isLoadingAutoReleases}
+        showDualActions={showDualGetButtons}
         size={size}
         variant={variant}
         fullWidth={fullWidth}

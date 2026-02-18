@@ -22,6 +22,8 @@ interface AdvancedFiltersProps {
   metadataSearchFields?: MetadataSearchField[];
   searchFieldValues?: Record<string, string | number | boolean>;
   onSearchFieldChange?: (key: string, value: string | number | boolean) => void;
+  showDualGetButtonsToggle?: boolean;
+  onShowDualGetButtonsToggleChange?: (value: boolean) => void;
   // Submit handler for Enter key
   onSubmit?: () => void;
 }
@@ -38,6 +40,8 @@ export const AdvancedFilters = ({
   metadataSearchFields = [],
   searchFieldValues = {},
   onSearchFieldChange,
+  showDualGetButtonsToggle = false,
+  onShowDualGetButtonsToggleChange,
   onSubmit,
 }: AdvancedFiltersProps) => {
   const { searchMode } = useSearchMode();
@@ -70,6 +74,18 @@ export const AdvancedFilters = ({
     label: format.toUpperCase(),
     disabled: !supportedFormats.includes(format),
   }));
+
+  const dualGetButtonsToggle = onShowDualGetButtonsToggleChange ? (
+    <label className="inline-flex items-center gap-2 text-sm opacity-90 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={showDualGetButtonsToggle}
+        onChange={(e) => onShowDualGetButtonsToggleChange(e.target.checked)}
+        className="w-4 h-4 rounded border-[var(--border-muted)] text-emerald-500 focus:ring-emerald-500/50"
+      />
+      <span>Allow auto-download in standard search</span>
+    </label>
+  ) : null;
 
   if (!visible) return null;
 
@@ -104,6 +120,9 @@ export const AdvancedFilters = ({
             )}
           </div>
         ))}
+        {dualGetButtonsToggle ? (
+          <div className="md:col-span-2 lg:col-span-3">{dualGetButtonsToggle}</div>
+        ) : null}
       </form>
     );
 
@@ -222,6 +241,9 @@ export const AdvancedFilters = ({
               keepOpenOnSelect
             />
           </div>
+          {dualGetButtonsToggle ? (
+            <div className="md:col-span-2 lg:col-span-3">{dualGetButtonsToggle}</div>
+          ) : null}
     </form>
   );
 

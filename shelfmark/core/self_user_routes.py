@@ -254,6 +254,8 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
             allowed_user_settings_keys = {
                 key for key, _field in _get_ordered_user_overridable_fields("downloads")
             } | {
+                key for key, _field in _get_ordered_user_overridable_fields("search_mode")
+            } | {
                 key for key, _field in _get_ordered_user_overridable_fields("notifications")
             }
             disallowed_keys = sorted(

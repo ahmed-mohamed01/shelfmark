@@ -10,6 +10,8 @@ interface ListViewProps {
   onDetails: (id: string) => Promise<void>;
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => Promise<void>;
+  onGetReleasesAuto?: (book: Book) => Promise<void>;
+  showDualGetButtons?: boolean;
   getButtonState: (bookId: string) => ButtonStateInfo;
   getUniversalButtonState: (bookId: string) => ButtonStateInfo;
   showSeriesPosition?: boolean;
@@ -53,6 +55,8 @@ export const ListView = ({
   onDetails,
   onDownload,
   onGetReleases,
+  onGetReleasesAuto,
+  showDualGetButtons = false,
   getButtonState,
   getUniversalButtonState,
   showSeriesPosition = false,
@@ -60,6 +64,7 @@ export const ListView = ({
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
   const [releasesLoadingId, setReleasesLoadingId] = useState<string | null>(null);
+  const [autoReleasesLoadingId, setAutoReleasesLoadingId] = useState<string | null>(null);
 
   if (books.length === 0) {
     return null;
@@ -80,6 +85,16 @@ export const ListView = ({
       await onGetReleases(book);
     } finally {
       setReleasesLoadingId((current) => (current === book.id ? null : current));
+    }
+  };
+
+  const handleGetReleasesAuto = async (book: Book) => {
+    if (!onGetReleasesAuto) return;
+    setAutoReleasesLoadingId(book.id);
+    try {
+      await onGetReleasesAuto(book);
+    } finally {
+      setAutoReleasesLoadingId((current) => (current === book.id ? null : current));
     }
   };
 
@@ -245,7 +260,10 @@ export const ListView = ({
                     buttonState={buttonState}
                     onDownload={onDownload}
                     onGetReleases={handleGetReleases}
+                    onGetReleasesAuto={onGetReleasesAuto ? handleGetReleasesAuto : undefined}
                     isLoadingReleases={releasesLoadingId === book.id}
+                    isLoadingAutoReleases={autoReleasesLoadingId === book.id}
+                    showDualGetButtons={showDualGetButtons}
                     variant="icon"
                     size="md"
                   />

@@ -13,6 +13,8 @@ interface CompactViewProps {
   onDetails: (id: string) => Promise<void>;
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => Promise<void>;
+  onGetReleasesAuto?: (book: Book) => Promise<void>;
+  showDualGetButtons?: boolean;
   buttonState: ButtonStateInfo;
   showDetailsButton?: boolean;
   animationDelay?: number;
@@ -24,6 +26,8 @@ export const CompactView = ({
   onDetails,
   onDownload,
   onGetReleases,
+  onGetReleasesAuto,
+  showDualGetButtons = false,
   buttonState,
   showDetailsButton = false,
   animationDelay = 0,
@@ -32,6 +36,7 @@ export const CompactView = ({
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingReleases, setIsLoadingReleases] = useState(false);
+  const [isLoadingAutoReleases, setIsLoadingAutoReleases] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -51,6 +56,16 @@ export const CompactView = ({
       await onGetReleases(book);
     } finally {
       setIsLoadingReleases(false);
+    }
+  };
+
+  const handleGetReleasesAuto = async (book: Book) => {
+    if (!onGetReleasesAuto) return;
+    setIsLoadingAutoReleases(true);
+    try {
+      await onGetReleasesAuto(book);
+    } finally {
+      setIsLoadingAutoReleases(false);
     }
   };
 
@@ -178,7 +193,10 @@ export const CompactView = ({
                 buttonState={buttonState}
                 onDownload={onDownload}
                 onGetReleases={handleGetReleases}
+                onGetReleasesAuto={onGetReleasesAuto ? handleGetReleasesAuto : undefined}
                 isLoadingReleases={isLoadingReleases}
+                isLoadingAutoReleases={isLoadingAutoReleases}
+                showDualGetButtons={showDualGetButtons}
                 size="sm"
                 className="flex-1"
               />
@@ -189,7 +207,10 @@ export const CompactView = ({
               buttonState={buttonState}
               onDownload={onDownload}
               onGetReleases={handleGetReleases}
+              onGetReleasesAuto={onGetReleasesAuto ? handleGetReleasesAuto : undefined}
               isLoadingReleases={isLoadingReleases}
+              isLoadingAutoReleases={isLoadingAutoReleases}
+              showDualGetButtons={showDualGetButtons}
               size="sm"
               fullWidth
             />

@@ -20,6 +20,8 @@ interface ResultsSectionProps {
   onDetails: (id: string) => Promise<void>;
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => Promise<void>;
+  onGetReleasesAuto?: (book: Book) => Promise<void>;
+  showDualGetButtons?: boolean;
   getButtonState: (bookId: string) => ButtonStateInfo;
   getUniversalButtonState: (bookId: string) => ButtonStateInfo;
   sortValue: string;
@@ -38,6 +40,8 @@ export const ResultsSection = ({
   onDetails,
   onDownload,
   onGetReleases,
+  onGetReleasesAuto,
+  showDualGetButtons = false,
   getButtonState,
   getUniversalButtonState,
   sortValue,
@@ -180,6 +184,8 @@ export const ResultsSection = ({
           onDetails={onDetails}
           onDownload={onDownload}
           onGetReleases={onGetReleases}
+          onGetReleasesAuto={onGetReleasesAuto}
+          showDualGetButtons={showDualGetButtons}
           getButtonState={getButtonState}
           getUniversalButtonState={getUniversalButtonState}
           showSeriesPosition={sortValue === 'series_order'}
@@ -204,6 +210,8 @@ export const ResultsSection = ({
                 onDetails={onDetails}
                 onDownload={onDownload}
                 onGetReleases={onGetReleases}
+                onGetReleasesAuto={onGetReleasesAuto}
+                showDualGetButtons={showDualGetButtons}
                 buttonState={buttonState}
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
@@ -215,6 +223,8 @@ export const ResultsSection = ({
                 onDetails={onDetails}
                 onDownload={onDownload}
                 onGetReleases={onGetReleases}
+                onGetReleasesAuto={onGetReleasesAuto}
+                showDualGetButtons={showDualGetButtons}
                 buttonState={buttonState}
                 showDetailsButton={!isDesktop}
                 animationDelay={animationDelay}

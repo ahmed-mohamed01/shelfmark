@@ -8,8 +8,11 @@ type ButtonVariant = 'default' | 'icon';
 interface BookGetButtonProps {
   book: Book;
   onGetReleases: (book: Book) => void;
+  onGetReleasesAuto?: (book: Book) => void;
   buttonState?: ButtonStateInfo;
   isLoading?: boolean;
+  isAutoLoading?: boolean;
+  showDualActions?: boolean;
   size?: ButtonSize;
   variant?: ButtonVariant;
   fullWidth?: boolean;
@@ -40,8 +43,11 @@ const iconOnlySizes: Record<ButtonSize, string> = {
 export const BookGetButton = ({
   book,
   onGetReleases,
+  onGetReleasesAuto,
   buttonState,
   isLoading = false,
+  isAutoLoading = false,
+  showDualActions = false,
   size = 'md',
   variant = 'default',
   fullWidth = false,
@@ -49,6 +55,7 @@ export const BookGetButton = ({
   style,
 }: BookGetButtonProps) => {
   const isIconVariant = variant === 'icon';
+  const canShowDualActions = showDualActions && typeof onGetReleasesAuto === 'function';
   const widthClasses = fullWidth ? 'w-full' : '';
   const sizeClass = isIconVariant ? iconSizeClasses[size] : sizeClasses[size];
   const iconSize = isIconVariant ? iconOnlySizes[size] : iconSizes[size];
@@ -60,6 +67,7 @@ export const BookGetButton = ({
   const isInProgress = buttonState && ['queued', 'resolving', 'locating', 'downloading'].includes(buttonState.state);
   const showCircularProgress = buttonState?.state === 'downloading' && buttonState.progress !== undefined;
   const showSpinner = (isInProgress && !showCircularProgress) || isLoading;
+  const showAutoSpinner = (isInProgress && !showCircularProgress) || isAutoLoading;
 
   // Disable button while loading metadata
   const isDisabled = isLoading || isBlocked;
@@ -102,6 +110,11 @@ export const BookGetButton = ({
   const handleClick = () => {
     if (isDisabled) return;
     onGetReleases(book);
+  };
+
+  const handleAutoClick = () => {
+    if (!onGetReleasesAuto || isDisabled) return;
+    onGetReleasesAuto(book);
   };
 
   // Determine display text
@@ -164,6 +177,84 @@ export const BookGetButton = ({
       </svg>
     );
   };
+
+  if (canShowDualActions) {
+    if (isIconVariant) {
+      return (
+        <div className={`inline-flex items-center gap-1 ${className}`.trim()} style={style}>
+          <button
+            className={`flex items-center justify-center rounded-full transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 ${sizeClass} ${getButtonClasses()}`.trim()}
+            onClick={handleAutoClick}
+            disabled={isDisabled}
+            aria-label={`Auto search releases for ${book.title}`}
+            title="Auto search and download"
+          >
+            {showAutoSpinner ? (
+              <div className={`${iconSize} border-2 border-current border-t-transparent rounded-full animate-spin`} />
+            ) : (
+              <svg className={iconSize} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+              </svg>
+            )}
+          </button>
+          <button
+            className={`flex items-center justify-center rounded-full transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 ${sizeClass} border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 text-gray-700 dark:text-gray-200 hover-action`}
+            onClick={handleClick}
+            disabled={isDisabled}
+            aria-label={`Interactive search releases for ${book.title}`}
+            title="Open interactive search"
+          >
+            {isLoading ? (
+              <div className={`${iconSize} border-2 border-current border-t-transparent rounded-full animate-spin`} />
+            ) : (
+              <svg className={iconSize} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 8.25h7.5v7.5" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 8.25 8.25 15.75" />
+              </svg>
+            )}
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`inline-flex items-stretch gap-1 ${widthClasses} ${className}`.trim()} style={style}>
+        <button
+          className={`inline-flex items-center justify-center gap-1.5 rounded text-white transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 ${sizeClass} ${getButtonClasses()} ${fullWidth ? 'flex-1' : ''}`.trim()}
+          onClick={handleAutoClick}
+          disabled={isDisabled}
+          aria-label={`Auto search releases for ${book.title}`}
+          title="Auto search and download"
+        >
+          {showAutoSpinner ? (
+            <div className={`${iconSize} border-2 border-current border-t-transparent rounded-full animate-spin`} />
+          ) : (
+            <svg className={iconSize} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+            </svg>
+          )}
+          <span>Auto</span>
+        </button>
+        <button
+          className={`inline-flex items-center justify-center gap-1.5 rounded border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 text-gray-900 dark:text-gray-100 transition-all duration-200 hover-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 ${sizeClass} ${fullWidth ? 'flex-1' : ''}`.trim()}
+          onClick={handleClick}
+          disabled={isDisabled}
+          aria-label={`Interactive search releases for ${book.title}`}
+          title="Open interactive search"
+        >
+          {isLoading ? (
+            <div className={`${iconSize} border-2 border-current border-t-transparent rounded-full animate-spin`} />
+          ) : (
+            <svg className={iconSize} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 8.25h7.5v7.5" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 8.25 8.25 15.75" />
+            </svg>
+          )}
+          <span>Interactive</span>
+        </button>
+      </div>
+    );
+  }
 
   // Icon variant renders as a circular button without text
   if (isIconVariant) {

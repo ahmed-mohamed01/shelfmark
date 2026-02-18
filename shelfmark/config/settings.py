@@ -458,6 +458,14 @@ def search_mode_settings():
             default="direct_download",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
         ),
+        CheckboxField(
+            key="SHOW_DUAL_GET_BUTTONS",
+            label="Allow auto-download in standard search",
+            description="Show separate Auto and Interactive actions instead of a single Get button in standalone search results.",
+            default=False,
+            user_overridable=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+        ),
     ]
 
 

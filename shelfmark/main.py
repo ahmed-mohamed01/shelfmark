@@ -966,6 +966,13 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         from shelfmark.config.env import _is_config_dir_writable
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
 
+        config_user_id = None
+        raw_db_user_id = session.get("db_user_id")
+        try:
+            config_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
+        except (TypeError, ValueError):
+            config_user_id = None
+
         default_action_raw = str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
 
         default_action_map = {
@@ -1003,7 +1010,7 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "default_language": app_config.BOOK_LANGUAGE,
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
-            "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True),
+            "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id),
             "release_primary_default_action": f"{default_content_type}_{default_action}",
             "release_primary_content_type": default_content_type,
             "release_primary_action_ebook": (
@@ -1012,18 +1019,19 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "release_primary_action_audiobook": (
                 default_action if default_content_type == "audiobook" else "interactive_search"
             ),
-            "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75),
-            "search_mode": app_config.get("SEARCH_MODE", "direct"),
+            "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
+            "search_mode": app_config.get("SEARCH_MODE", "direct", user_id=config_user_id),
             "metadata_sort_options": get_provider_sort_options(),
             "metadata_search_fields": get_provider_search_fields(),
-            "default_release_source": app_config.get("DEFAULT_RELEASE_SOURCE", "direct_download"),
-            "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
-            "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),
-            "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False),
+            "default_release_source": app_config.get("DEFAULT_RELEASE_SOURCE", "direct_download", user_id=config_user_id),
+            "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder", user_id=config_user_id),
+            "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True, user_id=config_user_id),
+            "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False, user_id=config_user_id),
+            "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
             "settings_enabled": _is_config_dir_writable(),
             "onboarding_complete": _get_onboarding_complete(),
             # Default sort orders
-            "default_sort": app_config.get("AA_DEFAULT_SORT", "relevance"),  # For direct mode (Anna's Archive)
+            "default_sort": app_config.get("AA_DEFAULT_SORT", "relevance", user_id=config_user_id),  # For direct mode (Anna's Archive)
             "metadata_default_sort": get_provider_default_sort(),  # For universal mode
         }
         return jsonify(config)

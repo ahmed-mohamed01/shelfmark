@@ -23,6 +23,7 @@ import {
   getConfig,
   createRequest,
   isApiResponseError,
+  updateSelfUser,
 } from './services/api';
 import { useToast } from './hooks/useToast';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
@@ -183,6 +184,7 @@ function App() {
 
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
   const [contentType, setContentType] = useState<ContentType>(() => getInitialContentType());
+  const [showDualGetButtons, setShowDualGetButtons] = useState<boolean>(false);
 
   const [releaseMonitoredEntityId, setReleaseMonitoredEntityId] = useState<number | null>(null);
 
@@ -368,6 +370,13 @@ function App() {
   const [selfSettingsOpen, setSelfSettingsOpen] = useState(false);
   const [configBannerOpen, setConfigBannerOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+    setShowDualGetButtons(Boolean(config.show_dual_get_buttons));
+  }, [config]);
 
   // Expose debug function to trigger onboarding from browser console
   useEffect(() => {
@@ -1194,8 +1203,32 @@ function App() {
   };
 
   const handleGetReleases = async (book: Book) => {
-    return openReleasesForBook(book, contentType);
+    return openReleasesForBook(book, contentType, undefined, 'interactive_search');
   };
+
+  const handleGetReleasesAuto = async (book: Book) => {
+    return openReleasesForBook(book, contentType, undefined, 'auto_search_download');
+  };
+
+  const handleDualGetButtonsToggle = useCallback((value: boolean) => {
+    setShowDualGetButtons(value);
+    setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: value } : prev));
+
+    if (!isAuthenticated) {
+      return;
+    }
+
+    void updateSelfUser({
+      settings: {
+        SHOW_DUAL_GET_BUTTONS: value,
+      },
+    }).catch((error) => {
+      console.error('Failed to save dual Get button preference:', error);
+      setShowDualGetButtons(!value);
+      setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: !value } : prev));
+      showToast('Failed to save preference', 'error');
+    });
+  }, [isAuthenticated, showToast]);
 
   // Handle download from ReleaseModal (universal mode release rows).
   const handleReleaseDownload = async (
@@ -1586,6 +1619,8 @@ function App() {
         metadataSearchFields={config?.metadata_search_fields}
         searchFieldValues={searchFieldValues}
         onSearchFieldChange={updateSearchFieldValue}
+        showDualGetButtonsToggle={showDualGetButtons}
+        onShowDualGetButtonsToggleChange={handleDualGetButtonsToggle}
         onSubmit={() => {
           const query = buildSearchQuery({
             searchInput,
@@ -1624,6 +1659,8 @@ function App() {
           metadataSearchFields={config?.metadata_search_fields}
           searchFieldValues={searchFieldValues}
           onSearchFieldChange={updateSearchFieldValue}
+          showDualGetButtonsToggle={showDualGetButtons}
+          onShowDualGetButtonsToggleChange={handleDualGetButtonsToggle}
           contentType={contentType}
           onContentTypeChange={setContentType}
         />
@@ -1634,6 +1671,8 @@ function App() {
           onDetails={handleShowDetails}
           onDownload={handleDownload}
           onGetReleases={handleGetReleases}
+          onGetReleasesAuto={handleGetReleasesAuto}
+          showDualGetButtons={showDualGetButtons}
           getButtonState={getDirectActionButtonState}
           getUniversalButtonState={getUniversalActionButtonState}
           sortValue={advancedFilters.sort}

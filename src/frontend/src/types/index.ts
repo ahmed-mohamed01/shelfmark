@@ -259,6 +259,7 @@ export interface AppConfig {
   books_output_mode: BooksOutputMode;
   auto_open_downloads_sidebar: boolean;  // Auto-open sidebar when download is queued
   download_to_browser: boolean;  // Auto-download completed files to browser
+  show_dual_get_buttons?: boolean;  // User preference to show Auto + Interactive Get buttons
   settings_enabled: boolean;  // Whether config directory is mounted and writable
   onboarding_complete: boolean;  // Whether the user has completed initial setup
   default_sort: string;  // Default sort for direct mode

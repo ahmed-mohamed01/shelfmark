@@ -22,6 +22,8 @@ interface SearchSectionProps {
   metadataSearchFields?: MetadataSearchField[];
   searchFieldValues?: Record<string, string | number | boolean>;
   onSearchFieldChange?: (key: string, value: string | number | boolean) => void;
+  showDualGetButtonsToggle?: boolean;
+  onShowDualGetButtonsToggleChange?: (value: boolean) => void;
   contentType?: ContentType;
   onContentTypeChange?: (type: ContentType) => void;
 }
@@ -43,6 +45,8 @@ export const SearchSection = ({
   metadataSearchFields,
   searchFieldValues,
   onSearchFieldChange,
+  showDualGetButtonsToggle,
+  onShowDualGetButtonsToggleChange,
   contentType = 'ebook',
   onContentTypeChange,
 }: SearchSectionProps) => {
@@ -99,6 +103,8 @@ export const SearchSection = ({
           metadataSearchFields={metadataSearchFields}
           searchFieldValues={searchFieldValues}
           onSearchFieldChange={onSearchFieldChange}
+          showDualGetButtonsToggle={showDualGetButtonsToggle}
+          onShowDualGetButtonsToggleChange={onShowDualGetButtonsToggleChange}
           onSubmit={handleSearch}
         />
       </div>

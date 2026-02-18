@@ -13,6 +13,8 @@ interface CardViewProps {
   onDetails: (id: string) => Promise<void>;
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => Promise<void>;
+  onGetReleasesAuto?: (book: Book) => Promise<void>;
+  showDualGetButtons?: boolean;
   buttonState: ButtonStateInfo;
   animationDelay?: number;
   showSeriesPosition?: boolean;
@@ -23,6 +25,8 @@ export const CardView = ({
   onDetails,
   onDownload,
   onGetReleases,
+  onGetReleasesAuto,
+  showDualGetButtons = false,
   buttonState,
   animationDelay = 0,
   showSeriesPosition = false,
@@ -30,6 +34,7 @@ export const CardView = ({
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isLoadingReleases, setIsLoadingReleases] = useState(false);
+  const [isLoadingAutoReleases, setIsLoadingAutoReleases] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -49,6 +54,16 @@ export const CardView = ({
       await onGetReleases(book);
     } finally {
       setIsLoadingReleases(false);
+    }
+  };
+
+  const handleGetReleasesAuto = async (book: Book) => {
+    if (!onGetReleasesAuto) return;
+    setIsLoadingAutoReleases(true);
+    try {
+      await onGetReleasesAuto(book);
+    } finally {
+      setIsLoadingAutoReleases(false);
     }
   };
 
@@ -179,7 +194,10 @@ export const CardView = ({
             buttonState={buttonState}
             onDownload={onDownload}
             onGetReleases={handleGetReleases}
+            onGetReleasesAuto={onGetReleasesAuto ? handleGetReleasesAuto : undefined}
             isLoadingReleases={isLoadingReleases}
+            isLoadingAutoReleases={isLoadingAutoReleases}
+            showDualGetButtons={showDualGetButtons}
             size="sm"
             className="flex-1"
           />
@@ -191,7 +209,10 @@ export const CardView = ({
         buttonState={buttonState}
         onDownload={onDownload}
         onGetReleases={handleGetReleases}
+        onGetReleasesAuto={onGetReleasesAuto ? handleGetReleasesAuto : undefined}
         isLoadingReleases={isLoadingReleases}
+        isLoadingAutoReleases={isLoadingAutoReleases}
+        showDualGetButtons={showDualGetButtons}
         className="hidden sm:flex rounded-none"
         fullWidth
         style={{
