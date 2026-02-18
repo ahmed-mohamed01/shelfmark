@@ -80,6 +80,39 @@ def register_monitored_routes(
     resolve_auth_mode: Callable[[], str],
 ) -> None:
 
+    def _transform_cached_cover_urls(
+        rows: list[dict[str, Any]],
+        *,
+        provider_key: str = "provider",
+        provider_id_key: str = "provider_book_id",
+    ) -> None:
+        if not rows:
+            return
+
+        from shelfmark.core.utils import transform_cover_url
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            cover_url = row.get("cover_url")
+            if not isinstance(cover_url, str) or not cover_url:
+                continue
+
+            provider = str(row.get(provider_key) or "").strip()
+            provider_book_id = str(row.get(provider_id_key) or "").strip()
+
+            cache_id = ""
+            if provider and provider_book_id:
+                cache_id = f"{provider}_{provider_book_id}"
+            else:
+                fallback_id = str(row.get("id") or "").strip()
+                if fallback_id:
+                    cache_id = f"monitored_{fallback_id}"
+
+            if cache_id:
+                row["cover_url"] = transform_cover_url(cover_url, cache_id)
+
     def _parse_float_from_text(value: str) -> float | None:
         match = re.search(r"-?\d+(?:\.\d+)?", value or "")
         if not match:
@@ -469,6 +502,7 @@ def register_monitored_routes(
             limit = 20
 
         rows = user_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
+        _transform_cached_cover_urls(rows, provider_key="book_provider", provider_id_key="book_provider_id")
         return jsonify({"results": rows})
 
     @app.route("/api/monitored", methods=["POST"])
@@ -543,6 +577,8 @@ def register_monitored_routes(
         rows = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
+
+        _transform_cached_cover_urls(rows)
 
         # Include last_checked_at so the frontend can decide whether to refresh
         entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
