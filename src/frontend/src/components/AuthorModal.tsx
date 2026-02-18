@@ -1686,6 +1686,14 @@ export const AuthorModal = ({
                         {filteredGroupedBooks.map((group, groupIndex) => {
                           const isCollapsed = collapsedGroups[group.key] ?? false;
                           const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
+                          const booksInSeries = group.books.length;
+                          const booksOnDisk = group.books.reduce((count, book) => {
+                            const prov = book.provider || '';
+                            const bid = book.provider_id || '';
+                            if (!prov || !bid) return count;
+                            const key = `${prov}:${bid}`;
+                            return count + (matchedFileTypesByBookKey.has(key) ? 1 : 0);
+                          }, 0);
                           return (
                             <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
                               <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center justify-between gap-3">
@@ -1704,7 +1712,12 @@ export const AuthorModal = ({
                                   >
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                                   </svg>
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
+                                  <div className="min-w-0 flex items-center gap-2">
+                                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
+                                    <span className={`text-[11px] tabular-nums ${booksOnDisk > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                                      ({booksOnDisk}/{booksInSeries})
+                                    </span>
+                                  </div>
                                 </button>
                                 <button
                                   type="button"
