@@ -1264,7 +1264,7 @@ export const AuthorModal = ({
           aria-labelledby={titleId}
         >
           <div className={isPageMode
-            ? 'flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl'
+            ? 'flex flex-col overflow-visible rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
             <header className={`flex items-start gap-4 px-5 py-4 ${isPageMode ? 'border-b border-black/10 dark:border-white/10 bg-transparent' : 'border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">
@@ -1487,8 +1487,10 @@ export const AuthorModal = ({
                 </div>
               </div>
 
-              <div className="mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
-                <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)]">
+              <div className={`mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] ${isPageMode ? 'overflow-visible' : 'overflow-hidden'}`}>
+                <div
+                  className={`sticky z-20 flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border-muted)] bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
+                >
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
