@@ -122,6 +122,13 @@ const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
 
 type AuthorBooksSort = 'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc' | 'popular' | 'rating';
 
+type AuthorBooksFilters = {
+  showMissing: boolean;
+  showAvailable: boolean;
+  showUpcoming: boolean;
+  seriesKeys: string[];
+};
+
 const parseFloatFromText = (value: string): number | null => {
   const match = value.match(/-?\d+(?:\.\d+)?/);
   if (!match) return null;
@@ -134,6 +141,123 @@ const parseIntFromText = (value: string): number | null => {
   if (!digitsOnly) return null;
   const parsed = Number.parseInt(digitsOnly, 10);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const MONTHS_BY_NAME: Record<string, number> = {
+  january: 0,
+  jan: 0,
+  february: 1,
+  feb: 1,
+  march: 2,
+  mar: 2,
+  april: 3,
+  apr: 3,
+  may: 4,
+  june: 5,
+  jun: 5,
+  july: 6,
+  jul: 6,
+  august: 7,
+  aug: 7,
+  september: 8,
+  sep: 8,
+  sept: 8,
+  october: 9,
+  oct: 9,
+  november: 10,
+  nov: 10,
+  december: 11,
+  dec: 11,
+};
+
+const parseReleaseDateValue = (value: string): { date: Date | null; yearOnly: number | null } => {
+  const input = value.trim();
+  if (!input) {
+    return { date: null, yearOnly: null };
+  }
+
+  const yearOnlyMatch = input.match(/^(\d{4})$/);
+  if (yearOnlyMatch) {
+    const year = Number.parseInt(yearOnlyMatch[1], 10);
+    return { date: null, yearOnly: Number.isFinite(year) ? year : null };
+  }
+
+  const isoYmd = input.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoYmd) {
+    const year = Number.parseInt(isoYmd[1], 10);
+    const month = Number.parseInt(isoYmd[2], 10) - 1;
+    const day = Number.parseInt(isoYmd[3], 10);
+    const date = new Date(year, month, day);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, yearOnly: null };
+    }
+  }
+
+  const isoYm = input.match(/^(\d{4})-(\d{1,2})$/);
+  if (isoYm) {
+    const year = Number.parseInt(isoYm[1], 10);
+    const month = Number.parseInt(isoYm[2], 10) - 1;
+    const date = new Date(year, month, 1);
+    if (!Number.isNaN(date.getTime())) {
+      return { date, yearOnly: null };
+    }
+  }
+
+  const monthYear = input.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (monthYear) {
+    const month = MONTHS_BY_NAME[monthYear[1].toLowerCase()];
+    const year = Number.parseInt(monthYear[2], 10);
+    if (month != null && Number.isFinite(year)) {
+      return { date: new Date(year, month, 1), yearOnly: null };
+    }
+  }
+
+  const yearMonth = input.match(/^(\d{4})\s+([A-Za-z]{3,9})$/);
+  if (yearMonth) {
+    const month = MONTHS_BY_NAME[yearMonth[2].toLowerCase()];
+    const year = Number.parseInt(yearMonth[1], 10);
+    if (month != null && Number.isFinite(year)) {
+      return { date: new Date(year, month, 1), yearOnly: null };
+    }
+  }
+
+  const fallback = new Date(input);
+  if (!Number.isNaN(fallback.getTime())) {
+    return { date: fallback, yearOnly: null };
+  }
+
+  const embeddedYear = input.match(/\b(19|20)\d{2}\b/);
+  if (embeddedYear) {
+    const year = Number.parseInt(embeddedYear[0], 10);
+    return { date: null, yearOnly: Number.isFinite(year) ? year : null };
+  }
+
+  return { date: null, yearOnly: null };
+};
+
+const extractReleaseDateCandidate = (book: Book): string | null => {
+  const explicit = (book.release_date || '').trim();
+  if (explicit) return explicit;
+
+  const fields = Array.isArray(book.display_fields) ? book.display_fields : [];
+  for (const field of fields) {
+    const label = String(field?.label || '').trim().toLowerCase();
+    const value = String(field?.value || '').trim();
+    if (!label || !value) continue;
+    const isReleaseLabel =
+      label.includes('released') ||
+      label.includes('release date') ||
+      label.includes('publish date') ||
+      label.includes('publication date') ||
+      label === 'release' ||
+      label === 'published' ||
+      label === 'publication';
+    if (isReleaseLabel) {
+      return value;
+    }
+  }
+
+  return null;
 };
 
 const extractBookPopularity = (book: Book): {
@@ -220,6 +344,13 @@ export const AuthorModal = ({
       ? saved
       : 'series_asc';
   });
+  const [booksFilters, setBooksFilters] = useState<AuthorBooksFilters>({
+    showMissing: false,
+    showAvailable: false,
+    showUpcoming: false,
+    seriesKeys: [],
+  });
+  const [isSeriesFilterMenuOpen, setIsSeriesFilterMenuOpen] = useState(false);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoadingBooks, setIsLoadingBooks] = useState(false);
@@ -702,6 +833,12 @@ export const AuthorModal = ({
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
       display_fields: [
+        ...(typeof row.release_date === 'string' && row.release_date.trim()
+          ? [{
+              label: 'Release Date',
+              value: row.release_date.trim(),
+            }]
+          : []),
         ...(typeof row.rating === 'number'
           ? [{
               label: 'Rating',
@@ -1071,6 +1208,24 @@ export const AuthorModal = ({
     return groups;
   }, [books, booksSort]);
 
+  const seriesFilterOptions = useMemo(() => {
+    return groupedBooks
+      .filter((group) => group.key !== '__standalone__')
+      .map((group) => ({ key: group.key, title: group.title, count: group.books.length }));
+  }, [groupedBooks]);
+
+  useEffect(() => {
+    const allowed = new Set(seriesFilterOptions.map((option) => option.key));
+    setBooksFilters((prev) => {
+      if (prev.seriesKeys.length === 0) return prev;
+      const nextSeriesKeys = prev.seriesKeys.filter((key) => allowed.has(key));
+      if (nextSeriesKeys.length === prev.seriesKeys.length) {
+        return prev;
+      }
+      return { ...prev, seriesKeys: nextSeriesKeys };
+    });
+  }, [seriesFilterOptions]);
+
   const matchedFileTypesByBookKey = useMemo(() => {
     const map = new Map<string, Set<string>>();
     for (const f of files) {
@@ -1100,18 +1255,97 @@ export const AuthorModal = ({
 
   const filteredGroupedBooks = useMemo(() => {
     const q = activeBooksQuery.trim().toLowerCase();
-    if (!q) return groupedBooks;
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const currentYear = todayStart.getFullYear();
+    const selectedSeries = new Set(booksFilters.seriesKeys);
+
+    const passesUpcomingFilter = (book: Book): boolean => {
+      if (!booksFilters.showUpcoming) return true;
+
+      const releaseDateRaw = extractReleaseDateCandidate(book);
+      if (releaseDateRaw) {
+        const parsed = parseReleaseDateValue(releaseDateRaw);
+        if (parsed.date) {
+          return parsed.date.getTime() > todayStart.getTime();
+        }
+        if (parsed.yearOnly != null) {
+          return parsed.yearOnly >= currentYear;
+        }
+      }
+
+      const fallbackYear = book.year ? Number.parseInt(book.year, 10) : Number.NaN;
+      return Number.isFinite(fallbackYear) && fallbackYear >= currentYear;
+    };
+
+    const passesAvailabilityFilter = (book: Book): boolean => {
+      if (booksFilters.showAvailable === booksFilters.showMissing) {
+        return true;
+      }
+
+      const provider = book.provider || '';
+      const providerId = book.provider_id || '';
+      const key = provider && providerId ? `${provider}:${providerId}` : '';
+      const hasMatch = key ? matchedFileTypesByBookKey.has(key) : false;
+      return booksFilters.showAvailable ? hasMatch : !hasMatch;
+    };
 
     return groupedBooks
       .map((g) => {
+        if (selectedSeries.size > 0 && !selectedSeries.has(g.key)) {
+          return null;
+        }
+
+        const booksPassingFilters = g.books.filter((book) => (
+          passesAvailabilityFilter(book) && passesUpcomingFilter(book)
+        ));
+        if (booksPassingFilters.length === 0) return null;
+
+        if (!q) {
+          return { ...g, books: booksPassingFilters };
+        }
+
         const titleMatch = (g.title || '').toLowerCase().includes(q);
-        if (titleMatch) return g;
-        const matching = g.books.filter((b) => (b.title || '').toLowerCase().includes(q));
+        if (titleMatch) return { ...g, books: booksPassingFilters };
+        const matching = booksPassingFilters.filter((b) => (b.title || '').toLowerCase().includes(q));
         if (matching.length === 0) return null;
         return { ...g, books: matching };
       })
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, activeBooksQuery]);
+  }, [groupedBooks, activeBooksQuery, booksFilters, matchedFileTypesByBookKey]);
+
+  const activeFiltersCount = useMemo(() => {
+    const availabilityActive = booksFilters.showAvailable !== booksFilters.showMissing;
+    let count = availabilityActive ? 1 : 0;
+    if (booksFilters.showUpcoming) count += 1;
+    if (booksFilters.seriesKeys.length > 0) count += 1;
+    return count;
+  }, [booksFilters]);
+
+  const singleActiveFilterLabel = useMemo(() => {
+    const labels: string[] = [];
+
+    const availabilityActive = booksFilters.showAvailable !== booksFilters.showMissing;
+    if (availabilityActive) {
+      labels.push(booksFilters.showAvailable ? 'Available' : 'Missing');
+    }
+
+    if (booksFilters.showUpcoming) {
+      labels.push('Upcoming');
+    }
+
+    if (booksFilters.seriesKeys.length > 0) {
+      if (booksFilters.seriesKeys.length === 1) {
+        const selected = seriesFilterOptions.find((option) => option.key === booksFilters.seriesKeys[0]);
+        labels.push(selected?.title || 'Series');
+      } else {
+        labels.push('Series');
+      }
+    }
+
+    return labels.length === 1 ? labels[0] : null;
+  }, [booksFilters, seriesFilterOptions]);
 
   const visibleBooks = useMemo(() => {
     return filteredGroupedBooks.flatMap((group) => group.books);
@@ -1126,6 +1360,18 @@ export const AuthorModal = ({
   }, [books, selectedBookIds]);
 
   const showIndividualBookSelectors = selectedBooks.length > 0;
+
+  const toggleSeriesFilter = useCallback((seriesKey: string) => {
+    setBooksFilters((prev) => {
+      const exists = prev.seriesKeys.includes(seriesKey);
+      return {
+        ...prev,
+        seriesKeys: exists
+          ? prev.seriesKeys.filter((key) => key !== seriesKey)
+          : [...prev.seriesKeys, seriesKey],
+      };
+    });
+  }, []);
 
   const allGroupsCollapsed = useMemo(() => {
     if (groupedBooks.length === 0) return false;
@@ -1766,6 +2012,148 @@ export const AuthorModal = ({
                     <Dropdown
                       align="right"
                       widthClassName="w-auto flex-shrink-0"
+                      panelClassName="w-64"
+                      noScrollLimit={true}
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={toggle}
+                            className={`relative p-1.5 rounded-full transition-all duration-200 ${
+                              isOpen || activeFiltersCount > 0
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'
+                            }`}
+                            aria-haspopup="menu"
+                            aria-expanded={isOpen}
+                            aria-label={singleActiveFilterLabel ? `Filter books (${singleActiveFilterLabel})` : 'Filter books'}
+                            title={singleActiveFilterLabel ? `Filter books: ${singleActiveFilterLabel}` : 'Filter books'}
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5h18l-7 8.25v5.25l-4 2.25v-7.5L3 4.5Z" />
+                            </svg>
+                            {activeFiltersCount > 1 ? (
+                              <span className="pointer-events-none absolute -top-1 -right-1 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full text-[10px] font-semibold bg-emerald-600 text-white">
+                                {activeFiltersCount}
+                              </span>
+                            ) : null}
+                          </button>
+                          {singleActiveFilterLabel ? (
+                            <span className="max-w-28 truncate px-2 py-0.5 rounded-full text-[10px] font-medium border border-[var(--border-muted)] text-emerald-700 dark:text-emerald-300 bg-emerald-50/70 dark:bg-emerald-500/10">
+                              {singleActiveFilterLabel}
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
+                    >
+                      {({ close }) => (
+                        <div className="py-1" role="menu" aria-label="Book filters">
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showMissing ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => {
+                              setBooksFilters((prev) => ({ ...prev, showMissing: !prev.showMissing }));
+                            }}
+                          >
+                            <span>Missing</span>
+                            {booksFilters.showMissing ? <span>✓</span> : null}
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showAvailable ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => {
+                              setBooksFilters((prev) => ({ ...prev, showAvailable: !prev.showAvailable }));
+                            }}
+                          >
+                            <span>Available</span>
+                            {booksFilters.showAvailable ? <span>✓</span> : null}
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showUpcoming ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            onClick={() => {
+                              setBooksFilters((prev) => ({ ...prev, showUpcoming: !prev.showUpcoming }));
+                            }}
+                          >
+                            <span>Upcoming</span>
+                            {booksFilters.showUpcoming ? <span>✓</span> : null}
+                          </button>
+
+                          <div className="my-1 border-t border-[var(--border-muted)]" />
+
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+                              onClick={() => setIsSeriesFilterMenuOpen((prev) => !prev)}
+                            >
+                              <span className="inline-flex items-center gap-2">
+                                <span>Series</span>
+                                {booksFilters.seriesKeys.length > 0 ? (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-600 text-white">{booksFilters.seriesKeys.length}</span>
+                                ) : null}
+                              </span>
+                              <svg className={`w-3.5 h-3.5 transition-transform ${isSeriesFilterMenuOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+
+                            {isSeriesFilterMenuOpen ? (
+                              <div className="absolute left-full top-0 ml-2 w-56 rounded-lg border border-[var(--border-muted)] bg-[var(--bg)] shadow-xl z-10 max-h-56 overflow-auto py-1">
+                                {seriesFilterOptions.length === 0 ? (
+                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">No series found.</div>
+                                ) : (
+                                  seriesFilterOptions.map((option) => {
+                                    const selected = booksFilters.seriesKeys.includes(option.key);
+                                    return (
+                                      <button
+                                        key={option.key}
+                                        type="button"
+                                        className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${selected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                        onClick={() => toggleSeriesFilter(option.key)}
+                                      >
+                                        <span className="truncate pr-2">{option.title}</span>
+                                        <span className="inline-flex items-center gap-2 flex-shrink-0">
+                                          <span className="text-[10px] text-gray-500 dark:text-gray-400">{option.count}</span>
+                                          {selected ? <span>✓</span> : null}
+                                        </span>
+                                      </button>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-1 border-t border-[var(--border-muted)]" />
+                          <div className="px-2 pt-2 pb-1 flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              className="px-2.5 py-1 text-xs rounded-md hover-surface"
+                              onClick={() => {
+                                setBooksFilters({ showMissing: false, showAvailable: false, showUpcoming: false, seriesKeys: [] });
+                                setIsSeriesFilterMenuOpen(false);
+                              }}
+                            >
+                              Clear
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2.5 py-1 text-xs rounded-md hover-surface"
+                              onClick={() => {
+                                setIsSeriesFilterMenuOpen(false);
+                                close();
+                              }}
+                            >
+                              Done
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </Dropdown>
+                    <Dropdown
+                      align="right"
+                      widthClassName="w-auto flex-shrink-0"
                       panelClassName="w-48"
                       renderTrigger={({ isOpen, toggle }) => (
                         <button
@@ -1886,6 +2274,8 @@ export const AuthorModal = ({
                     <div className="text-sm text-gray-600 dark:text-gray-300">Loading…</div>
                   ) : books.length === 0 && !isLoadingBooks ? (
                     <div className="text-sm text-gray-600 dark:text-gray-300">No books found.</div>
+                  ) : filteredGroupedBooks.length === 0 ? (
+                    <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
                   ) : (
                     <>
                       <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
