@@ -76,6 +76,19 @@ const fallbackEmailRecipientField: TextFieldConfig = {
   placeholder: 'reader@example.com',
 };
 
+const fallbackDuplicateBehaviorField: SelectFieldConfig = {
+  type: 'SelectField',
+  key: 'DUPLICATE_FILE_BEHAVIOR',
+  label: 'Duplicate File Behavior',
+  description: 'Choose how Shelfmark handles files when a destination filename already exists.',
+  value: 'allow_duplicates',
+  options: [
+    { value: 'allow_duplicates', label: 'Allow duplicates' },
+    { value: 'keep_one_per_filetype', label: 'Keep 1 file per filetype' },
+    { value: 'keep_one_per_book', label: 'Keep 1 file per book' },
+  ],
+};
+
 type DeliverySettingKey = keyof PerUserSettings;
 
 function normalizeMode(value: unknown): 'folder' | 'booklore' | 'email' {
@@ -118,6 +131,7 @@ const BOOK_PREFERENCE_KEYS: DeliverySettingKey[] = [
   'BOOKLORE_LIBRARY_ID',
   'BOOKLORE_PATH_ID',
   'EMAIL_RECIPIENT',
+  'DUPLICATE_FILE_BEHAVIOR',
 ];
 
 const AUDIOBOOK_PREFERENCE_KEYS: DeliverySettingKey[] = ['DESTINATION_AUDIOBOOK'];
@@ -138,6 +152,7 @@ export const UserOverridesSection = ({
   const bookloreLibraryField = getFieldByKey<SelectFieldConfig>(fields, 'BOOKLORE_LIBRARY_ID', fallbackBookloreLibraryField);
   const booklorePathField = getFieldByKey<SelectFieldConfig>(fields, 'BOOKLORE_PATH_ID', fallbackBooklorePathField);
   const emailRecipientFieldSource = getFieldByKey<TextFieldConfig>(fields, 'EMAIL_RECIPIENT', fallbackEmailRecipientField);
+  const duplicateBehaviorField = getFieldByKey<SelectFieldConfig>(fields, 'DUPLICATE_FILE_BEHAVIOR', fallbackDuplicateBehaviorField);
   const emailRecipientField: TextFieldConfig = {
     ...emailRecipientFieldSource,
     label: 'Email Recipient',
@@ -186,6 +201,7 @@ export const UserOverridesSection = ({
   const libraryValue = readValue('BOOKLORE_LIBRARY_ID');
   const pathValue = readValue('BOOKLORE_PATH_ID');
   const emailRecipientValue = readValue('EMAIL_RECIPIENT');
+  const duplicateBehaviorValue = readValue('DUPLICATE_FILE_BEHAVIOR', 'allow_duplicates');
 
   const availableBookPreferenceKeys = BOOK_PREFERENCE_KEYS.filter((key) => preferenceKeys.includes(String(key)));
   const availableAudiobookPreferenceKeys = AUDIOBOOK_PREFERENCE_KEYS.filter((key) => preferenceKeys.includes(String(key)));
@@ -199,6 +215,7 @@ export const UserOverridesSection = ({
   const canOverrideBookloreLibrary = isUserOverridable('BOOKLORE_LIBRARY_ID');
   const canOverrideBooklorePath = isUserOverridable('BOOKLORE_PATH_ID');
   const canOverrideEmailRecipient = isUserOverridable('EMAIL_RECIPIENT');
+  const canOverrideDuplicateBehavior = isUserOverridable('DUPLICATE_FILE_BEHAVIOR');
 
   if (!deliveryPreferences) {
     return null;
@@ -226,6 +243,27 @@ export const UserOverridesSection = ({
             value={outputModeValue}
             onChange={(value) => setUserSettings((prev) => ({ ...prev, BOOKS_OUTPUT_MODE: value }))}
             disabled={Boolean(outputModeField.fromEnv)}
+          />
+        </FieldWrapper>
+      )}
+
+      {canOverrideDuplicateBehavior && (
+        <FieldWrapper
+          field={duplicateBehaviorField}
+          resetAction={
+            isOverridden('DUPLICATE_FILE_BEHAVIOR')
+              ? {
+                  disabled: Boolean(duplicateBehaviorField.fromEnv),
+                  onClick: () => resetKeys(['DUPLICATE_FILE_BEHAVIOR']),
+                }
+              : undefined
+          }
+        >
+          <SelectField
+            field={duplicateBehaviorField}
+            value={duplicateBehaviorValue}
+            onChange={(value) => setUserSettings((prev) => ({ ...prev, DUPLICATE_FILE_BEHAVIOR: value }))}
+            disabled={Boolean(duplicateBehaviorField.fromEnv)}
           />
         </FieldWrapper>
       )}

@@ -16,13 +16,46 @@ from shelfmark.core.naming import (
 )
 from shelfmark.core.utils import is_audiobook as check_audiobook
 from shelfmark.download.fs import atomic_copy, atomic_hardlink, atomic_move, run_blocking_io
-from shelfmark.download.postprocess.policy import get_file_organization, get_template, get_template_for_task
+from shelfmark.download.postprocess.policy import get_file_organization, get_template_for_task
 
 from .scan import collect_directory_files, scan_directory_tree
 from .types import TransferPlan
 from .workspace import safe_cleanup_path
 
 logger = setup_logger("shelfmark.download.postprocess.pipeline")
+
+
+DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES = "allow_duplicates"
+DUPLICATE_BEHAVIOR_KEEP_ONE_PER_FILETYPE = "keep_one_per_filetype"
+DUPLICATE_BEHAVIOR_KEEP_ONE_PER_BOOK = "keep_one_per_book"
+
+
+def _resolve_duplicate_file_behavior(task: DownloadTask) -> str:
+    user_id = task.user_id if task.user_id is not None else None
+    raw = core_config.config.get(
+        "DUPLICATE_FILE_BEHAVIOR",
+        DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES,
+        user_id=user_id,
+    )
+    value = str(raw or "").strip().lower()
+    if value in {
+        DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES,
+        DUPLICATE_BEHAVIOR_KEEP_ONE_PER_FILETYPE,
+        DUPLICATE_BEHAVIOR_KEEP_ONE_PER_BOOK,
+    }:
+        return value
+    return DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES
+
+
+def _cleanup_existing_book_variants(dest_path: Path) -> None:
+    parent = dest_path.parent
+    stem = dest_path.stem
+    if not run_blocking_io(parent.exists):
+        return
+    for candidate in run_blocking_io(lambda: list(parent.glob(f"{stem}.*"))):
+        if not run_blocking_io(candidate.is_file):
+            continue
+        run_blocking_io(candidate.unlink, missing_ok=True)
 
 
 def should_hardlink(task: DownloadTask) -> bool:
@@ -120,9 +153,22 @@ def _transfer_single_file(
     is_torrent: bool,
     preserve_source: bool = False,
     max_attempts: int = 100,
+    duplicate_file_behavior: str = DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES,
 ) -> Tuple[Path, str]:
+    overwrite_existing = duplicate_file_behavior in {
+        DUPLICATE_BEHAVIOR_KEEP_ONE_PER_FILETYPE,
+        DUPLICATE_BEHAVIOR_KEEP_ONE_PER_BOOK,
+    }
+    if duplicate_file_behavior == DUPLICATE_BEHAVIOR_KEEP_ONE_PER_BOOK:
+        _cleanup_existing_book_variants(dest_path)
+
     if use_hardlink:
-        final_path = atomic_hardlink(source_path, dest_path, max_attempts=max_attempts)
+        final_path = atomic_hardlink(
+            source_path,
+            dest_path,
+            max_attempts=max_attempts,
+            overwrite_existing=overwrite_existing,
+        )
         try:
             if run_blocking_io(source_path.stat).st_ino == run_blocking_io(final_path.stat).st_ino:
                 return final_path, "hardlink"
@@ -131,9 +177,19 @@ def _transfer_single_file(
         return final_path, "copy"
 
     if is_torrent or preserve_source:
-        return atomic_copy(source_path, dest_path, max_attempts=max_attempts), "copy"
+        return atomic_copy(
+            source_path,
+            dest_path,
+            max_attempts=max_attempts,
+            overwrite_existing=overwrite_existing,
+        ), "copy"
 
-    return atomic_move(source_path, dest_path, max_attempts=max_attempts), "move"
+    return atomic_move(
+        source_path,
+        dest_path,
+        max_attempts=max_attempts,
+        overwrite_existing=overwrite_existing,
+    ), "move"
 
 
 def transfer_book_files(
@@ -151,6 +207,7 @@ def transfer_book_files(
     is_audiobook = check_audiobook(task.content_type)
     organization_mode = organization_mode or get_file_organization(is_audiobook)
     max_attempts = _max_attempts_for_batch(len(book_files))
+    duplicate_file_behavior = _resolve_duplicate_file_behavior(task)
 
     final_paths: List[Path] = []
     op_counts: Dict[str, int] = {"hardlink": 0, "copy": 0, "move": 0}
@@ -178,6 +235,7 @@ def transfer_book_files(
                 is_torrent,
                 preserve_source=preserve_source,
                 max_attempts=max_attempts,
+                duplicate_file_behavior=duplicate_file_behavior,
             )
             final_paths.append(final_path)
             op_counts[op] = op_counts.get(op, 0) + 1
@@ -205,6 +263,7 @@ def transfer_book_files(
                     is_torrent,
                     preserve_source=preserve_source,
                     max_attempts=max_attempts,
+                    duplicate_file_behavior=duplicate_file_behavior,
                 )
                 final_paths.append(final_path)
                 op_counts[op] = op_counts.get(op, 0) + 1
@@ -238,6 +297,7 @@ def transfer_book_files(
             is_torrent,
             preserve_source=preserve_source,
             max_attempts=max_attempts,
+            duplicate_file_behavior=duplicate_file_behavior,
         )
         final_paths.append(final_path)
         op_counts[op] = op_counts.get(op, 0) + 1
@@ -313,6 +373,7 @@ def transfer_file_to_library(
     extension = source_path.suffix.lstrip(".") or task.format
     dest_path = run_blocking_io(build_library_path, library_base, template, metadata, extension)
     run_blocking_io(dest_path.parent.mkdir, parents=True, exist_ok=True)
+    duplicate_file_behavior = _resolve_duplicate_file_behavior(task)
 
     is_torrent = is_torrent_source(source_path, task)
     final_path, op = _transfer_single_file(
@@ -321,6 +382,7 @@ def transfer_file_to_library(
         use_hardlink,
         is_torrent,
         max_attempts=_max_attempts_for_batch(1),
+        duplicate_file_behavior=duplicate_file_behavior,
     )
     logger.info(f"Library {op}: {final_path}")
     if use_hardlink and op != "hardlink":
@@ -376,6 +438,7 @@ def transfer_directory_to_library(
     transferred_paths: List[Path] = []
     op_counts: Dict[str, int] = {"hardlink": 0, "copy": 0, "move": 0}
     max_attempts = _max_attempts_for_batch(len(source_files))
+    duplicate_file_behavior = _resolve_duplicate_file_behavior(task)
 
     if len(source_files) == 1:
         source_file = source_files[0]
@@ -387,6 +450,7 @@ def transfer_directory_to_library(
             use_hardlink,
             is_torrent,
             max_attempts=max_attempts,
+            duplicate_file_behavior=duplicate_file_behavior,
         )
         logger.debug(f"Library {op}: {source_file.name} -> {final_path}")
         transferred_paths.append(final_path)
@@ -407,6 +471,7 @@ def transfer_directory_to_library(
                 use_hardlink,
                 is_torrent,
                 max_attempts=max_attempts,
+                duplicate_file_behavior=duplicate_file_behavior,
             )
             logger.debug(f"Library {op}: {source_file.name} -> {final_path}")
             transferred_paths.append(final_path)

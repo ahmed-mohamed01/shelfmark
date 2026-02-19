@@ -102,23 +102,31 @@ def _verify_transfer_size(
         )
 
 
-def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100) -> Path:
-    """Write data to a file with atomic collision detection.
+def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+    """Write data atomically.
 
-    If the destination already exists, retries with counter suffix (_1, _2, etc.)
-    until a unique path is found.
-
-    Args:
-        dest_path: Desired destination path
-        data: Bytes to write
-        max_attempts: Maximum collision retries before raising error
-
-    Returns:
-        Path where file was actually written (may differ from dest_path)
-
-    Raises:
-        RuntimeError: If no unique path found after max_attempts
+    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
+    Set overwrite_existing=True to replace destination in place.
     """
+    if overwrite_existing:
+        temp_path = _create_temp_path(dest_path)
+        try:
+            fd = run_blocking_io(
+                os.open,
+                str(temp_path),
+                os.O_WRONLY,
+                0o666,
+            )
+            try:
+                run_blocking_io(os.write, fd, data)
+            finally:
+                run_blocking_io(os.close, fd)
+            run_blocking_io(os.replace, str(temp_path), str(dest_path))
+            return dest_path
+        except Exception:
+            run_blocking_io(temp_path.unlink, missing_ok=True)
+            raise
+
     base = dest_path.stem
     ext = dest_path.suffix
     parent = dest_path.parent
@@ -126,7 +134,6 @@ def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100) -> Path:
     for attempt in range(max_attempts):
         try_path = dest_path if attempt == 0 else parent / f"{base}_{attempt}{ext}"
         try:
-            # O_CREAT | O_EXCL fails atomically if file exists
             fd = run_blocking_io(
                 os.open,
                 str(try_path),
@@ -281,27 +288,80 @@ def _publish_temp_file(temp_path: Path, dest_path: Path) -> bool:
         raise
 
 
-def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100) -> Path:
-    """Move a file with collision detection.
+def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+    """Move a file atomically.
 
-    Uses os.rename() for same-filesystem moves (atomic, triggers inotify events),
-    falls back to copy-then-publish for cross-filesystem moves.
-
-    Note: We use os.rename() instead of hardlink+unlink because os.rename()
-    triggers proper inotify IN_MOVED_TO events that file watchers (like Calibre's
-    auto-add) rely on to detect new files.
-
-    Args:
-        source_path: Source file to move
-        dest_path: Desired destination path
-        max_attempts: Maximum collision retries before raising error
-
-    Returns:
-        Path where file was actually moved (may differ from dest_path)
-
-    Raises:
-        RuntimeError: If no unique path found after max_attempts
+    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
+    Set overwrite_existing=True to replace destination in place.
     """
+    if overwrite_existing:
+        try:
+            run_blocking_io(os.replace, str(source_path), str(dest_path))
+            return dest_path
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                if _is_permission_error(e):
+                    log_transfer_permission_context(
+                        "atomic_move",
+                        source=source_path,
+                        dest=dest_path,
+                        error=e,
+                    )
+                raise
+
+        expected_size = run_blocking_io(source_path.stat).st_size
+        temp_path: Optional[Path] = None
+        try:
+            temp_path = _create_temp_path(dest_path)
+            try:
+                run_blocking_io(shutil.copy2, str(source_path), str(temp_path))
+            except (PermissionError, OSError) as copy_error:
+                if _is_permission_error(copy_error):
+                    logger.debug(
+                        "Permission error during move-copy, falling back to copyfile (%s -> %s): %s",
+                        source_path,
+                        temp_path,
+                        copy_error,
+                    )
+                    _perform_nfs_fallback(source_path, temp_path, is_move=False)
+                else:
+                    raise
+
+            _verify_transfer_size(temp_path, expected_size, "move")
+            run_blocking_io(os.replace, str(temp_path), str(dest_path))
+            _verify_transfer_size(dest_path, expected_size, "move")
+            run_blocking_io(source_path.unlink, missing_ok=True)
+            return dest_path
+        except (PermissionError, OSError) as e:
+            if _is_permission_error(e):
+                log_transfer_permission_context(
+                    "atomic_move",
+                    source=source_path,
+                    dest=dest_path,
+                    error=e,
+                )
+                logger.debug(
+                    "Permission error during move, falling back to copyfile (%s -> %s): %s",
+                    source_path,
+                    dest_path,
+                    e,
+                )
+                try:
+                    _perform_nfs_fallback(source_path, dest_path, is_move=True)
+                    return dest_path
+                except Exception as fallback_error:
+                    logger.error(
+                        "NFS fallback also failed (%s -> %s): %s",
+                        source_path,
+                        dest_path,
+                        fallback_error,
+                    )
+                    raise e from fallback_error
+            raise
+        finally:
+            if temp_path:
+                run_blocking_io(temp_path.unlink, missing_ok=True)
+
     base = dest_path.stem
     ext = dest_path.suffix
     parent = dest_path.parent
@@ -309,17 +369,13 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100) -> 
     for attempt in range(max_attempts):
         try_path = dest_path if attempt == 0 else parent / f"{base}_{attempt}{ext}"
 
-        # Check for existing file (os.rename would overwrite on Unix)
         claimed = False
         if run_blocking_io(try_path.exists):
-            # Some filesystems can report false positives for exists() with
-            # special characters. Probe with O_EXCL to confirm.
             claimed = _claim_destination(try_path)
             if not claimed:
                 continue
 
         try:
-            # os.rename is atomic on same filesystem and triggers inotify events
             if claimed:
                 run_blocking_io(os.replace, str(source_path), str(try_path))
             else:
@@ -328,12 +384,10 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100) -> 
                 logger.info(f"File collision resolved: {try_path.name}")
             return try_path
         except FileExistsError:
-            # Race condition: file created between exists() check and rename()
             if claimed:
                 run_blocking_io(try_path.unlink, missing_ok=True)
             continue
         except OSError as e:
-            # Cross-filesystem - copy to temp and publish atomically.
             if e.errno != errno.EXDEV:
                 if claimed:
                     run_blocking_io(try_path.unlink, missing_ok=True)
@@ -421,20 +475,39 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100) -> 
     raise RuntimeError(f"Could not move file after {max_attempts} attempts: {dest_path}")
 
 
-def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100) -> Path:
-    """Create a hardlink with atomic collision detection.
+def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+    """Create a hardlink atomically.
 
-    Args:
-        source_path: Source file to link from
-        dest_path: Desired destination path for the link
-        max_attempts: Maximum collision retries before raising error
-
-    Returns:
-        Path where link was actually created (may differ from dest_path)
-
-    Raises:
-        RuntimeError: If no unique path found after max_attempts
+    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
+    Set overwrite_existing=True to replace destination in place.
     """
+    if overwrite_existing:
+        temp_path = _create_temp_path(dest_path)
+        try:
+            run_blocking_io(temp_path.unlink, missing_ok=True)
+            run_blocking_io(os.link, str(source_path), str(temp_path))
+            run_blocking_io(os.replace, str(temp_path), str(dest_path))
+            return dest_path
+        except OSError as e:
+            if _is_permission_error(e) or e.errno in (errno.EXDEV, errno.EMLINK):
+                if _is_permission_error(e):
+                    log_transfer_permission_context(
+                        "atomic_hardlink",
+                        source=source_path,
+                        dest=dest_path,
+                        error=e,
+                    )
+                logger.debug(
+                    "Hardlink failed (%s), falling back to copy: %s -> %s",
+                    e,
+                    source_path,
+                    dest_path,
+                )
+                return atomic_copy(source_path, dest_path, max_attempts=max_attempts, overwrite_existing=True)
+            raise
+        finally:
+            run_blocking_io(temp_path.unlink, missing_ok=True)
+
     base = dest_path.stem
     ext = dest_path.suffix
     parent = dest_path.parent
@@ -463,33 +536,64 @@ def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100)
                     source_path,
                     dest_path,
                 )
-                return atomic_copy(source_path, dest_path, max_attempts=max_attempts)
+                return atomic_copy(source_path, dest_path, max_attempts=max_attempts, overwrite_existing=False)
             raise
 
     raise RuntimeError(f"Could not create hardlink after {max_attempts} attempts: {dest_path}")
 
 
-def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100) -> Path:
-    """Copy a file with atomic collision detection.
+def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+    """Copy a file atomically.
 
-    Uses a temp file in the destination directory and publishes it atomically,
-    avoiding partial files on failure.
-
-    Args:
-        source_path: Source file to copy
-        dest_path: Desired destination path
-        max_attempts: Maximum collision retries before raising error
-
-    Returns:
-        Path where file was actually copied (may differ from dest_path)
-
-    Raises:
-        RuntimeError: If no unique path found after max_attempts
+    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
+    Set overwrite_existing=True to replace destination in place.
     """
+    expected_size = run_blocking_io(source_path.stat).st_size
+
+    if overwrite_existing:
+        temp_path: Optional[Path] = None
+        try:
+            temp_path = _create_temp_path(dest_path)
+            try:
+                run_blocking_io(shutil.copy2, str(source_path), str(temp_path))
+            except (PermissionError, OSError) as e:
+                if _is_permission_error(e):
+                    log_transfer_permission_context(
+                        "atomic_copy",
+                        source=source_path,
+                        dest=temp_path,
+                        error=e,
+                    )
+                    logger.debug(
+                        "Permission error during copy, falling back to copyfile (%s -> %s): %s",
+                        source_path,
+                        temp_path,
+                        e,
+                    )
+                    try:
+                        _perform_nfs_fallback(source_path, temp_path, is_move=False)
+                    except Exception as fallback_error:
+                        logger.error(
+                            "NFS fallback also failed (%s -> %s): %s",
+                            source_path,
+                            temp_path,
+                            fallback_error,
+                        )
+                        raise e from fallback_error
+                else:
+                    raise
+
+            _verify_transfer_size(temp_path, expected_size, "copy")
+            run_blocking_io(os.replace, str(temp_path), str(dest_path))
+            _verify_transfer_size(dest_path, expected_size, "copy")
+            return dest_path
+        finally:
+            if temp_path:
+                run_blocking_io(temp_path.unlink, missing_ok=True)
+
     base = dest_path.stem
     ext = dest_path.suffix
     parent = dest_path.parent
-    expected_size = run_blocking_io(source_path.stat).st_size
 
     for attempt in range(max_attempts):
         try_path = dest_path if attempt == 0 else parent / f"{base}_{attempt}{ext}"
@@ -501,7 +605,6 @@ def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100) -> 
             try:
                 run_blocking_io(shutil.copy2, str(source_path), str(temp_path))
             except (PermissionError, OSError) as e:
-                # Handle NFS permission errors immediately here
                 if _is_permission_error(e):
                     log_transfer_permission_context(
                         "atomic_copy",

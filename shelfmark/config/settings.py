@@ -1117,6 +1117,30 @@ def download_settings():
             key="options_heading",
             title="Options",
         ),
+        SelectField(
+            key="DUPLICATE_FILE_BEHAVIOR",
+            label="Duplicate File Behavior",
+            description="Choose how Shelfmark handles a filename that already exists at the destination.",
+            options=[
+                {
+                    "value": "allow_duplicates",
+                    "label": "Allow duplicates",
+                    "description": "Keep existing files and add a numeric suffix (_1, _2, ...).",
+                },
+                {
+                    "value": "keep_one_per_filetype",
+                    "label": "Keep 1 file per filetype",
+                    "description": "Overwrite the existing file when the exact same filename and extension already exists.",
+                },
+                {
+                    "value": "keep_one_per_book",
+                    "label": "Keep 1 file per book",
+                    "description": "Keep only one file variant per book name (same stem), replacing older variants.",
+                },
+            ],
+            default="allow_duplicates",
+            user_overridable=True,
+        ),
         CheckboxField(
             key="AUTO_OPEN_DOWNLOADS_SIDEBAR",
             label="Auto-Open Downloads Sidebar",
