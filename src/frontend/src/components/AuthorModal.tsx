@@ -122,11 +122,63 @@ const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
 
 type AuthorBooksSort = 'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc' | 'popular' | 'rating';
 
+type AvailabilityFilterMode =
+  | 'all'
+  | 'missing_any'
+  | 'missing_ebook'
+  | 'missing_audiobook'
+  | 'available_any'
+  | 'ebook_available'
+  | 'audiobook_available'
+  | 'both_available';
+
+type UpcomingWindowMode = 'any' | '30d' | '90d' | 'this_year';
+
 type AuthorBooksFilters = {
-  showMissing: boolean;
-  showAvailable: boolean;
+  availability: AvailabilityFilterMode;
   showUpcoming: boolean;
+  upcomingWindow: UpcomingWindowMode;
+  showNoReleaseDate: boolean;
   seriesKeys: string[];
+};
+
+const createDefaultAuthorBooksFilters = (): AuthorBooksFilters => ({
+  availability: 'all',
+  showUpcoming: false,
+  upcomingWindow: 'any',
+  showNoReleaseDate: false,
+  seriesKeys: [],
+});
+
+const AVAILABILITY_FILTER_LABELS: Record<AvailabilityFilterMode, string> = {
+  all: 'Availability: Any',
+  missing_any: 'Missing',
+  missing_ebook: 'Missing eBook',
+  missing_audiobook: 'Missing audiobook',
+  available_any: 'Available',
+  ebook_available: 'eBook available',
+  audiobook_available: 'Audiobook available',
+  both_available: 'Both formats available',
+};
+
+const AVAILABLE_FILTER_MODES: AvailabilityFilterMode[] = [
+  'available_any',
+  'ebook_available',
+  'audiobook_available',
+  'both_available',
+];
+
+const MISSING_FILTER_MODES: AvailabilityFilterMode[] = [
+  'missing_any',
+  'missing_ebook',
+  'missing_audiobook',
+];
+
+const UPCOMING_WINDOW_LABELS: Record<UpcomingWindowMode, string> = {
+  any: 'Any time',
+  '30d': 'Next 30 days',
+  '90d': 'Next 90 days',
+  this_year: 'This year',
 };
 
 const parseFloatFromText = (value: string): number | null => {
@@ -344,13 +396,11 @@ export const AuthorModal = ({
       ? saved
       : 'series_asc';
   });
-  const [booksFilters, setBooksFilters] = useState<AuthorBooksFilters>({
-    showMissing: false,
-    showAvailable: false,
-    showUpcoming: false,
-    seriesKeys: [],
-  });
+  const [booksFilters, setBooksFilters] = useState<AuthorBooksFilters>(() => createDefaultAuthorBooksFilters());
   const [isSeriesFilterMenuOpen, setIsSeriesFilterMenuOpen] = useState(false);
+  const [closeSeriesFilterOnSelect, setCloseSeriesFilterOnSelect] = useState(false);
+  const [isAvailabilityFilterMenuOpen, setIsAvailabilityFilterMenuOpen] = useState(false);
+  const [isMissingFilterMenuOpen, setIsMissingFilterMenuOpen] = useState(false);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoadingBooks, setIsLoadingBooks] = useState(false);
@@ -1268,27 +1318,74 @@ export const AuthorModal = ({
       if (releaseDateRaw) {
         const parsed = parseReleaseDateValue(releaseDateRaw);
         if (parsed.date) {
-          return parsed.date.getTime() > todayStart.getTime();
+          const millis = parsed.date.getTime();
+          if (millis <= todayStart.getTime()) return false;
+          if (booksFilters.upcomingWindow === 'any') return true;
+          if (booksFilters.upcomingWindow === '30d') {
+            const end = new Date(todayStart);
+            end.setDate(end.getDate() + 30);
+            return millis <= end.getTime();
+          }
+          if (booksFilters.upcomingWindow === '90d') {
+            const end = new Date(todayStart);
+            end.setDate(end.getDate() + 90);
+            return millis <= end.getTime();
+          }
+          return parsed.date.getFullYear() === currentYear;
         }
         if (parsed.yearOnly != null) {
-          return parsed.yearOnly >= currentYear;
+          if (parsed.yearOnly < currentYear) return false;
+          if (booksFilters.upcomingWindow === 'this_year') {
+            return parsed.yearOnly === currentYear;
+          }
+          if (booksFilters.upcomingWindow === '30d' || booksFilters.upcomingWindow === '90d') {
+            return false;
+          }
+          return true;
         }
       }
 
       const fallbackYear = book.year ? Number.parseInt(book.year, 10) : Number.NaN;
-      return Number.isFinite(fallbackYear) && fallbackYear >= currentYear;
+      if (!Number.isFinite(fallbackYear)) return false;
+      if (booksFilters.upcomingWindow === 'this_year') return fallbackYear === currentYear;
+      if (booksFilters.upcomingWindow === '30d' || booksFilters.upcomingWindow === '90d') return false;
+      return fallbackYear >= currentYear;
+    };
+
+    const passesNoReleaseDateFilter = (book: Book): boolean => {
+      if (!booksFilters.showNoReleaseDate) return true;
+      const releaseDateRaw = extractReleaseDateCandidate(book);
+      return !releaseDateRaw;
     };
 
     const passesAvailabilityFilter = (book: Book): boolean => {
-      if (booksFilters.showAvailable === booksFilters.showMissing) {
-        return true;
-      }
-
+      if (booksFilters.availability === 'all') return true;
       const provider = book.provider || '';
       const providerId = book.provider_id || '';
       const key = provider && providerId ? `${provider}:${providerId}` : '';
-      const hasMatch = key ? matchedFileTypesByBookKey.has(key) : false;
-      return booksFilters.showAvailable ? hasMatch : !hasMatch;
+      const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+      const hasAny = Boolean(types && types.size > 0);
+      const hasEbook = Boolean(types && EBOOK_MATCH_FORMATS.some((format) => types.has(format)));
+      const hasAudiobook = Boolean(types && AUDIOBOOK_MATCH_FORMATS.some((format) => types.has(format)));
+
+      switch (booksFilters.availability) {
+        case 'missing_any':
+          return !hasAny;
+        case 'missing_ebook':
+          return !hasEbook;
+        case 'missing_audiobook':
+          return !hasAudiobook;
+        case 'available_any':
+          return hasAny;
+        case 'ebook_available':
+          return hasEbook;
+        case 'audiobook_available':
+          return hasAudiobook;
+        case 'both_available':
+          return hasEbook && hasAudiobook;
+        default:
+          return true;
+      }
     };
 
     return groupedBooks
@@ -1298,7 +1395,7 @@ export const AuthorModal = ({
         }
 
         const booksPassingFilters = g.books.filter((book) => (
-          passesAvailabilityFilter(book) && passesUpcomingFilter(book)
+          passesAvailabilityFilter(book) && passesUpcomingFilter(book) && passesNoReleaseDateFilter(book)
         ));
         if (booksPassingFilters.length === 0) return null;
 
@@ -1316,9 +1413,9 @@ export const AuthorModal = ({
   }, [groupedBooks, activeBooksQuery, booksFilters, matchedFileTypesByBookKey]);
 
   const activeFiltersCount = useMemo(() => {
-    const availabilityActive = booksFilters.showAvailable !== booksFilters.showMissing;
-    let count = availabilityActive ? 1 : 0;
+    let count = booksFilters.availability !== 'all' ? 1 : 0;
     if (booksFilters.showUpcoming) count += 1;
+    if (booksFilters.showNoReleaseDate) count += 1;
     if (booksFilters.seriesKeys.length > 0) count += 1;
     return count;
   }, [booksFilters]);
@@ -1326,13 +1423,16 @@ export const AuthorModal = ({
   const singleActiveFilterLabel = useMemo(() => {
     const labels: string[] = [];
 
-    const availabilityActive = booksFilters.showAvailable !== booksFilters.showMissing;
-    if (availabilityActive) {
-      labels.push(booksFilters.showAvailable ? 'Available' : 'Missing');
+    if (booksFilters.availability !== 'all') {
+      labels.push(AVAILABILITY_FILTER_LABELS[booksFilters.availability]);
     }
 
     if (booksFilters.showUpcoming) {
-      labels.push('Upcoming');
+      labels.push(booksFilters.upcomingWindow === 'any' ? 'Upcoming' : UPCOMING_WINDOW_LABELS[booksFilters.upcomingWindow]);
+    }
+
+    if (booksFilters.showNoReleaseDate) {
+      labels.push('No release date');
     }
 
     if (booksFilters.seriesKeys.length > 0) {
@@ -1345,6 +1445,31 @@ export const AuthorModal = ({
     }
 
     return labels.length === 1 ? labels[0] : null;
+  }, [booksFilters, seriesFilterOptions]);
+
+  const activeFilterChips = useMemo(() => {
+    const chips: Array<{ key: string; label: string }> = [];
+
+    if (booksFilters.availability !== 'all') {
+      chips.push({ key: 'availability', label: AVAILABILITY_FILTER_LABELS[booksFilters.availability] });
+    }
+    if (booksFilters.showUpcoming) {
+      chips.push({
+        key: 'upcoming',
+        label: booksFilters.upcomingWindow === 'any'
+          ? 'Upcoming'
+          : `Upcoming · ${UPCOMING_WINDOW_LABELS[booksFilters.upcomingWindow]}`,
+      });
+    }
+    if (booksFilters.showNoReleaseDate) {
+      chips.push({ key: 'no_release_date', label: 'No release date' });
+    }
+    for (const seriesKey of booksFilters.seriesKeys) {
+      const selected = seriesFilterOptions.find((option) => option.key === seriesKey);
+      chips.push({ key: `series:${seriesKey}`, label: selected?.title || 'Series' });
+    }
+
+    return chips;
   }, [booksFilters, seriesFilterOptions]);
 
   const visibleBooks = useMemo(() => {
@@ -2048,26 +2173,94 @@ export const AuthorModal = ({
                     >
                       {({ close }) => (
                         <div className="py-1" role="menu" aria-label="Book filters">
+                          <div className="px-3 pb-1 text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Availability</div>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${AVAILABLE_FILTER_MODES.includes(booksFilters.availability) ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                              onClick={() => {
+                                setIsAvailabilityFilterMenuOpen((prev) => {
+                                  const next = !prev;
+                                  if (next) setIsMissingFilterMenuOpen(false);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <span>Available</span>
+                              <svg className={`w-3.5 h-3.5 transition-transform ${isAvailabilityFilterMenuOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+
+                            {isAvailabilityFilterMenuOpen ? (
+                              <div className="pl-3 pr-2 pb-1">
+                                {AVAILABLE_FILTER_MODES.map((mode) => (
+                                  <button
+                                    key={mode}
+                                    type="button"
+                                    className={`w-full px-3 py-1.5 text-left text-xs rounded-md hover-surface flex items-center justify-between ${booksFilters.availability === mode ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-gray-600 dark:text-gray-300'}`}
+                                    onClick={() => {
+                                      setBooksFilters((prev) => ({ ...prev, availability: mode }));
+                                    }}
+                                  >
+                                    <span>{AVAILABILITY_FILTER_LABELS[mode]}</span>
+                                    {booksFilters.availability === mode ? <span>✓</span> : null}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${MISSING_FILTER_MODES.includes(booksFilters.availability) ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                              onClick={() => {
+                                setIsMissingFilterMenuOpen((prev) => {
+                                  const next = !prev;
+                                  if (next) setIsAvailabilityFilterMenuOpen(false);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <span>Missing</span>
+                              <svg className={`w-3.5 h-3.5 transition-transform ${isMissingFilterMenuOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+
+                            {isMissingFilterMenuOpen ? (
+                              <div className="pl-3 pr-2 pb-1">
+                                {MISSING_FILTER_MODES.map((mode) => (
+                                  <button
+                                    key={mode}
+                                    type="button"
+                                    className={`w-full px-3 py-1.5 text-left text-xs rounded-md hover-surface flex items-center justify-between ${booksFilters.availability === mode ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-gray-600 dark:text-gray-300'}`}
+                                    onClick={() => {
+                                      setBooksFilters((prev) => ({ ...prev, availability: mode }));
+                                    }}
+                                  >
+                                    <span>{AVAILABILITY_FILTER_LABELS[mode]}</span>
+                                    {booksFilters.availability === mode ? <span>✓</span> : null}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="my-1 border-t border-[var(--border-muted)]" />
+
                           <button
                             type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showMissing ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showNoReleaseDate ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
                             onClick={() => {
-                              setBooksFilters((prev) => ({ ...prev, showMissing: !prev.showMissing }));
+                              setBooksFilters((prev) => ({ ...prev, showNoReleaseDate: !prev.showNoReleaseDate }));
                             }}
                           >
-                            <span>Missing</span>
-                            {booksFilters.showMissing ? <span>✓</span> : null}
+                            <span>No release date</span>
+                            {booksFilters.showNoReleaseDate ? <span>✓</span> : null}
                           </button>
-                          <button
-                            type="button"
-                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showAvailable ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                            onClick={() => {
-                              setBooksFilters((prev) => ({ ...prev, showAvailable: !prev.showAvailable }));
-                            }}
-                          >
-                            <span>Available</span>
-                            {booksFilters.showAvailable ? <span>✓</span> : null}
-                          </button>
+
                           <button
                             type="button"
                             className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${booksFilters.showUpcoming ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
@@ -2078,6 +2271,24 @@ export const AuthorModal = ({
                             <span>Upcoming</span>
                             {booksFilters.showUpcoming ? <span>✓</span> : null}
                           </button>
+
+                          {booksFilters.showUpcoming ? (
+                            <div className="pl-3 pr-2 pb-1">
+                              {(['any', '30d', '90d', 'this_year'] as UpcomingWindowMode[]).map((windowMode) => (
+                                <button
+                                  key={windowMode}
+                                  type="button"
+                                  className={`w-full px-3 py-1.5 text-left text-xs rounded-md hover-surface flex items-center justify-between ${booksFilters.upcomingWindow === windowMode ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-gray-600 dark:text-gray-300'}`}
+                                  onClick={() => {
+                                    setBooksFilters((prev) => ({ ...prev, upcomingWindow: windowMode }));
+                                  }}
+                                >
+                                  <span>{UPCOMING_WINDOW_LABELS[windowMode]}</span>
+                                  {booksFilters.upcomingWindow === windowMode ? <span>✓</span> : null}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
 
                           <div className="my-1 border-t border-[var(--border-muted)]" />
 
@@ -2110,7 +2321,12 @@ export const AuthorModal = ({
                                         key={option.key}
                                         type="button"
                                         className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${selected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                        onClick={() => toggleSeriesFilter(option.key)}
+                                        onClick={() => {
+                                          toggleSeriesFilter(option.key);
+                                          if (closeSeriesFilterOnSelect) {
+                                            setIsSeriesFilterMenuOpen(false);
+                                          }
+                                        }}
                                       >
                                         <span className="truncate pr-2">{option.title}</span>
                                         <span className="inline-flex items-center gap-2 flex-shrink-0">
@@ -2121,6 +2337,16 @@ export const AuthorModal = ({
                                     );
                                   })
                                 )}
+                                <div className="border-t border-[var(--border-muted)] mt-1 pt-1">
+                                  <button
+                                    type="button"
+                                    className={`w-full px-3 py-2 text-left text-xs hover-surface flex items-center justify-between ${closeSeriesFilterOnSelect ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
+                                    onClick={() => setCloseSeriesFilterOnSelect((prev) => !prev)}
+                                  >
+                                    <span>Close on select</span>
+                                    {closeSeriesFilterOnSelect ? <span>✓</span> : null}
+                                  </button>
+                                </div>
                               </div>
                             ) : null}
                           </div>
@@ -2131,8 +2357,10 @@ export const AuthorModal = ({
                               type="button"
                               className="px-2.5 py-1 text-xs rounded-md hover-surface"
                               onClick={() => {
-                                setBooksFilters({ showMissing: false, showAvailable: false, showUpcoming: false, seriesKeys: [] });
+                                setBooksFilters(createDefaultAuthorBooksFilters());
                                 setIsSeriesFilterMenuOpen(false);
+                                setIsAvailabilityFilterMenuOpen(false);
+                                setIsMissingFilterMenuOpen(false);
                               }}
                             >
                               Clear
@@ -2142,6 +2370,8 @@ export const AuthorModal = ({
                               className="px-2.5 py-1 text-xs rounded-md hover-surface"
                               onClick={() => {
                                 setIsSeriesFilterMenuOpen(false);
+                                setIsAvailabilityFilterMenuOpen(false);
+                                setIsMissingFilterMenuOpen(false);
                                 close();
                               }}
                             >
@@ -2259,6 +2489,42 @@ export const AuthorModal = ({
                 </div>
 
                 <div className="rounded-b-2xl border border-[var(--border-muted)] border-t-0 bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
+
+                {activeFilterChips.length > 0 ? (
+                  <div className="px-4 pt-3 pb-1 flex flex-wrap items-center gap-2">
+                    {activeFilterChips.map((chip) => (
+                      <button
+                        key={chip.key}
+                        type="button"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] border border-[var(--border-muted)] bg-[var(--bg-soft)] hover-surface"
+                        onClick={() => {
+                          if (chip.key === 'availability') {
+                            setBooksFilters((prev) => ({ ...prev, availability: 'all' }));
+                            return;
+                          }
+                          if (chip.key === 'upcoming') {
+                            setBooksFilters((prev) => ({ ...prev, showUpcoming: false, upcomingWindow: 'any' }));
+                            return;
+                          }
+                          if (chip.key === 'no_release_date') {
+                            setBooksFilters((prev) => ({ ...prev, showNoReleaseDate: false }));
+                            return;
+                          }
+                          if (chip.key.startsWith('series:')) {
+                            const seriesKey = chip.key.slice('series:'.length);
+                            setBooksFilters((prev) => ({ ...prev, seriesKeys: prev.seriesKeys.filter((key) => key !== seriesKey) }));
+                          }
+                        }}
+                        title={`Remove filter: ${chip.label}`}
+                      >
+                        <span className="truncate max-w-44">{chip.label}</span>
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
 
                 {monitoredEntityId ? (
                   <div className="px-4 pb-3">
