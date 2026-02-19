@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import json
+import re
 from typing import Any, Dict
 
 
@@ -11,6 +12,33 @@ def _on_save_advanced(values: Dict[str, Any]) -> Dict[str, Any]:
     from shelfmark.core.logger import setup_logger
 
     logger = setup_logger(__name__)
+
+    raw_schedule = str(values.get("MONITORED_REFRESH_TIMES") or "").strip()
+    if not raw_schedule:
+        raw_schedule = "02:00,14:00"
+
+    parts = [segment.strip() for segment in raw_schedule.split(",") if segment.strip()]
+    if not parts:
+        return {
+            "error": True,
+            "message": "Monitored refresh times must include at least one time in HH:MM format",
+            "values": values,
+        }
+
+    normalized_parts: list[str] = []
+    seen_parts: set[str] = set()
+    for part in parts:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", part):
+            return {
+                "error": True,
+                "message": f"Invalid monitored refresh time '{part}'. Use 24-hour HH:MM (e.g. 02:00,14:00)",
+                "values": values,
+            }
+        if part not in seen_parts:
+            normalized_parts.append(part)
+            seen_parts.add(part)
+
+    values["MONITORED_REFRESH_TIMES"] = ",".join(normalized_parts)
 
     mappings = values.get("PROWLARR_REMOTE_PATH_MAPPINGS")
     if mappings is None:
@@ -1857,6 +1885,25 @@ def advanced_settings():
             description="Delete all cached cover images.",
             style="danger",
             callback=_clear_covers_cache,
+        ),
+        HeadingField(
+            key="monitored_refresh_heading",
+            title="Monitored Author Refresh",
+            description="Refresh monitored authors on a schedule to keep books, series, popularity, and covers current without refreshing on every author open.",
+        ),
+        CheckboxField(
+            key="MONITORED_SCHEDULED_REFRESH_ENABLED",
+            label="Enable Scheduled Monitored Refresh",
+            description="Run monitored-author refresh jobs automatically at configured times.",
+            default=True,
+        ),
+        TextField(
+            key="MONITORED_REFRESH_TIMES",
+            label="Refresh Times (HH:MM)",
+            description="Comma-separated 24-hour local times. Example: 02:00,14:00",
+            default="02:00,14:00",
+            placeholder="02:00,14:00",
+            show_when={"field": "MONITORED_SCHEDULED_REFRESH_ENABLED", "value": True},
         ),
         HeadingField(
             key="metadata_cache_heading",

@@ -779,7 +779,6 @@ export const AuthorModal = ({
       return seriesUpdates;
     };
 
-    const REFRESH_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
     const forceRefresh = refreshKey > 0;
 
     const fetchFromProvider = async (authorName: string, cachedBooks: Book[]): Promise<void> => {
@@ -928,17 +927,10 @@ export const AuthorModal = ({
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
 
-              const cachedHasPopularity = cachedBooks.some((book) => {
-                const popularity = extractBookPopularity(book);
-                return popularity.rating !== null || popularity.ratingsCount !== null || popularity.readersCount !== null;
-              });
-
-              // Skip provider refresh if last sync was <24hrs ago and not a forced refresh
-              if (!forceRefresh && resp.last_checked_at) {
-                const lastChecked = new Date(resp.last_checked_at + 'Z').getTime();
-                if (Date.now() - lastChecked < REFRESH_TTL_MS && cachedHasPopularity) {
-                  skipProviderRefresh = true;
-                }
+              // Scheduled backend refresh keeps monitored author data fresh.
+              // On open, prefer cached DB rows and only hit provider on explicit manual refresh.
+              if (!forceRefresh) {
+                skipProviderRefresh = true;
               }
             }
           } catch {

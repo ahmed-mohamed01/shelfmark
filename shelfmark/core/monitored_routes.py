@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import difflib
 import re
+import threading
 from pathlib import Path
 
 from flask import Flask, jsonify, request, session
@@ -171,6 +172,182 @@ def register_monitored_routes(
                     readers_count = parsed_readers
 
         return rating, ratings_count, readers_count
+
+    def _parse_schedule_times(raw_value: Any) -> list[str]:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            raw = "02:00,14:00"
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for part in (segment.strip() for segment in raw.split(",")):
+            if not part:
+                continue
+            if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", part):
+                continue
+            if part not in seen:
+                seen.add(part)
+                unique.append(part)
+
+        return unique or ["02:00", "14:00"]
+
+    def _sync_author_entity(*, db_user_id: int | None, entity: dict[str, Any], prefetch_covers: bool = False) -> int:
+        if entity.get("kind") != "author":
+            raise ValueError("Sync is only supported for author entities")
+
+        entity_id = int(entity.get("id"))
+        author_name = str(entity.get("name") or "")
+        provider_name = str(entity.get("provider") or "hardcover")
+
+        from shelfmark.metadata_providers import MetadataSearchOptions, SortOrder, get_provider_kwargs, get_provider
+
+        provider = get_provider(provider_name, **get_provider_kwargs(provider_name))
+        if not provider.is_available():
+            raise RuntimeError(f"Metadata provider '{provider_name}' is not available")
+
+        cache = None
+        covers_enabled = False
+        if prefetch_covers:
+            try:
+                from shelfmark.config.env import is_covers_cache_enabled
+                covers_enabled = bool(is_covers_cache_enabled())
+                if covers_enabled:
+                    from shelfmark.core.image_cache import get_image_cache
+
+                    cache = get_image_cache()
+            except Exception:
+                cache = None
+                covers_enabled = False
+
+        limit = 40
+        page = 1
+        has_more = True
+        discovered = 0
+
+        while has_more and page <= 15 and discovered < 600:
+            options = MetadataSearchOptions(
+                query="",
+                limit=limit,
+                page=page,
+                sort=SortOrder.RELEVANCE,
+                fields={"author": author_name},
+            )
+            result = provider.search_paginated(options)
+            for book in result.books:
+                payload = asdict(book)
+                authors = payload.get("authors")
+                authors_str = ", ".join(authors) if isinstance(authors, list) else None
+                rating, ratings_count, readers_count = _extract_book_popularity(payload.get("display_fields"))
+                provider_book_id = str(payload.get("provider_id") or "")
+                provider_value = str(payload.get("provider") or provider_name)
+                cover_url = payload.get("cover_url")
+
+                user_db.upsert_monitored_book(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider_value,
+                    provider_book_id=provider_book_id,
+                    title=str(payload.get("title") or ""),
+                    authors=authors_str,
+                    publish_year=payload.get("publish_year"),
+                    isbn_13=payload.get("isbn_13"),
+                    cover_url=cover_url,
+                    series_name=payload.get("series_name"),
+                    series_position=payload.get("series_position"),
+                    series_count=payload.get("series_count"),
+                    rating=rating,
+                    ratings_count=ratings_count,
+                    readers_count=readers_count,
+                    state="discovered",
+                )
+
+                if covers_enabled and cache is not None and isinstance(cover_url, str) and cover_url.strip():
+                    cache_id = f"{provider_value}_{provider_book_id}"
+                    try:
+                        # Avoid network fetch if we already have a cached cover.
+                        if cache.get(cache_id) is None:
+                            cache.fetch_and_cache(cache_id, cover_url)
+                    except Exception:
+                        pass
+
+                discovered += 1
+
+            has_more = bool(getattr(result, "has_more", False))
+            page += 1
+
+        user_db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
+        return discovered
+
+    def _start_monitored_refresh_scheduler() -> None:
+        if app.config.get("TESTING"):
+            return
+        if app.extensions.get("monitored_refresh_scheduler_started"):
+            return
+
+        stop_event = threading.Event()
+
+        def _run() -> None:
+            from shelfmark.core.config import config as app_config
+
+            last_run_marker = ""
+            while not stop_event.is_set():
+                try:
+                    if not app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True):
+                        stop_event.wait(30)
+                        continue
+
+                    now = datetime.now()
+                    slot = now.strftime("%H:%M")
+                    schedule_times = _parse_schedule_times(app_config.get("MONITORED_REFRESH_TIMES", "02:00,14:00"))
+
+                    if slot in schedule_times:
+                        marker = f"{now.strftime('%Y-%m-%d')}@{slot}"
+                        if marker != last_run_marker:
+                            last_run_marker = marker
+                            user_ids = {int(u.get("id")) for u in user_db.list_users() if u.get("id") is not None}
+                            global_user = user_db.get_user(username="global")
+                            if global_user and global_user.get("id") is not None:
+                                user_ids.add(int(global_user.get("id")))
+
+                            total_entities = 0
+                            total_books = 0
+                            for uid in sorted(user_ids):
+                                entities = user_db.list_monitored_entities(user_id=uid)
+                                for entity in entities:
+                                    if not bool(int(entity.get("enabled") or 0)):
+                                        continue
+                                    if str(entity.get("kind") or "") != "author":
+                                        continue
+                                    total_entities += 1
+                                    try:
+                                        total_books += _sync_author_entity(db_user_id=uid, entity=entity, prefetch_covers=True)
+                                    except Exception as exc:
+                                        logger.warning("Scheduled monitored sync failed entity_id=%s user_id=%s: %s", entity.get("id"), uid, exc)
+                                        try:
+                                            user_db.update_monitored_entity_check(
+                                                entity_id=int(entity.get("id") or 0),
+                                                last_error=str(exc),
+                                            )
+                                        except Exception:
+                                            pass
+
+                            logger.info(
+                                "Scheduled monitored refresh complete slot=%s entities=%s discovered_books=%s",
+                                slot,
+                                total_entities,
+                                total_books,
+                            )
+                except Exception as exc:
+                    logger.warning("Scheduled monitored refresh loop error: %s", exc)
+
+                stop_event.wait(30)
+
+        worker = threading.Thread(target=_run, daemon=True, name="MonitoredRefreshScheduler")
+        worker.start()
+        app.extensions["monitored_refresh_scheduler_started"] = True
+        app.extensions["monitored_refresh_scheduler_stop_event"] = stop_event
+
+    _start_monitored_refresh_scheduler()
 
     def _resolve_allowed_roots(*, db_user_id: int) -> list[Path]:
         # Mirror the safety model in /api/fs/list: only allow browsing/scanning inside
@@ -1195,59 +1372,8 @@ def register_monitored_routes(
         if entity.get("kind") != "author":
             return jsonify({"error": "Sync is only supported for author entities"}), 400
 
-        author_name = entity.get("name") or ""
-        provider_name = entity.get("provider") or "hardcover"
-
         try:
-            from shelfmark.metadata_providers import MetadataSearchOptions, SortOrder, get_provider_kwargs, get_provider
-
-            provider = get_provider(provider_name, **get_provider_kwargs(provider_name))
-            if not provider.is_available():
-                raise RuntimeError(f"Metadata provider '{provider_name}' is not available")
-
-            limit = 40
-            page = 1
-            has_more = True
-            discovered = 0
-
-            while has_more and page <= 15 and discovered < 600:
-                options = MetadataSearchOptions(
-                    query="",
-                    limit=limit,
-                    page=page,
-                    sort=SortOrder.RELEVANCE,
-                    fields={"author": author_name},
-                )
-                result = provider.search_paginated(options)
-                for book in result.books:
-                    payload = asdict(book)
-                    authors = payload.get("authors")
-                    authors_str = ", ".join(authors) if isinstance(authors, list) else None
-                    rating, ratings_count, readers_count = _extract_book_popularity(payload.get("display_fields"))
-                    user_db.upsert_monitored_book(
-                        user_id=db_user_id,
-                        entity_id=entity_id,
-                        provider=str(payload.get("provider") or provider_name),
-                        provider_book_id=str(payload.get("provider_id") or ""),
-                        title=str(payload.get("title") or ""),
-                        authors=authors_str,
-                        publish_year=payload.get("publish_year"),
-                        isbn_13=payload.get("isbn_13"),
-                        cover_url=payload.get("cover_url"),
-                        series_name=payload.get("series_name"),
-                        series_position=payload.get("series_position"),
-                        series_count=payload.get("series_count"),
-                        rating=rating,
-                        ratings_count=ratings_count,
-                        readers_count=readers_count,
-                        state="discovered",
-                    )
-                    discovered += 1
-
-                has_more = bool(getattr(result, "has_more", False))
-                page += 1
-
-            user_db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
+            discovered = _sync_author_entity(db_user_id=db_user_id, entity=entity, prefetch_covers=True)
             return jsonify({"ok": True, "discovered": discovered})
 
         except Exception as exc:
