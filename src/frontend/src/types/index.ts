@@ -25,6 +25,7 @@ export interface Book {
   size?: string;
   preview?: string;
   publisher?: string;
+  release_date?: string;
   info?: Record<string, string | string[]>;
   description?: string;
   download_path?: string;

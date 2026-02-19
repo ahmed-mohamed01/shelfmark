@@ -693,6 +693,7 @@ export const AuthorModal = ({
       title: row.title,
       author: row.authors || '',
       year: row.publish_year != null ? String(row.publish_year) : undefined,
+      release_date: row.release_date || undefined,
       preview: row.cover_url || undefined,
       isbn_13: row.isbn_13 || undefined,
       provider: row.provider || undefined,

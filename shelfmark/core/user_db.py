@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     title TEXT NOT NULL,
     authors TEXT,
     publish_year INTEGER,
+    release_date TEXT,
     isbn_13 TEXT,
     cover_url TEXT,
     series_name TEXT,
@@ -250,6 +251,7 @@ class UserDB:
                 self._migrate_activity_tables(conn)
                 self._migrate_monitored_books_series_columns(conn)
                 self._migrate_monitored_books_popularity_columns(conn)
+                self._migrate_monitored_books_release_date_column(conn)
                 self._migrate_monitored_book_files_table(conn)
                 self._migrate_monitored_book_download_history_table(conn)
                 conn.commit()
@@ -580,6 +582,7 @@ class UserDB:
         title: str,
         authors: str | None,
         publish_year: Any = None,
+        release_date: str | None = None,
         isbn_13: str | None = None,
         cover_url: str | None = None,
         series_name: str | None = None,
@@ -605,6 +608,12 @@ class UserDB:
                 year_value = int(publish_year)
             except (TypeError, ValueError):
                 year_value = None
+
+        release_date_value: str | None = None
+        if release_date is not None:
+            candidate = str(release_date).strip()
+            if candidate:
+                release_date_value = candidate
 
         rating_value: float | None = None
         if rating is not None:
@@ -647,6 +656,7 @@ class UserDB:
                         title,
                         authors,
                         publish_year,
+                        release_date,
                         isbn_13,
                         cover_url,
                         series_name,
@@ -657,12 +667,13 @@ class UserDB:
                         readers_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
                         authors=excluded.authors,
                         publish_year=excluded.publish_year,
+                        release_date=excluded.release_date,
                         isbn_13=excluded.isbn_13,
                         cover_url=excluded.cover_url,
                         series_name=excluded.series_name,
@@ -680,6 +691,7 @@ class UserDB:
                         normalized_title,
                         authors,
                         year_value,
+                        release_date_value,
                         isbn_13,
                         cover_url,
                         series_name,
@@ -1263,6 +1275,15 @@ class UserDB:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN ratings_count INTEGER")
         if "readers_count" not in column_names:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN readers_count INTEGER")
+
+    def _migrate_monitored_books_release_date_column(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has release_date column."""
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return
+        column_names = {str(col["name"]) for col in rows}
+        if "release_date" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date TEXT")
 
     def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
         """Ensure monitored_book_files table exists for older DBs."""

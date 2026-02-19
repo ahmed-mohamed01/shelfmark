@@ -16,6 +16,7 @@ export interface MetadataBookData {
   description?: string;
   publisher?: string;
   publish_year?: number;
+  release_date?: string;
   language?: string;
   genres?: string[];
   source_url?: string;
@@ -47,6 +48,7 @@ export function transformMetadataToBook(data: MetadataBookData): Book {
     language: data.language,
     preview: data.cover_url,
     publisher: data.publisher,
+    release_date: data.release_date,
     description: data.description,
     provider: data.provider,
     provider_display_name: data.provider_display_name,

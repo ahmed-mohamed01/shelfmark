@@ -91,6 +91,15 @@ def _extract_publish_year(data: Dict) -> Optional[int]:
     return None
 
 
+def _extract_release_date(data: Dict) -> Optional[str]:
+    """Extract full release date text when available (e.g., YYYY-MM-DD)."""
+    value = data.get("release_date")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _build_source_url(slug: str) -> Optional[str]:
     """Build Hardcover source URL from book slug."""
     return f"https://hardcover.app/books/{slug}" if slug else None
@@ -694,6 +703,7 @@ class HardcoverProvider(MetadataProvider):
 
             cover_url = _extract_cover_url(item, "image")
             publish_year = _extract_publish_year(item)
+            release_date = _extract_release_date(item)
             source_url = _build_source_url(item.get("slug", ""))
 
             # Build display fields from Hardcover-specific data
@@ -712,6 +722,9 @@ class HardcoverProvider(MetadataProvider):
             users_count = item.get("users_count")
             if users_count:
                 display_fields.append(DisplayField(label="Readers", value=f"{users_count:,}", icon="users"))
+
+            if release_date:
+                display_fields.append(DisplayField(label="Release Date", value=release_date))
 
             # Combine headline and description if both present
             headline = item.get("headline")
@@ -733,6 +746,7 @@ class HardcoverProvider(MetadataProvider):
                 cover_url=cover_url,
                 description=full_description,
                 publish_year=publish_year,
+                release_date=release_date,
                 source_url=source_url,
                 display_fields=display_fields,
             )
@@ -778,6 +792,7 @@ class HardcoverProvider(MetadataProvider):
 
         cover_url = _extract_cover_url(book, "cached_image", "image")
         publish_year = _extract_publish_year(book)
+        release_date = _extract_release_date(book)
 
         # Extract genres from cached_tags
         genres = []
@@ -865,6 +880,7 @@ class HardcoverProvider(MetadataProvider):
              cover_url=cover_url,
              description=full_description,
              publish_year=publish_year,
+             release_date=release_date,
              genres=genres,
              source_url=source_url,
              series_name=series_name,

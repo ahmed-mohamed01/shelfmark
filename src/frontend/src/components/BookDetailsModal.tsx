@@ -125,6 +125,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
           return {
             ...current,
             publisher: full.publisher ?? current.publisher,
+            release_date: full.release_date ?? current.release_date,
             language: full.language ?? current.language,
             genres: full.genres ?? current.genres,
             description: full.description ?? current.description,
@@ -166,6 +167,45 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [files]);
 
+  const genresSummary = useMemo(() => {
+    if (!Array.isArray(enrichedBook?.genres) || enrichedBook.genres.length === 0) {
+      return null;
+    }
+    return enrichedBook.genres.slice(0, 5).join(', ');
+  }, [enrichedBook?.genres]);
+
+  const releaseDateSummary = useMemo(() => {
+    if (typeof enrichedBook?.release_date === 'string' && enrichedBook.release_date.trim()) {
+      return enrichedBook.release_date.trim();
+    }
+
+    if (!Array.isArray(enrichedBook?.display_fields)) {
+      return enrichedBook?.year || null;
+    }
+
+    for (const field of enrichedBook.display_fields) {
+      if (!field || typeof field.label !== 'string' || typeof field.value !== 'string') {
+        continue;
+      }
+      const label = field.label.trim().toLowerCase();
+      if (!label) continue;
+      const isReleaseDateLabel =
+        label.includes('released') ||
+        label.includes('release date') ||
+        label.includes('publish date') ||
+        label.includes('publication date') ||
+        label === 'release' ||
+        label === 'published' ||
+        label === 'publication';
+      if (!isReleaseDateLabel) continue;
+
+      const value = field.value.trim();
+      if (value) return value;
+    }
+
+    return enrichedBook?.year || null;
+  }, [enrichedBook?.release_date, enrichedBook?.display_fields, enrichedBook?.year]);
+
   const displayFields = useMemo(() => {
     const fields: Array<{ label: string; value: string }> = [];
 
@@ -177,10 +217,6 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
       fields.push({ label: 'Language', value: enrichedBook.language });
     }
 
-    if (Array.isArray(enrichedBook?.genres) && enrichedBook.genres.length > 0) {
-      fields.push({ label: 'Genres', value: enrichedBook.genres.slice(0, 5).join(', ') });
-    }
-
     if (Array.isArray(enrichedBook?.display_fields)) {
       for (const field of enrichedBook.display_fields) {
         if (!field || typeof field.label !== 'string' || typeof field.value !== 'string') {
@@ -189,6 +225,14 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
         const label = field.label.trim();
         const value = field.value.trim();
         if (!label || !value) {
+          continue;
+        }
+        const lowerLabel = label.toLowerCase();
+        const isGenresLabel = lowerLabel === 'genres' || lowerLabel === 'genre';
+        const isReleaseDateLabel =
+          (lowerLabel.includes('release') || lowerLabel.includes('publish') || lowerLabel.includes('publication')) &&
+          lowerLabel.includes('date');
+        if (isGenresLabel || isReleaseDateLabel) {
           continue;
         }
         fields.push({ label, value });
@@ -204,7 +248,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
       seen.add(key);
       return true;
     });
-  }, [enrichedBook?.publisher, enrichedBook?.language, enrichedBook?.genres, enrichedBook?.display_fields]);
+  }, [enrichedBook?.publisher, enrichedBook?.language, enrichedBook?.display_fields]);
 
   if (!book && !isClosing) return null;
   if (!book) return null;
@@ -327,6 +371,23 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                       >
                         more
                       </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {(genresSummary || releaseDateSummary) ? (
+                  <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                    {genresSummary ? (
+                      <div className="min-w-0 truncate">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">Genres:</span>{' '}
+                        <span>{genresSummary}</span>
+                      </div>
+                    ) : null}
+                    {releaseDateSummary ? (
+                      <div className="min-w-0 truncate">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">Release date:</span>{' '}
+                        <span>{releaseDateSummary}</span>
+                      </div>
                     ) : null}
                   </div>
                 ) : null}

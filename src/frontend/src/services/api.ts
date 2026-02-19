@@ -362,6 +362,7 @@ export interface MonitoredBookRow {
   title: string;
   authors?: string | null;
   publish_year?: number | null;
+  release_date?: string | null;
   isbn_13?: string | null;
   cover_url?: string | null;
   series_name?: string | null;

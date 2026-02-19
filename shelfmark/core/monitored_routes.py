@@ -250,6 +250,7 @@ def register_monitored_routes(
                     title=str(payload.get("title") or ""),
                     authors=authors_str,
                     publish_year=payload.get("publish_year"),
+                    release_date=payload.get("release_date"),
                     isbn_13=payload.get("isbn_13"),
                     cover_url=cover_url,
                     series_name=payload.get("series_name"),
