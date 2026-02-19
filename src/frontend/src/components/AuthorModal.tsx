@@ -927,9 +927,15 @@ export const AuthorModal = ({
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
 
+              const cachedHasSeriesGrouping = cachedBooks.some((book) => {
+                const seriesName = (book.series_name || '').trim();
+                return seriesName.length > 0;
+              });
+
               // Scheduled backend refresh keeps monitored author data fresh.
-              // On open, prefer cached DB rows and only hit provider on explicit manual refresh.
-              if (!forceRefresh) {
+              // On open, prefer cached DB rows when grouping metadata is already present.
+              // If cache lacks series data, fetch provider to avoid showing everything as standalone.
+              if (!forceRefresh && cachedHasSeriesGrouping) {
                 skipProviderRefresh = true;
               }
             }
