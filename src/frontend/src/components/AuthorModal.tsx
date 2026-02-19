@@ -1730,11 +1730,47 @@ export const AuthorModal = ({
     );
   };
 
+  const fallbackAuthorPhotoFromPopularBook = useMemo(() => {
+    let bestBook: Book | null = null;
+    let bestReaders = -1;
+    let bestRatingsCount = -1;
+    let bestRating = -1;
+
+    for (const book of books) {
+      const preview = typeof book.preview === 'string' ? book.preview.trim() : '';
+      if (!preview) continue;
+
+      const popularity = extractBookPopularity(book);
+      const readers = popularity.readersCount ?? -1;
+      const ratingsCount = popularity.ratingsCount ?? -1;
+      const rating = popularity.rating ?? -1;
+
+      const isBetter = readers > bestReaders
+        || (readers === bestReaders && ratingsCount > bestRatingsCount)
+        || (readers === bestReaders && ratingsCount === bestRatingsCount && rating > bestRating)
+        || (
+          readers === bestReaders
+          && ratingsCount === bestRatingsCount
+          && rating === bestRating
+          && (book.title || '').localeCompare(bestBook?.title || '') < 0
+        );
+
+      if (isBetter) {
+        bestBook = book;
+        bestReaders = readers;
+        bestRatingsCount = ratingsCount;
+        bestRating = rating;
+      }
+    }
+
+    return typeof bestBook?.preview === 'string' ? bestBook.preview.trim() : null;
+  }, [books]);
+
   if (!author && !isClosing) return null;
   if (!author) return null;
 
   const resolvedName = details?.name || author.name;
-  const resolvedPhoto = details?.photo_url || author.photo_url || null;
+  const resolvedPhoto = details?.photo_url || author.photo_url || fallbackAuthorPhotoFromPopularBook || null;
   const resolvedBio = details?.bio || null;
   const resolvedUrl = details?.source_url || author.source_url || null;
   const providerLabel = details?.provider || author.provider || null;

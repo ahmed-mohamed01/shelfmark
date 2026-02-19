@@ -5,11 +5,13 @@ import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
   createMonitoredEntity,
   listMonitoredEntities,
+  listMonitoredBooks,
   getSelfUserEditContext,
   fsListDirectories,
   updateSelfUser,
   MetadataAuthor,
   MonitoredEntity,
+  MonitoredBookRow,
   MonitoredAuthorBookSearchRow,
   searchMonitoredAuthorBooks,
   searchMetadata,
@@ -67,6 +69,44 @@ const GRID_CLASSES = {
 const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
 const MONITORED_COMPACT_MIN_WIDTH_MAX = 185;
 const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
+
+const selectFallbackPhotoFromMonitoredBooks = (books: MonitoredBookRow[]): string | undefined => {
+  let bestCover: string | undefined;
+  let bestReaders = -1;
+  let bestRatingsCount = -1;
+  let bestRating = -1;
+  let bestTitle = '';
+
+  for (const book of books) {
+    const cover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
+    if (!cover) continue;
+
+    const readers = typeof book.readers_count === 'number' ? book.readers_count : -1;
+    const ratingsCount = typeof book.ratings_count === 'number' ? book.ratings_count : -1;
+    const rating = typeof book.rating === 'number' ? book.rating : -1;
+    const title = (book.title || '').trim();
+
+    const isBetter = readers > bestReaders
+      || (readers === bestReaders && ratingsCount > bestRatingsCount)
+      || (readers === bestReaders && ratingsCount === bestRatingsCount && rating > bestRating)
+      || (
+        readers === bestReaders
+        && ratingsCount === bestRatingsCount
+        && rating === bestRating
+        && title.localeCompare(bestTitle, undefined, { sensitivity: 'base' }) < 0
+      );
+
+    if (isBetter) {
+      bestCover = cover;
+      bestReaders = readers;
+      bestRatingsCount = ratingsCount;
+      bestRating = rating;
+      bestTitle = title;
+    }
+  }
+
+  return bestCover;
+};
 
 const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -216,6 +256,44 @@ export const MonitoredPage = ({
       window.removeEventListener('resize', checkDesktop);
     };
   }, []);
+
+  useEffect(() => {
+    const targets = monitored.filter((author) => !author.photo_url && Number.isFinite(author.id));
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+
+    void (async () => {
+      const results = await Promise.allSettled(targets.map(async (author) => {
+        const response = await listMonitoredBooks(author.id);
+        return {
+          id: author.id,
+          photo_url: selectFallbackPhotoFromMonitoredBooks(response.books),
+        };
+      }));
+
+      if (cancelled) return;
+
+      const fallbackById = new Map<number, string>();
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.photo_url) {
+          fallbackById.set(result.value.id, result.value.photo_url);
+        }
+      }
+
+      if (fallbackById.size === 0) return;
+
+      setMonitored((prev) => prev.map((author) => {
+        if (author.photo_url) return author;
+        const fallback = fallbackById.get(author.id);
+        return fallback ? { ...author, photo_url: fallback } : author;
+      }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [monitored]);
 
   useEffect(() => {
     let alive = true;
