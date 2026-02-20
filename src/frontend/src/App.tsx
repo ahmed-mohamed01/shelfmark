@@ -1152,13 +1152,23 @@ function App() {
           if (isBatchAutoSearch && batchAuto && batchStatsKey && batchAuto.index >= batchAuto.total) {
             const batchStats = batchAutoStatsRef.current[batchStatsKey];
             if (batchStats) {
+              const total = Math.max(1, batchStats.total || 0);
+              const processed = batchStats.queued + batchStats.skipped + batchStats.failed;
+              const completedLabel = batchStats.failed > 0 ? 'Error' : 'Complete';
+              const completedVisualStatus: ActivityItem['visualStatus'] = batchStats.failed > 0 ? 'error' : 'complete';
+              updateBatchMasterActivity({
+                statusDetail: `${batchStats.queued}/${total} queued · ${batchStats.skipped} skipped · ${batchStats.failed} failed`,
+                progress: Math.max(95, Math.min(100, Math.round((processed / total) * 100))),
+                visualStatus: completedVisualStatus,
+                statusLabel: completedLabel,
+                progressAnimated: false,
+              });
               showToast(
                 `Batch pre-processing finished: ${batchStats.queued} queued, ${batchStats.skipped} skipped, ${batchStats.failed} failed.`,
                 batchStats.failed > 0 ? 'error' : 'success'
               );
               delete batchAutoStatsRef.current[batchStatsKey];
             }
-            setTransientDownloadActivityItems((prev) => prev.filter((item) => item.id !== batchMasterActivityId));
           }
         }
       }
