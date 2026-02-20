@@ -848,42 +848,7 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
 
         try:
-            from shelfmark.core.config import config as app_config
             from shelfmark.core.monitored_files import scan_monitored_author_files
-
-            def _normalize_supported_exts(raw_value: Any, fallback: list[str]) -> set[str]:
-                if isinstance(raw_value, str):
-                    values = [part.strip().lower() for part in raw_value.split(",") if part.strip()]
-                elif isinstance(raw_value, list):
-                    values = [str(part).strip().lower() for part in raw_value if str(part).strip()]
-                else:
-                    values = []
-
-                if not values:
-                    values = [item.strip().lower() for item in fallback if item.strip()]
-
-                return {
-                    ext if ext.startswith(".") else f".{ext}"
-                    for ext in values
-                    if ext and ext.strip(".")
-                }
-
-            configured_book_ext = _normalize_supported_exts(
-                app_config.get(
-                    "SUPPORTED_FORMATS",
-                    ["epub", "mobi", "azw3", "fb2", "djvu", "cbz", "cbr"],
-                    user_id=int(db_user_id or 0),
-                ),
-                ["epub", "mobi", "azw3", "fb2", "djvu", "cbz", "cbr"],
-            )
-            configured_audio_ext = _normalize_supported_exts(
-                app_config.get(
-                    "SUPPORTED_AUDIOBOOK_FORMATS",
-                    ["m4b", "mp3"],
-                    user_id=int(db_user_id or 0),
-                ),
-                ["m4b", "mp3"],
-            )
 
             scan_results = scan_monitored_author_files(
                 user_db=user_db,
@@ -893,8 +858,6 @@ def register_monitored_routes(
                 author_name=author_name,
                 ebook_path=ebook_path,
                 audiobook_path=audiobook_path,
-                allowed_ebook_ext=configured_book_ext,
-                allowed_audio_ext=configured_audio_ext,
             )
             scanned_ebook_files = int(scan_results.get("scanned_ebook_files") or 0)
             scanned_audio_folders = int(scan_results.get("scanned_audio_folders") or 0)

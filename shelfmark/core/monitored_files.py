@@ -10,6 +10,7 @@ from typing import Any
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.user_db import UserDB
+from shelfmark.download.postprocess.policy import get_supported_audiobook_formats, get_supported_formats
 
 logger = setup_logger(__name__)
 
@@ -17,8 +18,6 @@ logger = setup_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-ALLOWED_EBOOK_EXT = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
-ALLOWED_AUDIO_EXT = {".m4b", ".m4a", ".mp3", ".flac"}
 MAX_SCAN_FILES = 4000
 
 _TAG_PATTERNS = [
@@ -306,23 +305,27 @@ def scan_monitored_author_files(
     Returns scan stats and matched/unmatched payloads for API responses.
     """
 
+    raw_ebook_ext = allowed_ebook_ext
+    if raw_ebook_ext is None:
+        raw_ebook_ext = set(get_supported_formats())
+
     effective_ebook_ext = {
         ext if ext.startswith(".") else f".{ext}"
-        for ext in (allowed_ebook_ext or ALLOWED_EBOOK_EXT)
+        for ext in raw_ebook_ext
         if isinstance(ext, str) and ext.strip().strip(".")
     }
     effective_ebook_ext = {ext.lower() for ext in effective_ebook_ext}
-    if not effective_ebook_ext:
-        effective_ebook_ext = set(ALLOWED_EBOOK_EXT)
+
+    raw_audio_ext = allowed_audio_ext
+    if raw_audio_ext is None:
+        raw_audio_ext = set(get_supported_audiobook_formats())
 
     effective_audio_ext = {
         ext if ext.startswith(".") else f".{ext}"
-        for ext in (allowed_audio_ext or ALLOWED_AUDIO_EXT)
+        for ext in raw_audio_ext
         if isinstance(ext, str) and ext.strip().strip(".")
     }
     effective_audio_ext = {ext.lower() for ext in effective_audio_ext}
-    if not effective_audio_ext:
-        effective_audio_ext = set(ALLOWED_AUDIO_EXT)
 
     known_titles: list[tuple[dict[str, Any], str, str]] = []
     for row in books:
