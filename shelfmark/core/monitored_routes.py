@@ -215,6 +215,37 @@ def register_monitored_routes(
         except Exception:
             return None
 
+    def _parse_auto_search_release_date(value: Any) -> date | None:
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+
+        token = raw.split("T", 1)[0].split(" ", 1)[0].strip()
+        if not token:
+            return None
+
+        if re.fullmatch(r"\d{4}", token):
+            year = int(token)
+            return date(year, 1, 1)
+
+        if re.fullmatch(r"\d{4}-\d{2}", token):
+            year_str, month_str = token.split("-", 1)
+            try:
+                return date(int(year_str), int(month_str), 1)
+            except ValueError:
+                return None
+
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
+            try:
+                return date.fromisoformat(token)
+            except ValueError:
+                return None
+
+        return None
+
     def _book_has_file_type(
         *,
         by_book: dict[tuple[str, str], set[str]],
@@ -1169,12 +1200,36 @@ def register_monitored_routes(
 
         threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        today_utc = datetime.now(timezone.utc).date()
 
         for row in candidates:
             provider = str(row.get("provider") or "").strip()
             provider_book_id = str(row.get("provider_book_id") or "").strip()
             book_title = str(row.get("title") or "").strip() or None
             if not provider or not provider_book_id:
+                continue
+
+            explicit_release_date = _parse_auto_search_release_date(row.get("release_date"))
+            if explicit_release_date is not None and explicit_release_date > today_utc:
+                unreleased_message = f"Book is unreleased until {explicit_release_date.isoformat()}"
+                summary["unreleased"] += 1
+                _write_monitored_book_attempt(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status="not_released",
+                    error_message=unreleased_message,
+                )
+                _emit_monitored_search_error(
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    title=book_title,
+                    reason="not_released",
+                    detail=unreleased_message,
+                )
                 continue
 
             try:

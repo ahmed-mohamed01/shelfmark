@@ -163,3 +163,64 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
     assert payload.get("total_candidates") == 0
     assert payload.get("queued") == 0
     assert payload.get("failed") == 0
+
+
+def test_monitored_search_skips_unreleased_books_before_source_search(main_module, client):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.user_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Future Tester",
+        settings={"monitor_ebook_mode": "missing"},
+    )
+
+    provider = "hardcover"
+    provider_book_id = "book-future-guard"
+    future_year = date.today().year + 1
+    main_module.user_db.upsert_monitored_book(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        title="Future Book",
+        authors="Author One",
+        release_date=str(future_year),
+    )
+    main_module.user_db.set_monitored_book_monitor_flags(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        monitor_ebook=True,
+    )
+
+    with patch("shelfmark.metadata_providers.get_provider", side_effect=AssertionError("provider lookup should be skipped for unreleased books")):
+        response = client.post(
+            f"/api/monitored/{entity['id']}/search",
+            json={"content_type": "ebook"},
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json() or {}
+    assert payload.get("ok") is True
+    assert payload.get("total_candidates") == 1
+    assert payload.get("unreleased") == 1
+    assert payload.get("queued") == 0
+    assert payload.get("no_match") == 0
+    assert payload.get("below_cutoff") == 0
+    assert payload.get("failed") == 0
+
+    history_response = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={"provider": provider, "provider_book_id": provider_book_id, "limit": "10"},
+    )
+    assert history_response.status_code == 200
+    history_payload = history_response.get_json() or {}
+    attempts = history_payload.get("attempt_history") or []
+    assert len(attempts) >= 1
+    assert attempts[0]["status"] == "not_released"
+    assert attempts[0]["error_message"] == f"Book is unreleased until {future_year}-01-01"

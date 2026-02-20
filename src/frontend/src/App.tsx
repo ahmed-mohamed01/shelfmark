@@ -859,12 +859,79 @@ function App() {
     );
   };
 
+  const extractAutoSearchReleaseDateCandidate = (book: Book): string | null => {
+    const explicit = String(book.release_date || '').trim();
+    if (explicit) return explicit;
+
+    const fields = Array.isArray(book.display_fields) ? book.display_fields : [];
+    for (const field of fields) {
+      const label = String(field?.label || '').trim().toLowerCase();
+      const value = String(field?.value || '').trim();
+      if (!label || !value) continue;
+      const isReleaseLabel =
+        label.includes('released') ||
+        label.includes('release date') ||
+        label.includes('publish date') ||
+        label.includes('publication date') ||
+        label === 'release' ||
+        label === 'published' ||
+        label === 'publication';
+      if (isReleaseLabel) {
+        return value;
+      }
+    }
+    return null;
+  };
+
+  const getUnreleasedUntilDateForAutoSearch = (book: Book): string | null => {
+    const rawCandidate = extractAutoSearchReleaseDateCandidate(book);
+    if (!rawCandidate) return null;
+    const candidate = rawCandidate.trim();
+    const today = new Date();
+    const currentYear = today.getUTCFullYear();
+
+    if (/^\d{4}$/.test(candidate)) {
+      const year = Number.parseInt(candidate, 10);
+      if (Number.isFinite(year) && year > currentYear) {
+        return `${year}-01-01`;
+      }
+      return null;
+    }
+
+    const token = candidate.split('T', 1)[0].split(' ', 1)[0].trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
+      const parsed = new Date(`${token}T00:00:00Z`);
+      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now()) {
+        return token;
+      }
+      return null;
+    }
+
+    if (/^\d{4}-\d{2}$/.test(token)) {
+      const parsed = new Date(`${token}-01T00:00:00Z`);
+      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now()) {
+        return `${token}-01`;
+      }
+      return null;
+    }
+
+    const embeddedYear = candidate.match(/\b(19|20)\d{2}\b/);
+    if (embeddedYear) {
+      const year = Number.parseInt(embeddedYear[0], 10);
+      if (Number.isFinite(year) && year > currentYear) {
+        return `${year}-01-01`;
+      }
+    }
+
+    return null;
+  };
+
   const recordMonitoredAutoSearchAttempt = async (params: {
     monitoredEntityId?: number | null;
     provider?: string | null;
     providerBookId?: string | null;
     contentType: ContentType;
-    status: 'no_match' | 'below_cutoff' | 'error';
+    status: 'no_match' | 'below_cutoff' | 'not_released' | 'error';
     source?: string;
     sourceId?: string;
     releaseTitle?: string;
@@ -1064,6 +1131,38 @@ function App() {
           return;
         }
       } else {
+        const unreleasedUntil = getUnreleasedUntilDateForAutoSearch(book);
+        if (unreleasedUntil) {
+          const unreleasedMessage = `Book is unreleased until ${unreleasedUntil}`;
+          policyTrace('universal.get:auto_search:skip_unreleased', {
+            bookId: book.id,
+            contentType: normalizedContentType,
+            unreleasedUntil,
+          });
+          void recordMonitoredAutoSearchAttempt({
+            monitoredEntityId,
+            provider: book.provider,
+            providerBookId: book.provider_id,
+            contentType: normalizedContentType,
+            status: 'not_released',
+            errorMessage: unreleasedMessage,
+          });
+          if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
+            showToast(`${unreleasedMessage}. Skipping auto-search.`, 'info');
+          }
+          if (isBatchAutoSearch && batchAuto && batchStatsKey) {
+            batchAutoStatsRef.current[batchStatsKey].skipped += 1;
+            updateBatchMasterActivity({
+              statusDetail: `Skipped ${batchAuto.index}/${batchAuto.total} (unreleased)`,
+              progress: Math.max(10, Math.min(95, Math.round((batchAuto.index / Math.max(1, batchAuto.total)) * 100))),
+              visualStatus: 'resolving',
+              statusLabel: 'Resolving',
+              progressAnimated: true,
+            });
+          }
+          return;
+        }
+
         let processingActivityId: string | null = null;
         let processingToastId: string | null = null;
         if (!isBatchAutoSearch) {
