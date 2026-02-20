@@ -464,6 +464,8 @@ export interface MonitoredBookDownloadHistoryRow {
   downloaded_filename?: string | null;
   final_path?: string | null;
   overwritten_path?: string | null;
+  event_category?: 'success' | 'failure' | 'info';
+  event_kind?: 'download' | 'attempt';
   created_at?: string;
 }
 
@@ -480,8 +482,12 @@ export interface MonitoredBookAttemptHistoryRow {
   release_title?: string | null;
   match_score?: number | null;
   error_message?: string | null;
+  event_category?: 'success' | 'failure' | 'info';
+  event_kind?: 'download' | 'attempt';
   created_at?: string;
 }
+
+export type MonitoredHistoryCategory = 'all' | 'success' | 'failure' | 'info';
 
 export interface MonitoredAuthorBookSearchRow {
   entity_id: number;
@@ -521,11 +527,13 @@ export const listMonitoredBookDownloadHistory = async (
   provider: string,
   providerBookId: string,
   limit: number = 50,
+  category: MonitoredHistoryCategory = 'all',
 ): Promise<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }> => {
   const params = new URLSearchParams();
   params.set('provider', provider);
   params.set('provider_book_id', providerBookId);
   params.set('limit', String(limit));
+  params.set('category', category);
   return fetchJSON<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }>(
     `${API.monitored}/${entityId}/books/history?${params.toString()}`
   );

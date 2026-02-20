@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataBookInfo, listMonitoredBookDownloadHistory, MonitoredBookDownloadHistoryRow, MonitoredBookFileRow } from '../services/api';
+import {
+  getMetadataBookInfo,
+  listMonitoredBookDownloadHistory,
+  MonitoredBookAttemptHistoryRow,
+  MonitoredBookDownloadHistoryRow,
+  MonitoredBookFileRow,
+  MonitoredHistoryCategory,
+} from '../services/api';
 import { getFormatColor } from '../utils/colorMaps';
 
 interface BookDetailsModalProps {
@@ -13,12 +20,23 @@ interface BookDetailsModalProps {
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
+type HistoryTimelineRow = {
+  key: string;
+  event_kind: 'download' | 'attempt';
+  event_category: 'success' | 'failure' | 'info';
+  at: string;
+  primary: string;
+  details: string[];
+};
+
 export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
 
   const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
   const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
+  const [attemptHistoryRows, setAttemptHistoryRows] = useState<MonitoredBookAttemptHistoryRow[]>([]);
+  const [historyCategory, setHistoryCategory] = useState<MonitoredHistoryCategory>('all');
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
@@ -55,6 +73,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
   useEffect(() => {
     if (!book || !monitoredEntityId) {
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -64,6 +83,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     const providerId = (book.provider_id || '').trim();
     if (!provider || !providerId) {
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -74,14 +94,16 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     setHistoryError(null);
     void (async () => {
       try {
-        const resp = await listMonitoredBookDownloadHistory(monitoredEntityId, provider, providerId, 30);
+        const resp = await listMonitoredBookDownloadHistory(monitoredEntityId, provider, providerId, 50, historyCategory);
         if (cancelled) return;
         setHistoryRows(resp.history || []);
+        setAttemptHistoryRows(resp.attempt_history || []);
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : 'Failed to load history';
         setHistoryError(message);
         setHistoryRows([]);
+        setAttemptHistoryRows([]);
       } finally {
         if (!cancelled) {
           setHistoryLoading(false);
@@ -92,7 +114,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return () => {
       cancelled = true;
     };
-  }, [book?.id, book?.provider, book?.provider_id, monitoredEntityId]);
+  }, [book?.id, book?.provider, book?.provider_id, monitoredEntityId, historyCategory]);
 
   useEffect(() => {
     if (book) setTab('files');
@@ -102,6 +124,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     if (!book) {
       setEnrichedBook(null);
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -250,17 +273,62 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     });
   }, [enrichedBook?.publisher, enrichedBook?.language, enrichedBook?.display_fields]);
 
-  if (!book && !isClosing) return null;
-  if (!book) return null;
-  if (!enrichedBook) return null;
+  const timelineRows = useMemo<HistoryTimelineRow[]>(() => {
+    const statusLabel = (status: string | undefined): string => {
+      const token = String(status || '').trim();
+      if (!token) return 'Attempt';
+      return token.replace(/_/g, ' ');
+    };
 
-  const titleId = `book-details-modal-title-${enrichedBook.id}`;
+    const downloads: HistoryTimelineRow[] = historyRows.map((row) => ({
+      key: `download-${row.id}`,
+      event_kind: 'download',
+      event_category: row.event_category || 'success',
+      at: String(row.downloaded_at || row.created_at || ''),
+      primary: row.downloaded_filename || 'Downloaded file',
+      details: [
+        row.source_display_name ? `source: ${row.source_display_name}` : row.source ? `source: ${row.source}` : '',
+        typeof row.match_score === 'number' ? `match score: ${row.match_score}` : '',
+        row.final_path ? `saved to: ${row.final_path}` : '',
+        row.overwritten_path ? `overwrote: ${row.overwritten_path}` : '',
+      ].filter(Boolean),
+    }));
+
+    const attempts: HistoryTimelineRow[] = attemptHistoryRows.map((row) => ({
+      key: `attempt-${row.id}`,
+      event_kind: 'attempt',
+      event_category: row.event_category || 'info',
+      at: String(row.attempted_at || row.created_at || ''),
+      primary: statusLabel(row.status),
+      details: [
+        row.release_title ? `release: ${row.release_title}` : '',
+        row.source ? `source: ${row.source}` : '',
+        typeof row.match_score === 'number' ? `match score: ${row.match_score}` : '',
+        row.error_message ? `detail: ${row.error_message}` : '',
+      ].filter(Boolean),
+    }));
+
+    return [...downloads, ...attempts].sort((a, b) => {
+      const left = Date.parse(a.at || '');
+      const right = Date.parse(b.at || '');
+      const l = Number.isFinite(left) ? left : 0;
+      const r = Number.isFinite(right) ? right : 0;
+      return r - l;
+    });
+  }, [attemptHistoryRows, historyRows]);
+
   const formatHistoryDate = (value?: string | null): string => {
     if (!value) return 'Unknown date';
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString();
   };
+
+  if (!book && !isClosing) return null;
+  if (!book) return null;
+  if (!enrichedBook) return null;
+
+  const titleId = `book-details-modal-title-${enrichedBook.id}`;
 
   return (
     <div
@@ -498,31 +566,61 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   </div>
 
                   <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">History</div>
+                    <div className="px-4 py-3 bg-black/5 dark:bg-white/5 space-y-2">
+                      <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">History</div>
+                      <div className="flex flex-wrap gap-2">
+                        {([
+                          { key: 'all', label: 'All' },
+                          { key: 'success', label: 'Success' },
+                          { key: 'failure', label: 'Failure' },
+                          { key: 'info', label: 'Info' },
+                        ] as Array<{ key: MonitoredHistoryCategory; label: string }>).map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setHistoryCategory(option.key)}
+                            className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors ${
+                              historyCategory === option.key
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : 'bg-transparent text-gray-600 dark:text-gray-300 border-[var(--border-muted)] hover:bg-black/5 dark:hover:bg-white/10'
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
                       {historyLoading ? (
                         <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading history…</div>
                       ) : historyError ? (
                         <div className="px-4 py-4 text-sm text-red-500">{historyError}</div>
-                      ) : historyRows.length === 0 ? (
-                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No download/rename history yet.</div>
+                      ) : timelineRows.length === 0 ? (
+                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No history events in this category yet.</div>
                       ) : (
-                        historyRows.map((row) => (
-                          <div key={row.id} className="px-4 py-3">
-                            <div className="text-xs text-gray-500 dark:text-gray-400">{formatHistoryDate(row.downloaded_at)}</div>
-                            <div className="mt-1 text-xs text-gray-700 dark:text-gray-200 break-words">
-                              <span className="font-medium">{row.downloaded_filename || 'Unknown file'}</span>
-                              {row.source_display_name ? ` (${row.source_display_name})` : row.source ? ` (${row.source})` : ''}
-                              {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
+                        timelineRows.map((row) => (
+                          <div key={row.key} className="px-4 py-3">
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-gray-500 dark:text-gray-400">{formatHistoryDate(row.at)}</span>
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
+                                  row.event_category === 'success'
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                    : row.event_category === 'failure'
+                                    ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
+                                    : 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
+                                }`}
+                              >
+                                {row.event_category}
+                              </span>
+                              <span className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">{row.event_kind}</span>
                             </div>
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">
-                              renamed → {row.final_path || 'Unknown location'}
-                            </div>
-                            {row.overwritten_path ? (
-                              <div className="mt-1 text-xs text-amber-600 dark:text-amber-400 break-words">
-                                overwrote: {row.overwritten_path}
+                            <div className="mt-1 text-xs text-gray-800 dark:text-gray-100 break-words font-medium">{row.primary}</div>
+                            {row.details.map((detail, idx) => (
+                              <div key={`${row.key}-${idx}`} className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">
+                                {detail}
                               </div>
-                            ) : null}
+                            ))}
                           </div>
                         ))
                       )}

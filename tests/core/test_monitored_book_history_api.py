@@ -91,10 +91,121 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
     assert row["title_after_rename"] == "Harvest of Time"
     assert row["source_display_name"] == "Direct Download"
     assert row["final_path"].endswith(".epub")
+    assert row["event_kind"] == "download"
+    assert row["event_category"] == "success"
     assert attempt["provider"] == provider
     assert attempt["provider_book_id"] == provider_book_id
     assert attempt["content_type"] == "ebook"
     assert attempt["status"] == "queued"
+    assert attempt["event_kind"] == "attempt"
+    assert attempt["event_category"] == "success"
+
+
+def test_monitored_book_history_endpoint_filters_by_category(main_module, client):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.user_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Filter Tester",
+        settings={},
+    )
+
+    provider = "hardcover"
+    provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
+
+    main_module.user_db.insert_monitored_book_download_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        downloaded_at="2026-02-18T00:00:00Z",
+        source="direct_download",
+        source_display_name="Direct Download",
+        title_after_rename="Success Title",
+        match_score=90.0,
+        downloaded_filename="success.epub",
+        final_path="/books/success.epub",
+        overwritten_path=None,
+    )
+    main_module.user_db.insert_monitored_book_attempt_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type="ebook",
+        attempted_at="2026-02-18T00:00:01Z",
+        status="queued",
+    )
+    main_module.user_db.insert_monitored_book_attempt_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type="ebook",
+        attempted_at="2026-02-18T00:00:02Z",
+        status="download_failed",
+        error_message="network_error",
+    )
+    main_module.user_db.insert_monitored_book_attempt_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type="ebook",
+        attempted_at="2026-02-18T00:00:03Z",
+        status="no_match",
+    )
+
+    resp_success = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "limit": "50",
+            "category": "success",
+        },
+    )
+    assert resp_success.status_code == 200
+    payload_success = resp_success.get_json() or {}
+    assert len(payload_success.get("history") or []) == 1
+    assert len(payload_success.get("attempt_history") or []) == 1
+    assert payload_success["attempt_history"][0]["event_category"] == "success"
+
+    resp_failure = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "limit": "50",
+            "category": "failure",
+        },
+    )
+    assert resp_failure.status_code == 200
+    payload_failure = resp_failure.get_json() or {}
+    assert payload_failure.get("history") == []
+    attempts_failure = payload_failure.get("attempt_history") or []
+    assert len(attempts_failure) == 1
+    assert attempts_failure[0]["event_category"] == "failure"
+
+    resp_info = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "limit": "50",
+            "category": "info",
+        },
+    )
+    assert resp_info.status_code == 200
+    payload_info = resp_info.get_json() or {}
+    assert payload_info.get("history") == []
+    attempts_info = payload_info.get("attempt_history") or []
+    assert len(attempts_info) == 1
+    assert attempts_info[0]["event_category"] == "info"
 
 
 def test_monitored_book_history_endpoint_requires_provider_params(main_module, client):

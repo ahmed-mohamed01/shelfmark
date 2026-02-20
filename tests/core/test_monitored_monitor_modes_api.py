@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -163,3 +164,25 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
     assert payload.get("total_candidates") == 0
     assert payload.get("queued") == 0
     assert payload.get("failed") == 0
+
+    item_key = f"download:monitored-batch:{entity['id']}:ebook"
+    snapshot_id = main_module.activity_service.get_latest_activity_log_id(
+        item_type="download",
+        item_key=item_key,
+    )
+    assert snapshot_id is not None
+
+    conn = main_module.user_db._connect()
+    try:
+        row = conn.execute(
+            "SELECT final_status, snapshot_json FROM activity_log WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["final_status"] == "complete"
+    snapshot = json.loads(row["snapshot_json"])
+    assert snapshot["download"]["id"] == f"monitored-batch:{entity['id']}:ebook"
+    assert snapshot["download"]["status_message"] == "No monitored books needed downloads"

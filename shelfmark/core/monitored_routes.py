@@ -4,7 +4,6 @@ from dataclasses import asdict
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
-import difflib
 import re
 import threading
 from pathlib import Path
@@ -536,172 +535,6 @@ def register_monitored_routes(
                 continue
         return False
 
-    _TAG_PATTERNS = [
-        re.compile(r"\[[^\]]+\]"),
-        re.compile(r"\([^\)]+\)"),
-        re.compile(r"\{[^\}]+\}"),
-    ]
-
-    _WORD_NUMBER_MAP = {
-        "one": "1",
-        "two": "2",
-        "three": "3",
-        "four": "4",
-        "five": "5",
-        "six": "6",
-        "seven": "7",
-        "eight": "8",
-        "nine": "9",
-        "ten": "10",
-    }
-
-    def _normalize_match_text(raw: str) -> str:
-        s = (raw or "").strip().lower()
-        if not s:
-            return ""
-        s = s.replace("_", " ").replace(":", " ")
-        s = re.sub(r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\b", lambda m: _WORD_NUMBER_MAP.get(m.group(1), m.group(1)), s)
-        s = re.sub(r"[^a-z0-9]+", " ", s)
-        s = re.sub(r"\s+", " ", s).strip()
-        s = re.sub(r"\b(\d{1,3})\s+\1\b", r"\1", s)
-        return s
-
-    def _normalize_candidate_title(raw: str, author_name: str) -> str:
-        s = (raw or "").strip()
-        if not s:
-            return ""
-        s = s.replace('_', ' ').replace('.', ' ')
-        for pat in _TAG_PATTERNS:
-            s = pat.sub(' ', s)
-        s = re.sub(r"\b(ebook|epub|mobi|azw3?|pdf|retail|repack|illustrated|unabridged|scan|ocr)\b", " ", s, flags=re.IGNORECASE)
-        # Strip author suffix/prefix
-        a = (author_name or "").strip()
-        if a:
-            s = re.sub(rf"\s*[-–—:]\s*{re.escape(a)}\s*$", " ", s, flags=re.IGNORECASE)
-            s = re.sub(rf"^\s*{re.escape(a)}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
-        # Collapse whitespace
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    def _title_match_variants(raw_title: str) -> list[str]:
-        title = (raw_title or "").strip()
-        if not title:
-            return []
-
-        variants: list[str] = [title]
-
-        # Files often omit subtitle after colon, e.g.
-        # "Beware of Chicken 4 - Author (2024).epub" vs
-        # "Beware of Chicken 4: A Xianxia Cultivation Novel".
-        colon_base = title.split(":", 1)[0].strip()
-        if colon_base and colon_base.lower() != title.lower():
-            variants.append(colon_base)
-
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for value in variants:
-            key = value.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(value)
-        return deduped
-
-    _VOLUME_MARKER_RE = re.compile(
-        r"\b(?:(arc|book|vol(?:ume)?)\s*[-:#]?\s*)(\d{1,3})\b",
-        re.IGNORECASE,
-    )
-
-    def _extract_volume_markers(s: str) -> dict[str, int]:
-        out: dict[str, int] = {}
-        text = (s or "").strip().lower()
-        if not text:
-            return out
-        for m in _VOLUME_MARKER_RE.finditer(text):
-            kind = (m.group(1) or "").lower()
-            num_raw = m.group(2) or ""
-            try:
-                num = int(num_raw)
-            except Exception:
-                continue
-            if kind.startswith("vol"):
-                kind = "vol"
-            out[kind] = num
-        return out
-
-    def _score_title_match(candidate: str, title: str) -> float:
-        c = _normalize_match_text(candidate)
-        t = _normalize_match_text(title)
-        if not c or not t:
-            return 0.0
-        if c == t:
-            return 1.0
-
-        base = difflib.SequenceMatcher(None, c, t).ratio()
-
-        c_markers = _extract_volume_markers(c)
-        t_markers = _extract_volume_markers(t)
-
-        # Sonarr-style idea: structured tokens (e.g. ARC 1) should dominate over fuzzy similarity.
-        bonus = 0.0
-        penalty = 0.0
-        for kind in ("arc", "book", "vol"):
-            cn = c_markers.get(kind)
-            tn = t_markers.get(kind)
-            if cn is None or tn is None:
-                continue
-            if cn == tn:
-                bonus = max(bonus, 0.22)
-            else:
-                penalty = max(penalty, 0.35)
-
-        # This prevents drifting to late entries when names are otherwise very similar.
-        for kind in ("arc", "book", "vol"):
-            if kind in c_markers:
-                continue
-            tn = t_markers.get(kind)
-            if tn is None:
-                continue
-            # ARC/Book/Vol 1 should be close to neutral; higher numbers get a small penalty.
-            penalty += min(0.16, 0.04 * max(0, int(tn) - 1))
-
-        score = base + bonus - penalty
-        if score < 0.0:
-            return 0.0
-        if score > 1.0:
-            return 1.0
-        return float(score)
-
-    def _prefer_row_on_tie(
-        *,
-        candidate: str,
-        row: dict[str, Any],
-        display_title: str,
-        best_row: dict[str, Any],
-        best_display_title: str,
-    ) -> bool:
-        candidate_norm = _normalize_match_text(candidate)
-        title_norm = _normalize_match_text(display_title)
-        best_norm = _normalize_match_text(best_display_title)
-
-        # Prefer richer title variant when both are equivalent prefix matches.
-        title_extends_candidate = bool(candidate_norm and title_norm.startswith(f"{candidate_norm} "))
-        best_extends_candidate = bool(candidate_norm and best_norm.startswith(f"{candidate_norm} "))
-        if title_extends_candidate != best_extends_candidate:
-            return title_extends_candidate
-
-        # Prefer rows with explicit series metadata.
-        row_has_series = row.get("series_position") is not None or bool(str(row.get("series_name") or "").strip())
-        best_has_series = best_row.get("series_position") is not None or bool(str(best_row.get("series_name") or "").strip())
-        if row_has_series != best_has_series:
-            return row_has_series
-
-        # Prefer more specific (longer normalized) display title.
-        if len(title_norm) != len(best_norm):
-            return len(title_norm) > len(best_norm)
-
-        return False
-
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
@@ -919,6 +752,18 @@ def register_monitored_routes(
         except (TypeError, ValueError):
             limit = 50
 
+        category = str(request.args.get("category") or "all").strip().lower()
+        if category not in {"all", "success", "failure", "info"}:
+            return jsonify({"error": "category must be one of: all, success, failure, info"}), 400
+
+        def _attempt_category(status_value: Any) -> str:
+            status = str(status_value or "").strip().lower()
+            if status in {"queued", "complete", "completed", "success"}:
+                return "success"
+            if status in {"download_failed", "error", "failed"}:
+                return "failure"
+            return "info"
+
         rows = user_db.list_monitored_book_download_history(
             user_id=db_user_id,
             entity_id=entity_id,
@@ -937,7 +782,28 @@ def register_monitored_routes(
         )
         if attempt_rows is None:
             return jsonify({"error": "Not found"}), 404
-        return jsonify({"history": rows, "attempt_history": attempt_rows})
+
+        normalized_history_rows = []
+        for row in rows:
+            item = dict(row)
+            item["event_category"] = "success"
+            item["event_kind"] = "download"
+            normalized_history_rows.append(item)
+
+        normalized_attempt_rows = []
+        for row in attempt_rows:
+            item = dict(row)
+            item["event_category"] = _attempt_category(item.get("status"))
+            item["event_kind"] = "attempt"
+            normalized_attempt_rows.append(item)
+
+        if category != "all":
+            if category != "success":
+                normalized_history_rows = []
+            normalized_attempt_rows = [
+                row for row in normalized_attempt_rows if str(row.get("event_category") or "") == category
+            ]
+        return jsonify({"history": normalized_history_rows, "attempt_history": normalized_attempt_rows})
 
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
@@ -1518,6 +1384,95 @@ def register_monitored_routes(
             except Exception:
                 pass
 
+        def _emit_monitored_search_summary(summary_payload: dict[str, Any]) -> None:
+            if activity_service is None or db_user_id is None:
+                return
+
+            total_candidates = int(summary_payload.get("total_candidates") or 0)
+            queued_count = int(summary_payload.get("queued") or 0)
+            unreleased_count = int(summary_payload.get("unreleased") or 0)
+            no_match_count = int(summary_payload.get("no_match") or 0)
+            below_cutoff_count = int(summary_payload.get("below_cutoff") or 0)
+            failed_count = int(summary_payload.get("failed") or 0)
+
+            parts = [f"{queued_count}/{total_candidates} queued"]
+            if unreleased_count:
+                parts.append(f"{unreleased_count} skipped (unreleased)")
+            if no_match_count:
+                parts.append(f"{no_match_count} failed (no suitable release)")
+            if below_cutoff_count:
+                parts.append(f"{below_cutoff_count} failed (below cutoff)")
+            if failed_count:
+                parts.append(f"{failed_count} failed (queue error)")
+            if total_candidates == 0:
+                parts = ["No monitored books needed downloads"]
+            status_message = " · ".join(parts)
+
+            final_status = "complete"
+            if no_match_count > 0 or below_cutoff_count > 0 or failed_count > 0:
+                final_status = "error"
+
+            entity_name = str(entity.get("name") or "Monitored author").strip() or "Monitored author"
+            summary_task_id = f"monitored-batch:{entity_id}:{content_type}"
+            snapshot = {
+                "kind": "download",
+                "download": {
+                    "id": summary_task_id,
+                    "title": f"Monitored batch · {entity_name}",
+                    "author": "Auto-search",
+                    "format": content_type.upper(),
+                    "source": "monitored",
+                    "source_display_name": "Monitored",
+                    "added_time": datetime.now(timezone.utc).timestamp(),
+                    "status_message": status_message,
+                    "user_id": int(db_user_id),
+                    "username": session.get("user_id"),
+                },
+                "monitored_summary": {
+                    "entity_id": entity_id,
+                    "entity_name": entity_name,
+                    "content_type": content_type,
+                    "counts": {
+                        "total_candidates": total_candidates,
+                        "queued": queued_count,
+                        "unreleased": unreleased_count,
+                        "no_match": no_match_count,
+                        "below_cutoff": below_cutoff_count,
+                        "failed": failed_count,
+                    },
+                },
+            }
+
+            try:
+                activity_service.record_terminal_snapshot(
+                    user_id=int(db_user_id),
+                    item_type="download",
+                    item_key=build_download_item_key(summary_task_id),
+                    origin="direct",
+                    final_status=final_status,
+                    source_id=str(entity_id),
+                    snapshot=snapshot,
+                )
+            except Exception:
+                return
+
+            try:
+                from shelfmark.api.websocket import ws_manager as activity_ws_manager
+
+                socketio = getattr(activity_ws_manager, "socketio", None)
+                is_enabled = getattr(activity_ws_manager, "is_enabled", None)
+                if socketio is not None and callable(is_enabled) and is_enabled():
+                    payload = {
+                        "scope": "downloads",
+                        "kind": "monitored_batch_summary",
+                        "entity_id": entity_id,
+                        "content_type": content_type,
+                    }
+                    socketio.emit("activity_update", payload, to=f"user_{int(db_user_id)}")
+                    socketio.emit("activity_update", payload, to="admins")
+            except Exception:
+                pass
+
         books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
         files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
 
@@ -1564,6 +1519,7 @@ def register_monitored_routes(
         }
 
         if not candidates:
+            _emit_monitored_search_summary(summary)
             return jsonify(summary)
 
         from dataclasses import asdict
@@ -1806,6 +1762,7 @@ def register_monitored_routes(
                     detail=str(exc),
                 )
 
+        _emit_monitored_search_summary(summary)
         return jsonify(summary)
 
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
