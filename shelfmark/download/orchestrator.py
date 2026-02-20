@@ -9,7 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timezone
 from email.utils import parseaddr
 from pathlib import Path
 from threading import Event, Lock
@@ -88,6 +88,27 @@ def _record_monitored_download_history(task: DownloadTask, *, final_path: str) -
         final_path=str(final_path or "").strip(),
         overwritten_path=overwrite_path,
     )
+
+
+def _parse_release_date(value: Any) -> Optional[date]:
+    """Parse release date values from API/search payloads."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    token = raw
+    if "T" in token:
+        token = token.split("T", 1)[0]
+    elif " " in token:
+        token = token.split(" ", 1)[0]
+
+    try:
+        return date.fromisoformat(token)
+    except ValueError:
+        return None
 
 
 # =============================================================================
@@ -265,6 +286,15 @@ def queue_release(
         series_name = release_data.get('series_name') or extra.get('series_name')
         series_position = release_data.get('series_position') or extra.get('series_position')
         subtitle = release_data.get('subtitle') or extra.get('subtitle')
+
+        explicit_release_date = _parse_release_date(
+            release_data.get('release_date')
+            or extra.get('release_date')
+            or extra.get('publication_date')
+            or extra.get('publish_date')
+        )
+        if explicit_release_date is not None and datetime.now(timezone.utc).date() < explicit_release_date:
+            return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
 
         monitored_entity_id = release_data.get('monitored_entity_id')
         monitored_book_provider = release_data.get('monitored_book_provider')

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import date, timedelta
 
 
 def test_queue_book_uses_user_specific_books_output_mode(monkeypatch):
@@ -140,6 +141,42 @@ def test_queue_book_email_mode_without_recipient_is_queued(monkeypatch):
     task = captured["task"]
     assert task.output_mode == "email"
     assert task.output_args == {}
+
+
+def test_queue_release_skips_unreleased_book(monkeypatch):
+    import shelfmark.download.orchestrator as orchestrator
+
+    add_called = {"called": False}
+
+    def fake_config_get(key, default=None, user_id=None):
+        if key == "BOOKS_OUTPUT_MODE":
+            return "folder"
+        return default
+
+    def fake_add(_task):
+        add_called["called"] = True
+        return True
+
+    monkeypatch.setattr(orchestrator.config, "get", fake_config_get)
+    monkeypatch.setattr(orchestrator.book_queue, "add", fake_add)
+    monkeypatch.setattr(orchestrator, "ws_manager", None)
+
+    future_date = (date.today() + timedelta(days=5)).isoformat()
+    release_data = {
+        "source": "direct_download",
+        "source_id": "release-future-1",
+        "title": "Future Release",
+        "content_type": "book (fiction)",
+        "format": "epub",
+        "size": "1 MB",
+        "release_date": future_date,
+    }
+
+    success, error = orchestrator.queue_release(release_data, user_id=42, username="alice")
+
+    assert success is False
+    assert error == f"Book is unreleased until {future_date}"
+    assert add_called["called"] is False
 
 
 def test_queue_release_email_mode_without_recipient_is_queued(monkeypatch):

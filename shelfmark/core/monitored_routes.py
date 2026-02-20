@@ -1588,6 +1588,7 @@ def register_monitored_routes(
             "content_type": content_type,
             "total_candidates": len(candidates),
             "queued": 0,
+            "unreleased": 0,
             "no_match": 0,
             "below_cutoff": 0,
             "failed": 0,
@@ -1758,6 +1759,7 @@ def register_monitored_routes(
                 release_payload["monitored_book_provider_id"] = provider_book_id
                 release_payload["release_title"] = best_title
                 release_payload["match_score"] = match_score
+                release_payload["release_date"] = row.get("release_date")
 
                 success, error_message = download_orchestrator.queue_release(
                     release_payload,
@@ -1768,8 +1770,12 @@ def register_monitored_routes(
                     summary["queued"] += 1
                     status = "queued"
                 else:
-                    summary["failed"] += 1
-                    status = "download_failed"
+                    if isinstance(error_message, str) and error_message.startswith("Book is unreleased until "):
+                        summary["unreleased"] += 1
+                        status = "not_released"
+                    else:
+                        summary["failed"] += 1
+                        status = "download_failed"
 
                 user_db.set_monitored_book_search_status(
                     user_id=db_user_id,
