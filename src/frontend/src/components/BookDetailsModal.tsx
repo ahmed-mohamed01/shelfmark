@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataBookInfo, listMonitoredBookDownloadHistory, MonitoredBookDownloadHistoryRow, MonitoredBookFileRow } from '../services/api';
+import {
+  getMetadataBookInfo,
+  listMonitoredBookDownloadHistory,
+  MonitoredBookAttemptHistoryRow,
+  MonitoredBookDownloadHistoryRow,
+  MonitoredBookFileRow,
+} from '../services/api';
 import { getFormatColor } from '../utils/colorMaps';
 
 interface BookDetailsModalProps {
@@ -19,8 +25,10 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
 
   const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
   const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
+  const [attemptHistoryRows, setAttemptHistoryRows] = useState<MonitoredBookAttemptHistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [attemptHistoryOpen, setAttemptHistoryOpen] = useState(false);
 
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [descriptionOverflows, setDescriptionOverflows] = useState(false);
@@ -55,6 +63,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
   useEffect(() => {
     if (!book || !monitoredEntityId) {
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -64,6 +73,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     const providerId = (book.provider_id || '').trim();
     if (!provider || !providerId) {
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -77,11 +87,13 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
         const resp = await listMonitoredBookDownloadHistory(monitoredEntityId, provider, providerId, 30);
         if (cancelled) return;
         setHistoryRows(resp.history || []);
+        setAttemptHistoryRows(resp.attempt_history || []);
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : 'Failed to load history';
         setHistoryError(message);
         setHistoryRows([]);
+        setAttemptHistoryRows([]);
       } finally {
         if (!cancelled) {
           setHistoryLoading(false);
@@ -102,6 +114,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     if (!book) {
       setEnrichedBook(null);
       setHistoryRows([]);
+      setAttemptHistoryRows([]);
       setHistoryError(null);
       setHistoryLoading(false);
       return;
@@ -260,6 +273,23 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString();
+  };
+
+  const renderAttemptStatusBadge = (status: string) => {
+    const normalized = (status || '').trim().toLowerCase();
+    const statusClass =
+      normalized === 'queued'
+        ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+        : normalized === 'download_failed' || normalized === 'error'
+          ? 'bg-red-500/20 text-red-700 dark:text-red-300'
+          : normalized === 'below_cutoff' || normalized === 'no_match' || normalized === 'not_released'
+            ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+            : 'bg-gray-500/20 text-gray-700 dark:text-gray-300';
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide uppercase ${statusClass}`}>
+        {normalized || 'unknown'}
+      </span>
+    );
   };
 
   return (
@@ -527,6 +557,54 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                         ))
                       )}
                     </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setAttemptHistoryOpen((prev) => !prev)}
+                      className="w-full px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5 flex items-center justify-between hover-action"
+                      aria-expanded={attemptHistoryOpen}
+                    >
+                      <span>Attempt history ({attemptHistoryRows.length})</span>
+                      <svg
+                        className={`w-3.5 h-3.5 transition-transform duration-200 ${attemptHistoryOpen ? 'rotate-90' : ''}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    {attemptHistoryOpen ? (
+                      <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                        {historyLoading ? (
+                          <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading attempt history…</div>
+                        ) : historyError ? (
+                          <div className="px-4 py-4 text-sm text-red-500">{historyError}</div>
+                        ) : attemptHistoryRows.length === 0 ? (
+                          <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No monitored attempt history yet.</div>
+                        ) : (
+                          attemptHistoryRows.map((row) => (
+                            <div key={row.id} className="px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-xs text-gray-500 dark:text-gray-400">{formatHistoryDate(row.attempted_at)}</div>
+                                {renderAttemptStatusBadge(row.status)}
+                              </div>
+                              <div className="mt-1 text-xs text-gray-700 dark:text-gray-200 break-words">
+                                <span className="font-medium">{row.release_title || 'No release title'}</span>
+                                {row.source ? ` (${row.source})` : ''}
+                                {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
+                              </div>
+                              {row.error_message ? (
+                                <div className="mt-1 text-xs text-red-600 dark:text-red-300 break-words">{row.error_message}</div>
+                              ) : null}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : tab === 'ebooks' ? (

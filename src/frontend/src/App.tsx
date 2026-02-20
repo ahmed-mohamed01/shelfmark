@@ -23,6 +23,7 @@ import {
   getConfig,
   createRequest,
   isApiResponseError,
+  recordMonitoredBookAttempt,
   updateSelfUser,
 } from './services/api';
 import { useToast } from './hooks/useToast';
@@ -858,6 +859,43 @@ function App() {
     );
   };
 
+  const recordMonitoredAutoSearchAttempt = async (params: {
+    monitoredEntityId?: number | null;
+    provider?: string | null;
+    providerBookId?: string | null;
+    contentType: ContentType;
+    status: 'no_match' | 'below_cutoff' | 'error';
+    source?: string;
+    sourceId?: string;
+    releaseTitle?: string;
+    matchScore?: number | null;
+    errorMessage?: string;
+  }): Promise<void> => {
+    const provider = String(params.provider || '').trim();
+    const providerBookId = String(params.providerBookId || '').trim();
+    if (!params.monitoredEntityId || !provider || !providerBookId) {
+      return;
+    }
+    try {
+      await recordMonitoredBookAttempt(params.monitoredEntityId, {
+        provider,
+        provider_book_id: providerBookId,
+        content_type: params.contentType,
+        status: params.status,
+        source: params.source,
+        source_id: params.sourceId,
+        release_title: params.releaseTitle,
+        match_score: typeof params.matchScore === 'number' ? params.matchScore : undefined,
+        error_message: params.errorMessage,
+      });
+    } catch (err) {
+      console.warn(
+        'Failed to record monitored auto-search attempt:',
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  };
+
   // Universal-mode "Get" action (open releases, request-book, or block by policy).
   const openReleasesForBook = async (
     book: Book,
@@ -1107,6 +1145,17 @@ function App() {
             bestMatchScore,
             minMatchScore: autoDownloadMinMatchScore,
           });
+          void recordMonitoredAutoSearchAttempt({
+            monitoredEntityId,
+            provider: book.provider,
+            providerBookId: book.provider_id,
+            contentType: normalizedContentType,
+            status: bestRelease ? 'below_cutoff' : 'no_match',
+            source: bestRelease?.source,
+            sourceId: bestRelease?.source_id,
+            releaseTitle: bestRelease?.title,
+            matchScore: bestMatchScore,
+          });
           if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
             showToast(
               isForcedAutoAction
@@ -1127,6 +1176,14 @@ function App() {
             bookId: book.id,
             contentType: normalizedContentType,
             message: error instanceof Error ? error.message : String(error),
+          });
+          void recordMonitoredAutoSearchAttempt({
+            monitoredEntityId,
+            provider: book.provider,
+            providerBookId: book.provider_id,
+            contentType: normalizedContentType,
+            status: 'error',
+            errorMessage: error instanceof Error ? error.message : String(error),
           });
           if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
             showToast(

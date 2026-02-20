@@ -104,6 +104,30 @@ class TestDownloadEndpointGuardrails:
         assert "invalid literal for int()" in body["error"]
         mock_queue_book.assert_not_called()
 
+    def test_no_auth_mode_uses_global_db_user_for_queue_book(self, main_module, client):
+        captured: dict[str, object] = {}
+
+        def fake_queue_book(book_id, priority, user_id=None, username=None):
+            captured.update(
+                {
+                    "book_id": book_id,
+                    "priority": priority,
+                    "user_id": user_id,
+                    "username": username,
+                }
+            )
+            return True, None
+
+        with patch.object(main_module, "get_auth_mode", return_value="none"):
+            with patch.object(main_module.backend, "queue_book", side_effect=fake_queue_book):
+                resp = client.get("/api/download?id=book-123")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"status": "queued", "priority": 0}
+        global_user = main_module.user_db.get_user(username="global")
+        assert global_user is not None
+        assert captured["user_id"] == int(global_user["id"])
+
     def test_auth_enabled_without_session_returns_401(self, main_module, client):
         with patch.object(main_module, "get_auth_mode", return_value="builtin"):
             resp = client.get("/api/download?id=book-123")
@@ -203,6 +227,36 @@ class TestReleaseDownloadEndpointGuardrails:
         assert resp.get_json() == {"status": "queued", "priority": 1}
         assert captured["release_data"] == {**payload, "content_type": "audiobook"}
         assert captured["priority"] == 1
+
+    def test_no_auth_mode_uses_global_db_user_for_queue_release(self, main_module, client):
+        captured: dict[str, object] = {}
+
+        def fake_queue_release(release_data, priority, user_id=None, username=None):
+            captured.update(
+                {
+                    "release_data": release_data,
+                    "priority": priority,
+                    "user_id": user_id,
+                    "username": username,
+                }
+            )
+            return True, None
+
+        payload = {
+            "source": "direct_download",
+            "source_id": "release-global-user",
+            "title": "Release Title",
+        }
+
+        with patch.object(main_module, "get_auth_mode", return_value="none"):
+            with patch.object(main_module.backend, "queue_release", side_effect=fake_queue_release):
+                resp = client.post("/api/releases/download", json=payload)
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"status": "queued", "priority": 0}
+        global_user = main_module.user_db.get_user(username="global")
+        assert global_user is not None
+        assert captured["user_id"] == int(global_user["id"])
 
     def test_non_json_payload_returns_500_current_behavior(self, main_module, client):
         with patch.object(main_module, "get_auth_mode", return_value="none"):

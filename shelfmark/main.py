@@ -235,6 +235,40 @@ def _load_users_request_policy_settings() -> dict[str, Any]:
     return load_config_file("users")
 
 
+def _resolve_download_db_user_id() -> int | None:
+    """Resolve DB user id for download queue ownership/history writes.
+
+    In auth-none mode, sessions may not carry db_user_id. Fall back to the
+    global monitor user so monitored history writes are still associated with
+    the correct entity owner.
+    """
+    raw_db_user_id = session.get("db_user_id")
+    if raw_db_user_id is not None:
+        try:
+            return int(raw_db_user_id)
+        except (TypeError, ValueError):
+            pass
+
+    if get_auth_mode() != "none" or user_db is None:
+        return None
+
+    try:
+        global_user = user_db.get_user(username="global")
+        if global_user:
+            return int(global_user["id"])
+        created = user_db.create_user(
+            username="global",
+            password_hash=None,
+            email=None,
+            display_name="Global",
+            auth_source="builtin",
+            role="admin",
+        )
+        return int(created["id"])
+    except Exception:
+        return None
+
+
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -839,7 +873,7 @@ def api_download() -> Union[Response, Tuple[Response, int]]:
 
         priority = int(request.args.get('priority', 0))
         # Per-user download overrides
-        db_user_id = session.get('db_user_id')
+        db_user_id = _resolve_download_db_user_id()
         _username = session.get('user_id')
         success, error_msg = backend.queue_book(
             book_id, priority,
@@ -905,17 +939,19 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
                 release_payload = dict(release_payload)
                 release_payload.pop("monitored_entity_id", None)
 
+        db_user_id = _resolve_download_db_user_id()
+
         # If this is a monitored download, inject output overrides based on monitored entity settings.
         try:
             monitored_entity_id_int = release_payload.get("monitored_entity_id")
             if (
                 monitored_entity_id_int is not None
                 and user_db is not None
-                and session.get("db_user_id") is not None
+                and db_user_id is not None
                 and str(release_payload.get("content_type") or "").strip().lower() == "ebook"
             ):
                 entity = user_db.get_monitored_entity(
-                    user_id=int(session.get("db_user_id")),
+                    user_id=int(db_user_id),
                     entity_id=int(monitored_entity_id_int),
                 )
                 settings = entity.get("settings") if isinstance(entity, dict) else None
@@ -934,7 +970,6 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
 
         priority = data.get('priority', 0)
         # Per-user download overrides
-        db_user_id = session.get('db_user_id')
         _username = session.get('user_id')
         success, error_msg = backend.queue_release(
             release_payload, priority,

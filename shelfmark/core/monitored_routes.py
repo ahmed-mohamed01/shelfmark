@@ -228,6 +228,47 @@ def register_monitored_routes(
             return False
         return any(ft in allowed_file_types for ft in types)
 
+    def _write_monitored_book_attempt(
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        content_type: str,
+        status: str,
+        attempted_at: str | None = None,
+        source: str | None = None,
+        source_id: str | None = None,
+        release_title: str | None = None,
+        match_score: float | None = None,
+        error_message: str | None = None,
+    ) -> str:
+        attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        user_db.set_monitored_book_search_status(
+            user_id=user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            content_type=content_type,
+            status=status,
+            searched_at=attempted_at_iso,
+        )
+        user_db.insert_monitored_book_attempt_history(
+            user_id=user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            content_type=content_type,
+            attempted_at=attempted_at_iso,
+            status=status,
+            source=source,
+            source_id=source_id,
+            release_title=release_title,
+            match_score=match_score,
+            error_message=error_message,
+        )
+        return attempted_at_iso
+
     def _apply_monitor_modes_for_books(
         *,
         db_user_id: int | None,
@@ -772,6 +813,60 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
         return jsonify({"history": rows, "attempt_history": attempt_rows})
 
+    @app.route("/api/monitored/<int:entity_id>/books/attempt", methods=["POST"])
+    def api_record_monitored_book_attempt(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        provider = str(payload.get("provider") or "").strip()
+        provider_book_id = str(payload.get("provider_book_id") or "").strip()
+        content_type = str(payload.get("content_type") or "").strip().lower()
+        status = str(payload.get("status") or "").strip().lower()
+
+        if not provider or not provider_book_id:
+            return jsonify({"error": "provider and provider_book_id are required"}), 400
+        if content_type not in {"ebook", "audiobook"}:
+            return jsonify({"error": "content_type must be ebook or audiobook"}), 400
+        if status not in {"queued", "no_match", "below_cutoff", "not_released", "download_failed", "error"}:
+            return jsonify({"error": "invalid status"}), 400
+
+        source = str(payload.get("source") or "").strip() or None
+        source_id = str(payload.get("source_id") or "").strip() or None
+        release_title = str(payload.get("release_title") or "").strip() or None
+        error_message = str(payload.get("error_message") or "").strip() or None
+
+        raw_match_score = payload.get("match_score")
+        match_score: float | None = None
+        if raw_match_score is not None:
+            try:
+                match_score = float(raw_match_score)
+            except (TypeError, ValueError):
+                match_score = None
+
+        _write_monitored_book_attempt(
+            user_id=db_user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            content_type=content_type,
+            status=status,
+            source=source,
+            source_id=source_id,
+            release_title=release_title,
+            match_score=match_score,
+            error_message=error_message,
+        )
+        return jsonify({"ok": True})
+
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
@@ -1073,7 +1168,7 @@ def register_monitored_routes(
         from shelfmark.release_sources import get_source, list_available_sources
 
         threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
-        now_iso = datetime.utcnow().isoformat() + "Z"
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         for row in candidates:
             provider = str(row.get("provider") or "").strip()
@@ -1095,16 +1190,7 @@ def register_monitored_routes(
                 book = provider_instance.get_book(provider_book_id)
                 if not book:
                     summary["no_match"] += 1
-                    user_db.set_monitored_book_search_status(
-                        user_id=db_user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        content_type=content_type,
-                        status="no_match",
-                        searched_at=now_iso,
-                    )
-                    user_db.insert_monitored_book_attempt_history(
+                    _write_monitored_book_attempt(
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1149,16 +1235,7 @@ def register_monitored_routes(
 
                 if not ranked:
                     summary["no_match"] += 1
-                    user_db.set_monitored_book_search_status(
-                        user_id=db_user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        content_type=content_type,
-                        status="no_match",
-                        searched_at=now_iso,
-                    )
-                    user_db.insert_monitored_book_attempt_history(
+                    _write_monitored_book_attempt(
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1188,16 +1265,7 @@ def register_monitored_routes(
 
                 if match_score is None or match_score < threshold:
                     summary["below_cutoff"] += 1
-                    user_db.set_monitored_book_search_status(
-                        user_id=db_user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        content_type=content_type,
-                        status="below_cutoff",
-                        searched_at=now_iso,
-                    )
-                    user_db.insert_monitored_book_attempt_history(
+                    _write_monitored_book_attempt(
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1244,16 +1312,7 @@ def register_monitored_routes(
                         summary["failed"] += 1
                         status = "download_failed"
 
-                user_db.set_monitored_book_search_status(
-                    user_id=db_user_id,
-                    entity_id=entity_id,
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    content_type=content_type,
-                    status=status,
-                    searched_at=now_iso,
-                )
-                user_db.insert_monitored_book_attempt_history(
+                _write_monitored_book_attempt(
                     user_id=db_user_id,
                     entity_id=entity_id,
                     provider=provider,
@@ -1277,16 +1336,7 @@ def register_monitored_routes(
                     )
             except Exception as exc:
                 summary["failed"] += 1
-                user_db.set_monitored_book_search_status(
-                    user_id=db_user_id,
-                    entity_id=entity_id,
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    content_type=content_type,
-                    status="error",
-                    searched_at=now_iso,
-                )
-                user_db.insert_monitored_book_attempt_history(
+                _write_monitored_book_attempt(
                     user_id=db_user_id,
                     entity_id=entity_id,
                     provider=provider,

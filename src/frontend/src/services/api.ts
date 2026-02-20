@@ -542,6 +542,28 @@ export interface MonitoredSearchRunResult {
   failed: number;
 }
 
+export interface RecordMonitoredBookAttemptPayload {
+  provider: string;
+  provider_book_id: string;
+  content_type: 'ebook' | 'audiobook';
+  status: 'queued' | 'no_match' | 'below_cutoff' | 'not_released' | 'download_failed' | 'error';
+  source?: string;
+  source_id?: string;
+  release_title?: string;
+  match_score?: number;
+  error_message?: string;
+}
+
+export const recordMonitoredBookAttempt = async (
+  entityId: number,
+  payload: RecordMonitoredBookAttemptPayload,
+): Promise<{ ok: boolean }> => {
+  return fetchJSON<{ ok: boolean }>(`${API.monitored}/${entityId}/books/attempt`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
 export const runMonitoredEntitySearch = async (
   entityId: number,
   contentType: 'ebook' | 'audiobook',

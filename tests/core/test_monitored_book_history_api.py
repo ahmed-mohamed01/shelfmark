@@ -113,3 +113,54 @@ def test_monitored_book_history_endpoint_requires_provider_params(main_module, c
     response = client.get(f"/api/monitored/{entity['id']}/books/history")
     assert response.status_code == 400
     assert response.get_json()["error"] == "provider and provider_book_id are required"
+
+
+def test_record_monitored_book_attempt_endpoint_persists_and_is_returned(main_module, client):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.user_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Matt Dinniman",
+        settings={},
+    )
+
+    provider = "hardcover"
+    provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
+    main_module.user_db.upsert_monitored_book(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        title="Dungeon Crawler Carl, Vol. 1",
+        authors="Matt Dinniman",
+    )
+
+    response = client.post(
+        f"/api/monitored/{entity['id']}/books/attempt",
+        json={
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "content_type": "ebook",
+            "status": "no_match",
+            "error_message": "no_release_met_auto_download_cutoff",
+        },
+    )
+    assert response.status_code == 200
+    assert (response.get_json() or {}).get("ok") is True
+
+    history_response = client.get(
+        f"/api/monitored/{entity['id']}/books/history",
+        query_string={"provider": provider, "provider_book_id": provider_book_id, "limit": "20"},
+    )
+    assert history_response.status_code == 200
+    payload = history_response.get_json() or {}
+    attempts = payload.get("attempt_history") or []
+    assert len(attempts) >= 1
+    assert attempts[0]["status"] == "no_match"
+    assert attempts[0]["provider"] == provider
+    assert attempts[0]["provider_book_id"] == provider_book_id
+    assert attempts[0]["error_message"] == "no_release_met_auto_download_cutoff"
