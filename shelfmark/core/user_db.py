@@ -133,6 +133,12 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     ratings_count INTEGER,
     readers_count INTEGER,
     state TEXT NOT NULL DEFAULT 'discovered',
+    monitor_ebook INTEGER NOT NULL DEFAULT 1,
+    monitor_audiobook INTEGER NOT NULL DEFAULT 1,
+    ebook_last_search_status TEXT,
+    audiobook_last_search_status TEXT,
+    ebook_last_search_at TIMESTAMP,
+    audiobook_last_search_at TIMESTAMP,
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, provider, provider_book_id)
 );
@@ -179,6 +185,25 @@ CREATE TABLE IF NOT EXISTS monitored_book_download_history (
 
 CREATE INDEX IF NOT EXISTS idx_monitored_book_download_history_lookup
 ON monitored_book_download_history (entity_id, provider, provider_book_id, downloaded_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_book_id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    attempted_at TIMESTAMP NOT NULL,
+    status TEXT NOT NULL,
+    source TEXT,
+    source_id TEXT,
+    release_title TEXT,
+    match_score REAL,
+    error_message TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
+ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC);
 """
 
 
@@ -254,6 +279,8 @@ class UserDB:
                 self._migrate_monitored_books_release_date_column(conn)
                 self._migrate_monitored_book_files_table(conn)
                 self._migrate_monitored_book_download_history_table(conn)
+                self._migrate_monitored_books_monitor_columns(conn)
+                self._migrate_monitored_book_attempt_history_table(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -479,6 +506,267 @@ class UserDB:
                 (entity_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def set_monitored_book_monitor_flags(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        monitor_ebook: bool | None = None,
+        monitor_audiobook: bool | None = None,
+    ) -> bool:
+        """Update per-format monitor flags for a monitored book."""
+
+        updates: list[str] = []
+        params: list[Any] = []
+        if monitor_ebook is not None:
+            updates.append("monitor_ebook = ?")
+            params.append(1 if monitor_ebook else 0)
+        if monitor_audiobook is not None:
+            updates.append("monitor_audiobook = ?")
+            params.append(1 if monitor_audiobook else 0)
+        if not updates:
+            return False
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return False
+
+                params.extend([entity_id, provider, provider_book_id])
+                cur = conn.execute(
+                    f"""
+                    UPDATE monitored_books
+                    SET {", ".join(updates)}
+                    WHERE entity_id = ?
+                      AND provider = ?
+                      AND provider_book_id = ?
+                    """,
+                    params,
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+            finally:
+                conn.close()
+
+    def set_monitored_book_search_status(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        content_type: str,
+        status: str | None,
+        searched_at: str,
+    ) -> bool:
+        """Persist last monitored-search status per format for a monitored book."""
+
+        ct = (content_type or "").strip().lower()
+        if ct not in {"ebook", "audiobook"}:
+            return False
+        status_col = "ebook_last_search_status" if ct == "ebook" else "audiobook_last_search_status"
+        at_col = "ebook_last_search_at" if ct == "ebook" else "audiobook_last_search_at"
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return False
+
+                cur = conn.execute(
+                    f"""
+                    UPDATE monitored_books
+                    SET {status_col} = ?,
+                        {at_col} = ?
+                    WHERE entity_id = ?
+                      AND provider = ?
+                      AND provider_book_id = ?
+                    """,
+                    (status, searched_at, entity_id, provider, provider_book_id),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+            finally:
+                conn.close()
+
+    def insert_monitored_book_attempt_history(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        content_type: str,
+        attempted_at: str,
+        status: str,
+        source: str | None = None,
+        source_id: str | None = None,
+        release_title: str | None = None,
+        match_score: float | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Insert a monitored auto-search attempt row."""
+
+        ct = (content_type or "").strip().lower()
+        if ct not in {"ebook", "audiobook"}:
+            return
+        if not provider or not provider_book_id:
+            return
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return
+
+                conn.execute(
+                    """
+                    INSERT INTO monitored_book_attempt_history (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        content_type,
+                        attempted_at,
+                        status,
+                        source,
+                        source_id,
+                        release_title,
+                        match_score,
+                        error_message
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        ct,
+                        attempted_at,
+                        status,
+                        source,
+                        source_id,
+                        release_title,
+                        match_score,
+                        error_message,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_monitored_book_attempt_history(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]] | None:
+        """List monitored auto-search attempt rows for a monitored book."""
+
+        safe_limit = max(1, min(int(limit or 50), 200))
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    content_type,
+                    attempted_at,
+                    status,
+                    source,
+                    source_id,
+                    release_title,
+                    match_score,
+                    error_message,
+                    created_at
+                FROM monitored_book_attempt_history
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT ?
+                """,
+                (entity_id, provider, provider_book_id, safe_limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def list_monitored_failed_candidate_source_ids(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        content_type: str,
+    ) -> set[tuple[str, str]]:
+        """Return permanently failed candidate keys for suppression."""
+
+        ct = (content_type or "").strip().lower()
+        if ct not in {"ebook", "audiobook"}:
+            return set()
+
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                (entity_id, user_id),
+            ).fetchone()
+            if not exists:
+                return set()
+
+            rows = conn.execute(
+                """
+                SELECT source, source_id
+                FROM monitored_book_attempt_history
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                  AND content_type = ?
+                  AND status = 'download_failed'
+                  AND source IS NOT NULL
+                  AND source_id IS NOT NULL
+                """,
+                (entity_id, provider, provider_book_id, ct),
+            ).fetchall()
+            out: set[tuple[str, str]] = set()
+            for row in rows:
+                src = str(row["source"] or "").strip()
+                src_id = str(row["source_id"] or "").strip()
+                if src and src_id:
+                    out.add((src, src_id))
+            return out
         finally:
             conn.close()
 
@@ -1205,6 +1493,158 @@ class UserDB:
                   AND TRIM(title_before_rename) != ''
                 """
             )
+
+    def _migrate_monitored_books_monitor_columns(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has per-format monitor/search columns."""
+
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return
+        column_names = {str(col["name"]) for col in rows}
+
+        if "monitor_ebook" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_ebook INTEGER NOT NULL DEFAULT 1")
+        if "monitor_audiobook" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_audiobook INTEGER NOT NULL DEFAULT 1")
+        if "ebook_last_search_status" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN ebook_last_search_status TEXT")
+        if "audiobook_last_search_status" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN audiobook_last_search_status TEXT")
+        if "ebook_last_search_at" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN ebook_last_search_at TIMESTAMP")
+        if "audiobook_last_search_at" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN audiobook_last_search_at TIMESTAMP")
+
+    def _migrate_monitored_book_attempt_history_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_book_attempt_history exists for older DBs."""
+
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_attempt_history'"
+        ).fetchone()
+        if not exists:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL,
+                    provider_book_id TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    attempted_at TIMESTAMP NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT,
+                    source_id TEXT,
+                    release_title TEXT,
+                    match_score REAL,
+                    error_message TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
+                ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_failed_candidate
+                ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, status, source, source_id);
+                """
+            )
+            return
+
+        columns = conn.execute("PRAGMA table_info(monitored_book_attempt_history)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+
+        # Legacy schema (outcome/message/candidate_key) must be rebuilt to the
+        # new schema used by monitored auto-search (status/error_message/etc.).
+        if "status" not in column_names:
+            legacy_table = "monitored_book_attempt_history_legacy_tmp"
+            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+            conn.execute(
+                f"ALTER TABLE monitored_book_attempt_history RENAME TO {legacy_table}"
+            )
+
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL,
+                    provider_book_id TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    attempted_at TIMESTAMP NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT,
+                    source_id TEXT,
+                    release_title TEXT,
+                    match_score REAL,
+                    error_message TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            legacy_columns = conn.execute(f"PRAGMA table_info({legacy_table})").fetchall()
+            legacy_names = {str(col["name"]) for col in legacy_columns}
+
+            def _legacy_expr(name: str, fallback: str = "NULL") -> str:
+                return name if name in legacy_names else fallback
+
+            status_expr = _legacy_expr("outcome", "'error'")
+            error_expr = _legacy_expr("message")
+
+            conn.execute(
+                f"""
+                INSERT INTO monitored_book_attempt_history (
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    content_type,
+                    attempted_at,
+                    status,
+                    source,
+                    source_id,
+                    release_title,
+                    match_score,
+                    error_message,
+                    created_at
+                )
+                SELECT
+                    {_legacy_expr('entity_id', 'NULL')},
+                    {_legacy_expr('provider', "''")},
+                    {_legacy_expr('provider_book_id', "''")},
+                    {_legacy_expr('content_type', "'ebook'")},
+                    {_legacy_expr('attempted_at', 'CURRENT_TIMESTAMP')},
+                    {status_expr},
+                    {_legacy_expr('source')},
+                    {_legacy_expr('source_id')},
+                    NULL,
+                    {_legacy_expr('match_score')},
+                    {error_expr},
+                    {_legacy_expr('created_at', 'CURRENT_TIMESTAMP')}
+                FROM {legacy_table}
+                """
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+            column_names = {
+                str(col["name"])
+                for col in conn.execute("PRAGMA table_info(monitored_book_attempt_history)").fetchall()
+            }
+
+        if "release_title" not in column_names:
+            conn.execute("ALTER TABLE monitored_book_attempt_history ADD COLUMN release_title TEXT")
+        if "error_message" not in column_names:
+            conn.execute("ALTER TABLE monitored_book_attempt_history ADD COLUMN error_message TEXT")
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
+            ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_failed_candidate
+            ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, status, source, source_id)
+            """
+        )
 
     def _migrate_activity_tables(self, conn: sqlite3.Connection) -> None:
         """Ensure activity log and dismissal tables exist with current columns/indexes."""

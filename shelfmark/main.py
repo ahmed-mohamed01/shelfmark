@@ -421,6 +421,7 @@ if user_db is not None:
             app,
             user_db,
             resolve_auth_mode=lambda: get_auth_mode(),
+            activity_service=activity_service,
         )
     except Exception as e:
         logger.warning(f"Failed to register request routes: {e}")

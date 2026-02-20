@@ -58,6 +58,19 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
         final_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013).epub",
         overwritten_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013)_1.epub",
     )
+    main_module.user_db.insert_monitored_book_attempt_history(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type="ebook",
+        attempted_at="2026-02-18T00:00:01Z",
+        status="queued",
+        source="direct_download",
+        source_id="aa-md5-123",
+        release_title="Harvest of Time",
+        match_score=94.0,
+    )
 
     response = client.get(
         f"/api/monitored/{entity['id']}/books/history",
@@ -67,14 +80,21 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
     assert response.status_code == 200
     payload = response.get_json() or {}
     rows = payload.get("history") or []
+    attempts = payload.get("attempt_history") or []
     assert len(rows) >= 1
+    assert len(attempts) >= 1
     row = rows[0]
+    attempt = attempts[0]
     assert row["provider"] == provider
     assert row["provider_book_id"] == provider_book_id
     assert row["downloaded_filename"] == "elantris_2011_sanderson_brandon_TOR_books.epub"
     assert row["title_after_rename"] == "Harvest of Time"
     assert row["source_display_name"] == "Direct Download"
     assert row["final_path"].endswith(".epub")
+    assert attempt["provider"] == provider
+    assert attempt["provider_book_id"] == provider_book_id
+    assert attempt["content_type"] == "ebook"
+    assert attempt["status"] == "queued"
 
 
 def test_monitored_book_history_endpoint_requires_provider_params(main_module, client):

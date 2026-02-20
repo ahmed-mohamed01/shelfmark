@@ -204,11 +204,15 @@ export const MonitoredPage = ({
     author: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number } | null;
     ebookAuthorDir: string;
     audiobookAuthorDir: string;
+    monitorEbookMode: 'all' | 'missing' | 'upcoming';
+    monitorAudiobookMode: 'all' | 'missing' | 'upcoming';
   }>(() => ({
     open: false,
     author: null,
     ebookAuthorDir: '',
     audiobookAuthorDir: '',
+    monitorEbookMode: 'missing',
+    monitorAudiobookMode: 'missing',
   }));
 
   const [monitoredEbookRoots, setMonitoredEbookRoots] = useState<string[]>([]);
@@ -652,6 +656,8 @@ export const MonitoredPage = ({
       author: { ...payload, name: normalized },
       ebookAuthorDir: ebookSuggestion,
       audiobookAuthorDir: audioSuggestion,
+      monitorEbookMode: 'missing',
+      monitorAudiobookMode: 'missing',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
     setEditingMonitorPathKind(null);
@@ -663,6 +669,8 @@ export const MonitoredPage = ({
       author: null,
       ebookAuthorDir: '',
       audiobookAuthorDir: '',
+      monitorEbookMode: 'missing',
+      monitorAudiobookMode: 'missing',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
     setEditingMonitorPathKind(null);
@@ -729,6 +737,8 @@ export const MonitoredPage = ({
           books_count: payload.books_count,
           ebook_author_dir: ebookAuthorDir || undefined,
           audiobook_author_dir: audiobookAuthorDir || undefined,
+          monitor_ebook_mode: monitorModalState.monitorEbookMode,
+          monitor_audiobook_mode: monitorModalState.monitorAudiobookMode,
         },
       });
 
@@ -1623,6 +1633,40 @@ export const MonitoredPage = ({
                       );
                     })()}
                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="space-y-1">
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">eBook monitoring</div>
+                    <select
+                      value={monitorModalState.monitorEbookMode}
+                      onChange={(e) => {
+                        const value = e.target.value as 'all' | 'missing' | 'upcoming';
+                        setMonitorModalState((prev) => ({ ...prev, monitorEbookMode: value }));
+                      }}
+                      className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
+                    >
+                      <option value="all">Monitor all books</option>
+                      <option value="missing">Monitor missing only</option>
+                      <option value="upcoming">Monitor upcoming only</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1">
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">Audiobook monitoring</div>
+                    <select
+                      value={monitorModalState.monitorAudiobookMode}
+                      onChange={(e) => {
+                        const value = e.target.value as 'all' | 'missing' | 'upcoming';
+                        setMonitorModalState((prev) => ({ ...prev, monitorAudiobookMode: value }));
+                      }}
+                      className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
+                    >
+                      <option value="all">Monitor all books</option>
+                      <option value="missing">Monitor missing only</option>
+                      <option value="upcoming">Monitor upcoming only</option>
+                    </select>
+                  </label>
                 </div>
               </div>
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, deleteMonitoredEntity } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, deleteMonitoredEntity, runMonitoredEntitySearch } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
@@ -431,6 +431,11 @@ export const AuthorModal = ({
 
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
+  const [monitorSearchBusyByType, setMonitorSearchBusyByType] = useState<Record<ContentType, boolean>>({
+    ebook: false,
+    audiobook: false,
+  });
+  const [monitorSearchSummary, setMonitorSearchSummary] = useState<string | null>(null);
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
@@ -711,6 +716,31 @@ export const AuthorModal = ({
       }
     } finally {
       setIsRefreshing(false);
+    }
+  }, [monitoredEntityId]);
+
+  const handleRunMonitoredSearch = useCallback(async (contentType: ContentType) => {
+    if (!monitoredEntityId) {
+      return;
+    }
+
+    setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: true }));
+    setMonitorSearchSummary(null);
+    setFilesError(null);
+    try {
+      await scanMonitoredEntityFiles(monitoredEntityId);
+      const result = await runMonitoredEntitySearch(monitoredEntityId, contentType);
+      setMonitorSearchSummary(
+        `${contentType === 'ebook' ? 'eBook' : 'Audiobook'} search: ${result.queued} queued, ${result.no_match} no match, ${result.below_cutoff} below cutoff, ${result.failed} failed.`
+      );
+      setRefreshKey((k) => k + 1);
+      const filesResp = await listMonitoredBookFiles(monitoredEntityId);
+      setFiles(filesResp.files || []);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Monitored search failed';
+      setFilesError(message);
+    } finally {
+      setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: false }));
     }
   }, [monitoredEntityId]);
 
@@ -2520,6 +2550,28 @@ export const AuthorModal = ({
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" />
                       </svg>
                     </button>
+                    {monitoredEntityId ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handleRunMonitoredSearch('ebook')}
+                          disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook}
+                          className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40"
+                          title="Search monitored ebook candidates"
+                        >
+                          {monitorSearchBusyByType.ebook ? 'Searching eBooks…' : 'Search eBooks'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleRunMonitoredSearch('audiobook')}
+                          disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook}
+                          className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40"
+                          title="Search monitored audiobook candidates"
+                        >
+                          {monitorSearchBusyByType.audiobook ? 'Searching audiobooks…' : 'Search audiobooks'}
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </div>
                 </div>
@@ -2565,6 +2617,7 @@ export const AuthorModal = ({
                 {monitoredEntityId ? (
                   <div className="px-4 pb-3">
                     {filesError ? <div className="text-sm text-red-500">{filesError}</div> : null}
+                    {monitorSearchSummary ? <div className="text-sm text-emerald-600 dark:text-emerald-400">{monitorSearchSummary}</div> : null}
                     {filesLoading ? <div className="text-sm text-gray-600 dark:text-gray-300">Loading files…</div> : null}
                   </div>
                 ) : null}

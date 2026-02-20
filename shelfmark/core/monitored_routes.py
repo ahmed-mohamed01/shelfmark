@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 import difflib
@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, session
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, parse_policy_mode, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
+from shelfmark.core.activity_service import ActivityService, build_download_item_key
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -34,6 +35,12 @@ def _resolve_monitor_scope_user_id(
 ) -> tuple[int | None, tuple[Any, int] | None]:
     auth_mode = resolve_auth_mode()
     if auth_mode == "none":
+        raw = session.get("db_user_id")
+        if raw is not None:
+            try:
+                return int(raw), None
+            except (TypeError, ValueError):
+                pass
         return _resolve_global_monitor_user_id(user_db), None
 
     raw = session.get("db_user_id")
@@ -79,6 +86,7 @@ def register_monitored_routes(
     user_db: UserDB,
     *,
     resolve_auth_mode: Callable[[], str],
+    activity_service: ActivityService | None = None,
 ) -> None:
 
     def _transform_cached_cover_urls(
@@ -191,6 +199,113 @@ def register_monitored_routes(
 
         return unique or ["02:00", "14:00"]
 
+    def _normalize_monitor_mode(value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        if mode not in {"all", "missing", "upcoming"}:
+            return "all"
+        return mode
+
+    def _parse_explicit_release_date(value: Any) -> date | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return None
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    def _book_has_file_type(
+        *,
+        by_book: dict[tuple[str, str], set[str]],
+        provider: str,
+        provider_book_id: str,
+        allowed_file_types: set[str],
+    ) -> bool:
+        key = (provider, provider_book_id)
+        types = by_book.get(key)
+        if not types:
+            return False
+        return any(ft in allowed_file_types for ft in types)
+
+    def _apply_monitor_modes_for_books(
+        *,
+        db_user_id: int | None,
+        entity: dict[str, Any],
+        books: list[dict[str, Any]],
+        file_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if not books:
+            return
+
+        entity_id = int(entity.get("id") or 0)
+        if entity_id <= 0:
+            return
+
+        settings = entity.get("settings") if isinstance(entity.get("settings"), dict) else {}
+        ebook_mode = _normalize_monitor_mode(settings.get("monitor_ebook_mode"))
+        audio_mode = _normalize_monitor_mode(settings.get("monitor_audiobook_mode"))
+
+        by_book: dict[tuple[str, str], set[str]] = {}
+        for row in file_rows or []:
+            provider = str(row.get("provider") or "").strip()
+            provider_book_id = str(row.get("provider_book_id") or "").strip()
+            file_type = str(row.get("file_type") or "").strip().lower()
+            if not provider or not provider_book_id or not file_type:
+                continue
+            key = (provider, provider_book_id)
+            if key not in by_book:
+                by_book[key] = set()
+            by_book[key].add(file_type)
+
+        ebook_types = {"epub", "pdf", "mobi", "azw", "azw3"}
+        audio_types = {"m4b", "m4a", "mp3", "flac"}
+        today = date.today()
+
+        for row in books:
+            provider = str(row.get("provider") or "").strip()
+            provider_book_id = str(row.get("provider_book_id") or "").strip()
+            if not provider or not provider_book_id:
+                continue
+
+            has_ebook = _book_has_file_type(
+                by_book=by_book,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                allowed_file_types=ebook_types,
+            )
+            has_audio = _book_has_file_type(
+                by_book=by_book,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                allowed_file_types=audio_types,
+            )
+            explicit_release_date = _parse_explicit_release_date(row.get("release_date"))
+
+            if ebook_mode == "all":
+                monitor_ebook = True
+            elif ebook_mode == "missing":
+                monitor_ebook = not has_ebook
+            else:
+                monitor_ebook = bool(explicit_release_date is not None and explicit_release_date > today and not has_ebook)
+
+            if audio_mode == "all":
+                monitor_audio = True
+            elif audio_mode == "missing":
+                monitor_audio = not has_audio
+            else:
+                monitor_audio = bool(explicit_release_date is not None and explicit_release_date > today and not has_audio)
+
+            user_db.set_monitored_book_monitor_flags(
+                user_id=db_user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                monitor_ebook=monitor_ebook,
+                monitor_audiobook=monitor_audio,
+            )
+
     def _sync_author_entity(*, db_user_id: int | None, entity: dict[str, Any], prefetch_covers: bool = False) -> int:
         if entity.get("kind") != "author":
             raise ValueError("Sync is only supported for author entities")
@@ -275,6 +390,15 @@ def register_monitored_routes(
 
             has_more = bool(getattr(result, "has_more", False))
             page += 1
+
+        refreshed_books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        _apply_monitor_modes_for_books(
+            db_user_id=db_user_id,
+            entity=entity,
+            books=refreshed_books,
+            file_rows=existing_files,
+        )
 
         user_db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
         return discovered
@@ -756,6 +880,9 @@ def register_monitored_routes(
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
+        for row in rows:
+            row["no_release_date"] = _parse_explicit_release_date(row.get("release_date")) is None
+
         _transform_cached_cover_urls(rows)
 
         # Include last_checked_at so the frontend can decide whether to refresh
@@ -801,7 +928,16 @@ def register_monitored_routes(
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        return jsonify({"history": rows})
+        attempt_rows = user_db.list_monitored_book_attempt_history(
+            user_id=db_user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            limit=limit,
+        )
+        if attempt_rows is None:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"history": rows, "attempt_history": attempt_rows})
 
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
@@ -893,7 +1029,7 @@ def register_monitored_routes(
         def _iso_mtime(p: Path) -> str | None:
             try:
                 ts = p.stat().st_mtime
-                return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
             except Exception:
                 return None
 
@@ -1263,8 +1399,15 @@ def register_monitored_routes(
                         "title": row.get("title"),
                     })
 
+            _apply_monitor_modes_for_books(
+                db_user_id=db_user_id,
+                entity=entity,
+                books=books,
+                file_rows=existing_files,
+            )
+
             # Update settings with scan timestamp
-            scan_at = datetime.utcnow().isoformat() + "Z"
+            scan_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             merged_settings = dict(settings)
             if ebook_path is not None:
                 merged_settings["last_ebook_scan_at"] = scan_at
@@ -1355,6 +1498,340 @@ def register_monitored_routes(
             updates=updates,
         )
         return jsonify({"ok": True, "updated": count})
+
+    @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
+    def api_search_monitored_entity(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
+        if not allowed:
+            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+
+        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+        if entity.get("kind") != "author":
+            return jsonify({"error": "Search is only supported for author entities"}), 400
+
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        content_type = str(payload.get("content_type") or "ebook").strip().lower()
+        if content_type not in {"ebook", "audiobook"}:
+            return jsonify({"error": "content_type must be ebook or audiobook"}), 400
+
+        def _emit_monitored_search_error(*, provider: str, provider_book_id: str, title: str | None, reason: str, detail: str | None = None) -> None:
+            if activity_service is None or db_user_id is None:
+                return
+            try:
+                task_id = f"monitored-search:{entity_id}:{provider}:{provider_book_id}:{content_type}"
+                activity_service.record_terminal_snapshot(
+                    user_id=int(db_user_id),
+                    item_type="download",
+                    item_key=build_download_item_key(task_id),
+                    origin="direct",
+                    final_status="error",
+                    source_id=provider_book_id,
+                    snapshot={
+                        "kind": "monitored_search",
+                        "entity_id": entity_id,
+                        "content_type": content_type,
+                        "provider": provider,
+                        "provider_book_id": provider_book_id,
+                        "title": title,
+                        "reason": reason,
+                        "detail": detail,
+                    },
+                )
+            except Exception:
+                pass
+
+        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+
+        ebook_types = {"epub", "pdf", "mobi", "azw", "azw3"}
+        audio_types = {"m4b", "m4a", "mp3", "flac"}
+        wanted_types = ebook_types if content_type == "ebook" else audio_types
+        monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
+
+        available_by_book: dict[tuple[str, str], set[str]] = {}
+        for row in files:
+            provider = str(row.get("provider") or "").strip()
+            provider_book_id = str(row.get("provider_book_id") or "").strip()
+            file_type = str(row.get("file_type") or "").strip().lower()
+            if not provider or not provider_book_id or not file_type:
+                continue
+            key = (provider, provider_book_id)
+            if key not in available_by_book:
+                available_by_book[key] = set()
+            available_by_book[key].add(file_type)
+
+        candidates: list[dict[str, Any]] = []
+        for row in books:
+            provider = str(row.get("provider") or "").strip()
+            provider_book_id = str(row.get("provider_book_id") or "").strip()
+            if not provider or not provider_book_id:
+                continue
+            if not bool(int(row.get(monitor_col) or 0)):
+                continue
+            file_types = available_by_book.get((provider, provider_book_id), set())
+            if any(ft in wanted_types for ft in file_types):
+                continue
+            candidates.append(row)
+
+        summary = {
+            "ok": True,
+            "entity_id": entity_id,
+            "content_type": content_type,
+            "total_candidates": len(candidates),
+            "queued": 0,
+            "no_match": 0,
+            "below_cutoff": 0,
+            "failed": 0,
+        }
+
+        if not candidates:
+            return jsonify(summary)
+
+        from dataclasses import asdict
+        from shelfmark.core.config import config as app_config
+        from shelfmark.core.release_matcher import rank_releases_for_book
+        from shelfmark.core.search_plan import build_release_search_plan
+        from shelfmark.download import orchestrator as download_orchestrator
+        from shelfmark.metadata_providers import get_provider, get_provider_kwargs
+        from shelfmark.release_sources import get_source, list_available_sources
+
+        threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
+        now_iso = datetime.utcnow().isoformat() + "Z"
+
+        for row in candidates:
+            provider = str(row.get("provider") or "").strip()
+            provider_book_id = str(row.get("provider_book_id") or "").strip()
+            book_title = str(row.get("title") or "").strip() or None
+            if not provider or not provider_book_id:
+                continue
+
+            try:
+                failed_candidates = user_db.list_monitored_failed_candidate_source_ids(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                )
+
+                provider_instance = get_provider(provider, **get_provider_kwargs(provider))
+                book = provider_instance.get_book(provider_book_id)
+                if not book:
+                    summary["no_match"] += 1
+                    user_db.set_monitored_book_search_status(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        status="no_match",
+                        searched_at=now_iso,
+                    )
+                    user_db.insert_monitored_book_attempt_history(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        attempted_at=now_iso,
+                        status="no_match",
+                        error_message="book_not_found",
+                    )
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="no_match",
+                        detail="book_not_found",
+                    )
+                    continue
+
+                search_plan = build_release_search_plan(book, languages=None, manual_query=None, indexers=None)
+                all_releases: list[Any] = []
+                for source_row in list_available_sources():
+                    source_name = str(source_row.get("name") or "").strip()
+                    if not source_name or not bool(source_row.get("enabled")):
+                        continue
+                    try:
+                        source = get_source(source_name)
+                        releases = source.search(book, search_plan, expand_search=False, content_type=content_type)
+                        all_releases.extend(releases)
+                    except Exception:
+                        continue
+
+                scored = rank_releases_for_book(book, all_releases)
+                ranked = [release for release, _ in scored]
+                ranked = [
+                    release
+                    for release in ranked
+                    if (
+                        str(getattr(release, "source", "") or "").strip(),
+                        str(getattr(release, "source_id", "") or "").strip(),
+                    ) not in failed_candidates
+                ]
+
+                if not ranked:
+                    summary["no_match"] += 1
+                    user_db.set_monitored_book_search_status(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        status="no_match",
+                        searched_at=now_iso,
+                    )
+                    user_db.insert_monitored_book_attempt_history(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        attempted_at=now_iso,
+                        status="no_match",
+                    )
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="no_match",
+                    )
+                    continue
+
+                best = ranked[0]
+                best_source = str(getattr(best, "source", "") or "").strip() or None
+                best_source_id = str(getattr(best, "source_id", "") or "").strip() or None
+                best_title = str(getattr(best, "title", "") or "").strip() or None
+                extra = getattr(best, "extra", None)
+                score_raw = extra.get("match_score") if isinstance(extra, dict) else None
+                try:
+                    match_score = float(score_raw) if score_raw is not None else None
+                except (TypeError, ValueError):
+                    match_score = None
+
+                if match_score is None or match_score < threshold:
+                    summary["below_cutoff"] += 1
+                    user_db.set_monitored_book_search_status(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        status="below_cutoff",
+                        searched_at=now_iso,
+                    )
+                    user_db.insert_monitored_book_attempt_history(
+                        user_id=db_user_id,
+                        entity_id=entity_id,
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        content_type=content_type,
+                        attempted_at=now_iso,
+                        status="below_cutoff",
+                        source=best_source,
+                        source_id=best_source_id,
+                        release_title=best_title,
+                        match_score=match_score,
+                    )
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="below_cutoff",
+                        detail=f"match_score={match_score}",
+                    )
+                    continue
+
+                release_payload = asdict(best)
+                release_payload["content_type"] = content_type
+                release_payload["monitored_entity_id"] = entity_id
+                release_payload["monitored_book_provider"] = provider
+                release_payload["monitored_book_provider_id"] = provider_book_id
+                release_payload["release_title"] = best_title
+                release_payload["match_score"] = match_score
+
+                success, error_message = download_orchestrator.queue_release(
+                    release_payload,
+                    user_id=db_user_id,
+                    username=session.get("user_id"),
+                )
+                if success:
+                    summary["queued"] += 1
+                    status = "queued"
+                else:
+                    summary["failed"] += 1
+                    status = "download_failed"
+
+                user_db.set_monitored_book_search_status(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    status=status,
+                    searched_at=now_iso,
+                )
+                user_db.insert_monitored_book_attempt_history(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status=status,
+                    source=best_source,
+                    source_id=best_source_id,
+                    release_title=best_title,
+                    match_score=match_score,
+                    error_message=error_message,
+                )
+                if not success:
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="download_failed",
+                        detail=error_message,
+                    )
+            except Exception as exc:
+                summary["failed"] += 1
+                user_db.set_monitored_book_search_status(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    status="error",
+                    searched_at=now_iso,
+                )
+                user_db.insert_monitored_book_attempt_history(
+                    user_id=db_user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status="error",
+                    error_message=str(exc),
+                )
+                _emit_monitored_search_error(
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    title=book_title,
+                    reason="error",
+                    detail=str(exc),
+                )
+
+        return jsonify(summary)
 
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
     def api_sync_monitored(entity_id: int):

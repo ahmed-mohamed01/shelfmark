@@ -371,6 +371,13 @@ export interface MonitoredBookRow {
   rating?: number | null;
   ratings_count?: number | null;
   readers_count?: number | null;
+  monitor_ebook?: number | boolean;
+  monitor_audiobook?: number | boolean;
+  ebook_last_search_status?: string | null;
+  audiobook_last_search_status?: string | null;
+  ebook_last_search_at?: string | null;
+  audiobook_last_search_at?: string | null;
+  no_release_date?: boolean;
   state: string;
   first_seen_at: string;
 }
@@ -460,6 +467,22 @@ export interface MonitoredBookDownloadHistoryRow {
   created_at?: string;
 }
 
+export interface MonitoredBookAttemptHistoryRow {
+  id: number;
+  entity_id: number;
+  provider: string;
+  provider_book_id: string;
+  content_type: 'ebook' | 'audiobook';
+  attempted_at: string;
+  status: string;
+  source?: string | null;
+  source_id?: string | null;
+  release_title?: string | null;
+  match_score?: number | null;
+  error_message?: string | null;
+  created_at?: string;
+}
+
 export interface MonitoredAuthorBookSearchRow {
   entity_id: number;
   author_name: string;
@@ -498,14 +521,35 @@ export const listMonitoredBookDownloadHistory = async (
   provider: string,
   providerBookId: string,
   limit: number = 50,
-): Promise<{ history: MonitoredBookDownloadHistoryRow[] }> => {
+): Promise<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }> => {
   const params = new URLSearchParams();
   params.set('provider', provider);
   params.set('provider_book_id', providerBookId);
   params.set('limit', String(limit));
-  return fetchJSON<{ history: MonitoredBookDownloadHistoryRow[] }>(
+  return fetchJSON<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }>(
     `${API.monitored}/${entityId}/books/history?${params.toString()}`
   );
+};
+
+export interface MonitoredSearchRunResult {
+  ok: boolean;
+  entity_id: number;
+  content_type: 'ebook' | 'audiobook';
+  total_candidates: number;
+  queued: number;
+  no_match: number;
+  below_cutoff: number;
+  failed: number;
+}
+
+export const runMonitoredEntitySearch = async (
+  entityId: number,
+  contentType: 'ebook' | 'audiobook',
+): Promise<MonitoredSearchRunResult> => {
+  return fetchJSON<MonitoredSearchRunResult>(`${API.monitored}/${entityId}/search`, {
+    method: 'POST',
+    body: JSON.stringify({ content_type: contentType }),
+  });
 };
 
 export interface MonitoredFilesScanResult {
