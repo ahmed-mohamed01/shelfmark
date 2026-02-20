@@ -723,17 +723,14 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
 
     total = max(
         0,
-        min(
-            100,
-            title_score
-            + author_score
-            + series_score
-            + series_num_score
-            + year_score
-            + format_priority_score
-            + freeleech_direct_score
-            + indexer_priority_score,
-        ),
+        title_score
+        + author_score
+        + series_score
+        + series_num_score
+        + year_score
+        + format_priority_score
+        + freeleech_direct_score
+        + indexer_priority_score,
     )
 
     if total >= 75:

@@ -29,11 +29,12 @@ def _book_four() -> BookMetadata:
     )
 
 
-def _release(title: str, extra: dict | None = None) -> Release:
+def _release(title: str, extra: dict | None = None, fmt: str | None = None) -> Release:
     return Release(
         source="prowlarr",
         source_id=title,
         title=title,
+        format=fmt,
         content_type="ebook",
         extra=extra or {"author": "Khenal"},
     )
@@ -149,3 +150,33 @@ def test_low_information_title_without_distinctive_overlap_is_rejected(monkeypat
 
     assert score.hard_reject is True
     assert score.reject_reason == "low_information_title_match"
+
+
+def test_score_can_exceed_100_and_format_priority_still_applies(monkeypatch):
+    import shelfmark.core.release_matcher as release_matcher
+
+    def configured_get(key, default=None, user_id=None):
+        if key == "EBOOK_FORMAT_PRIORITY":
+            return [
+                {"id": "epub", "enabled": True},
+                {"id": "pdf", "enabled": True},
+            ]
+        return default
+
+    monkeypatch.setattr(release_matcher.app_config, "get", configured_get)
+
+    book = _book_four()
+
+    score_epub = score_release_match(
+        book,
+        _release("Dungeon Life 4: An Isekai LitRPG", fmt="epub"),
+    )
+    score_pdf = score_release_match(
+        book,
+        _release("Dungeon Life 4: An Isekai LitRPG", fmt="pdf"),
+    )
+
+    assert score_epub.score > 100
+    assert score_pdf.score > 100
+    assert score_epub.breakdown["format_priority"] > score_pdf.breakdown["format_priority"]
+    assert score_epub.score > score_pdf.score
