@@ -2698,11 +2698,11 @@ export const AuthorModal = ({
 
                               {!isCollapsed ? (
                                 <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                                  <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                     <div />
                                     <div />
                                     <div />
-                                    <div className="flex justify-center">
+                                    <div className="flex w-full justify-center">
                                       <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Available</span>
                                     </div>
                                     <div />
@@ -2807,7 +2807,7 @@ export const AuthorModal = ({
 
                                           const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
                                           return (
-                                            <div className="hidden sm:flex items-center justify-center gap-1">
+                                            <div className="hidden sm:flex w-full items-center justify-center gap-1">
                                               {sorted.slice(0, 2).map((t) => (
                                                 <span
                                                   key={t}
