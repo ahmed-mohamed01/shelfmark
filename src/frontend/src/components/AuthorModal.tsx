@@ -1520,7 +1520,7 @@ export const AuthorModal = ({
     return books.filter((book) => Boolean(selectedBookIds[book.id]));
   }, [books, selectedBookIds]);
 
-  const showIndividualBookSelectors = selectedBooks.length > 0;
+  const hasActiveBookSelection = selectedBooks.length > 0;
 
   const toggleSeriesFilter = useCallback((seriesKey: string) => {
     setBooksFilters((prev) => {
@@ -2722,17 +2722,32 @@ export const AuthorModal = ({
                                         return (
                                       <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                         <div className="flex items-center justify-center pl-0.5 sm:pl-1">
-                                          {showIndividualBookSelectors ? (
-                                            <input
-                                              type="checkbox"
-                                              checked={Boolean(selectedBookIds[book.id])}
-                                              onChange={() => toggleBookSelection(book.id)}
-                                              className="h-4 w-4 rounded border-gray-400 text-emerald-600 focus:ring-emerald-500"
-                                              aria-label={`Select ${book.title || 'book'}`}
-                                            />
-                                          ) : (
-                                            <span className="inline-block h-4 w-4" aria-hidden="true" />
-                                          )}
+                                          {(() => {
+                                            const isSelected = Boolean(selectedBookIds[book.id]);
+                                            const showDimmed = !hasActiveBookSelection && !isSelected;
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => toggleBookSelection(book.id)}
+                                                className={`transition-opacity ${showDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
+                                                role="checkbox"
+                                                aria-checked={isSelected}
+                                                aria-label={`Select ${book.title || 'book'}`}
+                                                title={isSelected ? 'Unselect book' : 'Select book'}
+                                              >
+                                                {isSelected ? (
+                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                                    <rect x="4" y="4" width="16" height="16" rx="3" />
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
+                                                  </svg>
+                                                ) : (
+                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                                    <rect x="4" y="4" width="16" height="16" rx="3" />
+                                                  </svg>
+                                                )}
+                                              </button>
+                                            );
+                                          })()}
                                         </div>
 
                                         <div className="flex items-center pl-1 sm:pl-3">
