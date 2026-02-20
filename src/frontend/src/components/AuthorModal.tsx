@@ -706,8 +706,6 @@ export const AuthorModal = ({
       setRefreshKey((k) => k + 1);
       await syncMonitoredEntity(monitoredEntityId);
       await scanMonitoredEntityFiles(monitoredEntityId);
-      const resp = await listMonitoredBookFiles(monitoredEntityId);
-      setFiles(resp.files || []);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Refresh & scan failed';
       console.warn('AuthorModal: Refresh & scan failed', message);
@@ -715,6 +713,14 @@ export const AuthorModal = ({
         setFilesError(message);
       }
     } finally {
+      try {
+        const resp = await listMonitoredBookFiles(monitoredEntityId);
+        setFiles(resp.files || []);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Failed to load matched files';
+        console.warn('AuthorModal: failed to reload matched files after refresh', message);
+        setFiles([]);
+      }
       setIsRefreshing(false);
     }
   }, [monitoredEntityId]);

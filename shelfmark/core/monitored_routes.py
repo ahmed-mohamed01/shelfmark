@@ -1000,25 +1000,40 @@ def register_monitored_routes(
                 audiobook_path = None
 
         if ebook_path is None and audiobook_path is None:
+            # Harden: clear all matched files when both directories are gone
+            from shelfmark.core.monitored_files import clear_entity_matched_files
+            try:
+                clear_entity_matched_files(user_db=user_db, user_id=db_user_id, entity_id=entity_id)
+            except Exception as exc:
+                logger.warning("Failed clearing matched files for missing dirs entity_id=%s: %s", entity_id, exc)
             if dir_warnings:
-                return jsonify({"error": "Directory not found", "details": dir_warnings}), 404
-            return jsonify({"error": "Directory not found"}), 404
+                return jsonify({"error": "Directory not found", "details": dir_warnings, "files_cleared": True}), 404
+            return jsonify({"error": "Directory not found", "files_cleared": True}), 404
 
         books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if books is None:
             return jsonify({"error": "Not found"}), 404
+
+        from shelfmark.core.monitored_files import (
+            ALLOWED_EBOOK_EXT,
+            ALLOWED_AUDIO_EXT,
+            MAX_SCAN_FILES,
+            title_match_variants,
+            normalize_candidate_title,
+            score_title_match,
+            prefer_row_on_tie,
+            iso_mtime,
+            pick_best_audio_file,
+        )
 
         known_titles: list[tuple[dict[str, Any], str, str]] = []
         for row in books:
             title = str(row.get("title") or "").strip()
             if not title:
                 continue
-            for match_title in _title_match_variants(title):
+            for match_title in title_match_variants(title):
                 known_titles.append((row, match_title, title))
 
-        allowed_ebook_ext = {".epub", ".pdf", ".azw", ".azw3", ".mobi"}
-        allowed_audio_ext = {".m4b", ".m4a", ".mp3", ".flac"}
-        max_files = 4000
         scanned_ebook_files = 0
         scanned_audio_folders = 0
         matched: list[dict[str, Any]] = []
@@ -1026,34 +1041,10 @@ def register_monitored_routes(
         best_by_book_and_type: dict[tuple[str, str, str], float] = {}
         seen_paths: set[str] = set()
 
-        def _iso_mtime(p: Path) -> str | None:
-            try:
-                ts = p.stat().st_mtime
-                return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
-            except Exception:
-                return None
-
-        def _pick_best_audio_file(files: list[Path]) -> Path | None:
-            if not files:
-                return None
-            # Prefer single-file audiobooks (m4b/m4a) over mp3, then by size.
-            priority = {".m4b": 0, ".m4a": 1, ".mp3": 2, ".flac": 3}
-
-            def _key(p: Path) -> tuple[int, int]:
-                ext = p.suffix.lower()
-                pr = priority.get(ext, 99)
-                try:
-                    sz = int(p.stat().st_size)
-                except Exception:
-                    sz = 0
-                return (pr, -sz)
-
-            return sorted(files, key=_key)[0]
-
         try:
             if ebook_path is not None:
                 for p in ebook_path.rglob('*'):
-                    if scanned_ebook_files >= max_files:
+                    if scanned_ebook_files >= MAX_SCAN_FILES:
                         break
                     try:
                         if not p.is_file():
@@ -1064,7 +1055,7 @@ def register_monitored_routes(
                         continue
 
                     ext = p.suffix.lower()
-                    if ext not in allowed_ebook_ext:
+                    if ext not in ALLOWED_EBOOK_EXT:
                         continue
 
                     seen_paths.add(str(p))
@@ -1076,14 +1067,14 @@ def register_monitored_routes(
                     except Exception:
                         size_bytes = None
 
-                    candidate = _normalize_candidate_title(p.stem, author_name)
+                    candidate = normalize_candidate_title(p.stem, author_name)
 
                     best_score = 0.0
                     best_row: dict[str, Any] | None = None
                     best_title = ""
                     scored: list[tuple[float, dict[str, Any], str]] = []
                     for row, match_title, display_title in known_titles:
-                        score = _score_title_match(candidate, match_title)
+                        score = score_title_match(candidate, match_title)
                         scored.append((score, row, display_title))
                         if score > best_score:
                             best_score = score
@@ -1092,7 +1083,7 @@ def register_monitored_routes(
                         elif (
                             best_row is not None
                             and abs(score - best_score) < 1e-9
-                            and _prefer_row_on_tie(
+                            and prefer_row_on_tie(
                                 candidate=candidate,
                                 row=row,
                                 display_title=display_title,
@@ -1116,7 +1107,7 @@ def register_monitored_routes(
                     ]
 
                     file_type = ext.lstrip('.')
-                    mtime = _iso_mtime(p)
+                    mtime = iso_mtime(p)
 
                     # Aggressive threshold
                     if best_row is not None and best_score >= 0.55:
@@ -1185,7 +1176,7 @@ def register_monitored_routes(
                         continue
 
                     ext = p.suffix.lower()
-                    if ext not in allowed_audio_ext:
+                    if ext not in ALLOWED_AUDIO_EXT:
                         continue
 
                     parent = p.parent
@@ -1197,12 +1188,12 @@ def register_monitored_routes(
                         audio_files = [
                             fp
                             for fp in parent.iterdir()
-                            if fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in allowed_audio_ext
+                            if fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in ALLOWED_AUDIO_EXT
                         ]
                     except Exception:
                         continue
 
-                    best_file = _pick_best_audio_file(audio_files)
+                    best_file = pick_best_audio_file(audio_files)
                     if best_file is None:
                         continue
 
@@ -1224,7 +1215,7 @@ def register_monitored_routes(
                                 continue
                             try:
                                 has_audio = any(
-                                    fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in allowed_audio_ext
+                                    fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in ALLOWED_AUDIO_EXT
                                     for fp in child.iterdir()
                                 )
                             except Exception:
@@ -1244,14 +1235,14 @@ def register_monitored_routes(
                         if series_name and not re.match(r"^\d+\.?\s*", folder_name):
                             combined = f"{folder_name} {series_name}"
 
-                    candidate = _normalize_candidate_title(combined, author_name)
+                    candidate = normalize_candidate_title(combined, author_name)
 
                     best_score = 0.0
                     best_row: dict[str, Any] | None = None
                     best_title = ""
                     scored: list[tuple[float, dict[str, Any], str]] = []
                     for row, match_title, display_title in known_titles:
-                        score = _score_title_match(candidate, match_title)
+                        score = score_title_match(candidate, match_title)
                         scored.append((score, row, display_title))
                         if score > best_score:
                             best_score = score
@@ -1260,7 +1251,7 @@ def register_monitored_routes(
                         elif (
                             best_row is not None
                             and abs(score - best_score) < 1e-9
-                            and _prefer_row_on_tie(
+                            and prefer_row_on_tie(
                                 candidate=candidate,
                                 row=row,
                                 display_title=display_title,
@@ -1285,7 +1276,7 @@ def register_monitored_routes(
 
                     ext = best_file.suffix.lower()
                     file_type = ext.lstrip('.')
-                    mtime = _iso_mtime(best_file)
+                    mtime = iso_mtime(best_file)
                     try:
                         size_bytes = int(best_file.stat().st_size)
                     except Exception:
@@ -1345,38 +1336,16 @@ def register_monitored_routes(
                             "top_matches": top_matches,
                         })
 
-            # Determine missing books (best-effort): books with no matching file rows for epub
             # Prune DB rows for files that no longer exist on disk.
-            # Only prune within the roots used for this scan (ebook_path/audiobook_path).
-            try:
-                if ebook_path is not None or audiobook_path is not None:
-                    existing_files_before = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
-                    keep: list[str] = []
-                    for row in existing_files_before:
-                        path = row.get("path")
-                        if not isinstance(path, str) or not path:
-                            continue
-                        should_consider = False
-                        if ebook_path is not None:
-                            try:
-                                Path(path).resolve().relative_to(ebook_path)
-                                should_consider = True
-                            except Exception:
-                                pass
-                        if audiobook_path is not None and not should_consider:
-                            try:
-                                Path(path).resolve().relative_to(audiobook_path)
-                                should_consider = True
-                            except Exception:
-                                pass
-                        if not should_consider:
-                            keep.append(path)
-                            continue
-                        if path in seen_paths and Path(path).exists():
-                            keep.append(path)
-                    user_db.prune_monitored_book_files(user_id=db_user_id, entity_id=entity_id, keep_paths=keep)
-            except Exception as exc:
-                logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
+            from shelfmark.core.monitored_files import prune_stale_matched_files
+            scanned_roots = [p for p in [ebook_path, audiobook_path] if p is not None]
+            prune_stale_matched_files(
+                user_db=user_db,
+                user_id=db_user_id,
+                entity_id=entity_id,
+                scanned_roots=scanned_roots,
+                seen_paths=seen_paths,
+            )
 
             existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
             have_book_ids: set[tuple[str, str]] = set()
