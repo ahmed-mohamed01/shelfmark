@@ -31,20 +31,22 @@ export const MonitoredTableRowBase = ({
   rowClassName = 'px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full',
   onRowClick,
 }: MonitoredTableRowBaseProps) => {
-  const shouldIgnoreRowClick = (target: EventTarget | null): boolean => {
+  const shouldIgnoreRowClick = (target: EventTarget | null, rowElement: HTMLDivElement): boolean => {
     if (!(target instanceof Element)) return false;
-    return Boolean(target.closest('button,a,input,select,textarea,[role="button"],[role="checkbox"],[role="switch"]'));
+    const interactiveAncestor = target.closest('button,a,input,select,textarea,[role="button"],[role="checkbox"],[role="switch"]');
+    if (!interactiveAncestor) return false;
+    return interactiveAncestor !== rowElement;
   };
 
   const handleRowClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!onRowClick || shouldIgnoreRowClick(event.target)) return;
+    if (!onRowClick || shouldIgnoreRowClick(event.target, event.currentTarget)) return;
     onRowClick();
   };
 
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!onRowClick) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
-    if (shouldIgnoreRowClick(event.target)) return;
+    if (shouldIgnoreRowClick(event.target, event.currentTarget)) return;
     event.preventDefault();
     onRowClick();
   };
