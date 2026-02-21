@@ -6,16 +6,25 @@ import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { BookDetailsModal } from './BookDetailsModal';
-import { getProgressConfig } from './activity/activityStyles';
+import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 
-const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
+const BooksListThumbnail = ({
+  preview,
+  title,
+  className,
+}: {
+  preview?: string;
+  title?: string;
+  className?: string;
+}) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const sizeClass = className || 'w-7 h-10 sm:w-10 sm:h-14';
 
   if (!preview || imageError) {
     return (
       <div
-        className="w-7 h-10 sm:w-10 sm:h-14 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300"
+        className={`${sizeClass} rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300`}
         aria-label="No cover available"
       >
         No Cover
@@ -24,7 +33,7 @@ const BooksListThumbnail = ({ preview, title }: { preview?: string; title?: stri
   }
 
   return (
-    <div className="relative w-7 h-10 sm:w-10 sm:h-14 rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70">
+    <div className={`relative ${sizeClass} rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70`}>
       {!imageLoaded && (
         <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
       )}
@@ -84,22 +93,6 @@ interface AuthorModalProps {
   onBooksSearchQueryChange?: (value: string) => void;
 }
 
-type DownloadStatusBucket = 'queued' | 'resolving' | 'locating' | 'downloading' | 'complete' | 'error' | 'cancelled';
-
-const isDownloadStatusBucket = (value: string | undefined): value is DownloadStatusBucket => (
-  value === 'queued'
-  || value === 'resolving'
-  || value === 'locating'
-  || value === 'downloading'
-  || value === 'complete'
-  || value === 'error'
-  || value === 'cancelled'
-);
-
-const progressColorToBorderColor = (progressColorClass: string): string => {
-  if (!progressColorClass) return 'border-sky-600';
-  return progressColorClass.replace(/^bg-/, 'border-');
-};
 
 const EBOOK_MATCH_FORMATS = ['epub', 'pdf', 'mobi', 'azw', 'azw3'];
 const AUDIOBOOK_MATCH_FORMATS = ['m4b', 'm4a', 'mp3', 'flac'];
@@ -115,12 +108,12 @@ const SEARCH_DROPDOWN_OPTIONS: Array<{
   { contentType: 'audiobook', action: 'auto_search_download', label: 'Audiobook — Auto Search + Download' },
 ];
 
-const getContentTypeLabel = (contentType: ContentType): string => (contentType === 'audiobook' ? 'Audiobook' : 'eBook');
-const getPrimaryActionLabel = (action: ReleasePrimaryAction): string => (
-  action === 'auto_search_download' ? 'Auto Search + Download' : 'Interactive Search'
-);
-
 type AuthorBooksSort = 'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc' | 'popular' | 'rating';
+type AuthorBooksViewMode = 'table' | 'compact';
+
+const AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN = 112;
+const AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX = 220;
+const AUTHOR_BOOKS_COMPACT_MIN_WIDTH_DEFAULT = 150;
 
 type AvailabilityFilterMode =
   | 'all'
@@ -396,6 +389,19 @@ export const AuthorModal = ({
       ? saved
       : 'series_asc';
   });
+  const [booksViewMode, setBooksViewMode] = useState<AuthorBooksViewMode>(() => {
+    const saved = localStorage.getItem('authorBooksViewMode');
+    if (saved === 'compact' || saved === 'card') return 'compact';
+    return 'table';
+  });
+  const [booksCompactMinWidth, setBooksCompactMinWidth] = useState<number>(() => {
+    const raw = localStorage.getItem('authorBooksCompactMinWidth');
+    const parsed = raw ? Number(raw) : Number.NaN;
+    if (!Number.isFinite(parsed)) {
+      return AUTHOR_BOOKS_COMPACT_MIN_WIDTH_DEFAULT;
+    }
+    return Math.max(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN, Math.min(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX, parsed));
+  });
   const [booksFilters, setBooksFilters] = useState<AuthorBooksFilters>(() => createDefaultAuthorBooksFilters());
   const [isSeriesFilterMenuOpen, setIsSeriesFilterMenuOpen] = useState(false);
   const [closeSeriesFilterOnSelect, setCloseSeriesFilterOnSelect] = useState(false);
@@ -439,7 +445,6 @@ export const AuthorModal = ({
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
-  const [pendingAutoSearchByKey, setPendingAutoSearchByKey] = useState<Record<string, boolean>>({});
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
   const isPageMode = displayMode === 'page';
   const activeBooksQuery = booksSearchQuery ?? booksQuery;
@@ -507,19 +512,10 @@ export const AuthorModal = ({
     return keys;
   };
 
-  const buildReleaseActionKey = (b: Book, contentType: ContentType): string => {
-    const provider = b.provider || '';
-    const providerId = b.provider_id || '';
-    const fallbackId = b.id != null ? String(b.id) : '';
-    return `${contentType}:${provider}:${providerId}:${fallbackId}`;
-  };
+  const resolvePrimaryActionForContentType = useCallback((contentType: ContentType): ReleasePrimaryAction => {
+    return contentType === 'audiobook' ? defaultReleaseActionAudiobook : defaultReleaseActionEbook;
+  }, [defaultReleaseActionAudiobook, defaultReleaseActionEbook]);
 
-  const resolvePrimaryActionForContentType = useCallback(
-    (contentType: ContentType): ReleasePrimaryAction => {
-      return contentType === 'audiobook' ? defaultReleaseActionAudiobook : defaultReleaseActionEbook;
-    },
-    [defaultReleaseActionAudiobook, defaultReleaseActionEbook]
-  );
 
   const triggerReleaseSearch = useCallback(
     async (
@@ -529,28 +525,9 @@ export const AuthorModal = ({
       options?: OpenReleasesOptions,
     ) => {
       if (!onGetReleases) return;
-      const effectiveAction = actionOverride || resolvePrimaryActionForContentType(contentType);
-      const actionKey = buildReleaseActionKey(book, contentType);
-      const shouldShowImmediateSpinner = effectiveAction === 'auto_search_download';
-
-      if (shouldShowImmediateSpinner) {
-        setPendingAutoSearchByKey((prev) => ({ ...prev, [actionKey]: true }));
-      }
-
-      try {
-        await onGetReleases(book, contentType, monitoredEntityId, actionOverride, options);
-      } finally {
-        if (shouldShowImmediateSpinner) {
-          setPendingAutoSearchByKey((prev) => {
-            if (!prev[actionKey]) return prev;
-            const next = { ...prev };
-            delete next[actionKey];
-            return next;
-          });
-        }
-      }
+      await onGetReleases(book, contentType, monitoredEntityId, actionOverride, options);
     },
-    [onGetReleases, monitoredEntityId, resolvePrimaryActionForContentType]
+    [onGetReleases, monitoredEntityId]
   );
 
   const lastAutoRefreshSignatureRef = useMemo(() => ({ value: '' }), []);
@@ -750,38 +727,6 @@ export const AuthorModal = ({
     }
   }, [monitoredEntityId]);
 
-  const statusByBookKey = useMemo(() => {
-    const map = new Map<string, { bucket: string; progress?: number }>();
-    if (!status) return map;
-
-    const addBucket = (bucketName: string, bucket: Record<string, Book> | undefined) => {
-      if (!bucket) return;
-      for (const [recordKey, b] of Object.entries(bucket)) {
-        const progress = typeof b.progress === 'number' ? b.progress : undefined;
-        const normalizedRecordKey = normalizeStatusKeyPart(recordKey);
-        if (normalizedRecordKey && !map.has(`rk:${normalizedRecordKey}`)) {
-          map.set(`rk:${normalizedRecordKey}`, { bucket: bucketName, progress });
-        }
-
-        for (const key of buildBookStatusKeys(b)) {
-          if (!map.has(key)) {
-            map.set(key, { bucket: bucketName, progress });
-          }
-        }
-      }
-    };
-
-    addBucket('queued', status.queued);
-    addBucket('resolving', status.resolving);
-    addBucket('locating', status.locating);
-    addBucket('downloading', status.downloading);
-    addBucket('complete', status.complete);
-    addBucket('error', status.error);
-    addBucket('cancelled', status.cancelled);
-
-    return map;
-  }, [status]);
-
   useEffect(() => {
     if (!monitoredEntityId || !status || autoRefreshBusy) {
       return;
@@ -840,6 +785,22 @@ export const AuthorModal = ({
       // ignore
     }
   }, [booksSort]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('authorBooksViewMode', booksViewMode);
+    } catch {
+      // ignore
+    }
+  }, [booksViewMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('authorBooksCompactMinWidth', String(booksCompactMinWidth));
+    } catch {
+      // ignore
+    }
+  }, [booksCompactMinWidth]);
 
   useEffect(() => {
     if (!author) {
@@ -1667,102 +1628,80 @@ export const AuthorModal = ({
     });
   }, []);
 
-  const renderBookSearchActionMenu = (book: Book) => {
-    if (!onGetReleases) return null;
-
-    const prov = book.provider || '';
-    const bid = book.provider_id || '';
-    const key = prov && bid ? `${prov}:${bid}` : '';
-    const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-    const hasEbookMatch = Boolean(types && EBOOK_MATCH_FORMATS.some((format) => types.has(format)));
-    const hasAudioMatch = Boolean(types && AUDIOBOOK_MATCH_FORMATS.some((format) => types.has(format)));
-
-    const primaryContentType: ContentType = defaultReleaseContentType === 'audiobook' ? 'audiobook' : 'ebook';
-    const primaryAction = resolvePrimaryActionForContentType(primaryContentType);
-    const primaryActionLabel = getPrimaryActionLabel(primaryAction);
-    const primaryContentLabel = getContentTypeLabel(primaryContentType);
-    const primaryTitle = `Primary action: ${primaryContentLabel} · ${primaryActionLabel}`;
-
-    const primaryActionKey = buildReleaseActionKey(book, primaryContentType);
-    const primaryPendingAuto = Boolean(pendingAutoSearchByKey[primaryActionKey]);
-    const primaryHasMatch = primaryContentType === 'audiobook' ? hasAudioMatch : hasEbookMatch;
-    const primaryColor = primaryHasMatch
-      ? (primaryContentType === 'audiobook' ? 'text-violet-600 dark:text-violet-400' : 'text-emerald-600 dark:text-emerald-400')
-      : 'text-gray-600 dark:text-gray-200';
-
-    const activity = buildBookStatusKeys(book)
-      .map((statusKey) => statusByBookKey.get(statusKey))
-      .find((item) => Boolean(item));
-    const bucket = activity?.bucket;
-    const showSpinner = primaryPendingAuto || bucket === 'queued' || bucket === 'resolving' || bucket === 'locating' || bucket === 'downloading';
-    const ringColor = isDownloadStatusBucket(bucket)
-      ? progressColorToBorderColor(getProgressConfig(bucket, activity?.progress).color)
-      : 'border-sky-600';
-
-    const isDefault = (contentType: ContentType, action: ReleasePrimaryAction): boolean => {
-      return primaryContentType === contentType && resolvePrimaryActionForContentType(contentType) === action;
-    };
+  const renderBookOverflowMenu = (book: Book, compact = false) => {
+    const defaultContentType: ContentType = defaultReleaseContentType === 'audiobook' ? 'audiobook' : 'ebook';
+    const defaultAction = resolvePrimaryActionForContentType(defaultContentType);
 
     return (
-      <div className="inline-flex items-stretch rounded-lg border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
-        <button
-          type="button"
-          className={`flex h-9 w-9 items-center justify-center transition-colors duration-200 hover-surface ${primaryColor}`}
-          onClick={() => void triggerReleaseSearch(book, primaryContentType)}
-          aria-label={`Run primary search action for ${book.title || 'this book'}`}
-          title={primaryTitle}
-        >
-          <span className="relative inline-flex items-center justify-center" title={bucket ? `Status: ${bucket}` : primaryPendingAuto ? 'Status: auto searching' : undefined}>
-            {primaryContentType === 'audiobook' ? <AudiobookIcon className="w-4 h-4" /> : <BookIcon className="w-4 h-4" />}
-            {showSpinner ? (
-              <span
-                className={`pointer-events-none absolute -inset-1 rounded-full border-[3px] border-t-transparent ${ringColor} animate-spin`}
-                aria-hidden="true"
-              />
-            ) : null}
-          </span>
-        </button>
-        <Dropdown
-          widthClassName="w-auto"
-          align="right"
-          panelClassName="z-[2200] min-w-[240px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
-          renderTrigger={({ isOpen, toggle }) => (
+      <Dropdown
+        widthClassName="w-auto"
+        align="right"
+        panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+        renderTrigger={({ isOpen, toggle }) => (
+          <button
+            type="button"
+            onClick={toggle}
+            className={`inline-flex items-center justify-center rounded-full text-gray-600 dark:text-gray-200 hover-action transition-colors ${compact ? 'h-6 w-6' : 'h-8 w-8'} ${isOpen ? 'text-gray-900 dark:text-gray-100' : ''}`}
+            aria-label={`More actions for ${book.title || 'this book'}`}
+            title="More actions"
+          >
+            <svg className={compact ? 'w-3.5 h-3.5' : 'w-4.5 h-4.5'} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 12.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 18.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
+            </svg>
+          </button>
+        )}
+      >
+        {({ close }) => (
+          <div className="py-1">
             <button
               type="button"
-              onClick={toggle}
-              className={`h-9 w-8 border-l border-[var(--border-muted)] inline-flex items-center justify-center transition-colors duration-200 hover-surface ${primaryColor}`}
-              aria-label="Choose search mode and content type"
-              title={`Choose mode (current: ${primaryContentLabel} · ${primaryActionLabel})`}
+              onClick={() => {
+                close();
+                setActiveBookDetails(book);
+              }}
+              className="w-full px-3 py-2 text-left text-sm hover-surface"
             >
-              <svg className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
-                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-              </svg>
+              View info
             </button>
-          )}
-        >
-          {({ close }) => (
-            <div className="py-1">
-              {SEARCH_DROPDOWN_OPTIONS.map((option) => {
-                const optionIsDefault = isDefault(option.contentType, option.action);
-                return (
-                  <button
-                    type="button"
-                    key={`${option.contentType}:${option.action}`}
-                    onClick={() => {
-                      close();
-                      void triggerReleaseSearch(book, option.contentType, option.action);
-                    }}
-                    className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${optionIsDefault ? 'text-sky-600 dark:text-sky-400 font-medium' : ''}`}
-                  >
-                    <span>{option.label}</span>
-                    {optionIsDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </Dropdown>
-      </div>
+            {onGetReleases ? (
+              <>
+                <div className="my-1 border-t border-[var(--border-muted)]" />
+                {SEARCH_DROPDOWN_OPTIONS.map((option) => {
+                  const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
+                  return (
+                    <button
+                      type="button"
+                      key={`${option.contentType}:${option.action}`}
+                      onClick={() => {
+                        close();
+                        void triggerReleaseSearch(book, option.contentType, option.action);
+                      }}
+                      className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+                    >
+                      <span>{option.label}</span>
+                      {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
+                    </button>
+                  );
+                })}
+              </>
+            ) : null}
+            {book.source_url ? (
+              <>
+                <div className="my-1 border-t border-[var(--border-muted)]" />
+                <a
+                  href={book.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block w-full px-3 py-2 text-left text-sm hover-surface"
+                  onClick={() => close()}
+                >
+                  View source
+                </a>
+              </>
+            ) : null}
+          </div>
+        )}
+      </Dropdown>
     );
   };
 
@@ -2544,6 +2483,76 @@ export const AuthorModal = ({
                         </div>
                       )}
                     </Dropdown>
+                    <Dropdown
+                      align="right"
+                      widthClassName="w-auto flex-shrink-0"
+                      panelClassName="w-56"
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`p-1.5 rounded-full transition-all duration-200 ${
+                            isOpen
+                              ? 'text-gray-900 dark:text-gray-100'
+                              : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'
+                          }`}
+                          aria-label="Compact tile size"
+                          title="Compact tile size"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 19.5h16M7.5 4.5v12m4.5-9v9m4.5-6v6" />
+                          </svg>
+                        </button>
+                      )}
+                    >
+                      {() => (
+                        <div className="px-3 py-3">
+                          <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Compact tile size</div>
+                          <input
+                            type="range"
+                            min={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN}
+                            max={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX}
+                            step={4}
+                            value={booksCompactMinWidth}
+                            onChange={(e) => setBooksCompactMinWidth(Number(e.target.value))}
+                            className="w-full accent-emerald-600"
+                            aria-label="Books compact tile size"
+                            title="Books compact tile size"
+                            disabled={booksViewMode !== 'compact'}
+                          />
+                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tabular-nums text-right">{booksCompactMinWidth}px</div>
+                          {booksViewMode !== 'compact' ? (
+                            <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust tile size.</div>
+                          ) : null}
+                        </div>
+                      )}
+                    </Dropdown>
+                    <div className="hidden sm:flex items-center gap-1 rounded-full border border-[var(--border-muted)] p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setBooksViewMode('table')}
+                        className={`h-7 w-7 rounded-full inline-flex items-center justify-center transition-colors ${booksViewMode === 'table' ? 'bg-emerald-600 text-white' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`}
+                        aria-label="Table view"
+                        title="Table view"
+                        aria-pressed={booksViewMode === 'table'}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBooksViewMode('compact')}
+                        className={`h-7 w-7 rounded-full inline-flex items-center justify-center transition-colors ${booksViewMode === 'compact' ? 'bg-emerald-600 text-white' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`}
+                        aria-label="Compact view"
+                        title="Compact view"
+                        aria-pressed={booksViewMode === 'compact'}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+                        </svg>
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => void handleRefreshAndScan()}
@@ -2582,7 +2591,7 @@ export const AuthorModal = ({
                 </div>
                 </div>
 
-                <div className="rounded-b-2xl border border-[var(--border-muted)] border-t-0 bg-[var(--bg-soft)] sm:bg-[var(--bg)] overflow-hidden">
+                <div className={`rounded-b-2xl border border-[var(--border-muted)] border-t-0 bg-[var(--bg-soft)] sm:bg-[var(--bg)] ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`}>
 
                 {activeFilterChips.length > 0 ? (
                   <div className="px-4 pt-3 pb-1 flex flex-wrap items-center gap-2">
@@ -2639,7 +2648,7 @@ export const AuthorModal = ({
                     <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
                   ) : (
                     <>
-                      <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
+                      <div className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
                         {filteredGroupedBooks.map((group, groupIndex) => {
                           const isCollapsed = collapsedGroups[group.key] ?? false;
                           const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
@@ -2697,6 +2706,53 @@ export const AuthorModal = ({
                               </div>
 
                               {!isCollapsed ? (
+                                booksViewMode === 'compact' ? (
+                                  <div
+                                    className="px-3 py-3 grid gap-3 justify-start"
+                                    style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${booksCompactMinWidth}px, ${booksCompactMinWidth}px))` }}
+                                  >
+                                    {group.books.map((book) => {
+                                      const isSelected = Boolean(selectedBookIds[book.id]);
+                                      const prov = book.provider || '';
+                                      const bid = book.provider_id || '';
+                                      const key = prov && bid ? `${prov}:${bid}` : '';
+                                      const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                      const sortedTypes = types ? Array.from(types).sort((a, b) => a.localeCompare(b)) : [];
+                                      const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
+                                      const showSeriesName = Boolean(seriesLabel) && booksCompactMinWidth >= 168;
+                                      const showExtendedMeta = booksCompactMinWidth >= 178;
+                                      const popularity = extractBookPopularity(book);
+                                      const showPopularity = booksCompactMinWidth >= 194 && (popularity.rating !== null || popularity.readersCount !== null);
+                                      const metaLine = `${book.year || '—'}${book.author ? ` • ${book.author}` : ''}`;
+                                      const popularityLine = [
+                                        popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null,
+                                        popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null,
+                                      ].filter(Boolean).join(' • ');
+                                      return (
+                                        <MonitoredBookCompactTile
+                                          key={book.id}
+                                          title={book.title || 'Untitled'}
+                                          onOpenDetails={() => setActiveBookDetails(book)}
+                                          onToggleSelect={() => toggleBookSelection(book.id)}
+                                          isSelected={isSelected}
+                                          hasActiveSelection={hasActiveBookSelection}
+                                          seriesPosition={book.series_position}
+                                          seriesCount={book.series_count}
+                                          primaryFormat={sortedTypes[0]}
+                                          extraFormatsCount={Math.max(0, sortedTypes.length - 1)}
+                                          seriesLabel={seriesLabel}
+                                          showSeriesName={showSeriesName}
+                                          metaLine={metaLine}
+                                          showMetaLine={showExtendedMeta}
+                                          popularityLine={popularityLine}
+                                          showPopularityLine={showPopularity}
+                                          thumbnail={<BooksListThumbnail preview={book.preview} title={book.title} className="w-full aspect-[2/3]" />}
+                                          overflowMenu={renderBookOverflowMenu(book, true)}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
                                 <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
                                   <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
                                     <div />
@@ -2837,21 +2893,7 @@ export const AuthorModal = ({
                                         })()}
 
                                         <div className="relative flex flex-row justify-end gap-1 sm:gap-1.5 sm:pr-3">
-                                          {renderBookSearchActionMenu(book)}
-                                          {book.source_url ? (
-                                            <a
-                                              className="flex items-center justify-center p-1.5 sm:p-2 rounded-full text-gray-600 dark:text-gray-200 hover-action transition-all duration-200"
-                                              href={book.source_url}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                              aria-label={`View source for ${book.title || 'this book'}`}
-                                            >
-                                              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H18a.75.75 0 0 1 .75.75V18A.75.75 0 0 1 18 18.75H6A.75.75 0 0 1 5.25 18V6.75A.75.75 0 0 1 6 6h4.5" />
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 12.75 18.75 6M15 6h3.75v3.75" />
-                                              </svg>
-                                            </a>
-                                          ) : null}
+                                          {renderBookOverflowMenu(book)}
                                         </div>
                                       </div>
                                         );
@@ -2859,6 +2901,7 @@ export const AuthorModal = ({
                                     </div>
                                   ))}
                                 </div>
+                                )
                               ) : null}
                             </div>
                           );
