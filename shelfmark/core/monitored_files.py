@@ -201,6 +201,99 @@ def prefer_row_on_tie(
     return False
 
 
+def _normalize_alias_series_position(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _alias_identity_for_book(row: dict[str, Any]) -> tuple[str, float | None, str]:
+    raw_title = str(row.get("title") or "").strip()
+    base_title = raw_title.split(":", 1)[0].strip() if raw_title else ""
+    normalized_base = normalize_match_text(base_title or raw_title)
+    series_position = _normalize_alias_series_position(row.get("series_position"))
+    normalized_series_name = normalize_match_text(str(row.get("series_name") or ""))
+    return (normalized_base, series_position, normalized_series_name)
+
+
+def _books_are_alias_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_base, left_series_pos, left_series_name = _alias_identity_for_book(left)
+    right_base, right_series_pos, right_series_name = _alias_identity_for_book(right)
+
+    if not left_base or left_base != right_base:
+        return False
+
+    if left_series_pos is not None and right_series_pos is not None and abs(left_series_pos - right_series_pos) > 1e-6:
+        return False
+
+    if left_series_name and right_series_name and left_series_name != right_series_name:
+        return False
+
+    return True
+
+
+def expand_monitored_file_rows_for_equivalent_books(
+    *,
+    books: list[dict[str, Any]],
+    file_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand matched file rows so equivalent monitored books share detection state.
+
+    This is read-time expansion only; it does not mutate the DB schema.
+    """
+
+    if not books or not file_rows:
+        return list(file_rows or [])
+
+    books_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in books:
+        provider = str(row.get("provider") or "").strip()
+        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        if not provider or not provider_book_id:
+            continue
+        books_by_key[(provider, provider_book_id)] = row
+
+    alias_map: dict[tuple[str, str], set[tuple[str, str]]] = {key: set() for key in books_by_key}
+    book_items = list(books_by_key.items())
+    for idx in range(len(book_items)):
+        left_key, left_row = book_items[idx]
+        for jdx in range(idx + 1, len(book_items)):
+            right_key, right_row = book_items[jdx]
+            if _books_are_alias_equivalent(left_row, right_row):
+                alias_map[left_key].add(right_key)
+                alias_map[right_key].add(left_key)
+
+    expanded: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def _append_row(provider: str, provider_book_id: str, base_row: dict[str, Any]) -> None:
+        row_path = str(base_row.get("path") or "")
+        row_type = str(base_row.get("file_type") or "")
+        dedupe_key = (provider, provider_book_id, row_type, row_path)
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        cloned = dict(base_row)
+        cloned["provider"] = provider
+        cloned["provider_book_id"] = provider_book_id
+        expanded.append(cloned)
+
+    for row in file_rows:
+        provider = str(row.get("provider") or "").strip()
+        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        if not provider or not provider_book_id:
+            continue
+
+        _append_row(provider, provider_book_id, row)
+        for alias_provider, alias_provider_book_id in alias_map.get((provider, provider_book_id), set()):
+            _append_row(alias_provider, alias_provider_book_id, row)
+
+    return expanded
+
+
 # ---------------------------------------------------------------------------
 # File helpers
 # ---------------------------------------------------------------------------
@@ -637,8 +730,12 @@ def scan_monitored_author_files(
     )
 
     existing_files = user_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+    expanded_existing_files = expand_monitored_file_rows_for_equivalent_books(
+        books=books,
+        file_rows=existing_files,
+    )
     have_book_ids: set[tuple[str, str]] = set()
-    for row in existing_files:
+    for row in expanded_existing_files:
         prov = row.get("provider")
         bid = row.get("provider_book_id")
         if isinstance(prov, str) and isinstance(bid, str) and prov and bid:
@@ -664,6 +761,6 @@ def scan_monitored_author_files(
         "scanned_audio_folders": scanned_audio_folders,
         "matched": matched,
         "unmatched": unmatched,
-        "existing_files": existing_files,
+        "existing_files": expanded_existing_files,
         "missing_books": missing_books,
     }

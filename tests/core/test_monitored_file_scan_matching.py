@@ -85,3 +85,16 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
 
     assert row["match"]["provider"] == "hardcover"
     assert row["match"]["provider_book_id"] == subtitle_book_id
+
+    files_response = client.get(f"/api/monitored/{entity['id']}/files")
+    assert files_response.status_code == 200
+    files_payload = files_response.get_json() or {}
+    files = files_payload.get("files") or []
+
+    book_ids_for_path = {
+        str(item.get("provider_book_id"))
+        for item in files
+        if str(item.get("path")) == str(ebook_file)
+    }
+    assert plain_book_id in book_ids_for_path
+    assert subtitle_book_id in book_ids_for_path

@@ -464,6 +464,13 @@ def register_monitored_routes(
 
         refreshed_books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
         existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        if refreshed_books and existing_files:
+            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
+            existing_files = expand_monitored_file_rows_for_equivalent_books(
+                books=refreshed_books,
+                file_rows=existing_files,
+            )
         _apply_monitor_modes_for_books(
             db_user_id=db_user_id,
             entity=entity,
@@ -805,6 +812,14 @@ def register_monitored_routes(
         rows = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
+        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        if books and rows:
+            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
+            rows = expand_monitored_file_rows_for_equivalent_books(
+                books=books,
+                file_rows=rows,
+            )
         return jsonify({"files": rows})
 
     @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
@@ -1144,6 +1159,13 @@ def register_monitored_routes(
 
         books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
         files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        if books and files:
+            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
+            files = expand_monitored_file_rows_for_equivalent_books(
+                books=books,
+                file_rows=files,
+            )
 
         ebook_types = {"epub", "pdf", "mobi", "azw", "azw3"}
         audio_types = {"m4b", "m4a", "mp3", "flac"}
