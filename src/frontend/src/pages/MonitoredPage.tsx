@@ -21,6 +21,7 @@ import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { Dropdown } from '../components/Dropdown';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
+import { MonitoredAuthorCompactTile } from '../components/MonitoredAuthorCompactTile';
 
 interface MonitoredAuthor {
   id: number;
@@ -1203,14 +1204,32 @@ export const MonitoredPage = ({
                     className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
                     style={monitoredCompactGridStyle}
                   >
-                    {monitoredAuthorsForCards.map((author, index) => {
+                    {monitoredAuthorsForCards.map((author) => {
+                      const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
+                      const providerLabel = author.provider ? author.provider : null;
+                      const subtitle = providerLabel ? `${booksCountLabel} • ${providerLabel}` : booksCountLabel;
                       return (
-                        <AuthorCompactView
+                        <MonitoredAuthorCompactTile
                           key={`${author.provider}:${author.provider_id}`}
-                          author={author}
-                          showAction={false}
-                          onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
-                          animationDelay={index * 50}
+                          name={author.name || 'Unknown author'}
+                          thumbnail={
+                            <div className="w-full aspect-[2/3] bg-black/10 dark:bg-white/10">
+                              {author.photo_url ? (
+                                <img
+                                  src={author.photo_url}
+                                  alt={author.name || 'Author photo'}
+                                  className="w-full h-full object-cover object-center"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-xs opacity-60">
+                                  No Photo
+                                </div>
+                              )}
+                            </div>
+                          }
+                          subtitle={subtitle}
+                          onOpenDetails={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
                         />
                       );
                     })}
