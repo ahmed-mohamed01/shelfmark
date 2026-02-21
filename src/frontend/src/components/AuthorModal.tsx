@@ -7,6 +7,8 @@ import { Dropdown } from './Dropdown';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { BookDetailsModal } from './BookDetailsModal';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
+import { MonitoredBookTableRow } from './MonitoredBookTableRow';
+import { ViewModeToggle } from './ViewModeToggle';
 
 const BooksListThumbnail = ({
   preview,
@@ -2527,32 +2529,31 @@ export const AuthorModal = ({
                         </div>
                       )}
                     </Dropdown>
-                    <div className="hidden sm:flex items-center gap-1 rounded-full border border-[var(--border-muted)] p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setBooksViewMode('table')}
-                        className={`h-7 w-7 rounded-full inline-flex items-center justify-center transition-colors ${booksViewMode === 'table' ? 'bg-emerald-600 text-white' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`}
-                        aria-label="Table view"
-                        title="Table view"
-                        aria-pressed={booksViewMode === 'table'}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setBooksViewMode('compact')}
-                        className={`h-7 w-7 rounded-full inline-flex items-center justify-center transition-colors ${booksViewMode === 'compact' ? 'bg-emerald-600 text-white' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`}
-                        aria-label="Compact view"
-                        title="Compact view"
-                        aria-pressed={booksViewMode === 'compact'}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
-                        </svg>
-                      </button>
-                    </div>
+                    <ViewModeToggle
+                      className="hidden sm:inline-flex"
+                      value={booksViewMode}
+                      onChange={(next) => setBooksViewMode(next as AuthorBooksViewMode)}
+                      options={[
+                        {
+                          value: 'table',
+                          label: 'Table view',
+                          icon: (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" />
+                            </svg>
+                          ),
+                        },
+                        {
+                          value: 'compact',
+                          label: 'Compact view',
+                          icon: (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+                            </svg>
+                          ),
+                        },
+                      ]}
+                    />
                     <button
                       type="button"
                       onClick={() => void handleRefreshAndScan()}
@@ -2764,11 +2765,7 @@ export const AuthorModal = ({
                                     <div />
                                   </div>
                                   {group.books.map((book) => (
-                                    <div
-                                      key={book.id}
-                                      className="px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full"
-                                    >
-                                      {(() => {
+                                      (() => {
                                         const popularity = extractBookPopularity(book);
                                         const hasPopularity = popularity.rating !== null || popularity.readersCount !== null;
                                         const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
@@ -2776,129 +2773,122 @@ export const AuthorModal = ({
                                         const hasSeriesPosition = book.series_position != null;
 
                                         return (
-                                      <div className="grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
-                                        <div className="flex items-center justify-center pl-0.5 sm:pl-1">
-                                          {(() => {
-                                            const isSelected = Boolean(selectedBookIds[book.id]);
-                                            const showDimmed = !hasActiveBookSelection && !isSelected;
-                                            return (
-                                              <button
-                                                type="button"
-                                                onClick={() => toggleBookSelection(book.id)}
-                                                className={`transition-opacity ${showDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
-                                                role="checkbox"
-                                                aria-checked={isSelected}
-                                                aria-label={`Select ${book.title || 'book'}`}
-                                                title={isSelected ? 'Unselect book' : 'Select book'}
-                                              >
-                                                {isSelected ? (
-                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                                                    <rect x="4" y="4" width="16" height="16" rx="3" />
-                                                    <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
-                                                  </svg>
-                                                ) : (
-                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                                                    <rect x="4" y="4" width="16" height="16" rx="3" />
-                                                  </svg>
-                                                )}
-                                              </button>
-                                            );
-                                          })()}
-                                        </div>
-
-                                        <div className="flex items-center pl-1 sm:pl-3">
-                                          <BooksListThumbnail preview={book.preview} title={book.title} />
-                                        </div>
-
-                                        <button
-                                          type="button"
-                                          className="min-w-0 flex flex-col justify-center sm:pl-3 text-left"
-                                          onClick={() => setActiveBookDetails(book)}
-                                        >
-                                          <div className="flex items-center gap-2 min-w-0">
-                                            <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>
-                                              {book.title || 'Untitled'}
-                                            </h3>
-                                            {showSeriesInfo ? (
-                                              <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
-                                                • {seriesLabel}
-                                              </span>
-                                            ) : null}
-                                            {hasSeriesPosition ? (
-                                              <span
-                                                className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0"
-                                                style={{
-                                                  boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
-                                                  textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
-                                                }}
-                                                title={seriesLabel ? `${seriesLabel}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}` : undefined}
-                                              >
-                                                #{book.series_position}
-                                                {book.series_count != null ? `/${book.series_count}` : ''}
-                                              </span>
-                                            ) : null}
-                                          </div>
-                                          <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                                            {book.author || resolvedName || 'Unknown author'}
-                                            {book.year ? <span> • {book.year}</span> : null}
-                                          </p>
-                                          {hasPopularity ? (
-                                            <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
-                                              {popularity.rating !== null ? (
-                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" />
-                                                  </svg>
-                                                  <span>
-                                                    {popularity.rating.toFixed(1)}
-                                                    {popularity.ratingsCount !== null ? ` (${popularity.ratingsCount.toLocaleString()})` : ''}
-                                                  </span>
-                                                </span>
-                                              ) : null}
-                                              {popularity.readersCount !== null ? (
-                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0-3-.479c-1.07 0-2.098.18-3 .512m6 0a7.5 7.5 0 1 0-6 0m6 0a9.372 9.372 0 0 1 3 .512M9 10.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0Z" />
-                                                  </svg>
-                                                  <span>{popularity.readersCount.toLocaleString()}</span>
-                                                </span>
-                                              ) : null}
-                                            </div>
-                                          ) : null}
-                                        </button>
-
-                                        {(() => {
-                                          const prov = book.provider || '';
-                                          const bid = book.provider_id || '';
-                                          const key = prov && bid ? `${prov}:${bid}` : '';
-                                          const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                          if (!types || types.size === 0) {
-                                            return <div className="hidden sm:flex" />;
-                                          }
-
-                                          const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
-                                          return (
-                                            <div className="hidden sm:flex w-full items-center justify-center gap-1">
-                                              {sorted.slice(0, 2).map((t) => (
-                                                <span
-                                                  key={t}
-                                                  className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
-                                                  title={`Matched file: ${t.toUpperCase()}`}
+                                          <MonitoredBookTableRow
+                                            key={book.id}
+                                            leadingControl={(() => {
+                                              const isSelected = Boolean(selectedBookIds[book.id]);
+                                              const showDimmed = !hasActiveBookSelection && !isSelected;
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => toggleBookSelection(book.id)}
+                                                  className={`transition-opacity ${showDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
+                                                  role="checkbox"
+                                                  aria-checked={isSelected}
+                                                  aria-label={`Select ${book.title || 'book'}`}
+                                                  title={isSelected ? 'Unselect book' : 'Select book'}
                                                 >
-                                                  {t.toUpperCase()}
-                                                </span>
-                                              ))}
-                                            </div>
-                                          );
-                                        })()}
+                                                  {isSelected ? (
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                                      <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
+                                                    </svg>
+                                                  ) : (
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                                    </svg>
+                                                  )}
+                                                </button>
+                                              );
+                                            })()}
+                                            thumbnail={<BooksListThumbnail preview={book.preview} title={book.title} />}
+                                            onOpen={() => setActiveBookDetails(book)}
+                                            titleRow={(
+                                              <div className="flex items-center gap-2 min-w-0">
+                                                <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>
+                                                  {book.title || 'Untitled'}
+                                                </h3>
+                                                {showSeriesInfo ? (
+                                                  <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
+                                                    • {seriesLabel}
+                                                  </span>
+                                                ) : null}
+                                                {hasSeriesPosition ? (
+                                                  <span
+                                                    className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0"
+                                                    style={{
+                                                      boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
+                                                      textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+                                                    }}
+                                                    title={seriesLabel ? `${seriesLabel}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}` : undefined}
+                                                  >
+                                                    #{book.series_position}
+                                                    {book.series_count != null ? `/${book.series_count}` : ''}
+                                                  </span>
+                                                ) : null}
+                                              </div>
+                                            )}
+                                            subtitleRow={(
+                                              <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
+                                                {book.author || resolvedName || 'Unknown author'}
+                                                {book.year ? <span> • {book.year}</span> : null}
+                                              </p>
+                                            )}
+                                            metaRow={hasPopularity ? (
+                                              <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                                                {popularity.rating !== null ? (
+                                                  <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" />
+                                                    </svg>
+                                                    <span>
+                                                      {popularity.rating.toFixed(1)}
+                                                      {popularity.ratingsCount !== null ? ` (${popularity.ratingsCount.toLocaleString()})` : ''}
+                                                    </span>
+                                                  </span>
+                                                ) : null}
+                                                {popularity.readersCount !== null ? (
+                                                  <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true">
+                                                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0-3-.479c-1.07 0-2.098.18-3 .512m6 0a7.5 7.5 0 1 0-6 0m6 0a9.372 9.372 0 0 1 3 .512M9 10.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0Z" />
+                                                    </svg>
+                                                    <span>{popularity.readersCount.toLocaleString()}</span>
+                                                  </span>
+                                                ) : null}
+                                              </div>
+                                            ) : undefined}
+                                            availabilitySlot={(
+                                              <>
+                                                {(() => {
+                                                  const prov = book.provider || '';
+                                                  const bid = book.provider_id || '';
+                                                  const key = prov && bid ? `${prov}:${bid}` : '';
+                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
+                                                  if (!types || types.size === 0) {
+                                                    return null;
+                                                  }
 
-                                        <div className="relative flex flex-row justify-end gap-1 sm:gap-1.5 sm:pr-3">
-                                          {renderBookOverflowMenu(book)}
-                                        </div>
-                                      </div>
+                                                  const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
+                                                  return (
+                                                    <>
+                                                      {sorted.slice(0, 2).map((t) => (
+                                                        <span
+                                                          key={t}
+                                                          className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
+                                                          title={`Matched file: ${t.toUpperCase()}`}
+                                                        >
+                                                          {t.toUpperCase()}
+                                                        </span>
+                                                      ))}
+                                                    </>
+                                                  );
+                                                })()}
+                                              </>
+                                            )}
+                                            trailingSlot={renderBookOverflowMenu(book)}
+                                          />
                                         );
-                                      })()}
-                                    </div>
+                                      })()
                                   ))}
                                 </div>
                                 )

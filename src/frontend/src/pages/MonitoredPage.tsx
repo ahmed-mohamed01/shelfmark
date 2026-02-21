@@ -22,6 +22,8 @@ import { Dropdown } from '../components/Dropdown';
 import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
 import { MonitoredAuthorCompactTile } from '../components/MonitoredAuthorCompactTile';
+import { MonitoredAuthorTableRow } from '../components/AuthorTableRow';
+import { ViewModeToggle } from '../components/ViewModeToggle';
 
 interface MonitoredAuthor {
   id: number;
@@ -1146,56 +1148,46 @@ export const MonitoredPage = ({
                         </div>
                       )}
                     </Dropdown>
-                    <button
-                      type="button"
-                      onClick={() => setMonitoredViewMode(monitoredViewMode === 'table' ? 'compact' : 'table')}
-                      className="p-2 rounded-full transition-all duration-200 hover-action text-gray-900 dark:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
-                      title={monitoredViewMode === 'table' ? 'Switch to card view' : 'Switch to table view'}
-                      aria-label={monitoredViewMode === 'table' ? 'Switch to card view' : 'Switch to table view'}
-                    >
-                      {monitoredViewMode === 'table' ? (
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                          <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
-                          <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
-                        </svg>
-                      ) : (
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                          />
-                        </svg>
-                      )}
-                    </button>
+                    <ViewModeToggle
+                      value={monitoredViewMode}
+                      onChange={(next) => setMonitoredViewMode(next as 'compact' | 'table')}
+                      options={[
+                        {
+                          value: 'table',
+                          label: 'Table view',
+                          icon: (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" />
+                            </svg>
+                          ),
+                        },
+                        {
+                          value: 'compact',
+                          label: 'Compact view',
+                          icon: (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+                            </svg>
+                          ),
+                        },
+                      ]}
+                    />
                   </div>
                 </div>
 
                 {monitoredViewMode === 'table' ? (
                   <div className="flex flex-col gap-2">
                     {monitoredAuthorsForCards.map((author) => {
+                      const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
+                      const subtitle = author.provider ? `${booksCountLabel} • ${author.provider}` : booksCountLabel;
                       return (
-                        <div
+                        <MonitoredAuthorTableRow
                           key={`${author.provider}:${author.provider_id}`}
-                          className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 bg-black/5 dark:bg-white/5"
-                        >
-                          <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-                            <AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name} />
-                            <button
-                              type="button"
-                              onClick={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
-                              className="text-left flex-1 min-w-0"
-                            >
-                              <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{author.name}</div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {typeof author.stats?.books_count === 'number' ? `${author.stats?.books_count} books` : 'Unknown'}
-                                {author.provider ? ` • ${author.provider}` : ''}
-                              </div>
-                            </button>
-                          </div>
-                        </div>
+                          name={author.name || 'Unknown author'}
+                          subtitle={subtitle}
+                          thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name || 'Unknown author'} />}
+                          onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
+                        />
                       );
                     })}
                   </div>
@@ -1255,67 +1247,39 @@ export const MonitoredPage = ({
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAuthorViewMode('card')}
-                    className={`p-2 rounded-full transition-all duration-200 ${
-                      authorViewMode === 'card'
-                        ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                        : 'hover-action text-gray-900 dark:text-gray-100'
-                    }`}
-                    title="Card view"
-                    aria-label="Card view"
-                    aria-pressed={authorViewMode === 'card'}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAuthorViewMode('compact')}
-                    className={`p-2 rounded-full transition-all duration-200 ${
-                      authorViewMode === 'compact'
-                        ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                        : 'hover-action text-gray-900 dark:text-gray-100'
-                    }`}
-                    title="Compact view"
-                    aria-label="Compact view"
-                    aria-pressed={authorViewMode === 'compact'}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                      <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
-                      <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAuthorViewMode('list')}
-                    className={`p-2 rounded-full transition-all duration-200 ${
-                      authorViewMode === 'list'
-                        ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                        : 'hover-action text-gray-900 dark:text-gray-100'
-                    }`}
-                    title="List view"
-                    aria-label="List view"
-                    aria-pressed={authorViewMode === 'list'}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                      />
-                    </svg>
-                  </button>
-                </div>
+                <ViewModeToggle
+                  value={authorViewMode}
+                  onChange={(next) => setAuthorViewMode(next as 'card' | 'compact' | 'list')}
+                  options={[
+                    {
+                      value: 'card',
+                      label: 'Card view',
+                      icon: (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
+                        </svg>
+                      ),
+                    },
+                    {
+                      value: 'compact',
+                      label: 'Compact view',
+                      icon: (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+                        </svg>
+                      ),
+                    },
+                    {
+                      value: 'list',
+                      label: 'List view',
+                      icon: (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+                        </svg>
+                      ),
+                    },
+                  ]}
+                />
               </div>
 
               {authorResults.length === 0 ? (
@@ -1335,40 +1299,31 @@ export const MonitoredPage = ({
                       const name = author.name;
                       const isMonitored = monitoredNames.has(name.toLowerCase());
                       const booksCount = author.stats?.books_count;
+                      const subtitle = `${typeof booksCount === 'number' ? `${booksCount} books` : 'Unknown'}${author.provider ? ` • ${author.provider}` : ''}`;
                       return (
-                        <div
+                        <MonitoredAuthorTableRow
                           key={`${author.provider}:${author.provider_id}`}
-                          className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 bg-black/5 dark:bg-white/5"
-                        >
-                          <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-                            <AuthorRowThumbnail photo_url={author.photo_url || undefined} name={name} />
+                          name={name || 'Unknown author'}
+                          subtitle={subtitle}
+                          thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={name || 'Unknown author'} />}
+                          onOpen={() => navigateToAuthorPage(author)}
+                          trailingAction={(
                             <button
                               type="button"
-                              onClick={() => navigateToAuthorPage(author)}
-                              className="text-left flex-1 min-w-0"
+                              onClick={() => openMonitorModal({
+                                name,
+                                provider: author.provider,
+                                provider_id: author.provider_id,
+                                photo_url: author.photo_url || undefined,
+                                books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
+                              })}
+                              disabled={isMonitored}
+                              className="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-medium"
                             >
-                              <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{name}</div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {typeof booksCount === 'number' ? `${booksCount} books` : 'Unknown'}
-                                {author.provider ? ` • ${author.provider}` : ''}
-                              </div>
+                              {isMonitored ? 'Monitored' : 'Monitor'}
                             </button>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => openMonitorModal({
-                              name,
-                              provider: author.provider,
-                              provider_id: author.provider_id,
-                              photo_url: author.photo_url || undefined,
-                              books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
-                            })}
-                            disabled={isMonitored}
-                            className="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-medium"
-                          >
-                            {isMonitored ? 'Monitored' : 'Monitor'}
-                          </button>
-                        </div>
+                          )}
+                        />
                       );
                     })}
                   </div>
