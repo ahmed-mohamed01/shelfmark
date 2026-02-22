@@ -1630,9 +1630,83 @@ export const AuthorModal = ({
     });
   }, []);
 
-  const renderBookOverflowMenu = (book: Book, compact = false) => {
+  const getDefaultBookSearchMode = useCallback(() => {
     const defaultContentType: ContentType = defaultReleaseContentType === 'audiobook' ? 'audiobook' : 'ebook';
     const defaultAction = resolvePrimaryActionForContentType(defaultContentType);
+    const isAutoDefault = defaultAction === 'auto_search_download';
+    const primaryLabel = defaultContentType === 'audiobook'
+      ? isAutoDefault
+        ? 'Auto search + download audiobooks'
+        : 'Interactive search audiobooks'
+      : isAutoDefault
+        ? 'Auto search + download eBooks'
+        : 'Interactive search eBooks';
+
+    return {
+      defaultContentType,
+      defaultAction,
+      isAutoDefault,
+      primaryLabel,
+    };
+  }, [defaultReleaseContentType, resolvePrimaryActionForContentType]);
+
+  const renderBookActionMenuContent = useCallback((
+    book: Book,
+    defaultContentType: ContentType,
+    defaultAction: ReleasePrimaryAction,
+  ) => ({ close }: { close: () => void }) => (
+    <div className="py-1">
+      <button
+        type="button"
+        onClick={() => {
+          close();
+          setActiveBookDetails(book);
+        }}
+        className="w-full px-3 py-2 text-left text-sm hover-surface"
+      >
+        View info
+      </button>
+      {onGetReleases ? (
+        <>
+          <div className="my-1 border-t border-[var(--border-muted)]" />
+          {SEARCH_DROPDOWN_OPTIONS.map((option) => {
+            const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
+            return (
+              <button
+                type="button"
+                key={`${option.contentType}:${option.action}`}
+                onClick={() => {
+                  close();
+                  void triggerReleaseSearch(book, option.contentType, option.action);
+                }}
+                className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+              >
+                <span>{option.label}</span>
+                {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
+              </button>
+            );
+          })}
+        </>
+      ) : null}
+      {book.source_url ? (
+        <>
+          <div className="my-1 border-t border-[var(--border-muted)]" />
+          <a
+            href={book.source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full px-3 py-2 text-left text-sm hover-surface"
+            onClick={() => close()}
+          >
+            View source
+          </a>
+        </>
+      ) : null}
+    </div>
+  ), [onGetReleases, triggerReleaseSearch]);
+
+  const renderBookOverflowMenu = (book: Book) => {
+    const { defaultContentType, defaultAction } = getDefaultBookSearchMode();
 
     return (
       <Dropdown
@@ -1643,67 +1717,82 @@ export const AuthorModal = ({
           <button
             type="button"
             onClick={toggle}
-            className={`inline-flex items-center justify-center rounded-full text-gray-600 dark:text-gray-200 hover-action transition-colors ${compact ? 'h-6 w-6' : 'h-8 w-8'} ${isOpen ? 'text-gray-900 dark:text-gray-100' : ''}`}
+            className={`inline-flex items-center justify-center rounded-full text-gray-600 dark:text-gray-200 hover-action transition-colors h-6 w-6 ${isOpen ? 'text-gray-900 dark:text-gray-100' : ''}`}
             aria-label={`More actions for ${book.title || 'this book'}`}
             title="More actions"
           >
-            <svg className={compact ? 'w-3.5 h-3.5' : 'w-4.5 h-4.5'} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 12.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 18.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
             </svg>
           </button>
         )}
       >
-        {({ close }) => (
-          <div className="py-1">
+        {renderBookActionMenuContent(book, defaultContentType, defaultAction)}
+      </Dropdown>
+    );
+  };
+
+  const renderBookTableActions = (book: Book) => {
+    const { defaultContentType, defaultAction, isAutoDefault, primaryLabel } = getDefaultBookSearchMode();
+
+    return (
+      <div className="inline-flex items-stretch rounded-lg border border-emerald-500/40">
+        <button
+          type="button"
+          onClick={() => {
+            if (!onGetReleases) {
+              setActiveBookDetails(book);
+              return;
+            }
+            void triggerReleaseSearch(book, defaultContentType, defaultAction);
+          }}
+          className="inline-flex items-center justify-center h-8 w-8 text-emerald-600 dark:text-emerald-400 hover-action"
+          aria-label={`${primaryLabel} for ${book.title || 'this book'}`}
+          title={primaryLabel}
+        >
+          <span className="relative inline-flex items-center justify-center">
+            {defaultContentType === 'audiobook' ? (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12a7.5 7.5 0 1 1 15 0v6a1.5 1.5 0 0 1-1.5 1.5h-.75A2.25 2.25 0 0 1 15 17.25v-3A2.25 2.25 0 0 1 17.25 12h2.25m-15 0H6.75A2.25 2.25 0 0 1 9 14.25v3A2.25 2.25 0 0 1 6.75 19.5H6A1.5 1.5 0 0 1 4.5 18v-6Z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75A2.25 2.25 0 0 1 6.75 4.5h4.5A2.25 2.25 0 0 1 13.5 6.75v12A2.25 2.25 0 0 0 11.25 16.5h-4.5A2.25 2.25 0 0 0 4.5 18.75v-12Zm9 0A2.25 2.25 0 0 1 15.75 4.5h1.5A2.25 2.25 0 0 1 19.5 6.75v12a2.25 2.25 0 0 0-2.25-2.25h-1.5A2.25 2.25 0 0 0 13.5 18.75v-12Z" />
+              </svg>
+            )}
+            {isAutoDefault ? (
+              <svg className="w-2.5 h-2.5 absolute -right-1 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v10.5m0 0 3-3m-3 3-3-3" />
+              </svg>
+            ) : (
+              <svg className="w-2.5 h-2.5 absolute -right-1 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z" />
+              </svg>
+            )}
+          </span>
+        </button>
+
+        <Dropdown
+          widthClassName="w-auto"
+          align="right"
+          panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          renderTrigger={({ isOpen, toggle }) => (
             <button
               type="button"
-              onClick={() => {
-                close();
-                setActiveBookDetails(book);
-              }}
-              className="w-full px-3 py-2 text-left text-sm hover-surface"
+              onClick={toggle}
+              className={`inline-flex items-center justify-center h-8 w-7 border-l border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover-action ${isOpen ? 'bg-emerald-500/10' : ''}`}
+              aria-label={`More actions for ${book.title || 'this book'}`}
+              title="More actions"
             >
-              View info
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+              </svg>
             </button>
-            {onGetReleases ? (
-              <>
-                <div className="my-1 border-t border-[var(--border-muted)]" />
-                {SEARCH_DROPDOWN_OPTIONS.map((option) => {
-                  const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
-                  return (
-                    <button
-                      type="button"
-                      key={`${option.contentType}:${option.action}`}
-                      onClick={() => {
-                        close();
-                        void triggerReleaseSearch(book, option.contentType, option.action);
-                      }}
-                      className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
-                    >
-                      <span>{option.label}</span>
-                      {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
-                    </button>
-                  );
-                })}
-              </>
-            ) : null}
-            {book.source_url ? (
-              <>
-                <div className="my-1 border-t border-[var(--border-muted)]" />
-                <a
-                  href={book.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block w-full px-3 py-2 text-left text-sm hover-surface"
-                  onClick={() => close()}
-                >
-                  View source
-                </a>
-              </>
-            ) : null}
-          </div>
-        )}
-      </Dropdown>
+          )}
+        >
+          {renderBookActionMenuContent(book, defaultContentType, defaultAction)}
+        </Dropdown>
+      </div>
     );
   };
 
@@ -2055,7 +2144,7 @@ export const AuthorModal = ({
 
               <div className="mt-4">
                 <div
-                  className={`sticky z-20 rounded-t-2xl border border-[var(--border-muted)] border-b-0 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
+                  className={`sticky z-40 rounded-t-2xl border border-[var(--border-muted)] border-b-0 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
                 >
                   <div className="flex items-center justify-between gap-3 px-4 py-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -2748,7 +2837,7 @@ export const AuthorModal = ({
                                           popularityLine={popularityLine}
                                           showPopularityLine={showPopularity}
                                           thumbnail={<BooksListThumbnail preview={book.preview} title={book.title} className="w-full aspect-[2/3]" />}
-                                          overflowMenu={renderBookOverflowMenu(book, true)}
+                                          overflowMenu={renderBookOverflowMenu(book)}
                                         />
                                       );
                                     })}
@@ -2885,7 +2974,7 @@ export const AuthorModal = ({
                                                 })()}
                                               </>
                                             )}
-                                            trailingSlot={renderBookOverflowMenu(book)}
+                                            trailingSlot={renderBookTableActions(book)}
                                           />
                                         );
                                       })()

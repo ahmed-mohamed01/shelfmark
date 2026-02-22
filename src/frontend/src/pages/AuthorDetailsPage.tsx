@@ -61,6 +61,25 @@ export const AuthorDetailsPage = ({
   const initialBooksQuery = (searchParams.get('initial_query') || '').trim();
   const initialBookProvider = (searchParams.get('initial_provider') || '').trim() || undefined;
   const initialBookProviderId = (searchParams.get('initial_provider_id') || '').trim() || undefined;
+  const initialContentTypeParam = (searchParams.get('initial_content_type') || '').trim();
+  const initialActionParam = (searchParams.get('initial_action') || '').trim();
+  const initialContentTypeOverride: ContentType | undefined = initialContentTypeParam === 'audiobook'
+    ? 'audiobook'
+    : initialContentTypeParam === 'ebook'
+      ? 'ebook'
+      : undefined;
+  const initialActionOverride: ReleasePrimaryAction | undefined = initialActionParam === 'auto_search_download'
+    ? 'auto_search_download'
+    : initialActionParam === 'interactive_search'
+      ? 'interactive_search'
+      : undefined;
+  const effectiveDefaultContentType = initialContentTypeOverride ?? defaultReleaseContentType;
+  const effectiveDefaultActionEbook: ReleasePrimaryAction = effectiveDefaultContentType === 'ebook' && initialActionOverride
+    ? initialActionOverride
+    : defaultReleaseActionEbook;
+  const effectiveDefaultActionAudiobook: ReleasePrimaryAction = effectiveDefaultContentType === 'audiobook' && initialActionOverride
+    ? initialActionOverride
+    : defaultReleaseActionAudiobook;
   const [headerSearch, setHeaderSearch] = useState('');
 
   const author = useMemo<AuthorModalAuthor | null>(() => {
@@ -125,9 +144,9 @@ export const AuthorDetailsPage = ({
             displayMode="page"
             onClose={() => navigate('/monitored')}
             onGetReleases={onGetReleases}
-            defaultReleaseContentType={defaultReleaseContentType}
-            defaultReleaseActionEbook={defaultReleaseActionEbook}
-            defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
+            defaultReleaseContentType={effectiveDefaultContentType}
+            defaultReleaseActionEbook={effectiveDefaultActionEbook}
+            defaultReleaseActionAudiobook={effectiveDefaultActionAudiobook}
             initialBooksQuery={initialBooksQuery || undefined}
             initialBookProvider={initialBookProvider}
             initialBookProviderId={initialBookProviderId}

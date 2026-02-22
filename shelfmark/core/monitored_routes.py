@@ -1107,6 +1107,54 @@ def register_monitored_routes(
         )
         return jsonify({"ok": True, "updated": count})
 
+    @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])
+    def api_update_monitored_books_monitor_flags(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            rows = [payload]
+        elif isinstance(payload, list):
+            rows = payload
+        else:
+            return jsonify({"error": "Expected a JSON object or array"}), 400
+
+        updated = 0
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+
+            provider = str(item.get("provider") or "").strip()
+            provider_book_id = str(item.get("provider_book_id") or "").strip()
+            if not provider or not provider_book_id:
+                continue
+
+            monitor_ebook = item.get("monitor_ebook") if "monitor_ebook" in item else None
+            monitor_audiobook = item.get("monitor_audiobook") if "monitor_audiobook" in item else None
+
+            if monitor_ebook is not None:
+                monitor_ebook = bool(monitor_ebook)
+            if monitor_audiobook is not None:
+                monitor_audiobook = bool(monitor_audiobook)
+
+            if monitor_ebook is None and monitor_audiobook is None:
+                continue
+
+            ok = user_db.set_monitored_book_monitor_flags(
+                user_id=db_user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                monitor_ebook=monitor_ebook,
+                monitor_audiobook=monitor_audiobook,
+            )
+            if ok:
+                updated += 1
+
+        return jsonify({"ok": True, "updated": updated})
+
     @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
     def api_search_monitored_entity(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

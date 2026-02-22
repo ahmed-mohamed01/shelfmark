@@ -662,6 +662,23 @@ export const updateMonitoredBooksSeries = async (
   });
 };
 
+export interface MonitoredBookMonitorFlagsPatch {
+  provider: string;
+  provider_book_id: string;
+  monitor_ebook?: boolean;
+  monitor_audiobook?: boolean;
+}
+
+export const updateMonitoredBooksMonitorFlags = async (
+  entityId: number,
+  updates: MonitoredBookMonitorFlagsPatch[] | MonitoredBookMonitorFlagsPatch,
+): Promise<{ ok: boolean; updated: number }> => {
+  return fetchJSON<{ ok: boolean; updated: number }>(`${API.monitored}/${entityId}/books/monitor-flags`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  });
+};
+
 export const getBookInfo = async (id: string): Promise<Book> => {
   return fetchJSON<Book>(`${API.info}?id=${encodeURIComponent(id)}`);
 };
