@@ -49,7 +49,6 @@ import { ActivitySidebar } from './components/activity';
 import { ActivityItem } from './components/activity/activityTypes';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoredPage } from './pages/MonitoredPage';
-import { AuthorDetailsPage } from './pages/AuthorDetailsPage';
 import { SelfSettingsModal, SettingsModal } from './components/settings';
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -1965,7 +1964,7 @@ function App() {
         }
       />
       <Route
-        path="/monitored"
+        path="/monitored/*"
         element={
           authRequired && !isAuthenticated ? (
             <Navigate to="/login" replace />
@@ -1996,47 +1995,11 @@ function App() {
               username={username}
               displayName={displayName}
               onLogout={handleLogoutWithCleanup}
-            />
-          )
-        }
-      />
-      <Route
-        path="/monitored/author"
-        element={
-          authRequired && !isAuthenticated ? (
-            <Navigate to="/login" replace />
-          ) : (
-            <AuthorDetailsPage
-              onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
-              isActivityOpen={downloadsSidebarOpen}
               onGetReleases={openReleasesForBook}
               defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
               defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
               defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
-              onBack={() => navigate('/')}
-              onMonitoredClick={() => navigate('/monitored')}
-              logoUrl={logoUrl}
               status={currentStatus}
-              debug={config?.debug || false}
-              onSettingsClick={() => {
-                if (config?.settings_enabled) {
-                  if (authIsAdmin) {
-                    setSettingsOpen(true);
-                  } else {
-                    setSelfSettingsOpen(true);
-                  }
-                } else {
-                  setConfigBannerOpen(true);
-                }
-              }}
-              statusCounts={statusCounts}
-              isAdmin={requestRoleIsAdmin}
-              canAccessSettings={isAuthenticated}
-              authRequired={authRequired}
-              isAuthenticated={isAuthenticated}
-              username={username}
-              displayName={displayName}
-              onLogout={handleLogoutWithCleanup}
             />
           )
         }

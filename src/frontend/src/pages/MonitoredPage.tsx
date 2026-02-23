@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
@@ -29,8 +29,9 @@ import { MonitoredAuthorCompactTile } from '../components/MonitoredAuthorCompact
 import { MonitoredAuthorTableRow } from '../components/AuthorTableRow';
 import { MonitoredBookTableRow } from '../components/MonitoredBookTableRow';
 import { BookDetailsModal } from '../components/BookDetailsModal';
+import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle } from '../components/ViewModeToggle';
-import { Book, ContentType, ReleasePrimaryAction } from '../types';
+import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 
 interface MonitoredAuthor {
   id: number;
@@ -134,6 +135,17 @@ interface MonitoredPageProps {
   username?: string | null;
   displayName?: string | null;
   onLogout?: () => void;
+  onGetReleases?: (
+    book: Book,
+    contentType: ContentType,
+    monitoredEntityId?: number | null,
+    actionOverride?: ReleasePrimaryAction,
+    options?: OpenReleasesOptions,
+  ) => Promise<void>;
+  defaultReleaseContentType?: ContentType;
+  defaultReleaseActionEbook?: ReleasePrimaryAction;
+  defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  status?: StatusData;
 }
 
 const normalizeAuthor = (value: string): string => {
@@ -185,6 +197,37 @@ const GRID_CLASSES = {
 const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
 const MONITORED_COMPACT_MIN_WIDTH_MAX = 185;
 const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
+const MONITORED_COUNTS_CACHE_KEY = 'monitoredCountsSnapshot';
+const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
+const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
+
+interface MonitoredCountsSnapshot {
+  authors: number;
+  books: number;
+  upcoming: number;
+}
+
+const readMonitoredCountsSnapshot = (): MonitoredCountsSnapshot | null => {
+  try {
+    const raw = sessionStorage.getItem(MONITORED_COUNTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<MonitoredCountsSnapshot>;
+    if (
+      typeof parsed.authors === 'number'
+      && typeof parsed.books === 'number'
+      && typeof parsed.upcoming === 'number'
+    ) {
+      return {
+        authors: parsed.authors,
+        books: parsed.books,
+        upcoming: parsed.upcoming,
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+};
 
 const selectFallbackPhotoFromMonitoredBooks = (books: MonitoredBookRow[]): string | undefined => {
   let bestCover: string | undefined;
@@ -273,6 +316,11 @@ export const MonitoredPage = ({
   username,
   displayName,
   onLogout,
+  onGetReleases,
+  defaultReleaseContentType = 'ebook',
+  defaultReleaseActionEbook = 'interactive_search',
+  defaultReleaseActionAudiobook = 'interactive_search',
+  status,
 }: MonitoredPageProps) => {
   const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
@@ -323,6 +371,7 @@ export const MonitoredPage = ({
     return Math.max(MONITORED_COMPACT_MIN_WIDTH_MIN, Math.min(MONITORED_COMPACT_MIN_WIDTH_MAX, parsed));
   });
   const [monitored, setMonitored] = useState<MonitoredAuthor[]>([]);
+  const [monitoredLoaded, setMonitoredLoaded] = useState(false);
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
   const [monitoredBooksLoadError, setMonitoredBooksLoadError] = useState<string | null>(null);
@@ -332,16 +381,30 @@ export const MonitoredPage = ({
   const [activeBookSourceRow, setActiveBookSourceRow] = useState<MonitoredBookListRow | null>(null);
   const activeBookRequestSeq = useRef(0);
   const navigate = useNavigate();
-  const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState('');
+  const location = useLocation();
+  const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState(() => {
+    try {
+      return sessionStorage.getItem(MONITORED_BOOKS_SEARCH_QUERY_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
   const [monitoredBooksSearchResults, setMonitoredBooksSearchResults] = useState<MonitoredAuthorBookSearchRow[]>([]);
   const [monitoredBooksSearchLoading, setMonitoredBooksSearchLoading] = useState(false);
   const [monitoredBooksSearchError, setMonitoredBooksSearchError] = useState<string | null>(null);
   const [monitoredBooksSearchOpen, setMonitoredBooksSearchOpen] = useState(false);
-  const [monitoredBooksSearchExpanded, setMonitoredBooksSearchExpanded] = useState(false);
+  const [monitoredBooksSearchExpanded, setMonitoredBooksSearchExpanded] = useState(() => {
+    try {
+      return sessionStorage.getItem(MONITORED_BOOKS_SEARCH_EXPANDED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const monitoredBooksSearchRef = useRef<HTMLDivElement | null>(null);
   const monitoredBooksSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedMonitoredBookKeys, setSelectedMonitoredBookKeys] = useState<Record<string, boolean>>({});
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
+  const [cachedMonitoredCounts, setCachedMonitoredCounts] = useState<MonitoredCountsSnapshot | null>(() => readMonitoredCountsSnapshot());
 
   const [monitorModalState, setMonitorModalState] = useState<{
     open: boolean;
@@ -445,6 +508,7 @@ export const MonitoredPage = ({
 
   useEffect(() => {
     let alive = true;
+    setMonitoredLoaded(false);
 
     const toMonitoredAuthor = (entity: MonitoredEntity): MonitoredAuthor | null => {
       if (entity.kind !== 'author') {
@@ -494,6 +558,10 @@ export const MonitoredPage = ({
         const message = e instanceof Error ? e.message : 'Failed to load monitored authors';
         setMonitoredError(message);
         setMonitored([]);
+      } finally {
+        if (alive) {
+          setMonitoredLoaded(true);
+        }
       }
     };
 
@@ -719,6 +787,39 @@ export const MonitoredPage = ({
 
   useEffect(() => {
     try {
+      sessionStorage.setItem(MONITORED_BOOKS_SEARCH_QUERY_KEY, monitoredBooksSearchQuery);
+    } catch {
+      // ignore
+    }
+  }, [monitoredBooksSearchQuery]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(MONITORED_BOOKS_SEARCH_EXPANDED_KEY, monitoredBooksSearchExpanded ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [monitoredBooksSearchExpanded]);
+
+  useEffect(() => {
+    if (!monitoredLoaded) {
+      return;
+    }
+    const snapshot: MonitoredCountsSnapshot = {
+      authors: monitored.length,
+      books: regularMonitoredBooksForTable.length,
+      upcoming: upcomingMonitoredBooksForTable.length,
+    };
+    setCachedMonitoredCounts(snapshot);
+    try {
+      sessionStorage.setItem(MONITORED_COUNTS_CACHE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // ignore
+    }
+  }, [monitoredLoaded, monitored.length, regularMonitoredBooksForTable.length, upcomingMonitoredBooksForTable.length]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('authorViewMode', authorViewMode);
     } catch {
       // ignore
@@ -869,6 +970,10 @@ export const MonitoredPage = ({
   const isUpcomingTab = landingTab === 'upcoming';
   const activeBookGroups = isUpcomingTab ? upcomingBookGroups : monitoredBookGroups;
   const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
+  const monitoredBooksCountsReady = monitoredLoaded && (monitored.length === 0 || !monitoredBooksLoading);
+  const displayAuthorsCount = monitoredLoaded ? monitored.length : (cachedMonitoredCounts?.authors ?? '–');
+  const displayBooksCount = monitoredBooksCountsReady ? regularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
+  const displayUpcomingCount = monitoredBooksCountsReady ? upcomingMonitoredBooksForTable.length : (cachedMonitoredCounts?.upcoming ?? '–');
 
   const getMonitoredRowSearchKey = useCallback((book: MonitoredBookListRow): string => {
     const provider = (book.provider || '').trim().toLowerCase();
@@ -1507,6 +1612,129 @@ export const MonitoredPage = ({
     }
   }, [clearSearchAndReturn]);
 
+  const isAuthorDetailsRoute = location.pathname === '/monitored/author';
+  const authorDetailsSearchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+
+  const authorDetailsAuthor = useMemo<AuthorModalAuthor | null>(() => {
+    if (!isAuthorDetailsRoute) {
+      return null;
+    }
+    const name = (authorDetailsSearchParams.get('name') || '').trim();
+    if (!name) {
+      return null;
+    }
+    const provider = (authorDetailsSearchParams.get('provider') || '').trim();
+    const providerId = (authorDetailsSearchParams.get('provider_id') || '').trim();
+    const sourceUrl = (authorDetailsSearchParams.get('source_url') || '').trim();
+    const photoUrl = (authorDetailsSearchParams.get('photo_url') || '').trim();
+
+    return {
+      name,
+      provider: provider || null,
+      provider_id: providerId || null,
+      source_url: sourceUrl || null,
+      photo_url: photoUrl || null,
+    };
+  }, [isAuthorDetailsRoute, authorDetailsSearchParams]);
+
+  const authorDetailsMonitoredEntityId = useMemo(() => {
+    if (!isAuthorDetailsRoute) {
+      return null;
+    }
+    const raw = (authorDetailsSearchParams.get('entity_id') || '').trim();
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [isAuthorDetailsRoute, authorDetailsSearchParams]);
+
+  const authorDetailsInitialBooksQuery = (authorDetailsSearchParams.get('initial_query') || '').trim();
+  const authorDetailsInitialBookProvider = (authorDetailsSearchParams.get('initial_provider') || '').trim() || undefined;
+  const authorDetailsInitialBookProviderId = (authorDetailsSearchParams.get('initial_provider_id') || '').trim() || undefined;
+  const authorDetailsInitialContentTypeParam = (authorDetailsSearchParams.get('initial_content_type') || '').trim();
+  const authorDetailsInitialActionParam = (authorDetailsSearchParams.get('initial_action') || '').trim();
+  const authorDetailsInitialContentTypeOverride: ContentType | undefined = authorDetailsInitialContentTypeParam === 'audiobook'
+    ? 'audiobook'
+    : authorDetailsInitialContentTypeParam === 'ebook'
+      ? 'ebook'
+      : undefined;
+  const authorDetailsInitialActionOverride: ReleasePrimaryAction | undefined = authorDetailsInitialActionParam === 'auto_search_download'
+    ? 'auto_search_download'
+    : authorDetailsInitialActionParam === 'interactive_search'
+      ? 'interactive_search'
+      : undefined;
+  const authorDetailsEffectiveDefaultContentType = authorDetailsInitialContentTypeOverride ?? defaultReleaseContentType;
+  const authorDetailsEffectiveDefaultActionEbook: ReleasePrimaryAction = authorDetailsEffectiveDefaultContentType === 'ebook' && authorDetailsInitialActionOverride
+    ? authorDetailsInitialActionOverride
+    : defaultReleaseActionEbook;
+  const authorDetailsEffectiveDefaultActionAudiobook: ReleasePrimaryAction = authorDetailsEffectiveDefaultContentType === 'audiobook' && authorDetailsInitialActionOverride
+    ? authorDetailsInitialActionOverride
+    : defaultReleaseActionAudiobook;
+
+  if (isAuthorDetailsRoute) {
+    return (
+      <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
+        <div className="fixed top-0 left-0 right-0 z-40">
+          <Header
+            showSearch
+            logoUrl={logoUrl}
+            searchInput={authorQuery}
+            searchPlaceholder="Search authors to monitor.."
+            onSearchChange={handleHeaderAuthorSearchChange}
+            onSearch={() => void runAuthorSearch()}
+            isLoading={isSearching}
+            onDownloadsClick={onActivityClick}
+            isActivityOpen={isActivityOpen}
+            onLogoClick={onBack}
+            debug={debug}
+            onMonitoredClick={onMonitoredClick}
+            activeTopNav="monitoring"
+            onSettingsClick={onSettingsClick}
+            statusCounts={statusCounts}
+            isAdmin={isAdmin}
+            canAccessSettings={canAccessSettings}
+            authRequired={authRequired}
+            isAuthenticated={isAuthenticated}
+            username={username}
+            displayName={displayName}
+            onLogout={onLogout}
+          />
+        </div>
+
+        <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-32 lg:pt-24">
+          {authorDetailsAuthor ? (
+            <AuthorModal
+              author={authorDetailsAuthor}
+              displayMode="page"
+              onClose={() => navigate('/monitored')}
+              onGetReleases={onGetReleases}
+              defaultReleaseContentType={authorDetailsEffectiveDefaultContentType}
+              defaultReleaseActionEbook={authorDetailsEffectiveDefaultActionEbook}
+              defaultReleaseActionAudiobook={authorDetailsEffectiveDefaultActionAudiobook}
+              initialBooksQuery={authorDetailsInitialBooksQuery || undefined}
+              initialBookProvider={authorDetailsInitialBookProvider}
+              initialBookProviderId={authorDetailsInitialBookProviderId}
+              monitoredEntityId={authorDetailsMonitoredEntityId}
+              status={status}
+            />
+          ) : (
+            <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">
+              <div className="text-sm text-gray-600 dark:text-gray-300">Missing author details in URL.</div>
+              <button
+                type="button"
+                onClick={() => navigate('/monitored')}
+                className="mt-3 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
+              >
+                Back to Monitored
+              </button>
+            </section>
+          )}
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
       <div className="fixed top-0 left-0 right-0 z-40">
@@ -1555,7 +1783,16 @@ export const MonitoredPage = ({
           ) : null}
 
           {view === 'landing' ? (
-            monitored.length === 0 ? (
+            (!monitoredLoaded && monitored.length === 0) ? (
+              <div className="rounded-2xl bg-white/0 dark:bg-white/0 py-10">
+                <div className="mx-auto max-w-md text-center">
+                  <div className="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                    <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
+                    Loading monitored authors…
+                  </div>
+                </div>
+              </div>
+            ) : monitored.length === 0 ? (
               <div className="rounded-2xl bg-white/0 dark:bg-white/0 py-10">
                 <div className="mx-auto max-w-md text-center">
                   <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-black/5 dark:bg-white/10">
@@ -1607,7 +1844,7 @@ export const MonitoredPage = ({
                         aria-pressed={landingTab === 'authors'}
                       >
                         Monitored Authors
-                        <span className="ml-1 opacity-85">{monitored.length}</span>
+                        <span className="ml-1 opacity-85">{displayAuthorsCount}</span>
                       </button>
                       <button
                         type="button"
@@ -1616,7 +1853,7 @@ export const MonitoredPage = ({
                         aria-pressed={landingTab === 'books'}
                       >
                         Monitored Books
-                        <span className="ml-1 opacity-85">{regularMonitoredBooksForTable.length}</span>
+                        <span className="ml-1 opacity-85">{displayBooksCount}</span>
                       </button>
                       <button
                         type="button"
@@ -1625,7 +1862,7 @@ export const MonitoredPage = ({
                         aria-pressed={landingTab === 'upcoming'}
                       >
                         Upcoming
-                        <span className="ml-1 opacity-85">{upcomingMonitoredBooksForTable.length}</span>
+                        <span className="ml-1 opacity-85">{displayUpcomingCount}</span>
                       </button>
                     </div>
                   </div>
