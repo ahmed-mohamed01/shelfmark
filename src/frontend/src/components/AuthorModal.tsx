@@ -1087,10 +1087,25 @@ export const AuthorModal = ({
         try {
           await syncMonitoredEntity(monitoredEntityId);
           if (mergedSeriesUpdates.length > 0) {
-            await updateMonitoredBooksSeries(monitoredEntityId, mergedSeriesUpdates);
+            const result = await updateMonitoredBooksSeries(monitoredEntityId, mergedSeriesUpdates);
+            if ((result.updated || 0) < mergedSeriesUpdates.length) {
+              console.warn(
+                'AuthorModal: partial series metadata persistence',
+                {
+                  monitoredEntityId,
+                  attempted: mergedSeriesUpdates.length,
+                  updated: result.updated,
+                }
+              );
+            }
           }
-        } catch {
-          // Best-effort sync, don't block UI
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('AuthorModal: failed to persist monitored sync/series metadata', {
+            monitoredEntityId,
+            attemptedSeriesUpdates: mergedSeriesUpdates.length,
+            error: message,
+          });
         }
       }
     };

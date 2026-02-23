@@ -964,9 +964,9 @@ class UserDB:
                         release_date=excluded.release_date,
                         isbn_13=excluded.isbn_13,
                         cover_url=excluded.cover_url,
-                        series_name=excluded.series_name,
-                        series_position=excluded.series_position,
-                        series_count=excluded.series_count,
+                        series_name=COALESCE(NULLIF(excluded.series_name, ''), monitored_books.series_name),
+                        series_position=COALESCE(excluded.series_position, monitored_books.series_position),
+                        series_count=COALESCE(excluded.series_count, monitored_books.series_count),
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
@@ -1011,7 +1011,27 @@ class UserDB:
         if not updates:
             return 0
 
-        updated = 0
+        normalized_updates: list[tuple[str, Any, Any, int, str, str]] = []
+        for item in updates:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or "").strip()
+            provider_book_id = str(item.get("provider_book_id") or "").strip()
+            series_name = str(item.get("series_name") or "").strip()
+            if not provider or not provider_book_id or not series_name:
+                continue
+            normalized_updates.append((
+                series_name,
+                item.get("series_position"),
+                item.get("series_count"),
+                entity_id,
+                provider,
+                provider_book_id,
+            ))
+
+        if not normalized_updates:
+            return 0
+
         with self._lock:
             conn = self._connect()
             try:
@@ -1022,27 +1042,28 @@ class UserDB:
                 if not exists:
                     return 0
 
-                for item in updates:
-                    cur = conn.execute(
-                        """
-                        UPDATE monitored_books
-                        SET series_name = ?, series_position = ?, series_count = ?
-                        WHERE entity_id = ?
-                          AND provider = ?
-                          AND provider_book_id = ?
-                          AND (series_name IS NULL OR series_name = '')
-                        """,
-                        (
-                            item.get("series_name"),
-                            item.get("series_position"),
-                            item.get("series_count"),
-                            entity_id,
-                            item.get("provider"),
-                            item.get("provider_book_id"),
-                        ),
-                    )
-                    updated += cur.rowcount
+                before_changes = conn.total_changes
+                conn.executemany(
+                    """
+                    UPDATE monitored_books
+                    SET
+                      series_name = COALESCE(NULLIF(series_name, ''), ?),
+                      series_position = COALESCE(series_position, ?),
+                      series_count = COALESCE(series_count, ?)
+                    WHERE entity_id = ?
+                      AND provider = ?
+                      AND provider_book_id = ?
+                      AND (
+                        series_name IS NULL
+                        OR series_name = ''
+                        OR series_position IS NULL
+                        OR series_count IS NULL
+                      )
+                    """,
+                    normalized_updates,
+                )
                 conn.commit()
+                updated = conn.total_changes - before_changes
             finally:
                 conn.close()
         return updated
