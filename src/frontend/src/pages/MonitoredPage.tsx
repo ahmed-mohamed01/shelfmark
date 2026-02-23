@@ -670,13 +670,52 @@ export const MonitoredPage = ({
     return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, todayStartMs, currentYear));
   }, [monitoredBooksForTable, todayStartMs, currentYear]);
 
+  const normalizedMonitoredBooksFilterQuery = monitoredBooksSearchQuery.trim().toLowerCase();
+
+  const matchesMonitoredBooksFilter = useCallback((book: MonitoredBookListRow): boolean => {
+    if (!normalizedMonitoredBooksFilterQuery) return true;
+    const fields = [
+      book.title || '',
+      book.author_name || '',
+      book.series_name || '',
+      book.provider || '',
+      book.provider_book_id || '',
+      typeof book.publish_year === 'number' ? String(book.publish_year) : '',
+    ];
+    return fields.some((field) => field.toLowerCase().includes(normalizedMonitoredBooksFilterQuery));
+  }, [normalizedMonitoredBooksFilterQuery]);
+
+  const filteredRegularMonitoredBooksForTable = useMemo(() => {
+    if (!normalizedMonitoredBooksFilterQuery || landingTab === 'authors') {
+      return regularMonitoredBooksForTable;
+    }
+    return regularMonitoredBooksForTable.filter(matchesMonitoredBooksFilter);
+  }, [
+    normalizedMonitoredBooksFilterQuery,
+    landingTab,
+    regularMonitoredBooksForTable,
+    matchesMonitoredBooksFilter,
+  ]);
+
+  const filteredUpcomingMonitoredBooksForTable = useMemo(() => {
+    if (!normalizedMonitoredBooksFilterQuery || landingTab === 'authors') {
+      return upcomingMonitoredBooksForTable;
+    }
+    return upcomingMonitoredBooksForTable.filter(matchesMonitoredBooksFilter);
+  }, [
+    normalizedMonitoredBooksFilterQuery,
+    landingTab,
+    upcomingMonitoredBooksForTable,
+    matchesMonitoredBooksFilter,
+  ]);
+
   const monitoredBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
-    return groupMonitoredBooks(regularMonitoredBooksForTable, monitoredBooksGroupBy, 'All monitored books');
-  }, [regularMonitoredBooksForTable, monitoredBooksGroupBy]);
+    return groupMonitoredBooks(filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy, 'All monitored books');
+  }, [filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy]);
 
   const upcomingBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
-    return groupMonitoredBooks(upcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming books');
-  }, [upcomingMonitoredBooksForTable, monitoredBooksGroupBy]);
+    return groupMonitoredBooks(filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming books');
+  }, [filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy]);
 
   useEffect(() => {
     try {
@@ -829,7 +868,51 @@ export const MonitoredPage = ({
 
   const isUpcomingTab = landingTab === 'upcoming';
   const activeBookGroups = isUpcomingTab ? upcomingBookGroups : monitoredBookGroups;
-  const activeBooksCount = isUpcomingTab ? upcomingMonitoredBooksForTable.length : regularMonitoredBooksForTable.length;
+  const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
+
+  const getMonitoredRowSearchKey = useCallback((book: MonitoredBookListRow): string => {
+    const provider = (book.provider || '').trim().toLowerCase();
+    const providerId = (book.provider_book_id || '').trim().toLowerCase();
+    if (provider && providerId) {
+      return `${book.author_entity_id}:${provider}:${providerId}`;
+    }
+    const title = (book.title || '').trim().toLowerCase();
+    const author = (book.author_name || '').trim().toLowerCase();
+    return `${book.author_entity_id}::${title}|${author}`;
+  }, []);
+
+  const getSearchRowKey = useCallback((row: MonitoredAuthorBookSearchRow): string => {
+    const provider = (row.book_provider || '').trim().toLowerCase();
+    const providerId = (row.book_provider_id || '').trim().toLowerCase();
+    if (provider && providerId) {
+      return `${row.entity_id}:${provider}:${providerId}`;
+    }
+    const title = (row.book_title || '').trim().toLowerCase();
+    const author = (row.author_name || '').trim().toLowerCase();
+    return `${row.entity_id}::${title}|${author}`;
+  }, []);
+
+  const monitoredBookSearchKeySet = useMemo(() => {
+    return new Set(regularMonitoredBooksForTable.map(getMonitoredRowSearchKey));
+  }, [regularMonitoredBooksForTable, getMonitoredRowSearchKey]);
+
+  const upcomingBookSearchKeySet = useMemo(() => {
+    return new Set(upcomingMonitoredBooksForTable.map(getMonitoredRowSearchKey));
+  }, [upcomingMonitoredBooksForTable, getMonitoredRowSearchKey]);
+
+  const scopedMonitoredBooksSearchResults = useMemo(() => {
+    if (landingTab === 'authors') {
+      return monitoredBooksSearchResults;
+    }
+    const allowedKeys = landingTab === 'upcoming' ? upcomingBookSearchKeySet : monitoredBookSearchKeySet;
+    return monitoredBooksSearchResults.filter((row) => allowedKeys.has(getSearchRowKey(row)));
+  }, [
+    landingTab,
+    monitoredBooksSearchResults,
+    monitoredBookSearchKeySet,
+    upcomingBookSearchKeySet,
+    getSearchRowKey,
+  ]);
 
   const getMonitoredBookSelectionKey = useCallback((book: MonitoredBookListRow): string => {
     const provider = (book.provider || 'unknown').trim() || 'unknown';
@@ -911,6 +994,13 @@ export const MonitoredPage = ({
   }, [bulkUnmonitorRunning, monitoredBooksRows, selectedMonitoredBookKeys, getMonitoredBookSelectionKey]);
 
   useEffect(() => {
+    if (landingTab !== 'authors') {
+      setMonitoredBooksSearchResults([]);
+      setMonitoredBooksSearchLoading(false);
+      setMonitoredBooksSearchError(null);
+      return;
+    }
+
     const q = monitoredBooksSearchQuery.trim();
     if (!q) {
       setMonitoredBooksSearchResults([]);
@@ -949,7 +1039,14 @@ export const MonitoredPage = ({
       alive = false;
       window.clearTimeout(timeoutId);
     };
-  }, [monitoredBooksSearchQuery]);
+  }, [landingTab, monitoredBooksSearchQuery]);
+
+  useEffect(() => {
+    if (landingTab === 'authors') {
+      return;
+    }
+    setMonitoredBooksSearchOpen(false);
+  }, [landingTab]);
 
   useEffect(() => {
     if (!monitoredBooksSearchOpen) {
@@ -1560,21 +1657,27 @@ export const MonitoredPage = ({
                                 value={monitoredBooksSearchQuery}
                                 onChange={(e) => {
                                   setMonitoredBooksSearchQuery(e.target.value);
-                                  setMonitoredBooksSearchOpen(true);
+                                  if (landingTab === 'authors') {
+                                    setMonitoredBooksSearchOpen(true);
+                                  }
                                 }}
-                                onFocus={() => setMonitoredBooksSearchOpen(true)}
+                                onFocus={() => {
+                                  if (landingTab === 'authors') {
+                                    setMonitoredBooksSearchOpen(true);
+                                  }
+                                }}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Escape') {
                                     setMonitoredBooksSearchOpen(false);
                                     setMonitoredBooksSearchExpanded(false);
                                     return;
                                   }
-                                  if (e.key === 'Enter' && monitoredBooksSearchResults.length > 0) {
+                                  if (landingTab === 'authors' && e.key === 'Enter' && scopedMonitoredBooksSearchResults.length > 0) {
                                     e.preventDefault();
-                                    handleMonitoredBookResultSelect(monitoredBooksSearchResults[0]);
+                                    handleMonitoredBookResultSelect(scopedMonitoredBooksSearchResults[0]);
                                   }
                                 }}
-                                placeholder="Search monitored books"
+                                placeholder={landingTab === 'authors' ? 'Search monitored books' : 'Filter visible books'}
                                 className="w-full bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
                                 aria-label="Search monitored books"
                               />
@@ -1610,17 +1713,19 @@ export const MonitoredPage = ({
                               </button>
                             </div>
 
-                            {monitoredBooksSearchOpen && monitoredBooksSearchQuery.trim() ? (
+                            {landingTab === 'authors' && monitoredBooksSearchOpen && monitoredBooksSearchQuery.trim() ? (
                               <div className="absolute right-0 mt-2 w-full max-h-72 overflow-y-auto rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-2xl z-[120]">
                                 {monitoredBooksSearchLoading ? (
                                   <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Searching…</div>
                                 ) : monitoredBooksSearchError ? (
                                   <div className="px-3 py-2 text-xs text-red-500">{monitoredBooksSearchError}</div>
-                                ) : monitoredBooksSearchResults.length === 0 ? (
-                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">No monitored database matches.</div>
+                                ) : scopedMonitoredBooksSearchResults.length === 0 ? (
+                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                                    No monitored database matches.
+                                  </div>
                                 ) : (
                                   <div className="py-1">
-                                    {monitoredBooksSearchResults.map((row) => {
+                                    {scopedMonitoredBooksSearchResults.map((row) => {
                                       const hasEpub = row.has_epub === true || row.has_epub === 1;
                                       const hasM4b = row.has_m4b === true || row.has_m4b === 1;
                                       const hasDownload = hasEpub || hasM4b;
