@@ -4,7 +4,6 @@ import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
   createMonitoredEntity,
-  deleteMonitoredEntity,
   listMonitoredEntities,
   listMonitoredBooks,
   listMonitoredBookFiles,
@@ -21,6 +20,7 @@ import {
   searchMetadata,
   searchMetadataAuthors,
 } from '../services/api';
+import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { Dropdown } from '../components/Dropdown';
 import { MediaCompactTileBase } from '../components/MediaCompactTileBase';
@@ -1264,26 +1264,19 @@ export const MonitoredPage = ({
     setBulkDeleteAuthorsRunning(true);
     setMonitoredError(null);
     try {
-      const results = await Promise.allSettled(selectedAuthors.map((author) => deleteMonitoredEntity(author.id)));
-      const successfulIds = new Set<number>();
-      let hasFailure = false;
+      const { successfulIds, failedIds } = await deleteMonitoredAuthorsByIds(
+        selectedAuthors.map((author) => author.id),
+      );
+      const successfulIdSet = new Set(successfulIds);
 
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          successfulIds.add(selectedAuthors[index].id);
-        } else {
-          hasFailure = true;
-        }
-      });
-
-      if (successfulIds.size > 0) {
-        setMonitored((prev) => prev.filter((author) => !successfulIds.has(author.id)));
-        setMonitoredBooksSources((prev) => prev.filter((entity) => !successfulIds.has(entity.id)));
-        setMonitoredBooksRows((prev) => prev.filter((book) => !successfulIds.has(book.author_entity_id)));
+      if (successfulIdSet.size > 0) {
+        setMonitored((prev) => prev.filter((author) => !successfulIdSet.has(author.id)));
+        setMonitoredBooksSources((prev) => prev.filter((entity) => !successfulIdSet.has(entity.id)));
+        setMonitoredBooksRows((prev) => prev.filter((book) => !successfulIdSet.has(book.author_entity_id)));
         setSelectedMonitoredAuthorKeys((prev) => {
           const next: Record<string, boolean> = {};
           for (const [key, selected] of Object.entries(prev)) {
-            if (selected && !successfulIds.has(Number(key))) {
+            if (selected && !successfulIdSet.has(Number(key))) {
               next[key] = true;
             }
           }
@@ -1291,7 +1284,7 @@ export const MonitoredPage = ({
         });
       }
 
-      if (hasFailure) {
+      if (failedIds.length > 0) {
         setMonitoredError('Some authors could not be deleted, but successful deletions were applied.');
       }
     } catch (e) {

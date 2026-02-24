@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, deleteMonitoredEntity, runMonitoredEntitySearch } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, runMonitoredEntitySearch } from '../services/api';
+import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
@@ -1907,7 +1908,10 @@ export const AuthorModal = ({
     setAuthorDeleting(true);
     setPathsError(null);
     try {
-      await deleteMonitoredEntity(monitoredEntityId);
+      const { failedIds } = await deleteMonitoredAuthorsByIds([monitoredEntityId]);
+      if (failedIds.length > 0) {
+        throw new Error('Failed to delete monitored author');
+      }
       setIsEditModalOpen(false);
       handleClose();
     } catch (e) {
