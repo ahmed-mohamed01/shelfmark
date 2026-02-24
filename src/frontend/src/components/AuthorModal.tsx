@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, runMonitoredEntitySearch } from '../services/api';
 import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
@@ -449,6 +449,8 @@ export const AuthorModal = ({
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
+  const [isBooksToolbarPinned, setIsBooksToolbarPinned] = useState(false);
+  const booksToolbarRef = useRef<HTMLDivElement | null>(null);
   const isPageMode = displayMode === 'page';
   const activeBooksQuery = booksSearchQuery ?? booksQuery;
   const updateBooksQuery = (value: string) => {
@@ -570,6 +572,29 @@ export const AuthorModal = ({
       };
     }
   }, [author, isPageMode]);
+
+  useEffect(() => {
+    if (!isPageMode) {
+      setIsBooksToolbarPinned(false);
+      return;
+    }
+
+    const stickyTop = 76;
+    const updatePinned = () => {
+      const top = booksToolbarRef.current?.getBoundingClientRect().top;
+      if (typeof top !== 'number') return;
+      setIsBooksToolbarPinned(top <= stickyTop + 0.5);
+    };
+
+    updatePinned();
+    window.addEventListener('scroll', updatePinned, { passive: true });
+    window.addEventListener('resize', updatePinned);
+
+    return () => {
+      window.removeEventListener('scroll', updatePinned);
+      window.removeEventListener('resize', updatePinned);
+    };
+  }, [isPageMode]);
 
   useEffect(() => {
     if (!author || !monitoredEntityId) {
@@ -2163,7 +2188,8 @@ export const AuthorModal = ({
 
               <div className="mt-4">
                 <div
-                  className={`sticky z-40 rounded-t-2xl border border-[var(--border-muted)] border-b-0 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'}`}
+                  ref={booksToolbarRef}
+                  className={`sticky z-40 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'} ${isBooksToolbarPinned ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
                 >
                   <div className="flex items-center justify-between gap-3 px-4 py-2">
                   <div className="flex items-center gap-2 min-w-0">
