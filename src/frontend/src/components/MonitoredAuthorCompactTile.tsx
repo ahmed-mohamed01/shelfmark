@@ -32,7 +32,7 @@ export const MonitoredAuthorCompactTile = ({
     <button
       type="button"
       onClick={onToggleSelect}
-      className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-white/80'} ${!hasActiveSelection && !isSelected ? 'opacity-65' : 'opacity-100'} hover-action rounded-full p-0.5 bg-black/30 backdrop-blur-[1px]`}
+      className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-white/80'} ${isSelected || hasActiveSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity hover-action rounded-full p-0.5 bg-black/30 backdrop-blur-[1px]`}
       role="checkbox"
       aria-checked={isSelected}
       aria-label={`Select ${name || 'author'}`}

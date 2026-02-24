@@ -24,7 +24,7 @@ export const MediaCompactTileBase = ({
   footer,
 }: MediaCompactTileBaseProps) => {
   return (
-    <div className="relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] p-2">
+    <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] p-2">
       {topLeftOverlay ? (
         <div className="absolute left-2 top-2 z-20">
           {topLeftOverlay}

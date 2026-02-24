@@ -4,6 +4,7 @@ import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
   createMonitoredEntity,
+  deleteMonitoredEntity,
   listMonitoredEntities,
   listMonitoredBooks,
   listMonitoredBookFiles,
@@ -456,7 +457,10 @@ export const MonitoredPage = ({
   const monitoredBooksSearchRef = useRef<HTMLDivElement | null>(null);
   const monitoredBooksSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedMonitoredBookKeys, setSelectedMonitoredBookKeys] = useState<Record<string, boolean>>({});
+  const [selectedMonitoredAuthorKeys, setSelectedMonitoredAuthorKeys] = useState<Record<string, boolean>>({});
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
+  const [bulkDeleteAuthorsRunning, setBulkDeleteAuthorsRunning] = useState(false);
+  const [bulkDeleteAuthorsConfirmOpen, setBulkDeleteAuthorsConfirmOpen] = useState(false);
   const [cachedMonitoredCounts, setCachedMonitoredCounts] = useState<MonitoredCountsSnapshot | null>(() => readMonitoredCountsSnapshot());
 
   const [monitorModalState, setMonitorModalState] = useState<{
@@ -1160,6 +1164,21 @@ export const MonitoredPage = ({
     [selectedMonitoredBookKeys],
   );
 
+  const selectedMonitoredAuthorCount = useMemo(
+    () => Object.values(selectedMonitoredAuthorKeys).filter(Boolean).length,
+    [selectedMonitoredAuthorKeys],
+  );
+
+  const selectedMonitoredAuthors = useMemo(
+    () => monitored.filter((author) => selectedMonitoredAuthorKeys[String(author.id)]),
+    [monitored, selectedMonitoredAuthorKeys],
+  );
+
+  const hasActiveMonitoredAuthorSelection = selectedMonitoredAuthorCount > 0;
+  const selectedSingleMonitoredAuthorName = selectedMonitoredAuthors.length === 1
+    ? selectedMonitoredAuthors[0]?.name || 'this author'
+    : null;
+
   useEffect(() => {
     const validKeys = new Set(monitoredBooksRows.map((book) => getMonitoredBookSelectionKey(book)));
     setSelectedMonitoredBookKeys((prev) => {
@@ -1180,6 +1199,14 @@ export const MonitoredPage = ({
       [key]: !prev[key],
     }));
   }, [getMonitoredBookSelectionKey]);
+
+  const toggleMonitoredAuthorSelection = useCallback((authorId: number) => {
+    const key = String(authorId);
+    setSelectedMonitoredAuthorKeys((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
 
   const runBulkUnmonitorSelected = useCallback(async () => {
     if (bulkUnmonitorRunning) return;
@@ -1227,6 +1254,67 @@ export const MonitoredPage = ({
       setBulkUnmonitorRunning(false);
     }
   }, [bulkUnmonitorRunning, monitoredBooksRows, selectedMonitoredBookKeys, getMonitoredBookSelectionKey]);
+
+  const runBulkDeleteSelectedAuthors = useCallback(async () => {
+    if (bulkDeleteAuthorsRunning) return;
+
+    const selectedAuthors = monitored.filter((author) => selectedMonitoredAuthorKeys[String(author.id)]);
+    if (selectedAuthors.length === 0) return;
+
+    setBulkDeleteAuthorsRunning(true);
+    setMonitoredError(null);
+    try {
+      const results = await Promise.allSettled(selectedAuthors.map((author) => deleteMonitoredEntity(author.id)));
+      const successfulIds = new Set<number>();
+      let hasFailure = false;
+
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          successfulIds.add(selectedAuthors[index].id);
+        } else {
+          hasFailure = true;
+        }
+      });
+
+      if (successfulIds.size > 0) {
+        setMonitored((prev) => prev.filter((author) => !successfulIds.has(author.id)));
+        setMonitoredBooksSources((prev) => prev.filter((entity) => !successfulIds.has(entity.id)));
+        setMonitoredBooksRows((prev) => prev.filter((book) => !successfulIds.has(book.author_entity_id)));
+        setSelectedMonitoredAuthorKeys((prev) => {
+          const next: Record<string, boolean> = {};
+          for (const [key, selected] of Object.entries(prev)) {
+            if (selected && !successfulIds.has(Number(key))) {
+              next[key] = true;
+            }
+          }
+          return next;
+        });
+      }
+
+      if (hasFailure) {
+        setMonitoredError('Some authors could not be deleted, but successful deletions were applied.');
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to delete selected authors';
+      setMonitoredError(message);
+    } finally {
+      setBulkDeleteAuthorsRunning(false);
+      setBulkDeleteAuthorsConfirmOpen(false);
+    }
+  }, [bulkDeleteAuthorsRunning, monitored, selectedMonitoredAuthorKeys]);
+
+  useEffect(() => {
+    const validAuthorIds = new Set(monitored.map((author) => String(author.id)));
+    setSelectedMonitoredAuthorKeys((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const [key, selected] of Object.entries(prev)) {
+        if (selected && validAuthorIds.has(key)) {
+          next[key] = true;
+        }
+      }
+      return next;
+    });
+  }, [monitored]);
 
   useEffect(() => {
     if (landingTab !== 'authors') {
@@ -2361,6 +2449,26 @@ export const MonitoredPage = ({
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {landingTab === 'authors' ? (
+                      <div className="relative h-8 w-8 shrink-0">
+                        {selectedMonitoredAuthorCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setBulkDeleteAuthorsConfirmOpen(true)}
+                            className="absolute inset-0 flex items-center justify-center p-1 rounded-full border border-red-500/40 text-red-600 dark:text-red-400 hover-action"
+                            title={`Delete selected authors (${selectedMonitoredAuthorCount})`}
+                            aria-label={`Delete selected authors (${selectedMonitoredAuthorCount})`}
+                          >
+                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M9 3.75A1.5 1.5 0 0 1 10.5 2.25h3A1.5 1.5 0 0 1 15 3.75v.75h3.75a.75.75 0 0 1 0 1.5h-.53l-.64 11.32A2.25 2.25 0 0 1 15.34 19.5H8.66a2.25 2.25 0 0 1-2.24-2.18L5.78 6h-.53a.75.75 0 0 1 0-1.5H9v-.75Zm2.25 0v.75h1.5v-.75h-1.5Zm-.7 5.18a.75.75 0 0 0-1.06 1.06L10.94 12l-1.45 2.01a.75.75 0 1 0 1.22.88L12 13.06l1.29 1.83a.75.75 0 0 0 1.22-.88L13.06 12l1.45-2.01a.75.75 0 1 0-1.22-.88L12 10.94l-1.45-2.01Z" />
+                            </svg>
+                            <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white leading-none">
+                              {selectedMonitoredAuthorCount}
+                            </span>
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <div className="relative" ref={monitoredBooksSearchRef}>
                         {!monitoredBooksSearchExpanded ? (
                           <button
@@ -2771,13 +2879,20 @@ export const MonitoredPage = ({
                       {monitoredAuthorsForCards.map((author) => {
                         const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
                         const subtitle = author.provider ? `${booksCountLabel} • ${author.provider}` : booksCountLabel;
+                        const authorEntityId = monitoredEntityIdByName.get((author.name || '').toLowerCase());
+                        const isSelected = typeof authorEntityId === 'number'
+                          ? Boolean(selectedMonitoredAuthorKeys[String(authorEntityId)])
+                          : false;
                         return (
                           <MonitoredAuthorTableRow
                             key={`${author.provider}:${author.provider_id}`}
                             name={author.name || 'Unknown author'}
                             subtitle={subtitle}
                             thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name || 'Unknown author'} />}
-                            onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
+                            onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
+                            onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
+                            isSelected={isSelected}
+                            hasActiveSelection={hasActiveMonitoredAuthorSelection}
                           />
                         );
                       })}
@@ -2791,6 +2906,10 @@ export const MonitoredPage = ({
                         const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
                         const providerLabel = author.provider ? author.provider : null;
                         const subtitle = providerLabel ? `${booksCountLabel} • ${providerLabel}` : booksCountLabel;
+                        const authorEntityId = monitoredEntityIdByName.get((author.name || '').toLowerCase());
+                        const isSelected = typeof authorEntityId === 'number'
+                          ? Boolean(selectedMonitoredAuthorKeys[String(authorEntityId)])
+                          : false;
                         return (
                           <MonitoredAuthorCompactTile
                             key={`${author.provider}:${author.provider_id}`}
@@ -2812,7 +2931,10 @@ export const MonitoredPage = ({
                               </div>
                             }
                             subtitle={subtitle}
-                            onOpenDetails={() => navigateToAuthorPage({ ...author, monitoredEntityId: monitoredEntityIdByName.get(author.name.toLowerCase()) ?? null })}
+                            onOpenDetails={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
+                            onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
+                            isSelected={isSelected}
+                            hasActiveSelection={hasActiveMonitoredAuthorSelection}
                           />
                         );
                       })}
@@ -3279,6 +3401,74 @@ export const MonitoredPage = ({
           )}
         </div>
       </main>
+
+      {bulkDeleteAuthorsConfirmOpen && selectedMonitoredAuthorCount > 0 ? (
+        <div
+          className="modal-overlay active sm:px-6 sm:py-6"
+          style={{ zIndex: 1300 }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !bulkDeleteAuthorsRunning) {
+              setBulkDeleteAuthorsConfirmOpen(false);
+            }
+          }}
+        >
+          <div
+            className="details-container w-full max-w-md h-auto settings-modal-enter"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm delete monitored authors"
+          >
+            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] text-[var(--text)] shadow-2xl overflow-hidden">
+              <header className="flex items-start justify-between gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold">Delete monitored {selectedMonitoredAuthorCount === 1 ? 'author' : 'authors'}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBulkDeleteAuthorsConfirmOpen(false)}
+                  disabled={bulkDeleteAuthorsRunning}
+                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100 disabled:opacity-50"
+                  aria-label="Close"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </header>
+
+              <div className="px-5 py-4 space-y-3">
+                <p className="text-sm text-gray-800 dark:text-gray-100">
+                  {selectedMonitoredAuthorCount === 1
+                    ? `Are you sure you want to delete ${selectedSingleMonitoredAuthorName}?`
+                    : 'Are you sure you want to delete these authors?'}
+                </p>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  This action is not reversible. This will not delete files on the disk.
+                </p>
+              </div>
+
+              <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setBulkDeleteAuthorsConfirmOpen(false)}
+                  disabled={bulkDeleteAuthorsRunning}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium hover-action disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runBulkDeleteSelectedAuthors()}
+                  disabled={bulkDeleteAuthorsRunning}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50"
+                >
+                  {bulkDeleteAuthorsRunning ? 'Deleting…' : 'Delete'}
+                </button>
+              </footer>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {monitorModalState.open && monitorModalState.author ? (
         <div

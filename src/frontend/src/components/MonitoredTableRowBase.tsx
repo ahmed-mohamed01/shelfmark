@@ -28,7 +28,7 @@ export const MonitoredTableRowBase = ({
   mainClassName,
   middleClassName = 'hidden sm:flex w-full items-center justify-center gap-1',
   rightClassName = 'relative flex flex-row justify-end gap-1 sm:gap-1.5 sm:pr-3',
-  rowClassName = 'px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full',
+  rowClassName = 'group px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full',
   onRowClick,
 }: MonitoredTableRowBaseProps) => {
   const shouldIgnoreRowClick = (target: EventTarget | null, rowElement: HTMLDivElement): boolean => {
