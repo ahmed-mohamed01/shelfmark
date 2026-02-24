@@ -1999,6 +1999,7 @@ function App() {
               defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
               defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
               defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
+              metadataSortOptions={config?.metadata_sort_options}
               status={currentStatus}
             />
           )

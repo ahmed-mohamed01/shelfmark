@@ -30,8 +30,9 @@ import { MonitoredAuthorTableRow } from '../components/AuthorTableRow';
 import { MonitoredBookTableRow } from '../components/MonitoredBookTableRow';
 import { BookDetailsModal } from '../components/BookDetailsModal';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
-import { ViewModeToggle } from '../components/ViewModeToggle';
-import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
+import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
+import { ResultsSection } from '../components/ResultsSection';
+import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 
 interface MonitoredAuthor {
   id: number;
@@ -52,6 +53,16 @@ interface MonitoredBookListRow extends MonitoredBookRow {
   author_provider_id?: string;
   author_photo_url?: string;
   author_source_url?: string;
+}
+
+interface MonitoredBooksSourceEntity {
+  id: number;
+  kind: 'author' | 'book';
+  name: string;
+  provider?: string;
+  provider_id?: string;
+  cached_source_url?: string;
+  settings?: Record<string, unknown>;
 }
 
 interface MonitoredBooksGroup {
@@ -145,6 +156,7 @@ interface MonitoredPageProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  metadataSortOptions?: SortOption[];
   status?: StatusData;
 }
 
@@ -154,6 +166,43 @@ const normalizeAuthor = (value: string): string => {
     .join(' ')
     .trim();
 };
+
+const extractPrimaryAuthorName = (value: string): string => {
+  const first = (value || '').split(',')[0] || '';
+  return normalizeAuthor(first);
+};
+
+const MONITORED_SEARCH_SCOPE_OPTIONS = [
+  { value: 'authors', label: 'Authors' },
+  { value: 'books', label: 'Books' },
+];
+
+const SEARCH_VIEW_ICON_CARD = (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
+  </svg>
+);
+
+const SEARCH_VIEW_ICON_GRID = (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+  </svg>
+);
+
+const SEARCH_VIEW_ICON_LIST = (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+  </svg>
+);
+
+const SEARCH_VIEW_ICON_COMPACT_LINES = (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+    <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
+    <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
+  </svg>
+);
 
 const BookRowThumbnail = ({ coverUrl, title }: { coverUrl?: string | null; title: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -205,6 +254,7 @@ interface MonitoredCountsSnapshot {
   authors: number;
   books: number;
   upcoming: number;
+  search: number;
 }
 
 const readMonitoredCountsSnapshot = (): MonitoredCountsSnapshot | null => {
@@ -216,11 +266,13 @@ const readMonitoredCountsSnapshot = (): MonitoredCountsSnapshot | null => {
       typeof parsed.authors === 'number'
       && typeof parsed.books === 'number'
       && typeof parsed.upcoming === 'number'
+      && typeof parsed.search === 'number'
     ) {
       return {
         authors: parsed.authors,
         books: parsed.books,
         upcoming: parsed.upcoming,
+        search: parsed.search,
       };
     }
   } catch {
@@ -320,13 +372,15 @@ export const MonitoredPage = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  metadataSortOptions,
   status,
 }: MonitoredPageProps) => {
-  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming'>(() => {
+  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
-    return saved === 'books' || saved === 'upcoming' ? saved : 'authors';
+    return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
   });
   const [view, setView] = useState<'landing' | 'search'>('landing');
+  const [searchScope, setSearchScope] = useState<'authors' | 'books'>('authors');
   const [authorQuery, setAuthorQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -334,6 +388,12 @@ export const MonitoredPage = ({
   const [rootsError, setRootsError] = useState<string | null>(null);
   const [authorResults, setAuthorResults] = useState<string[]>([]);
   const [authorCards, setAuthorCards] = useState<MetadataAuthor[]>([]);
+  const [bookSearchResults, setBookSearchResults] = useState<Book[]>([]);
+  const [bookSearchSortValue, setBookSearchSortValue] = useState('relevance');
+  const [bookSearchViewMode, setBookSearchViewMode] = useState<'card' | 'compact' | 'list'>(() => {
+    const saved = localStorage.getItem('bookViewMode');
+    return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'compact';
+  });
   const [authorViewMode, setAuthorViewMode] = useState<'card' | 'compact' | 'list'>(() => {
     const saved = localStorage.getItem('authorViewMode');
     return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'card';
@@ -371,6 +431,7 @@ export const MonitoredPage = ({
     return Math.max(MONITORED_COMPACT_MIN_WIDTH_MIN, Math.min(MONITORED_COMPACT_MIN_WIDTH_MAX, parsed));
   });
   const [monitored, setMonitored] = useState<MonitoredAuthor[]>([]);
+  const [monitoredBooksSources, setMonitoredBooksSources] = useState<MonitoredBooksSourceEntity[]>([]);
   const [monitoredLoaded, setMonitoredLoaded] = useState(false);
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
@@ -421,6 +482,22 @@ export const MonitoredPage = ({
     monitorEbookMode: 'missing',
     monitorAudiobookMode: 'missing',
   }));
+
+  const [bookMonitorModalState, setBookMonitorModalState] = useState<{
+    open: boolean;
+    book: Book | null;
+    ebookAuthorDir: string;
+    audiobookAuthorDir: string;
+    monitorEbook: boolean;
+    monitorAudiobook: boolean;
+  }>({
+    open: false,
+    book: null,
+    ebookAuthorDir: '',
+    audiobookAuthorDir: '',
+    monitorEbook: true,
+    monitorAudiobook: true,
+  });
 
   const [monitoredEbookRoots, setMonitoredEbookRoots] = useState<string[]>([]);
   const [monitoredAudiobookRoots, setMonitoredAudiobookRoots] = useState<string[]>([]);
@@ -544,12 +621,30 @@ export const MonitoredPage = ({
       setMonitoredError(null);
       try {
         const entities = await listMonitoredEntities();
+        const nextSources = entities
+          .map((entity): MonitoredBooksSourceEntity | null => {
+            if (entity.kind !== 'author' && entity.kind !== 'book') {
+              return null;
+            }
+            const settings = entity.settings && typeof entity.settings === 'object' ? entity.settings as Record<string, unknown> : undefined;
+            return {
+              id: entity.id,
+              kind: entity.kind,
+              name: String(entity.name || '').trim(),
+              provider: entity.provider || undefined,
+              provider_id: entity.provider_id || undefined,
+              cached_source_url: entity.cached_source_url || undefined,
+              settings,
+            };
+          })
+          .filter((item): item is MonitoredBooksSourceEntity => item !== null);
         const next = entities
           .map(toMonitoredAuthor)
           .filter((item): item is MonitoredAuthor => item !== null);
         if (!alive) {
           return;
         }
+        setMonitoredBooksSources(nextSources);
         setMonitored(next);
       } catch (e) {
         if (!alive) {
@@ -557,6 +652,7 @@ export const MonitoredPage = ({
         }
         const message = e instanceof Error ? e.message : 'Failed to load monitored authors';
         setMonitoredError(message);
+        setMonitoredBooksSources([]);
         setMonitored([]);
       } finally {
         if (alive) {
@@ -806,9 +902,10 @@ export const MonitoredPage = ({
       return;
     }
     const snapshot: MonitoredCountsSnapshot = {
-      authors: monitored.length,
-      books: regularMonitoredBooksForTable.length,
-      upcoming: upcomingMonitoredBooksForTable.length,
+      authors: monitoredAuthorsForCards.length,
+      books: filteredRegularMonitoredBooksForTable.length,
+      upcoming: filteredUpcomingMonitoredBooksForTable.length,
+      search: searchScope === 'books' ? bookSearchResults.length : authorResults.length,
     };
     setCachedMonitoredCounts(snapshot);
     try {
@@ -884,8 +981,24 @@ export const MonitoredPage = ({
 
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);
 
+  const monitoredSingleBookKeySet = useMemo(() => {
+    const keys = new Set<string>();
+    for (const entity of monitoredBooksSources) {
+      if (entity.kind !== 'book') {
+        continue;
+      }
+      const provider = (entity.provider || '').trim().toLowerCase();
+      const providerId = (entity.provider_id || '').trim().toLowerCase();
+      if (!provider || !providerId) {
+        continue;
+      }
+      keys.add(`${provider}:${providerId}`);
+    }
+    return keys;
+  }, [monitoredBooksSources]);
+
   useEffect(() => {
-    if (monitored.length === 0) {
+    if (monitoredBooksSources.length === 0) {
       setMonitoredBooksRows([]);
       setMonitoredBooksLoading(false);
       setMonitoredBooksLoadError(null);
@@ -899,9 +1012,9 @@ export const MonitoredPage = ({
       setMonitoredBooksLoadError(null);
 
       const responses = await Promise.allSettled(
-        monitored.map(async (author) => {
-          const response = await listMonitoredBooks(author.id);
-          return { author, books: response.books };
+        monitoredBooksSources.map(async (entity) => {
+          const response = await listMonitoredBooks(entity.id);
+          return { entity, books: response.books };
         })
       );
 
@@ -917,16 +1030,21 @@ export const MonitoredPage = ({
           failedCount += 1;
           continue;
         }
-        const { author, books } = result.value;
+        const { entity, books } = result.value;
+        const settings = entity.settings || {};
+        const bookSettingsAuthorName = typeof settings.book_author === 'string' ? settings.book_author.trim() : '';
+        const bookSettingsSourceUrl = typeof settings.book_source_url === 'string' ? settings.book_source_url.trim() : '';
         for (const book of books || []) {
+          const displayAuthor = entity.kind === 'book'
+            ? (extractPrimaryAuthorName(book.authors || '') || bookSettingsAuthorName || entity.name || 'Unknown author')
+            : entity.name;
           rows.push({
             ...book,
-            author_entity_id: author.id,
-            author_name: author.name,
-            author_provider: author.provider,
-            author_provider_id: author.provider_id,
-            author_photo_url: author.photo_url,
-            author_source_url: author.cached_source_url,
+            author_entity_id: entity.id,
+            author_name: displayAuthor,
+            author_provider: entity.provider,
+            author_provider_id: entity.provider_id,
+            author_source_url: entity.cached_source_url || bookSettingsSourceUrl || undefined,
           });
         }
       }
@@ -974,6 +1092,34 @@ export const MonitoredPage = ({
   const displayAuthorsCount = monitoredLoaded ? monitored.length : (cachedMonitoredCounts?.authors ?? '–');
   const displayBooksCount = monitoredBooksCountsReady ? regularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
   const displayUpcomingCount = monitoredBooksCountsReady ? upcomingMonitoredBooksForTable.length : (cachedMonitoredCounts?.upcoming ?? '–');
+  const displaySearchCount = monitoredLoaded
+    ? (searchScope === 'books' ? bookSearchResults.length : authorResults.length)
+    : (cachedMonitoredCounts?.search ?? '–');
+  const monitoredSearchSortOptions = (metadataSortOptions && metadataSortOptions.length > 0)
+    ? metadataSortOptions
+    : [{ value: 'relevance', label: 'Most relevant' }];
+  const hasStartedSearch = isSearching
+    || Boolean(authorQuery.trim())
+    || Boolean(searchError)
+    || authorResults.length > 0
+    || authorCards.length > 0
+    || bookSearchResults.length > 0
+    || view === 'search';
+  const authorSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => ([
+    { value: 'card', label: 'Card view', icon: SEARCH_VIEW_ICON_CARD },
+    { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_GRID },
+    { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
+  ]), []);
+  const bookSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => {
+    const options: ViewModeToggleOption[] = [
+      { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_COMPACT_LINES },
+      { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
+    ];
+    if (isDesktop) {
+      options.unshift({ value: 'card', label: 'Card view', icon: SEARCH_VIEW_ICON_CARD });
+    }
+    return options;
+  }, [isDesktop]);
 
   const getMonitoredRowSearchKey = useCallback((book: MonitoredBookListRow): string => {
     const provider = (book.provider || '').trim().toLowerCase();
@@ -1188,14 +1334,22 @@ export const MonitoredPage = ({
     setSearchError(null);
     setAuthorResults([]);
     setAuthorCards([]);
+    setBookSearchResults([]);
 
     if (!q) {
       return;
     }
 
     setIsSearching(true);
+    setLandingTab('search');
     setView('search');
     try {
+      if (searchScope === 'books') {
+        const result = await searchMetadata(q, 40, bookSearchSortValue, {}, 1, defaultReleaseContentType);
+        setBookSearchResults(result.books || []);
+        return;
+      }
+
       const authorResponse = await searchMetadataAuthors(q, 20, 1, 'ebook');
 
       if (authorResponse.supportsAuthors && authorResponse.authors.length > 0) {
@@ -1223,12 +1377,181 @@ export const MonitoredPage = ({
       const results = Array.from(unique.values()).sort((a, b) => a.localeCompare(b));
       setAuthorResults(results);
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to search authors';
+      const message = e instanceof Error
+        ? e.message
+        : searchScope === 'books'
+          ? 'Failed to search books'
+          : 'Failed to search authors';
       setSearchError(message);
     } finally {
       setIsSearching(false);
     }
+  }, [authorQuery, bookSearchSortValue, defaultReleaseContentType, searchScope]);
+
+  useEffect(() => {
+    if (searchScope !== 'books') {
+      return;
+    }
+    if (!normalizeAuthor(authorQuery)) {
+      return;
+    }
+    void runAuthorSearch();
+  }, [authorQuery, bookSearchSortValue, runAuthorSearch, searchScope]);
+
+  useEffect(() => {
+    if (!monitoredSearchSortOptions.some((option) => option.value === bookSearchSortValue)) {
+      setBookSearchSortValue(monitoredSearchSortOptions[0]?.value || 'relevance');
+    }
+  }, [bookSearchSortValue, monitoredSearchSortOptions]);
+
+  const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search') => {
+    setLandingTab(tab);
+    if (tab === 'search') {
+      setView('search');
+      if (!authorQuery.trim()) {
+        window.setTimeout(() => {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }, 0);
+      }
+      return;
+    }
+    setView('landing');
   }, [authorQuery]);
+
+  const closeBookMonitorModal = useCallback(() => {
+    setBookMonitorModalState({
+      open: false,
+      book: null,
+      ebookAuthorDir: '',
+      audiobookAuthorDir: '',
+      monitorEbook: true,
+      monitorAudiobook: true,
+    });
+    setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
+    setEditingMonitorPathKind(null);
+  }, []);
+
+  const openBookMonitorModal = useCallback((book: Book) => {
+    const primaryAuthor = extractPrimaryAuthorName(book.author || '') || normalizeAuthor(book.title || '') || 'Unknown';
+    const ebookSuggestion = monitoredEbookRoots.length > 0 ? joinPath(monitoredEbookRoots[0], primaryAuthor) : '';
+    const audioSuggestion = monitoredAudiobookRoots.length > 0 ? joinPath(monitoredAudiobookRoots[0], primaryAuthor) : '';
+    setBookMonitorModalState({
+      open: true,
+      book,
+      ebookAuthorDir: ebookSuggestion,
+      audiobookAuthorDir: audioSuggestion,
+      monitorEbook: true,
+      monitorAudiobook: true,
+    });
+    setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
+    setEditingMonitorPathKind(null);
+  }, [joinPath, monitoredAudiobookRoots, monitoredEbookRoots]);
+
+  const runBookResultInteractiveSearch = useCallback((book: Book, contentType: ContentType) => {
+    if (!onGetReleases) {
+      return;
+    }
+    const actionOverride = contentType === 'ebook'
+      ? defaultReleaseActionEbook
+      : defaultReleaseActionAudiobook;
+    void onGetReleases(book, contentType, null, actionOverride);
+  }, [defaultReleaseActionAudiobook, defaultReleaseActionEbook, onGetReleases]);
+
+  const isBookSearchResultMonitored = useCallback((book: Book): boolean => {
+    const provider = (book.provider || '').trim().toLowerCase();
+    const providerId = (book.provider_id || '').trim().toLowerCase();
+    return Boolean(provider && providerId && monitoredSingleBookKeySet.has(`${provider}:${providerId}`));
+  }, [monitoredSingleBookKeySet]);
+
+  const getMonitorResultButtonState = useCallback((_bookId: string): ButtonStateInfo => ({
+    text: 'Monitor',
+    state: 'download',
+  }), []);
+
+  const handleBookSearchResultDetails = useCallback(async (bookId: string) => {
+    const selected = bookSearchResults.find((book) => book.id === bookId);
+    if (!selected) {
+      return;
+    }
+    runBookResultInteractiveSearch(selected, defaultReleaseContentType);
+  }, [bookSearchResults, defaultReleaseContentType, runBookResultInteractiveSearch]);
+
+  const noopDownload = useCallback(async (_book: Book) => {
+    return;
+  }, []);
+
+  const handleBookSearchResultGet = useCallback(async (book: Book) => {
+    runBookResultInteractiveSearch(book, defaultReleaseContentType);
+  }, [defaultReleaseContentType, runBookResultInteractiveSearch]);
+
+  const confirmMonitorBook = useCallback(async () => {
+    const book = bookMonitorModalState.book;
+    if (!book) return;
+
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) {
+      setMonitoredError('Selected book is missing provider metadata and cannot be monitored.');
+      return;
+    }
+
+    const monitorEbook = Boolean(bookMonitorModalState.monitorEbook);
+    const monitorAudiobook = Boolean(bookMonitorModalState.monitorAudiobook);
+    if (!monitorEbook && !monitorAudiobook) {
+      setMonitoredError('Enable eBook, Audiobook, or both to monitor this book.');
+      return;
+    }
+
+    const ebookAuthorDir = normalizeAbsolutePath(bookMonitorModalState.ebookAuthorDir);
+    const audiobookAuthorDir = normalizeAbsolutePath(bookMonitorModalState.audiobookAuthorDir);
+
+    if (!ebookAuthorDir && !audiobookAuthorDir) {
+      setMonitoredError('Please set an Ebook folder or Audiobook folder.');
+      return;
+    }
+
+    setMonitoredError(null);
+    try {
+      const created = await createMonitoredEntity({
+        kind: 'book',
+        name: (book.title || '').trim() || `${provider}:${providerId}`,
+        provider,
+        provider_id: providerId,
+        settings: {
+          photo_url: book.preview,
+          book_title: book.title,
+          book_author: book.author,
+          book_source_url: book.source_url,
+          ebook_author_dir: ebookAuthorDir || undefined,
+          audiobook_author_dir: audiobookAuthorDir || undefined,
+          monitor_ebook: monitorEbook,
+          monitor_audiobook: monitorAudiobook,
+        },
+      });
+
+      setMonitoredBooksSources((prev) => {
+        if (prev.some((entity) => entity.id === created.id)) {
+          return prev;
+        }
+        return [
+          {
+            id: created.id,
+            kind: created.kind,
+            name: created.name,
+            provider: created.provider || undefined,
+            provider_id: created.provider_id || undefined,
+            cached_source_url: created.cached_source_url || undefined,
+            settings: created.settings,
+          },
+          ...prev,
+        ];
+      });
+      closeBookMonitorModal();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to monitor book';
+      setMonitoredError(message);
+    }
+  }, [bookMonitorModalState, closeBookMonitorModal, normalizeAbsolutePath]);
 
   const openMonitorModal = useCallback((payload: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number }) => {
     const normalized = normalizeAuthor(payload.name);
@@ -1344,6 +1667,19 @@ export const MonitoredPage = ({
         });
         return next;
       });
+      setMonitoredBooksSources((prev) => {
+        const next = prev.filter((entity) => entity.id !== created.id);
+        next.unshift({
+          id: created.id,
+          kind: 'author',
+          name: normalized,
+          provider: created.provider || payload.provider,
+          provider_id: created.provider_id || payload.provider_id,
+          cached_source_url: created.cached_source_url || undefined,
+          settings: created.settings,
+        });
+        return next;
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to monitor author';
       setMonitoredError(message);
@@ -1354,6 +1690,7 @@ export const MonitoredPage = ({
     setAuthorQuery('');
     setAuthorResults([]);
     setAuthorCards([]);
+    setBookSearchResults([]);
     setSearchError(null);
     setView('landing');
   }, [closeMonitorModal, deriveRootFromAuthorDir, monitorModalState, normalizeAbsolutePath, persistLearnedRoots]);
@@ -1601,9 +1938,10 @@ export const MonitoredPage = ({
     setAuthorQuery('');
     setAuthorResults([]);
     setAuthorCards([]);
+    setBookSearchResults([]);
     setSearchError(null);
-    setView('landing');
-  }, []);
+    setView(landingTab === 'search' ? 'search' : 'landing');
+  }, [landingTab]);
 
   const handleHeaderAuthorSearchChange = useCallback((value: string) => {
     setAuthorQuery(value);
@@ -1612,8 +1950,49 @@ export const MonitoredPage = ({
     }
   }, [clearSearchAndReturn]);
 
+  const handleSearchScopeChange = useCallback((value: string) => {
+    const nextScope: 'authors' | 'books' = value === 'books' ? 'books' : 'authors';
+    setSearchScope(nextScope);
+    setSearchError(null);
+    setAuthorResults([]);
+    setAuthorCards([]);
+    setBookSearchResults([]);
+    if (!authorQuery.trim()) {
+      setView(landingTab === 'search' ? 'search' : 'landing');
+    }
+  }, [authorQuery, landingTab]);
+
   const isAuthorDetailsRoute = location.pathname === '/monitored/author';
   const authorDetailsSearchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const monitoredHeader = (
+    <Header
+      showSearch
+      logoUrl={logoUrl}
+      searchInput={authorQuery}
+      searchPlaceholder="Search authors to monitor.."
+      onSearchChange={handleHeaderAuthorSearchChange}
+      onSearch={() => void runAuthorSearch()}
+      searchScopeOptions={MONITORED_SEARCH_SCOPE_OPTIONS}
+      searchScopeValue={searchScope}
+      onSearchScopeChange={handleSearchScopeChange}
+      isLoading={isSearching}
+      onDownloadsClick={onActivityClick}
+      isActivityOpen={isActivityOpen}
+      onLogoClick={onBack}
+      debug={debug}
+      onMonitoredClick={onMonitoredClick}
+      activeTopNav="monitoring"
+      onSettingsClick={onSettingsClick}
+      statusCounts={statusCounts}
+      isAdmin={isAdmin}
+      canAccessSettings={canAccessSettings}
+      authRequired={authRequired}
+      isAuthenticated={isAuthenticated}
+      username={username}
+      displayName={displayName}
+      onLogout={onLogout}
+    />
+  );
 
   const authorDetailsAuthor = useMemo<AuthorModalAuthor | null>(() => {
     if (!isAuthorDetailsRoute) {
@@ -1676,30 +2055,7 @@ export const MonitoredPage = ({
     return (
       <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
         <div className="fixed top-0 left-0 right-0 z-40">
-          <Header
-            showSearch
-            logoUrl={logoUrl}
-            searchInput={authorQuery}
-            searchPlaceholder="Search authors to monitor.."
-            onSearchChange={handleHeaderAuthorSearchChange}
-            onSearch={() => void runAuthorSearch()}
-            isLoading={isSearching}
-            onDownloadsClick={onActivityClick}
-            isActivityOpen={isActivityOpen}
-            onLogoClick={onBack}
-            debug={debug}
-            onMonitoredClick={onMonitoredClick}
-            activeTopNav="monitoring"
-            onSettingsClick={onSettingsClick}
-            statusCounts={statusCounts}
-            isAdmin={isAdmin}
-            canAccessSettings={canAccessSettings}
-            authRequired={authRequired}
-            isAuthenticated={isAuthenticated}
-            username={username}
-            displayName={displayName}
-            onLogout={onLogout}
-          />
+          {monitoredHeader}
         </div>
 
         <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-32 lg:pt-24">
@@ -1738,30 +2094,7 @@ export const MonitoredPage = ({
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
       <div className="fixed top-0 left-0 right-0 z-40">
-        <Header
-          showSearch
-          logoUrl={logoUrl}
-          searchInput={authorQuery}
-          searchPlaceholder="Search authors to monitor.."
-          onSearchChange={handleHeaderAuthorSearchChange}
-          onSearch={() => void runAuthorSearch()}
-          isLoading={isSearching}
-          onDownloadsClick={onActivityClick}
-          isActivityOpen={isActivityOpen}
-          onLogoClick={onBack}
-          debug={debug}
-          onMonitoredClick={onMonitoredClick}
-          activeTopNav="monitoring"
-          onSettingsClick={onSettingsClick}
-          statusCounts={statusCounts}
-          isAdmin={isAdmin}
-          canAccessSettings={canAccessSettings}
-          authRequired={authRequired}
-          isAuthenticated={isAuthenticated}
-          username={username}
-          displayName={displayName}
-          onLogout={onLogout}
-        />
+        {monitoredHeader}
       </div>
 
       <main className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-32 lg:pt-24">
@@ -1782,7 +2115,166 @@ export const MonitoredPage = ({
             </div>
           ) : null}
 
-          {view === 'landing' ? (
+      {bookMonitorModalState.open && bookMonitorModalState.book ? (
+        <div
+          className="modal-overlay active sm:px-6 sm:py-6"
+          style={{ zIndex: 1200 }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              closeBookMonitorModal();
+            }
+          }}
+        >
+          <div
+            className="details-container w-full max-w-lg h-auto settings-modal-enter"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Monitor book"
+          >
+            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
+              <header className="flex items-start justify-between gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+                <div className="min-w-0">
+                  <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Monitor book</div>
+                  <div className="mt-1 text-base font-semibold truncate">{bookMonitorModalState.book.title || 'Unknown title'}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">{bookMonitorModalState.book.author || 'Unknown author'}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeBookMonitorModal}
+                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                  aria-label="Close"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </header>
+
+              <div className="px-5 py-4 space-y-4">
+                <div className="flex items-center gap-2">
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <input
+                      type="checkbox"
+                      checked={bookMonitorModalState.monitorEbook}
+                      onChange={(e) => setBookMonitorModalState((prev) => ({ ...prev, monitorEbook: e.target.checked }))}
+                      className="accent-emerald-600"
+                    />
+                    Monitor eBook
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <input
+                      type="checkbox"
+                      checked={bookMonitorModalState.monitorAudiobook}
+                      onChange={(e) => setBookMonitorModalState((prev) => ({ ...prev, monitorAudiobook: e.target.checked }))}
+                      className="accent-emerald-600"
+                    />
+                    Monitor Audiobook
+                  </label>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Ebook folder</div>
+                  <div className="space-y-2">
+                    {(() => {
+                      const authorName = extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
+                      const rootValue = stripTrailingAuthorName(bookMonitorModalState.ebookAuthorDir, authorName);
+                      const suffix = authorName ? `/${authorName}` : '';
+                      return (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFolderBrowserState({ open: true, kind: 'ebook', initialPath: rootValue || null });
+                              }}
+                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              Browse
+                            </button>
+                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">Pick the target folder.</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-xl bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm break-all">
+                              <span className="text-gray-900 dark:text-gray-100">{rootValue || '—'}</span>
+                              {suffix ? <span className="text-gray-400 dark:text-gray-500">{suffix}</span> : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMonitorPathKind('ebook')}
+                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Audiobook folder</div>
+                  <div className="space-y-2">
+                    {(() => {
+                      const authorName = extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
+                      const rootValue = stripTrailingAuthorName(bookMonitorModalState.audiobookAuthorDir, authorName);
+                      const suffix = authorName ? `/${authorName}` : '';
+                      return (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFolderBrowserState({ open: true, kind: 'audiobook', initialPath: rootValue || null });
+                              }}
+                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              Browse
+                            </button>
+                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">Pick the target folder.</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-xl bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm break-all">
+                              <span className="text-gray-900 dark:text-gray-100">{rootValue || '—'}</span>
+                              {suffix ? <span className="text-gray-400 dark:text-gray-500">{suffix}</span> : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMonitorPathKind('audiobook')}
+                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+                <button
+                  type="button"
+                  onClick={closeBookMonitorModal}
+                  className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-gray-900 font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmMonitorBook()}
+                  className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
+                >
+                  Monitor
+                </button>
+              </footer>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+          {(view === 'landing' && landingTab !== 'search') ? (
             (!monitoredLoaded && monitored.length === 0) ? (
               <div className="rounded-2xl bg-white/0 dark:bg-white/0 py-10">
                 <div className="mx-auto max-w-md text-center">
@@ -1839,7 +2331,7 @@ export const MonitoredPage = ({
                     <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
                       <button
                         type="button"
-                        onClick={() => setLandingTab('authors')}
+                        onClick={() => openMonitoredTab('authors')}
                         className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'authors'}
                       >
@@ -1848,7 +2340,7 @@ export const MonitoredPage = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setLandingTab('books')}
+                        onClick={() => openMonitoredTab('books')}
                         className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'books'}
                       >
@@ -1857,13 +2349,24 @@ export const MonitoredPage = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setLandingTab('upcoming')}
+                        onClick={() => openMonitoredTab('upcoming')}
                         className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'upcoming'}
                       >
                         Upcoming
                         <span className="ml-1 opacity-85">{displayUpcomingCount}</span>
                       </button>
+                      {hasStartedSearch ? (
+                        <button
+                          type="button"
+                          onClick={() => openMonitoredTab('search')}
+                          className="px-3.5 py-2 rounded-full text-xs font-medium transition-colors text-gray-700 dark:text-gray-200 hover-action"
+                          aria-pressed={false}
+                        >
+                          Search
+                          <span className="ml-1 opacity-85">{displaySearchCount}</span>
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -2523,58 +3026,190 @@ export const MonitoredPage = ({
             )
           ) : (
             <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
-              <div className="flex items-center justify-between mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3">
+              <div className="mb-3 pb-2 border-b border-black/10 dark:border-white/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onBack) {
+                          onBack();
+                          return;
+                        }
+                        navigate('/');
+                      }}
+                      className="rounded-full p-1.5 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+                      aria-label="Back to home"
+                      title="Back"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.5 7.5 12 15 4.5" />
+                      </svg>
+                    </button>
+                    <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
+                      <button
+                        type="button"
+                        onClick={() => openMonitoredTab('authors')}
+                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        aria-pressed={landingTab === 'authors'}
+                      >
+                        Monitored Authors
+                        <span className="ml-1 opacity-85">{displayAuthorsCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openMonitoredTab('books')}
+                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        aria-pressed={landingTab === 'books'}
+                      >
+                        Monitored Books
+                        <span className="ml-1 opacity-85">{displayBooksCount}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openMonitoredTab('upcoming')}
+                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        aria-pressed={landingTab === 'upcoming'}
+                      >
+                        Upcoming
+                        <span className="ml-1 opacity-85">{displayUpcomingCount}</span>
+                      </button>
+                      {hasStartedSearch ? (
+                        <button
+                          type="button"
+                          onClick={() => openMonitoredTab('search')}
+                          className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'search' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                          aria-pressed={landingTab === 'search'}
+                        >
+                          Search
+                          <span className="ml-1 opacity-85">{displaySearchCount}</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    {searchScope === 'authors' ? (
+                      <ViewModeToggle
+                        value={authorViewMode}
+                        onChange={(next) => setAuthorViewMode(next as 'card' | 'compact' | 'list')}
+                        options={authorSearchViewOptions}
+                      />
+                    ) : (
+                      <ViewModeToggle
+                        value={bookSearchViewMode}
+                        onChange={(next) => setBookSearchViewMode(next as 'card' | 'compact' | 'list')}
+                        options={bookSearchViewOptions}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3">
                 <div className="flex items-center gap-2 min-w-0">
-                  <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">New Authors</h2>
+                  <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">
+                    {searchScope === 'books' ? 'New Books' : 'New Authors'}
+                  </h2>
                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
-                    {authorResults.length}
+                    {searchScope === 'books' ? bookSearchResults.length : authorResults.length}
                   </span>
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                    title="Sort"
-                    aria-label="Sort"
-                  >
-                    Most relevant
-                  </button>
+                  {searchScope === 'books' ? (
+                    <Dropdown
+                      align="left"
+                      widthClassName="w-60 sm:w-72"
+                      renderTrigger={({ isOpen, toggle }) => (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100 ${isOpen ? 'ring-1 ring-emerald-500/50' : ''}`}
+                          title="Sort"
+                          aria-label="Sort"
+                          aria-haspopup="listbox"
+                          aria-expanded={isOpen}
+                        >
+                          {monitoredSearchSortOptions.find((option) => option.value === bookSearchSortValue)?.label || monitoredSearchSortOptions[0]?.label || 'Most relevant'}
+                        </button>
+                      )}
+                    >
+                      {({ close }) => (
+                        <div role="listbox" aria-label="Sort search results">
+                          {monitoredSearchSortOptions.map((option) => {
+                            const isSelected = option.value === bookSearchSortValue;
+                            return (
+                              <button
+                                type="button"
+                                key={option.value}
+                                className={`w-full px-3 py-2 text-left text-base flex items-center justify-between gap-2 hover-surface ${
+                                  isSelected ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''
+                                }`}
+                                onClick={() => {
+                                  setBookSearchSortValue(option.value);
+                                  close();
+                                }}
+                                role="option"
+                                aria-selected={isSelected}
+                              >
+                                <span>{option.label}</span>
+                                {isSelected ? (
+                                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                  </svg>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </Dropdown>
+                  ) : (
+                    <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 text-gray-900 dark:bg-white/10 dark:text-gray-100">
+                      Most relevant
+                    </span>
+                  )}
                 </div>
 
-                <ViewModeToggle
-                  value={authorViewMode}
-                  onChange={(next) => setAuthorViewMode(next as 'card' | 'compact' | 'list')}
-                  options={[
-                    {
-                      value: 'card',
-                      label: 'Card view',
-                      icon: (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
-                        </svg>
-                      ),
-                    },
-                    {
-                      value: 'compact',
-                      label: 'Compact view',
-                      icon: (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
-                        </svg>
-                      ),
-                    },
-                    {
-                      value: 'list',
-                      label: 'List view',
-                      icon: (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
-                        </svg>
-                      ),
-                    },
-                  ]}
-                />
               </div>
 
-              {authorResults.length === 0 ? (
+              {!authorQuery.trim() && !isSearching ? (
+                <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-4 py-8 text-center">
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Start a search from the top bar</div>
+                  <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">Use the header search input to find authors or books to monitor.</div>
+                  <div className="mt-4">
+                    <button
+                      type="button"
+                      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                    >
+                      Go to search bar
+                    </button>
+                  </div>
+                </div>
+              ) : searchScope === 'books' ? (
+                bookSearchResults.length === 0 ? (
+                  <div className="text-sm text-gray-500 dark:text-gray-400">Search for a book to monitor.</div>
+                ) : (
+                  <ResultsSection
+                    books={bookSearchResults}
+                    visible
+                    onDetails={handleBookSearchResultDetails}
+                    onDownload={noopDownload}
+                    onGetReleases={handleBookSearchResultGet}
+                    getButtonState={getMonitorResultButtonState}
+                    getUniversalButtonState={getMonitorResultButtonState}
+                    sortValue={bookSearchSortValue}
+                    onSortChange={setBookSearchSortValue}
+                    hideSortControl
+                    hideViewToggle
+                    viewMode={bookSearchViewMode}
+                    onViewModeChange={setBookSearchViewMode}
+                    customAction={{
+                      label: 'Monitor',
+                      onClick: (book) => openBookMonitorModal(book),
+                      isDisabled: (book) => isBookSearchResultMonitored(book),
+                      getLabel: (book) => (isBookSearchResultMonitored(book) ? 'Monitored' : 'Monitor'),
+                    }}
+                  />
+                )
+              ) : authorResults.length === 0 ? (
                 <div className="text-sm text-gray-500 dark:text-gray-400">Search for an author to add.</div>
               ) : (
                 authorViewMode === 'list' ? (
@@ -2982,8 +3617,23 @@ export const MonitoredPage = ({
         initialPath={folderBrowserState.initialPath}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
-          const authorName = monitorModalState.author?.name || '';
+          const authorName = monitorModalState.author?.name
+            || extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
           const suggested = authorName ? joinPath(path, authorName) : path;
+          if (bookMonitorModalState.open && bookMonitorModalState.book) {
+            if (folderBrowserState.kind === 'audiobook') {
+              setBookMonitorModalState((prev) => ({
+                ...prev,
+                audiobookAuthorDir: suggested,
+              }));
+            } else {
+              setBookMonitorModalState((prev) => ({
+                ...prev,
+                ebookAuthorDir: suggested,
+              }));
+            }
+            return;
+          }
           if (folderBrowserState.kind === 'audiobook') {
             setMonitorModalState((prev) => ({
               ...prev,

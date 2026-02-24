@@ -18,6 +18,12 @@ interface CardViewProps {
   buttonState: ButtonStateInfo;
   animationDelay?: number;
   showSeriesPosition?: boolean;
+  customAction?: {
+    label: string;
+    onClick: (book: Book) => void;
+    isDisabled?: (book: Book) => boolean;
+    getLabel?: (book: Book) => string;
+  };
 }
 
 export const CardView = ({
@@ -30,6 +36,7 @@ export const CardView = ({
   buttonState,
   animationDelay = 0,
   showSeriesPosition = false,
+  customAction,
 }: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -200,6 +207,7 @@ export const CardView = ({
             showDualGetButtons={showDualGetButtons}
             size="sm"
             className="flex-1"
+            customAction={customAction}
           />
         </div>
       </div>
@@ -215,6 +223,7 @@ export const CardView = ({
         showDualGetButtons={showDualGetButtons}
         className="hidden sm:flex rounded-none"
         fullWidth
+        customAction={customAction}
         style={{
           borderBottomLeftRadius: '.75rem',
           borderBottomRightRadius: '.75rem',

@@ -36,6 +36,9 @@ interface HeaderProps {
   onRemoveToast?: (id: string) => void;
   contentType?: ContentType;
   onContentTypeChange?: (type: ContentType) => void;
+  searchScopeOptions?: Array<{ value: string; label: string }>;
+  searchScopeValue?: string;
+  onSearchScopeChange?: (value: string) => void;
   activeTopNav?: 'standalone' | 'monitoring' | 'activity';
   isActivityOpen?: boolean;
 }
@@ -68,6 +71,9 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onRemoveToast,
   contentType = 'ebook',
   onContentTypeChange,
+  searchScopeOptions,
+  searchScopeValue,
+  onSearchScopeChange,
   activeTopNav,
   isActivityOpen = false,
 }, ref) => {
@@ -553,6 +559,9 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 isLoading={isLoading}
                 contentType={contentType}
                 onContentTypeChange={onContentTypeChange}
+                searchScopeOptions={searchScopeOptions}
+                searchScopeValue={searchScopeValue}
+                onSearchScopeChange={onSearchScopeChange}
               />
             </div>
           </div>

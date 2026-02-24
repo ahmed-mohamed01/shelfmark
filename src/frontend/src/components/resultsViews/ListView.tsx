@@ -15,6 +15,12 @@ interface ListViewProps {
   getButtonState: (bookId: string) => ButtonStateInfo;
   getUniversalButtonState: (bookId: string) => ButtonStateInfo;
   showSeriesPosition?: boolean;
+  customAction?: {
+    label: string;
+    onClick: (book: Book) => void;
+    isDisabled?: (book: Book) => boolean;
+    getLabel?: (book: Book) => string;
+  };
 }
 
 const ListViewThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
@@ -60,6 +66,7 @@ export const ListView = ({
   getButtonState,
   getUniversalButtonState,
   showSeriesPosition = false,
+  customAction,
 }: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
@@ -266,6 +273,7 @@ export const ListView = ({
                     showDualGetButtons={showDualGetButtons}
                     variant="icon"
                     size="md"
+                    customAction={customAction}
                   />
                 </div>
               </div>

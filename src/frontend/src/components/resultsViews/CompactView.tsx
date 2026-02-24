@@ -19,6 +19,12 @@ interface CompactViewProps {
   showDetailsButton?: boolean;
   animationDelay?: number;
   showSeriesPosition?: boolean;
+  customAction?: {
+    label: string;
+    onClick: (book: Book) => void;
+    isDisabled?: (book: Book) => boolean;
+    getLabel?: (book: Book) => string;
+  };
 }
 
 export const CompactView = ({
@@ -32,6 +38,7 @@ export const CompactView = ({
   showDetailsButton = false,
   animationDelay = 0,
   showSeriesPosition = false,
+  customAction,
 }: CompactViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -199,6 +206,7 @@ export const CompactView = ({
                 showDualGetButtons={showDualGetButtons}
                 size="sm"
                 className="flex-1"
+                customAction={customAction}
               />
             </div>
           ) : (
@@ -213,6 +221,7 @@ export const CompactView = ({
               showDualGetButtons={showDualGetButtons}
               size="sm"
               fullWidth
+              customAction={customAction}
             />
           )}
         </div>

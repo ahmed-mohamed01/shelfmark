@@ -746,6 +746,9 @@ def register_monitored_routes(
         provider = str(provider).strip() if isinstance(provider, str) and provider.strip() else None
         provider_id = str(provider_id).strip() if isinstance(provider_id, str) and provider_id.strip() else None
 
+        if kind == "book" and (not provider or not provider_id):
+            return jsonify({"error": "provider and provider_id are required for kind='book'"}), 400
+
         settings = data.get("settings")
         if settings is None:
             settings = {}
@@ -764,6 +767,77 @@ def register_monitored_routes(
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+
+        if kind == "book" and provider and provider_id:
+            monitor_ebook = bool(settings.get("monitor_ebook", True))
+            monitor_audiobook = bool(settings.get("monitor_audiobook", True))
+
+            seeded_title = name
+            seeded_authors = str(settings.get("book_author") or "").strip() or None
+            seeded_cover = str(settings.get("photo_url") or "").strip() or None
+            seeded_year: Any = None
+            seeded_release_date: str | None = None
+            seeded_isbn13: str | None = None
+            seeded_series_name: str | None = None
+            seeded_series_position: float | None = None
+            seeded_series_count: int | None = None
+            seeded_rating: float | None = None
+            seeded_ratings_count: int | None = None
+            seeded_readers_count: int | None = None
+
+            try:
+                from shelfmark.metadata_providers import get_provider, get_provider_kwargs
+
+                prov = get_provider(provider, **get_provider_kwargs(provider))
+                if prov.is_available():
+                    book = prov.get_book(provider_id)
+                    if book is not None:
+                        payload = asdict(book)
+                        seeded_title = str(payload.get("title") or seeded_title or "").strip() or seeded_title
+                        authors = payload.get("authors")
+                        if isinstance(authors, list):
+                            seeded_authors = ", ".join(str(author).strip() for author in authors if str(author).strip()) or seeded_authors
+                        seeded_year = payload.get("publish_year")
+                        seeded_release_date = payload.get("release_date")
+                        seeded_isbn13 = payload.get("isbn_13")
+                        seeded_cover = payload.get("cover_url") or seeded_cover
+                        seeded_series_name = payload.get("series_name")
+                        seeded_series_position = payload.get("series_position")
+                        seeded_series_count = payload.get("series_count")
+                        seeded_rating, seeded_ratings_count, seeded_readers_count = _extract_book_popularity(payload.get("display_fields"))
+            except Exception as exc:
+                logger.warning("Book monitor metadata seed failed provider=%s provider_id=%s: %s", provider, provider_id, exc)
+
+            try:
+                user_db.upsert_monitored_book(
+                    user_id=db_user_id,
+                    entity_id=int(row.get("id")),
+                    provider=provider,
+                    provider_book_id=provider_id,
+                    title=seeded_title or name,
+                    authors=seeded_authors,
+                    publish_year=seeded_year,
+                    release_date=seeded_release_date,
+                    isbn_13=seeded_isbn13,
+                    cover_url=seeded_cover,
+                    series_name=seeded_series_name,
+                    series_position=seeded_series_position,
+                    series_count=seeded_series_count,
+                    rating=seeded_rating,
+                    ratings_count=seeded_ratings_count,
+                    readers_count=seeded_readers_count,
+                    state="discovered",
+                )
+                user_db.set_monitored_book_monitor_flags(
+                    user_id=db_user_id,
+                    entity_id=int(row.get("id")),
+                    provider=provider,
+                    provider_book_id=provider_id,
+                    monitor_ebook=monitor_ebook,
+                    monitor_audiobook=monitor_audiobook,
+                )
+            except Exception as exc:
+                logger.warning("Book monitor seed upsert failed entity_id=%s provider=%s provider_id=%s: %s", row.get("id"), provider, provider_id, exc)
 
         return jsonify(row), 201
 

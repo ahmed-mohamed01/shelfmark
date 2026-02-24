@@ -32,6 +32,16 @@ interface ResultsSectionProps {
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
   totalFound?: number;
+  customAction?: {
+    label: string;
+    onClick: (book: Book) => void;
+    isDisabled?: (book: Book) => boolean;
+    getLabel?: (book: Book) => string;
+  };
+  hideSortControl?: boolean;
+  hideViewToggle?: boolean;
+  viewMode?: 'card' | 'compact' | 'list';
+  onViewModeChange?: (value: 'card' | 'compact' | 'list') => void;
 }
 
 export const ResultsSection = ({
@@ -51,17 +61,30 @@ export const ResultsSection = ({
   isLoadingMore,
   onLoadMore,
   totalFound,
+  customAction,
+  hideSortControl = false,
+  hideViewToggle = false,
+  viewMode: controlledViewMode,
+  onViewModeChange,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
-  const [viewMode, setViewMode] = useState<'card' | 'compact' | 'list'>(() => {
+  const [internalViewMode, setInternalViewMode] = useState<'card' | 'compact' | 'list'>(() => {
     const saved = localStorage.getItem('bookViewMode');
     return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'compact';
   });
+  const viewMode = controlledViewMode ?? internalViewMode;
 
   const [isDesktop, setIsDesktop] = useState(false);
   useEffect(() => {
     localStorage.setItem('bookViewMode', viewMode);
   }, [viewMode]);
+
+  const setViewMode = (next: 'card' | 'compact' | 'list') => {
+    onViewModeChange?.(next);
+    if (controlledViewMode === undefined) {
+      setInternalViewMode(next);
+    }
+  };
 
   // Track whether we're in desktop layout (sm breakpoint and above)
   // Debounced to avoid excessive state updates during resize
@@ -90,23 +113,81 @@ export const ResultsSection = ({
   return (
     <section id="results-section" className="mb-4 sm:mb-8 w-full">
       <div className="flex items-center justify-between mb-2 sm:mb-3 relative z-10">
-        <SortControl value={sortValue} onChange={onSortChange} metadataSortOptions={metadataSortOptions} />
+        {!hideSortControl ? (
+          <SortControl value={sortValue} onChange={onSortChange} metadataSortOptions={metadataSortOptions} />
+        ) : (
+          <div />
+        )}
 
-        {/* View toggle buttons - Desktop: show all 3, Mobile: show Compact and List only */}
-        <div className="flex items-center gap-2">
-          {isDesktop && (
+        {!hideViewToggle ? (
+          <div className="flex items-center gap-2">
+            {isDesktop && (
+              <button
+                onClick={() => setViewMode('card')}
+                className={`p-2 rounded-full transition-all duration-200 ${
+                  viewMode === 'card'
+                    ? searchMode === 'universal'
+                      ? 'text-white bg-emerald-600 hover:bg-emerald-700'
+                      : 'text-white bg-sky-700 hover:bg-sky-800'
+                    : 'hover-action text-gray-900 dark:text-gray-100'
+                }`}
+                title="Card view"
+                aria-label="Card view"
+                aria-pressed={viewMode === 'card'}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
+                  />
+                </svg>
+              </button>
+            )}
             <button
-              onClick={() => setViewMode('card')}
+              onClick={() => setViewMode('compact')}
               className={`p-2 rounded-full transition-all duration-200 ${
-                viewMode === 'card'
+                viewMode === 'compact'
                   ? searchMode === 'universal'
                     ? 'text-white bg-emerald-600 hover:bg-emerald-700'
                     : 'text-white bg-sky-700 hover:bg-sky-800'
                   : 'hover-action text-gray-900 dark:text-gray-100'
               }`}
-              title="Card view"
-              aria-label="Card view"
-              aria-pressed={viewMode === 'card'}
+              title="Compact view"
+              aria-label="Compact view"
+              aria-pressed={viewMode === 'compact'}
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                strokeWidth="1.5"
+              >
+                <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
+                <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-2 rounded-full transition-all duration-200 ${
+                viewMode === 'list'
+                  ? searchMode === 'universal'
+                    ? 'text-white bg-emerald-600 hover:bg-emerald-700'
+                    : 'text-white bg-sky-700 hover:bg-sky-800'
+                  : 'hover-action text-gray-900 dark:text-gray-100'
+              }`}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
             >
               <svg
                 className="w-5 h-5"
@@ -118,65 +199,12 @@ export const ResultsSection = ({
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"
+                  d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
                 />
               </svg>
             </button>
-          )}
-          <button
-            onClick={() => setViewMode('compact')}
-            className={`p-2 rounded-full transition-all duration-200 ${
-              viewMode === 'compact'
-                ? searchMode === 'universal'
-                  ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                  : 'text-white bg-sky-700 hover:bg-sky-800'
-                : 'hover-action text-gray-900 dark:text-gray-100'
-            }`}
-            title="Compact view"
-            aria-label="Compact view"
-            aria-pressed={viewMode === 'compact'}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-            >
-              <rect x="3.75" y="4.5" width="6" height="6" rx="1.125" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6h8.25M12 8.25h6" />
-              <rect x="3.75" y="13.5" width="6" height="6" rx="1.125" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15h8.25M12 17.25h6" />
-            </svg>
-          </button>
-          <button
-            onClick={() => setViewMode('list')}
-            className={`p-2 rounded-full transition-all duration-200 ${
-              viewMode === 'list'
-                ? searchMode === 'universal'
-                  ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                  : 'text-white bg-sky-700 hover:bg-sky-800'
-                : 'hover-action text-gray-900 dark:text-gray-100'
-            }`}
-            title="List view"
-            aria-label="List view"
-            aria-pressed={viewMode === 'list'}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-              />
-            </svg>
-          </button>
-        </div>
+          </div>
+        ) : null}
       </div>
       {viewMode === 'list' ? (
         <ListView
@@ -189,6 +217,7 @@ export const ResultsSection = ({
           getButtonState={getButtonState}
           getUniversalButtonState={getUniversalButtonState}
           showSeriesPosition={sortValue === 'series_order'}
+          customAction={customAction}
         />
       ) : (
         <div
@@ -215,6 +244,7 @@ export const ResultsSection = ({
                 buttonState={buttonState}
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
+                customAction={customAction}
               />
             ) : (
               <CompactView
@@ -229,6 +259,7 @@ export const ResultsSection = ({
                 showDetailsButton={!isDesktop}
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
+                customAction={customAction}
               />
             );
           })}
