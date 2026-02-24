@@ -1949,6 +1949,13 @@ export const MonitoredPage = ({
 
   const isAuthorDetailsRoute = location.pathname === '/monitored/author';
   const authorDetailsSearchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const handleMonitoredHeaderSearch = useCallback(() => {
+    if (isAuthorDetailsRoute) {
+      navigate('/monitored');
+    }
+    void runAuthorSearch();
+  }, [isAuthorDetailsRoute, navigate, runAuthorSearch]);
+
   const monitoredHeader = (
     <Header
       showSearch
@@ -1956,7 +1963,7 @@ export const MonitoredPage = ({
       searchInput={authorQuery}
       searchPlaceholder="Search authors to monitor.."
       onSearchChange={handleHeaderAuthorSearchChange}
-      onSearch={() => void runAuthorSearch()}
+      onSearch={handleMonitoredHeaderSearch}
       searchScopeOptions={MONITORED_SEARCH_SCOPE_OPTIONS}
       searchScopeValue={searchScope}
       onSearchScopeChange={handleSearchScopeChange}
