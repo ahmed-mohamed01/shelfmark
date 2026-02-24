@@ -2236,24 +2236,6 @@ export const AuthorModal = ({
                         </button>
                       </>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={toggleSelectAllVisibleBooks}
-                      className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200"
-                      aria-label={allVisibleBooksSelected ? 'Unselect all visible books' : 'Select all visible books'}
-                      title={allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}
-                    >
-                      {allVisibleBooksSelected ? (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <rect x="4" y="4" width="16" height="16" rx="3" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
-                        </svg>
-                      ) : (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                          <rect x="4" y="4" width="16" height="16" rx="3" />
-                        </svg>
-                      )}
-                    </button>
                     {!isPageMode ? (
                       <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
                         <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -2642,24 +2624,35 @@ export const AuthorModal = ({
                       )}
                     >
                       {() => (
-                        <div className="px-3 py-3">
-                          <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Compact tile size</div>
-                          <input
-                            type="range"
-                            min={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN}
-                            max={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX}
-                            step={4}
-                            value={booksCompactMinWidth}
-                            onChange={(e) => setBooksCompactMinWidth(Number(e.target.value))}
-                            className="w-full accent-emerald-600"
-                            aria-label="Books compact tile size"
-                            title="Books compact tile size"
-                            disabled={booksViewMode !== 'compact'}
-                          />
-                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tabular-nums text-right">{booksCompactMinWidth}px</div>
-                          {booksViewMode !== 'compact' ? (
-                            <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust tile size.</div>
-                          ) : null}
+                        <div className="py-1">
+                          <button
+                            type="button"
+                            onClick={toggleSelectAllVisibleBooks}
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${allVisibleBooksSelected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                          >
+                            <span>{allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}</span>
+                            {allVisibleBooksSelected ? <span>✓</span> : null}
+                          </button>
+                          <div className="border-t border-[var(--border-muted)] my-1" />
+                          <div className="px-3 py-2">
+                            <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Compact tile size</div>
+                            <input
+                              type="range"
+                              min={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN}
+                              max={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX}
+                              step={4}
+                              value={booksCompactMinWidth}
+                              onChange={(e) => setBooksCompactMinWidth(Number(e.target.value))}
+                              className="w-full accent-emerald-600"
+                              aria-label="Books compact tile size"
+                              title="Books compact tile size"
+                              disabled={booksViewMode !== 'compact'}
+                            />
+                            <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tabular-nums text-right">{booksCompactMinWidth}px</div>
+                            {booksViewMode !== 'compact' ? (
+                              <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust tile size.</div>
+                            ) : null}
+                          </div>
                         </div>
                       )}
                     </Dropdown>
@@ -2797,11 +2790,29 @@ export const AuthorModal = ({
                           }, 0);
                           return (
                             <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
-                              <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center justify-between gap-3">
+                              <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSelectAllInGroup(group.books)}
+                                  className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+                                  aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`}
+                                  title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}
+                                >
+                                  {allSelectedInGroup ? (
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                      <rect x="4" y="4" width="16" height="16" rx="3" />
+                                    </svg>
+                                  )}
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => toggleGroupCollapsed(group.key)}
-                                  className="flex items-center gap-2 min-w-0 hover-action"
+                                  className="flex-1 flex items-center gap-2 min-w-0 hover-action"
                                   aria-expanded={!isCollapsed}
                                 >
                                   <svg
@@ -2819,24 +2830,6 @@ export const AuthorModal = ({
                                       ({booksOnDisk}/{booksInSeries})
                                     </span>
                                   </div>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleSelectAllInGroup(group.books)}
-                                  className="text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
-                                  aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`}
-                                  title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}
-                                >
-                                  {allSelectedInGroup ? (
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                                      <rect x="4" y="4" width="16" height="16" rx="3" />
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
-                                    </svg>
-                                  ) : (
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                                      <rect x="4" y="4" width="16" height="16" rx="3" />
-                                    </svg>
-                                  )}
                                 </button>
                               </div>
 
@@ -2911,12 +2904,11 @@ export const AuthorModal = ({
                                             key={book.id}
                                             leadingControl={(() => {
                                               const isSelected = Boolean(selectedBookIds[book.id]);
-                                              const showDimmed = !hasActiveBookSelection && !isSelected;
                                               return (
                                                 <button
                                                   type="button"
                                                   onClick={() => toggleBookSelection(book.id)}
-                                                  className={`transition-opacity ${showDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
+                                                  className={`transition-opacity ${isSelected || hasActiveBookSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}
                                                   role="checkbox"
                                                   aria-checked={isSelected}
                                                   aria-label={`Select ${book.title || 'book'}`}
