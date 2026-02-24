@@ -23,7 +23,6 @@ import {
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { Dropdown } from '../components/Dropdown';
 import { MediaCompactTileBase } from '../components/MediaCompactTileBase';
-import { AuthorCardView } from '../components/resultsViews/AuthorCardView';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
 import { MonitoredAuthorCompactTile } from '../components/MonitoredAuthorCompactTile';
 import { MonitoredAuthorTableRow } from '../components/AuthorTableRow';
@@ -177,12 +176,6 @@ const MONITORED_SEARCH_SCOPE_OPTIONS = [
   { value: 'books', label: 'Books' },
 ];
 
-const SEARCH_VIEW_ICON_CARD = (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
-  </svg>
-);
-
 const SEARCH_VIEW_ICON_GRID = (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
@@ -239,8 +232,7 @@ const BookRowThumbnail = ({ coverUrl, title }: { coverUrl?: string | null; title
 
 const GRID_CLASSES = {
   mobile: 'grid-cols-1 items-start',
-  card: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 items-stretch',
-  compact: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 items-stretch',
+  compact: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 items-start',
 } as const;
 
 const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
@@ -390,13 +382,13 @@ export const MonitoredPage = ({
   const [authorCards, setAuthorCards] = useState<MetadataAuthor[]>([]);
   const [bookSearchResults, setBookSearchResults] = useState<Book[]>([]);
   const [bookSearchSortValue, setBookSearchSortValue] = useState('relevance');
-  const [bookSearchViewMode, setBookSearchViewMode] = useState<'card' | 'compact' | 'list'>(() => {
+  const [bookSearchViewMode, setBookSearchViewMode] = useState<'compact' | 'list'>(() => {
     const saved = localStorage.getItem('bookViewMode');
-    return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'compact';
+    return saved === 'list' ? 'list' : 'compact';
   });
-  const [authorViewMode, setAuthorViewMode] = useState<'card' | 'compact' | 'list'>(() => {
+  const [authorViewMode, setAuthorViewMode] = useState<'compact' | 'list'>(() => {
     const saved = localStorage.getItem('authorViewMode');
-    return saved === 'card' || saved === 'compact' || saved === 'list' ? saved : 'card';
+    return saved === 'list' ? 'list' : 'compact';
   });
   const [monitoredViewMode, setMonitoredViewMode] = useState<'compact' | 'table'>(() => {
     const saved = localStorage.getItem('monitoredAuthorViewMode');
@@ -404,9 +396,9 @@ export const MonitoredPage = ({
     if (saved === 'compact' || saved === 'card') return 'compact';
     return 'compact';
   });
-  const [monitoredBooksViewMode, setMonitoredBooksViewMode] = useState<'table' | 'card'>(() => {
+  const [monitoredBooksViewMode, setMonitoredBooksViewMode] = useState<'table' | 'compact'>(() => {
     const saved = localStorage.getItem('monitoredBooksViewMode');
-    return saved === 'card' ? 'card' : 'table';
+    return saved === 'table' || saved === 'list' ? 'table' : 'compact';
   });
   const [monitoredBooksSortBy, setMonitoredBooksSortBy] = useState<'alphabetical' | 'year'>(() => {
     const saved = localStorage.getItem('monitoredBooksSortBy');
@@ -1077,7 +1069,7 @@ export const MonitoredPage = ({
   }, [isDesktop, monitoredViewMode, monitoredCompactMinWidth]);
 
   const monitoredBooksGridStyle = useMemo(() => {
-    if (!isDesktop || monitoredBooksViewMode !== 'card') {
+    if (!isDesktop || monitoredBooksViewMode !== 'compact') {
       return undefined;
     }
     return {
@@ -1106,20 +1098,13 @@ export const MonitoredPage = ({
     || bookSearchResults.length > 0
     || view === 'search';
   const authorSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => ([
-    { value: 'card', label: 'Card view', icon: SEARCH_VIEW_ICON_CARD },
     { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_GRID },
     { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
   ]), []);
-  const bookSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => {
-    const options: ViewModeToggleOption[] = [
-      { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_COMPACT_LINES },
-      { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
-    ];
-    if (isDesktop) {
-      options.unshift({ value: 'card', label: 'Card view', icon: SEARCH_VIEW_ICON_CARD });
-    }
-    return options;
-  }, [isDesktop]);
+  const bookSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => ([
+    { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_COMPACT_LINES },
+    { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
+  ]), []);
 
   const getMonitoredRowSearchKey = useCallback((book: MonitoredBookListRow): string => {
     const provider = (book.provider || '').trim().toLowerCase();
@@ -2647,7 +2632,7 @@ export const MonitoredPage = ({
                         ) : null}
                         <ViewModeToggle
                           value={monitoredBooksViewMode}
-                          onChange={(next) => setMonitoredBooksViewMode(next as 'table' | 'card')}
+                          onChange={(next) => setMonitoredBooksViewMode(next as 'table' | 'compact')}
                           options={[
                             {
                               value: 'table',
@@ -2659,13 +2644,9 @@ export const MonitoredPage = ({
                               ),
                             },
                             {
-                              value: 'card',
-                              label: 'Card view',
-                              icon: (
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
-                                </svg>
-                              ),
+                              value: 'compact',
+                              label: 'Compact view',
+                              icon: SEARCH_VIEW_ICON_COMPACT_LINES,
                             },
                           ]}
                         />
@@ -2759,15 +2740,15 @@ export const MonitoredPage = ({
                                   value={monitoredCompactMinWidth}
                                   onChange={(e) => setMonitoredCompactMinWidth(Number(e.target.value))}
                                   className="w-full accent-emerald-600"
-                                  aria-label="Books card size"
-                                  title="Books card size"
-                                  disabled={monitoredBooksViewMode !== 'card'}
+                                  aria-label="Books compact size"
+                                  title="Books compact size"
+                                  disabled={monitoredBooksViewMode !== 'compact'}
                                 />
                                 <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 tabular-nums text-right">
                                   {monitoredCompactMinWidth}px
                                 </div>
-                                {monitoredBooksViewMode !== 'card' ? (
-                                  <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Switch to card view to adjust size.</div>
+                                {monitoredBooksViewMode !== 'compact' ? (
+                                  <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust size.</div>
                                 ) : null}
                               </div>
                             </div>
@@ -2969,7 +2950,7 @@ export const MonitoredPage = ({
 
                             return (
                               <MediaCompactTileBase
-                                key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}:card`}
+                                key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}:compact`}
                                 title={book.title || 'Unknown title'}
                                 media={
                                   <div className="w-full aspect-[2/3] bg-black/10 dark:bg-white/10">
@@ -3091,13 +3072,13 @@ export const MonitoredPage = ({
                     {searchScope === 'authors' ? (
                       <ViewModeToggle
                         value={authorViewMode}
-                        onChange={(next) => setAuthorViewMode(next as 'card' | 'compact' | 'list')}
+                        onChange={(next) => setAuthorViewMode(next as 'compact' | 'list')}
                         options={authorSearchViewOptions}
                       />
                     ) : (
                       <ViewModeToggle
                         value={bookSearchViewMode}
-                        onChange={(next) => setBookSearchViewMode(next as 'card' | 'compact' | 'list')}
+                        onChange={(next) => setBookSearchViewMode(next as 'compact' | 'list')}
                         options={bookSearchViewOptions}
                       />
                     )}
@@ -3200,7 +3181,7 @@ export const MonitoredPage = ({
                     hideSortControl
                     hideViewToggle
                     viewMode={bookSearchViewMode}
-                    onViewModeChange={setBookSearchViewMode}
+                    onViewModeChange={(next) => setBookSearchViewMode(next === 'list' ? 'list' : 'compact')}
                     customAction={{
                       label: 'Monitor',
                       onClick: (book) => openBookMonitorModal(book),
@@ -3255,7 +3236,7 @@ export const MonitoredPage = ({
                     })}
                   </div>
                 ) : (
-                  <div className={`grid gap-8 ${!isDesktop ? GRID_CLASSES.mobile : GRID_CLASSES[authorViewMode]}`}>
+                  <div className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : GRID_CLASSES.compact}`}>
                     {(authorCards.length > 0
                       ? authorCards
                       : authorResults.map((name) => ({
@@ -3267,25 +3248,7 @@ export const MonitoredPage = ({
                     ).map((author, index) => {
                       const name = author.name;
                       const isMonitored = monitoredNames.has(name.toLowerCase());
-                      const shouldUseCardLayout = isDesktop && authorViewMode === 'card';
-
-                      return shouldUseCardLayout ? (
-                        <AuthorCardView
-                          key={`${author.provider}:${author.provider_id}`}
-                          author={author}
-                          actionLabel={isMonitored ? 'Monitored' : 'Monitor'}
-                          actionDisabled={isMonitored}
-                          onAction={() => openMonitorModal({
-                            name,
-                            provider: author.provider,
-                            provider_id: author.provider_id,
-                            photo_url: author.photo_url || undefined,
-                            books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
-                          })}
-                          onOpen={() => navigateToAuthorPage(author)}
-                          animationDelay={index * 50}
-                        />
-                      ) : (
+                      return (
                         <AuthorCompactView
                           key={`${author.provider}:${author.provider_id}`}
                           author={author}
