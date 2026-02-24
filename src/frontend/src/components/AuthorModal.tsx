@@ -2825,7 +2825,7 @@ export const AuthorModal = ({
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                                   </svg>
                                   <div className="min-w-0 flex items-center gap-2">
-                                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">{group.title}</p>
+                                    <p className="text-s font-semibold text-gray-700 dark:text-gray-200 truncate">{group.title}</p>
                                     <span className={`text-[11px] tabular-nums ${booksOnDisk > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}>
                                       ({booksOnDisk}/{booksInSeries})
                                     </span>
