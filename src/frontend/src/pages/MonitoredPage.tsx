@@ -1091,7 +1091,6 @@ export const MonitoredPage = ({
     ? metadataSortOptions
     : [{ value: 'relevance', label: 'Most relevant' }];
   const hasStartedSearch = isSearching
-    || Boolean(authorQuery.trim())
     || Boolean(searchError)
     || authorResults.length > 0
     || authorCards.length > 0
