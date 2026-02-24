@@ -2776,7 +2776,7 @@ export const AuthorModal = ({
                     <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
                   ) : (
                     <>
-                      <div className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
+                      <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
                         {filteredGroupedBooks.map((group, groupIndex) => {
                           const isCollapsed = collapsedGroups[group.key] ?? false;
                           const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
