@@ -22,6 +22,7 @@ import {
 } from '../services/api';
 import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
+import { EditAuthorModal } from '../components/EditAuthorModal';
 import { Dropdown } from '../components/Dropdown';
 import { MediaCompactTileBase } from '../components/MediaCompactTileBase';
 import { AuthorCompactView } from '../components/resultsViews/AuthorCompactView';
@@ -458,12 +459,20 @@ export const MonitoredPage = ({
   const monitoredBooksSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedMonitoredBookKeys, setSelectedMonitoredBookKeys] = useState<Record<string, boolean>>({});
   const [selectedMonitoredAuthorKeys, setSelectedMonitoredAuthorKeys] = useState<Record<string, boolean>>({});
-  const [editAuthorModal, setEditAuthorModal] = useState<AuthorModalAuthor | null>(null);
-  const [editAuthorEntityId, setEditAuthorEntityId] = useState<number | null>(null);
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
   const [bulkDeleteAuthorsRunning, setBulkDeleteAuthorsRunning] = useState(false);
   const [bulkDeleteAuthorsConfirmOpen, setBulkDeleteAuthorsConfirmOpen] = useState(false);
   const [cachedMonitoredCounts, setCachedMonitoredCounts] = useState<MonitoredCountsSnapshot | null>(() => readMonitoredCountsSnapshot());
+
+  const [editAuthorModalState, setEditAuthorModalState] = useState<{
+    open: boolean;
+    entityId: number | null;
+    authorName: string;
+  }>({
+    open: false,
+    entityId: null,
+    authorName: '',
+  });
 
   const [monitorModalState, setMonitorModalState] = useState<{
     open: boolean;
@@ -1805,6 +1814,23 @@ export const MonitoredPage = ({
     navigate(`/monitored/author?${params.toString()}`);
   }, [navigate]);
 
+  const openEditAuthorModal = useCallback((entityId: number, authorName: string) => {
+    setEditAuthorModalState({ open: true, entityId, authorName });
+  }, []);
+
+  const closeEditAuthorModal = useCallback(() => {
+    setEditAuthorModalState({ open: false, entityId: null, authorName: '' });
+  }, []);
+
+  const handleEditAuthorDeleted = useCallback(() => {
+    const { entityId } = editAuthorModalState;
+    if (entityId) {
+      setMonitored((prev) => prev.filter((author) => author.id !== entityId));
+      setMonitoredBooksSources((prev) => prev.filter((entity) => entity.id !== entityId));
+      setMonitoredBooksRows((prev) => prev.filter((book) => book.author_entity_id !== entityId));
+    }
+  }, [editAuthorModalState]);
+
   const handleMonitoredBookResultSelect = useCallback((row: MonitoredAuthorBookSearchRow) => {
     const matchingAuthor = monitored.find((item) => item.id === row.entity_id);
     const resolvedAuthorName = matchingAuthor?.name || row.author_name;
@@ -2889,10 +2915,7 @@ export const MonitoredPage = ({
                             subtitle={subtitle}
                             thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name || 'Unknown author'} />}
                             onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
-                            onEdit={typeof authorEntityId === 'number' ? () => {
-                              setEditAuthorModal({ name: author.name || '', provider: author.provider, provider_id: author.provider_id, source_url: author.source_url, photo_url: author.photo_url });
-                              setEditAuthorEntityId(authorEntityId);
-                            } : undefined}
+                            onEdit={typeof authorEntityId === 'number' ? () => void openEditAuthorModal(authorEntityId, author.name || 'Unknown author') : undefined}
                             onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
                             isSelected={isSelected}
                             hasActiveSelection={hasActiveMonitoredAuthorSelection}
@@ -2934,10 +2957,7 @@ export const MonitoredPage = ({
                             }
                             subtitle={subtitle}
                             onOpenDetails={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
-                            onEdit={typeof authorEntityId === 'number' ? () => {
-                              setEditAuthorModal({ name: author.name || '', provider: author.provider, provider_id: author.provider_id, source_url: author.source_url, photo_url: author.photo_url });
-                              setEditAuthorEntityId(authorEntityId);
-                            } : undefined}
+                            onEdit={typeof authorEntityId === 'number' ? () => void openEditAuthorModal(authorEntityId, author.name || 'Unknown author') : undefined}
                             onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
                             isSelected={isSelected}
                             hasActiveSelection={hasActiveMonitoredAuthorSelection}
@@ -3813,23 +3833,13 @@ export const MonitoredPage = ({
         }}
       />
 
-      {editAuthorModal ? (
-        <AuthorModal
-          author={editAuthorModal}
-          displayMode="modal"
-          onClose={() => {
-            setEditAuthorModal(null);
-            setEditAuthorEntityId(null);
-          }}
-          onGetReleases={onGetReleases}
-          defaultReleaseContentType={defaultReleaseContentType}
-          defaultReleaseActionEbook={defaultReleaseActionEbook}
-          defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
-          monitoredEntityId={editAuthorEntityId}
-          status={status}
-          openEditOnMount
-        />
-      ) : null}
+      <EditAuthorModal
+        open={editAuthorModalState.open}
+        entityId={editAuthorModalState.entityId}
+        authorName={editAuthorModalState.authorName}
+        onClose={closeEditAuthorModal}
+        onDeleted={handleEditAuthorDeleted}
+      />
     </div>
   );
 };

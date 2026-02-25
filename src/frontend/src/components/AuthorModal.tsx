@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, runMonitoredEntitySearch } from '../services/api';
-import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, runMonitoredEntitySearch } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
-import { FolderBrowserModal } from './FolderBrowserModal';
+import { EditAuthorModal } from './EditAuthorModal';
 import { BookDetailsModal } from './BookDetailsModal';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
@@ -426,18 +425,6 @@ export const AuthorModal = ({
     audiobook: false,
   });
 
-  const [pathsEntity, setPathsEntity] = useState<MonitoredEntity | null>(null);
-  const [pathsLoading, setPathsLoading] = useState(false);
-  const [pathsError, setPathsError] = useState<string | null>(null);
-  const [ebookAuthorDir, setEbookAuthorDir] = useState('');
-  const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
-  const [pathsSaving, setPathsSaving] = useState(false);
-  const [authorDeleting, setAuthorDeleting] = useState(false);
-  const [pathsBrowserState, setPathsBrowserState] = useState<{ open: boolean; kind: 'ebook' | 'audiobook' | null; initialPath: string | null }>({
-    open: false,
-    kind: null,
-    initialPath: null,
-  });
   const [isEditModalOpen, setIsEditModalOpen] = useState(openEditOnMount);
 
   const [filesLoading, setFilesLoading] = useState(false);
@@ -600,44 +587,12 @@ export const AuthorModal = ({
 
   useEffect(() => {
     if (!author || !monitoredEntityId) {
-      setPathsEntity(null);
-      setPathsError(null);
-      setPathsLoading(false);
-      setEbookAuthorDir('');
-      setAudiobookAuthorDir('');
       setIsEditModalOpen(false);
-
       setFilesLoading(false);
       setFilesError(null);
       setFiles([]);
       return;
     }
-
-    let alive = true;
-    const load = async () => {
-      setPathsLoading(true);
-      setPathsError(null);
-      try {
-        const entity = await getMonitoredEntity(monitoredEntityId);
-        if (!alive) return;
-        setPathsEntity(entity);
-        const settings = entity.settings || {};
-        setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-        setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-      } catch (e) {
-        if (!alive) return;
-        const message = e instanceof Error ? e.message : 'Failed to load monitored paths';
-        setPathsError(message);
-        setPathsEntity(null);
-      } finally {
-        if (alive) setPathsLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      alive = false;
-    };
   }, [author, monitoredEntityId]);
 
   useEffect(() => {
@@ -842,12 +797,6 @@ export const AuthorModal = ({
       setBooks([]);
       setBooksError(null);
       setIsLoadingBooks(false);
-
-      setPathsEntity(null);
-      setPathsError(null);
-      setPathsLoading(false);
-      setEbookAuthorDir('');
-      setAudiobookAuthorDir('');
       setIsEditModalOpen(false);
       return;
     }
@@ -1924,70 +1873,6 @@ export const AuthorModal = ({
   const providerLabel = details?.provider || author.provider || null;
   const booksCount = details?.stats?.books_count ?? null;
 
-  const normalizePath = (value: string): string => {
-    const v = (value || '').trim();
-    if (!v) return '';
-    return v.replace(/\/+$/g, '');
-  };
-
-  const handleSavePaths = async () => {
-    if (!monitoredEntityId) return;
-    const ebook = normalizePath(ebookAuthorDir);
-    const audio = normalizePath(audiobookAuthorDir);
-    if (!ebook && !audio) {
-      setPathsError('Please set an Ebook folder or Audiobook folder.');
-      return;
-    }
-
-    setPathsSaving(true);
-    setPathsError(null);
-    try {
-      const updated = await patchMonitoredEntity(monitoredEntityId, {
-        settings: {
-          ebook_author_dir: ebook || undefined,
-          audiobook_author_dir: audio || undefined,
-        },
-      });
-      setPathsEntity(updated);
-      const settings = updated.settings || {};
-      setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : ebook);
-      setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : audio);
-      setIsEditModalOpen(false);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to save paths';
-      setPathsError(message);
-    } finally {
-      setPathsSaving(false);
-    }
-  };
-
-  const handleDeleteAuthor = async () => {
-    if (!monitoredEntityId || authorDeleting) return;
-
-    const confirmed = window.confirm(
-      `Delete monitored author "${resolvedName || 'Unknown author'}"?\n\n` +
-      'This removes monitored author data from Shelfmark database only (books, file matches, and settings for this monitored author).\n' +
-      'Files on disk will NOT be deleted.'
-    );
-    if (!confirmed) return;
-
-    setAuthorDeleting(true);
-    setPathsError(null);
-    try {
-      const { failedIds } = await deleteMonitoredAuthorsByIds([monitoredEntityId]);
-      if (failedIds.length > 0) {
-        throw new Error('Failed to delete monitored author');
-      }
-      setIsEditModalOpen(false);
-      handleClose();
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to delete monitored author';
-      setPathsError(message);
-    } finally {
-      setAuthorDeleting(false);
-    }
-  };
-
   return (
     <>
       <div
@@ -2073,10 +1958,7 @@ export const AuthorModal = ({
                     {monitoredEntityId ? (
                       <button
                         type="button"
-                        onClick={() => {
-                          setPathsError(null);
-                          setIsEditModalOpen(true);
-                        }}
+                        onClick={() => setIsEditModalOpen(true)}
                         className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
                       >
                         Edit
@@ -2130,10 +2012,7 @@ export const AuthorModal = ({
                         {monitoredEntityId && !isPageMode ? (
                           <button
                             type="button"
-                            onClick={() => {
-                              setPathsError(null);
-                              setIsEditModalOpen(true);
-                            }}
+                            onClick={() => setIsEditModalOpen(true)}
                             className="px-3 py-1 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
                           >
                             Edit
@@ -3088,23 +2967,6 @@ export const AuthorModal = ({
         </div>
       </div>
       </div>
-      <FolderBrowserModal
-        open={pathsBrowserState.open}
-        title={pathsBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
-        initialPath={pathsBrowserState.initialPath}
-        overlayZIndex={2100}
-        onClose={() => setPathsBrowserState({ open: false, kind: null, initialPath: null })}
-        onSelect={(path) => {
-          const authorName = (resolvedName || author?.name || '').trim();
-          const suggested = authorName ? `${normalizePath(path)}/${authorName}` : path;
-          if (pathsBrowserState.kind === 'audiobook') {
-            setAudiobookAuthorDir(suggested);
-          } else {
-            setEbookAuthorDir(suggested);
-          }
-        }}
-      />
-
       <BookDetailsModal
         book={activeBookDetails}
         files={activeBookFiles}
@@ -3116,126 +2978,13 @@ export const AuthorModal = ({
         }}
       />
 
-      {isEditModalOpen ? (
-        <div
-          className="modal-overlay active sm:px-6 sm:py-6"
-          style={{ zIndex: 2000, pointerEvents: pathsBrowserState.open ? 'none' : 'auto' }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              const settings = pathsEntity?.settings || {};
-              setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-              setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-              setPathsError(null);
-              setIsEditModalOpen(false);
-            }
-          }}
-        >
-          <div className="details-container w-full max-w-2xl h-auto settings-modal-enter" role="dialog" aria-modal="true" aria-label="Edit monitored author">
-            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
-              <header className="flex items-start justify-between gap-3 border-b border-[var(--border-muted)] px-5 py-4">
-                <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Edit</div>
-                  <div className="mt-1 text-base font-semibold truncate">{resolvedName || 'Unknown author'}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const settings = pathsEntity?.settings || {};
-                    setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-                    setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-                    setPathsError(null);
-                    setIsEditModalOpen(false);
-                  }}
-                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-                  aria-label="Close"
-                >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </header>
-
-              <div className="px-5 py-4 space-y-4">
-                {pathsLoading ? <div className="text-sm text-gray-500 dark:text-gray-400">Loading…</div> : null}
-                {pathsError ? <div className="text-sm text-red-500">{pathsError}</div> : null}
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">eBooks Path</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPathsBrowserState({ open: true, kind: 'ebook', initialPath: ebookAuthorDir || null })}
-                      className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                    >
-                      Browse
-                    </button>
-                    <input
-                      value={ebookAuthorDir}
-                      onChange={(e) => setEbookAuthorDir(e.target.value)}
-                      placeholder="/books/ebooks/Author Name"
-                      className="flex-1 px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Audiobooks Path</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPathsBrowserState({ open: true, kind: 'audiobook', initialPath: audiobookAuthorDir || null })}
-                      className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                    >
-                      Browse
-                    </button>
-                    <input
-                      value={audiobookAuthorDir}
-                      onChange={(e) => setAudiobookAuthorDir(e.target.value)}
-                      placeholder="/books/audiobooks/Author Name"
-                      className="flex-1 px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <footer className="flex items-center justify-between gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
-                <button
-                  type="button"
-                  onClick={() => void handleDeleteAuthor()}
-                  disabled={authorDeleting || pathsSaving || !monitoredEntityId}
-                  className="px-4 py-2 rounded-full bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-medium"
-                  title="Deletes monitored author records from database only. Files on disk are not deleted."
-                >
-                  {authorDeleting ? 'Deleting…' : 'Delete Author'}
-                </button>
-                <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const settings = pathsEntity?.settings || {};
-                    setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-                    setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-                    setPathsError(null);
-                    setIsEditModalOpen(false);
-                  }}
-                  className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-gray-900 font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={pathsSaving || authorDeleting}
-                  onClick={() => void handleSavePaths()}
-                  className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
-                >
-                  {pathsSaving ? 'Saving…' : 'Save'}
-                </button>
-                </div>
-              </footer>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <EditAuthorModal
+        open={isEditModalOpen}
+        entityId={monitoredEntityId ?? null}
+        authorName={resolvedName || 'Unknown author'}
+        onClose={() => setIsEditModalOpen(false)}
+        onDeleted={handleClose}
+      />
     </>
   );
 };
