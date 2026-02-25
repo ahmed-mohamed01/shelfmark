@@ -1206,23 +1206,6 @@ export const AuthorModal = ({
       return Number.isFinite(n) ? n : null;
     };
 
-    const groupMap = new Map<string, Book[]>();
-    for (const b of books) {
-      const key = b.series_name || '__standalone__';
-      const list = groupMap.get(key);
-      if (list) list.push(b);
-      else groupMap.set(key, [b]);
-    }
-
-    const standalone = groupMap.get('__standalone__') ?? [];
-    groupMap.delete('__standalone__');
-
-    const seriesNames = Array.from(groupMap.keys());
-    seriesNames.sort((a, b) => a.localeCompare(b));
-    if (booksSort === 'series_desc') {
-      seriesNames.reverse();
-    }
-
     const withinGroupSort = (a: Book, b: Book) => {
       if (booksSort === 'title_asc') {
         return (a.title || '').localeCompare(b.title || '');
@@ -1282,20 +1265,76 @@ export const AuthorModal = ({
       return by - ay;
     };
 
-    const groups = seriesNames.map((name) => {
-      const seriesBooks = [...(groupMap.get(name) ?? [])];
-      seriesBooks.sort(withinGroupSort);
-      return { key: name, title: name, books: seriesBooks };
-    });
+    // Group by year when sorting by year
+    if (booksSort === 'year_desc' || booksSort === 'year_asc') {
+      const yearMap = new Map<string, Book[]>();
+      for (const b of books) {
+        const year = parseYear(b.year);
+        const key = year != null ? String(year) : '__unknown__';
+        const list = yearMap.get(key);
+        if (list) list.push(b);
+        else yearMap.set(key, [b]);
+      }
 
-    const standaloneBooks = [...standalone];
-    standaloneBooks.sort(withinGroupSort);
+      const unknown = yearMap.get('__unknown__') ?? [];
+      yearMap.delete('__unknown__');
 
-    if (standaloneBooks.length > 0) {
-      groups.push({ key: '__standalone__', title: 'Standalone', books: standaloneBooks });
+      const years = Array.from(yearMap.keys()).sort((a, b) => 
+        booksSort === 'year_asc' ? Number(a) - Number(b) : Number(b) - Number(a)
+      );
+
+      const groups = years.map((year) => {
+        const yearBooks = [...(yearMap.get(year) ?? [])];
+        yearBooks.sort(withinGroupSort);
+        return { key: year, title: year, books: yearBooks };
+      });
+
+      if (unknown.length > 0) {
+        unknown.sort(withinGroupSort);
+        groups.push({ key: '__unknown__', title: 'Unknown Year', books: unknown });
+      }
+
+      return groups;
     }
 
-    return groups;
+    // Group by series when sorting by series
+    if (booksSort === 'series_asc' || booksSort === 'series_desc') {
+      const groupMap = new Map<string, Book[]>();
+      for (const b of books) {
+        const key = b.series_name || '__standalone__';
+        const list = groupMap.get(key);
+        if (list) list.push(b);
+        else groupMap.set(key, [b]);
+      }
+
+      const standalone = groupMap.get('__standalone__') ?? [];
+      groupMap.delete('__standalone__');
+
+      const seriesNames = Array.from(groupMap.keys());
+      seriesNames.sort((a, b) => a.localeCompare(b));
+      if (booksSort === 'series_desc') {
+        seriesNames.reverse();
+      }
+
+      const groups = seriesNames.map((name) => {
+        const seriesBooks = [...(groupMap.get(name) ?? [])];
+        seriesBooks.sort(withinGroupSort);
+        return { key: name, title: name, books: seriesBooks };
+      });
+
+      const standaloneBooks = [...standalone];
+      standaloneBooks.sort(withinGroupSort);
+
+      if (standaloneBooks.length > 0) {
+        groups.push({ key: '__standalone__', title: 'Standalone', books: standaloneBooks });
+      }
+
+      return groups;
+    }
+
+    // No grouping for other sort modes (title, popular, rating)
+    const sorted = [...books].sort(withinGroupSort);
+    return [{ key: '__all__', title: 'All Books', books: sorted }];
   }, [books, booksSort]);
 
   const seriesFilterOptions = useMemo(() => {
@@ -2846,12 +2885,20 @@ export const AuthorModal = ({
                                       const key = prov && bid ? `${prov}:${bid}` : '';
                                       const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
                                       const sortedTypes = types ? Array.from(types).sort((a, b) => a.localeCompare(b)) : [];
-                                      const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
-                                      const showSeriesName = Boolean(seriesLabel) && booksCompactMinWidth >= 168;
+                                      const seriesName = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
+                                      const seriesLabel = seriesName && book.series_position != null 
+                                        ? `${seriesName} #${book.series_position}` 
+                                        : seriesName;
+                                      const isSeriesSort = booksSort === 'series_asc' || booksSort === 'series_desc';
+                                      const isYearSort = booksSort === 'year_asc' || booksSort === 'year_desc';
+                                      // Show series name when NOT grouping by series (i.e., not series sort)
+                                      const showSeriesName = Boolean(seriesLabel) && !isSeriesSort;
                                       const showExtendedMeta = booksCompactMinWidth >= 178;
                                       const popularity = extractBookPopularity(book);
                                       const showPopularity = booksCompactMinWidth >= 194 && (popularity.rating !== null || popularity.readersCount !== null);
-                                      const metaLine = `${book.year || '—'}${book.author ? ` • ${book.author}` : ''}`;
+                                      // Show year when NOT grouping by year (i.e., not year sort)
+                                      const yearPart = !isYearSort ? (book.year || '—') : '';
+                                      const metaLine = yearPart ? `${yearPart}${book.author ? ` • ${book.author}` : ''}` : (book.author || '');
                                       const popularityLine = [
                                         popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null,
                                         popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null,
