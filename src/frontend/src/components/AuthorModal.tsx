@@ -94,6 +94,7 @@ interface AuthorModalProps {
   status?: StatusData;
   booksSearchQuery?: string;
   onBooksSearchQueryChange?: (value: string) => void;
+  openEditOnMount?: boolean;
 }
 
 
@@ -373,6 +374,7 @@ export const AuthorModal = ({
   status,
   booksSearchQuery,
   onBooksSearchQueryChange,
+  openEditOnMount = false,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -436,7 +438,7 @@ export const AuthorModal = ({
     kind: null,
     initialPath: null,
   });
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(openEditOnMount);
 
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);

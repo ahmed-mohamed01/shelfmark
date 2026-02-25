@@ -458,6 +458,8 @@ export const MonitoredPage = ({
   const monitoredBooksSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedMonitoredBookKeys, setSelectedMonitoredBookKeys] = useState<Record<string, boolean>>({});
   const [selectedMonitoredAuthorKeys, setSelectedMonitoredAuthorKeys] = useState<Record<string, boolean>>({});
+  const [editAuthorModal, setEditAuthorModal] = useState<AuthorModalAuthor | null>(null);
+  const [editAuthorEntityId, setEditAuthorEntityId] = useState<number | null>(null);
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
   const [bulkDeleteAuthorsRunning, setBulkDeleteAuthorsRunning] = useState(false);
   const [bulkDeleteAuthorsConfirmOpen, setBulkDeleteAuthorsConfirmOpen] = useState(false);
@@ -1772,6 +1774,7 @@ export const MonitoredPage = ({
     initialBookProviderId?: string | null;
     initialContentType?: ContentType;
     initialAction?: ReleasePrimaryAction;
+    openEdit?: boolean;
   }) => {
     const normalized = normalizeAuthor(payload.name);
     if (!normalized) {
@@ -1797,6 +1800,7 @@ export const MonitoredPage = ({
     if (initialBookProviderId) params.set('initial_provider_id', initialBookProviderId);
     if (payload.initialContentType) params.set('initial_content_type', payload.initialContentType);
     if (payload.initialAction) params.set('initial_action', payload.initialAction);
+    if (payload.openEdit) params.set('open_edit', '1');
 
     navigate(`/monitored/author?${params.toString()}`);
   }, [navigate]);
@@ -2105,6 +2109,7 @@ export const MonitoredPage = ({
   const authorDetailsInitialBookProviderId = (authorDetailsSearchParams.get('initial_provider_id') || '').trim() || undefined;
   const authorDetailsInitialContentTypeParam = (authorDetailsSearchParams.get('initial_content_type') || '').trim();
   const authorDetailsInitialActionParam = (authorDetailsSearchParams.get('initial_action') || '').trim();
+  const authorDetailsOpenEdit = authorDetailsSearchParams.get('open_edit') === '1';
   const authorDetailsInitialContentTypeOverride: ContentType | undefined = authorDetailsInitialContentTypeParam === 'audiobook'
     ? 'audiobook'
     : authorDetailsInitialContentTypeParam === 'ebook'
@@ -2145,6 +2150,7 @@ export const MonitoredPage = ({
               initialBookProviderId={authorDetailsInitialBookProviderId}
               monitoredEntityId={authorDetailsMonitoredEntityId}
               status={status}
+              openEditOnMount={authorDetailsOpenEdit}
             />
           ) : (
             <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">
@@ -2883,6 +2889,10 @@ export const MonitoredPage = ({
                             subtitle={subtitle}
                             thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name || 'Unknown author'} />}
                             onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
+                            onEdit={typeof authorEntityId === 'number' ? () => {
+                              setEditAuthorModal({ name: author.name || '', provider: author.provider, provider_id: author.provider_id, source_url: author.source_url, photo_url: author.photo_url });
+                              setEditAuthorEntityId(authorEntityId);
+                            } : undefined}
                             onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
                             isSelected={isSelected}
                             hasActiveSelection={hasActiveMonitoredAuthorSelection}
@@ -2924,6 +2934,10 @@ export const MonitoredPage = ({
                             }
                             subtitle={subtitle}
                             onOpenDetails={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
+                            onEdit={typeof authorEntityId === 'number' ? () => {
+                              setEditAuthorModal({ name: author.name || '', provider: author.provider, provider_id: author.provider_id, source_url: author.source_url, photo_url: author.photo_url });
+                              setEditAuthorEntityId(authorEntityId);
+                            } : undefined}
                             onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
                             isSelected={isSelected}
                             hasActiveSelection={hasActiveMonitoredAuthorSelection}
@@ -3798,6 +3812,24 @@ export const MonitoredPage = ({
           }
         }}
       />
+
+      {editAuthorModal ? (
+        <AuthorModal
+          author={editAuthorModal}
+          displayMode="modal"
+          onClose={() => {
+            setEditAuthorModal(null);
+            setEditAuthorEntityId(null);
+          }}
+          onGetReleases={onGetReleases}
+          defaultReleaseContentType={defaultReleaseContentType}
+          defaultReleaseActionEbook={defaultReleaseActionEbook}
+          defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
+          monitoredEntityId={editAuthorEntityId}
+          status={status}
+          openEditOnMount
+        />
+      ) : null}
     </div>
   );
 };
