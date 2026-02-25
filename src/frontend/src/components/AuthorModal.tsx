@@ -106,9 +106,9 @@ const SEARCH_DROPDOWN_OPTIONS: Array<{
   label: string;
 }> = [
   { contentType: 'ebook', action: 'interactive_search', label: 'eBook — Interactive Search' },
-  { contentType: 'ebook', action: 'auto_search_download', label: 'eBook — Auto Search + Download' },
+  { contentType: 'ebook', action: 'auto_search_download', label: 'eBook — Auto Search' },
   { contentType: 'audiobook', action: 'interactive_search', label: 'Audiobook — Interactive Search' },
-  { contentType: 'audiobook', action: 'auto_search_download', label: 'Audiobook — Auto Search + Download' },
+  { contentType: 'audiobook', action: 'auto_search_download', label: 'Audiobook — Auto Search' },
 ];
 
 type AuthorBooksSort = 'year_desc' | 'year_asc' | 'title_asc' | 'series_asc' | 'series_desc' | 'popular' | 'rating';
@@ -1857,10 +1857,9 @@ export const AuthorModal = ({
                     close();
                     void triggerReleaseSearch(book, option.contentType, option.action);
                   }}
-                  className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+                  className={`w-full px-3 py-2 text-left text-sm hover-surface ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
                 >
-                  <span>{option.label}</span>
-                  {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
+                  {option.label}
                 </button>
               );
             })}
@@ -1941,7 +1940,6 @@ export const AuthorModal = ({
       <Dropdown
         widthClassName="w-auto"
         align="right"
-        usePortal
         panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
         renderTrigger={({ isOpen, toggle }) => (
           <button
