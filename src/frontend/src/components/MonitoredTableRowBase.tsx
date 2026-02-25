@@ -14,6 +14,7 @@ interface MonitoredTableRowBaseProps {
   rightClassName?: string;
   rowClassName?: string;
   onRowClick?: () => void;
+  isDimmed?: boolean;
 }
 
 export const MonitoredTableRowBase = ({
@@ -30,6 +31,7 @@ export const MonitoredTableRowBase = ({
   rightClassName = 'relative flex flex-row justify-end gap-1 sm:gap-1.5 sm:pr-3',
   rowClassName = 'group px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full',
   onRowClick,
+  isDimmed = false,
 }: MonitoredTableRowBaseProps) => {
   const shouldIgnoreRowClick = (target: EventTarget | null, rowElement: HTMLDivElement): boolean => {
     if (!(target instanceof Element)) return false;
@@ -53,7 +55,7 @@ export const MonitoredTableRowBase = ({
 
   return (
     <div
-      className={`${rowClassName}${onRowClick ? ' cursor-pointer' : ''}`}
+      className={`${rowClassName}${onRowClick ? ' cursor-pointer' : ''}${isDimmed ? ' opacity-50' : ''}`}
       onClick={handleRowClick}
       onKeyDown={handleRowKeyDown}
       role={onRowClick ? 'button' : undefined}

@@ -1266,6 +1266,60 @@ export const MonitoredPage = ({
     }
   }, [bulkUnmonitorRunning, monitoredBooksRows, selectedMonitoredBookKeys, getMonitoredBookSelectionKey]);
 
+  const toggleSingleBookMonitor = useCallback(async (
+    book: MonitoredBookListRow,
+    type: 'ebook' | 'audiobook' | 'both'
+  ) => {
+    const provider = (book.provider || '').trim();
+    const providerBookId = (book.provider_book_id || '').trim();
+    if (!provider || !providerBookId) return;
+
+    const currentEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
+    const currentAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+
+    const patch: { provider: string; provider_book_id: string; monitor_ebook?: boolean; monitor_audiobook?: boolean } = {
+      provider,
+      provider_book_id: providerBookId,
+    };
+
+    if (type === 'ebook') {
+      patch.monitor_ebook = !currentEbook;
+    } else if (type === 'audiobook') {
+      patch.monitor_audiobook = !currentAudiobook;
+    } else {
+      const targetValue = !(currentEbook && currentAudiobook);
+      patch.monitor_ebook = targetValue;
+      patch.monitor_audiobook = targetValue;
+    }
+
+    // Optimistic update
+    setMonitoredBooksRows((prev) =>
+      prev.map((r) =>
+        r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
+          ? {
+              ...r,
+              monitor_ebook: patch.monitor_ebook !== undefined ? patch.monitor_ebook : r.monitor_ebook,
+              monitor_audiobook: patch.monitor_audiobook !== undefined ? patch.monitor_audiobook : r.monitor_audiobook,
+            }
+          : r
+      )
+    );
+
+    try {
+      await updateMonitoredBooksMonitorFlags(book.author_entity_id, patch);
+    } catch (e) {
+      // Revert on error
+      setMonitoredBooksRows((prev) =>
+        prev.map((r) =>
+          r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
+            ? { ...r, monitor_ebook: currentEbook, monitor_audiobook: currentAudiobook }
+            : r
+        )
+      );
+      console.error('Failed to update monitoring state:', e);
+    }
+  }, []);
+
   const runBulkDeleteSelectedAuthors = useCallback(async () => {
     if (bulkDeleteAuthorsRunning) return;
 
@@ -1538,6 +1592,26 @@ export const MonitoredPage = ({
     const providerId = (book.provider_id || '').trim().toLowerCase();
     return Boolean(provider && providerId && monitoredSingleBookKeySet.has(`${provider}:${providerId}`));
   }, [monitoredSingleBookKeySet]);
+
+  const findMonitoredBookRow = useCallback((book: Book): MonitoredBookListRow | undefined => {
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) return undefined;
+    return monitoredBooksRows.find(
+      (r) => r.provider === provider && r.provider_book_id === providerId
+    );
+  }, [monitoredBooksRows]);
+
+  const handleBookSearchResultMonitorAction = useCallback((book: Book) => {
+    const existingRow = findMonitoredBookRow(book);
+    if (existingRow) {
+      // Book is monitored - toggle to unmonitor both formats
+      void toggleSingleBookMonitor(existingRow, 'both');
+    } else {
+      // Book is not monitored - open monitor modal
+      openBookMonitorModal(book);
+    }
+  }, [findMonitoredBookRow, toggleSingleBookMonitor, openBookMonitorModal]);
 
   const getMonitorResultButtonState = useCallback((_bookId: string): ButtonStateInfo => ({
     text: 'Monitor',
@@ -1930,6 +2004,10 @@ export const MonitoredPage = ({
   }, [navigateToAuthorPage]);
 
   const renderMonitoredBookActions = useCallback((book: MonitoredBookListRow, compact = false) => {
+    const tracksEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
+    const tracksAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+    const isFullyMonitored = tracksEbook && tracksAudiobook;
+
     const menuContent = ({ close }: { close: () => void }) => (
       <div className="py-1">
         <button
@@ -1962,6 +2040,52 @@ export const MonitoredPage = ({
           className="w-full px-3 py-2 text-left text-sm hover-surface"
         >
           Search audiobooks
+        </button>
+        <div className="my-1 border-t border-[var(--border-muted)]" />
+        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Monitoring
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            void toggleSingleBookMonitor(book, 'both');
+          }}
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+        >
+          <span>Monitor Both</span>
+          {isFullyMonitored ? (
+            <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+            </svg>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void toggleSingleBookMonitor(book, 'ebook');
+          }}
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+        >
+          <span>Monitor eBook</span>
+          {tracksEbook ? (
+            <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+            </svg>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void toggleSingleBookMonitor(book, 'audiobook');
+          }}
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+        >
+          <span>Monitor Audiobook</span>
+          {tracksAudiobook ? (
+            <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+            </svg>
+          ) : null}
         </button>
       </div>
     );
@@ -2027,7 +2151,7 @@ export const MonitoredPage = ({
         </Dropdown>
       </div>
     );
-  }, [openMonitoredBookDetails, openMonitoredBookInAuthorPage]);
+  }, [openMonitoredBookDetails, openMonitoredBookInAuthorPage, toggleSingleBookMonitor]);
 
   const clearSearchAndReturn = useCallback(() => {
     setAuthorQuery('');
@@ -3338,9 +3462,9 @@ export const MonitoredPage = ({
                     onViewModeChange={(next) => setBookSearchViewMode(next === 'list' ? 'list' : 'compact')}
                     customAction={{
                       label: 'Monitor',
-                      onClick: (book) => openBookMonitorModal(book),
-                      isDisabled: (book) => isBookSearchResultMonitored(book),
-                      getLabel: (book) => (isBookSearchResultMonitored(book) ? 'Monitored' : 'Monitor'),
+                      onClick: (book) => handleBookSearchResultMonitorAction(book),
+                      isDisabled: () => false,
+                      getLabel: (book) => (isBookSearchResultMonitored(book) ? 'Unmonitor' : 'Monitor'),
                     }}
                   />
                 )
@@ -3794,6 +3918,9 @@ export const MonitoredPage = ({
           }
           openMonitoredBookInAuthorPage(activeBookSourceRow);
         }}
+        monitorEbook={activeBookSourceRow ? (activeBookSourceRow.monitor_ebook === true || activeBookSourceRow.monitor_ebook === 1) : undefined}
+        monitorAudiobook={activeBookSourceRow ? (activeBookSourceRow.monitor_audiobook === true || activeBookSourceRow.monitor_audiobook === 1) : undefined}
+        onToggleMonitor={activeBookSourceRow ? (type) => void toggleSingleBookMonitor(activeBookSourceRow, type) : undefined}
       />
 
       <FolderBrowserModal

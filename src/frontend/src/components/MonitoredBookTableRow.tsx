@@ -10,6 +10,7 @@ interface MonitoredBookTableRowProps {
   metaRow?: ReactNode;
   availabilitySlot: ReactNode;
   trailingSlot: ReactNode;
+  isDimmed?: boolean;
 }
 
 export const MonitoredBookTableRow = ({
@@ -21,6 +22,7 @@ export const MonitoredBookTableRow = ({
   metaRow,
   availabilitySlot,
   trailingSlot,
+  isDimmed = false,
 }: MonitoredBookTableRowProps) => {
   const mainSlot = (
     <button
@@ -42,6 +44,7 @@ export const MonitoredBookTableRow = ({
       mainSlot={mainSlot}
       middleSlot={availabilitySlot}
       rightSlot={trailingSlot}
+      isDimmed={isDimmed}
     />
   );
 };

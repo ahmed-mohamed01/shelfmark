@@ -15,11 +15,14 @@ interface BookDetailsModalProps {
   monitoredEntityId?: number | null;
   onClose: () => void;
   onOpenSearch: (contentType: ContentType) => void;
+  monitorEbook?: boolean;
+  monitorAudiobook?: boolean;
+  onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
-export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
 
@@ -451,6 +454,52 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                     </a>
                   ) : null}
                 </div>
+
+                {monitoredEntityId && onToggleMonitor ? (
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[var(--border-muted)]">
+                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
+                    <button
+                      type="button"
+                      onClick={() => onToggleMonitor('ebook')}
+                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                        monitorEbook
+                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                          : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
+                      }`}
+                    >
+                      {monitorEbook ? (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                        </svg>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                      )}
+                      eBook
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggleMonitor('audiobook')}
+                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                        monitorAudiobook
+                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                          : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
+                      }`}
+                    >
+                      {monitorAudiobook ? (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                        </svg>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                      )}
+                      Audiobook
+                    </button>
+                  </div>
+                ) : null}
 
               </div>
             </div>

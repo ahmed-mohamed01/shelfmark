@@ -11,6 +11,7 @@ interface MediaCompactTileBaseProps {
   metaLine?: string;
   footer?: ReactNode;
   tooltip?: string;
+  isDimmed?: boolean;
 }
 
 export const MediaCompactTileBase = ({
@@ -24,11 +25,12 @@ export const MediaCompactTileBase = ({
   metaLine,
   footer,
   tooltip,
+  isDimmed = false,
 }: MediaCompactTileBaseProps) => {
   const computedTooltip = tooltip || [title, subtitle, metaLine].filter(Boolean).join('\n');
 
   return (
-    <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] overflow-hidden" title={computedTooltip}>
+    <div className={`group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] overflow-hidden ${isDimmed ? 'opacity-50' : ''}`} title={computedTooltip}>
       {topLeftOverlay ? (
         <div className="absolute left-2 top-2 z-20">
           {topLeftOverlay}

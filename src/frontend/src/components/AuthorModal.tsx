@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, updateMonitoredBooksMonitorFlags } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
@@ -1752,60 +1752,187 @@ export const AuthorModal = ({
     };
   }, [defaultReleaseContentType, resolvePrimaryActionForContentType]);
 
+  const getBookMonitorState = useCallback((book: Book): { monitorEbook: boolean; monitorAudiobook: boolean } => {
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) {
+      return { monitorEbook: true, monitorAudiobook: true };
+    }
+    const row = monitoredBookRows.find(
+      (r) => r.provider === provider && r.provider_book_id === providerId
+    );
+    if (!row) {
+      return { monitorEbook: true, monitorAudiobook: true };
+    }
+    return {
+      monitorEbook: row.monitor_ebook === true || row.monitor_ebook === 1,
+      monitorAudiobook: row.monitor_audiobook === true || row.monitor_audiobook === 1,
+    };
+  }, [monitoredBookRows]);
+
+  const toggleBookMonitor = useCallback(async (
+    book: Book,
+    type: 'ebook' | 'audiobook' | 'both',
+    newValue?: boolean
+  ) => {
+    if (!monitoredEntityId) return;
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) return;
+
+    const current = getBookMonitorState(book);
+    const patch: { provider: string; provider_book_id: string; monitor_ebook?: boolean; monitor_audiobook?: boolean } = {
+      provider,
+      provider_book_id: providerId,
+    };
+
+    if (type === 'ebook') {
+      patch.monitor_ebook = newValue !== undefined ? newValue : !current.monitorEbook;
+    } else if (type === 'audiobook') {
+      patch.monitor_audiobook = newValue !== undefined ? newValue : !current.monitorAudiobook;
+    } else {
+      const targetValue = newValue !== undefined ? newValue : !(current.monitorEbook && current.monitorAudiobook);
+      patch.monitor_ebook = targetValue;
+      patch.monitor_audiobook = targetValue;
+    }
+
+    // Optimistic update
+    setMonitoredBookRows((prev) =>
+      prev.map((r) =>
+        r.provider === provider && r.provider_book_id === providerId
+          ? {
+              ...r,
+              monitor_ebook: patch.monitor_ebook !== undefined ? patch.monitor_ebook : r.monitor_ebook,
+              monitor_audiobook: patch.monitor_audiobook !== undefined ? patch.monitor_audiobook : r.monitor_audiobook,
+            }
+          : r
+      )
+    );
+
+    try {
+      await updateMonitoredBooksMonitorFlags(monitoredEntityId, patch);
+    } catch (e) {
+      // Revert on error
+      setMonitoredBookRows((prev) =>
+        prev.map((r) =>
+          r.provider === provider && r.provider_book_id === providerId
+            ? { ...r, monitor_ebook: current.monitorEbook, monitor_audiobook: current.monitorAudiobook }
+            : r
+        )
+      );
+      console.error('Failed to update monitoring state:', e);
+    }
+  }, [monitoredEntityId, getBookMonitorState]);
+
   const renderBookActionMenuContent = useCallback((
     book: Book,
     defaultContentType: ContentType,
     defaultAction: ReleasePrimaryAction,
-  ) => ({ close }: { close: () => void }) => (
-    <div className="py-1">
-      <button
-        type="button"
-        onClick={() => {
-          close();
-          setActiveBookDetails(book);
-        }}
-        className="w-full px-3 py-2 text-left text-sm hover-surface"
-      >
-        View info
-      </button>
-      {onGetReleases ? (
-        <>
-          <div className="my-1 border-t border-[var(--border-muted)]" />
-          {SEARCH_DROPDOWN_OPTIONS.map((option) => {
-            const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
-            return (
-              <button
-                type="button"
-                key={`${option.contentType}:${option.action}`}
-                onClick={() => {
-                  close();
-                  void triggerReleaseSearch(book, option.contentType, option.action);
-                }}
-                className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
-              >
-                <span>{option.label}</span>
-                {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
-              </button>
-            );
-          })}
-        </>
-      ) : null}
-      {book.source_url ? (
-        <>
-          <div className="my-1 border-t border-[var(--border-muted)]" />
-          <a
-            href={book.source_url}
-            target="_blank"
-            rel="noreferrer"
-            className="block w-full px-3 py-2 text-left text-sm hover-surface"
-            onClick={() => close()}
-          >
-            View source
-          </a>
-        </>
-      ) : null}
-    </div>
-  ), [onGetReleases, triggerReleaseSearch]);
+  ) => ({ close }: { close: () => void }) => {
+    const monitorState = getBookMonitorState(book);
+    const isFullyMonitored = monitorState.monitorEbook && monitorState.monitorAudiobook;
+
+    return (
+      <div className="py-1">
+        <button
+          type="button"
+          onClick={() => {
+            close();
+            setActiveBookDetails(book);
+          }}
+          className="w-full px-3 py-2 text-left text-sm hover-surface"
+        >
+          View info
+        </button>
+        {onGetReleases ? (
+          <>
+            <div className="my-1 border-t border-[var(--border-muted)]" />
+            {SEARCH_DROPDOWN_OPTIONS.map((option) => {
+              const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
+              return (
+                <button
+                  type="button"
+                  key={`${option.contentType}:${option.action}`}
+                  onClick={() => {
+                    close();
+                    void triggerReleaseSearch(book, option.contentType, option.action);
+                  }}
+                  className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+                >
+                  <span>{option.label}</span>
+                  {isDefault ? <span className="text-[10px] uppercase tracking-wide opacity-80">Default</span> : null}
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+        {book.source_url ? (
+          <>
+            <div className="my-1 border-t border-[var(--border-muted)]" />
+            <a
+              href={book.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="block w-full px-3 py-2 text-left text-sm hover-surface"
+              onClick={() => close()}
+            >
+              View source
+            </a>
+          </>
+        ) : null}
+        {monitoredEntityId ? (
+          <>
+            <div className="my-1 border-t border-[var(--border-muted)]" />
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Monitoring
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void toggleBookMonitor(book, 'both');
+              }}
+              className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+            >
+              <span>Monitor Both</span>
+              {isFullyMonitored ? (
+                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void toggleBookMonitor(book, 'ebook');
+              }}
+              className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+            >
+              <span>Monitor eBook</span>
+              {monitorState.monitorEbook ? (
+                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void toggleBookMonitor(book, 'audiobook');
+              }}
+              className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+            >
+              <span>Monitor Audiobook</span>
+              {monitorState.monitorAudiobook ? (
+                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </button>
+          </>
+        ) : null}
+      </div>
+    );
+  }, [onGetReleases, triggerReleaseSearch, monitoredEntityId, getBookMonitorState, toggleBookMonitor]);
 
   const renderBookOverflowMenu = (book: Book) => {
     const { defaultContentType, defaultAction } = getDefaultBookSearchMode();
@@ -2855,6 +2982,8 @@ export const AuthorModal = ({
                                         popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null,
                                         popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null,
                                       ].filter(Boolean).join(' • ');
+                                      const bookMonitorState = getBookMonitorState(book);
+                                      const isUnmonitored = !bookMonitorState.monitorEbook && !bookMonitorState.monitorAudiobook;
                                       return (
                                         <MonitoredBookCompactTile
                                           key={book.id}
@@ -2875,6 +3004,7 @@ export const AuthorModal = ({
                                           showPopularityLine={showPopularity}
                                           thumbnail={<BooksListThumbnail preview={book.preview} title={book.title} className="w-full aspect-[2/3]" />}
                                           overflowMenu={renderBookOverflowMenu(book)}
+                                          isDimmed={isUnmonitored}
                                         />
                                       );
                                     })}
@@ -2897,10 +3027,13 @@ export const AuthorModal = ({
                                         const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
                                         const showSeriesInfo = Boolean(seriesLabel) && group.key !== '__standalone__';
                                         const hasSeriesPosition = book.series_position != null;
+                                        const bookMonitorState = getBookMonitorState(book);
+                                        const isUnmonitored = !bookMonitorState.monitorEbook && !bookMonitorState.monitorAudiobook;
 
                                         return (
                                           <MonitoredBookTableRow
                                             key={book.id}
+                                            isDimmed={isUnmonitored}
                                             leadingControl={(() => {
                                               const isSelected = Boolean(selectedBookIds[book.id]);
                                               return (
@@ -3047,6 +3180,9 @@ export const AuthorModal = ({
           if (!activeBookDetails || !onGetReleases) return;
           void triggerReleaseSearch(activeBookDetails, contentType);
         }}
+        monitorEbook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorEbook : undefined}
+        monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
+        onToggleMonitor={activeBookDetails ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
       />
 
       <EditAuthorModal

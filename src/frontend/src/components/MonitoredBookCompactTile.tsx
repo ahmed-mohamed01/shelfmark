@@ -19,6 +19,7 @@ interface MonitoredBookCompactTileProps {
   showMetaLine?: boolean;
   popularityLine?: string;
   showPopularityLine?: boolean;
+  isDimmed?: boolean;
 }
 
 export const MonitoredBookCompactTile = ({
@@ -39,6 +40,7 @@ export const MonitoredBookCompactTile = ({
   showMetaLine = false,
   popularityLine,
   showPopularityLine = false,
+  isDimmed = false,
 }: MonitoredBookCompactTileProps) => {
   const topLeftOverlay = (
     <button
@@ -95,6 +97,7 @@ export const MonitoredBookCompactTile = ({
       subtitle={showSeriesName ? seriesLabel : undefined}
       metaLine={showMetaLine ? metaLine : undefined}
       footer={footer}
+      isDimmed={isDimmed}
     />
   );
 };
