@@ -26,6 +26,8 @@ export const EditAuthorModal = ({
   const [error, setError] = useState<string | null>(null);
   const [ebookAuthorDir, setEbookAuthorDir] = useState('');
   const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
+  const [monitorEbookMode, setMonitorEbookMode] = useState<'all' | 'missing' | 'upcoming'>('upcoming');
+  const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<'all' | 'missing' | 'upcoming'>('upcoming');
   const [entity, setEntity] = useState<MonitoredEntity | null>(null);
   const [folderBrowserState, setFolderBrowserState] = useState<{
     open: boolean;
@@ -43,6 +45,8 @@ export const EditAuthorModal = ({
       setError(null);
       setEbookAuthorDir('');
       setAudiobookAuthorDir('');
+      setMonitorEbookMode('upcoming');
+      setMonitorAudiobookMode('upcoming');
       setEntity(null);
       return;
     }
@@ -58,6 +62,10 @@ export const EditAuthorModal = ({
         const settings = loadedEntity.settings || {};
         setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
         setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+        const ebookMode = settings.monitor_ebook_mode;
+        const audioMode = settings.monitor_audiobook_mode;
+        setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
+        setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
       } catch (e) {
         if (!alive) return;
         const message = e instanceof Error ? e.message : 'Failed to load author settings';
@@ -83,12 +91,18 @@ export const EditAuthorModal = ({
         settings: {
           ebook_author_dir: ebookAuthorDir || undefined,
           audiobook_author_dir: audiobookAuthorDir || undefined,
+          monitor_ebook_mode: monitorEbookMode,
+          monitor_audiobook_mode: monitorAudiobookMode,
         },
       });
       setEntity(updated);
       const settings = updated.settings || {};
       setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : ebookAuthorDir);
       setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : audiobookAuthorDir);
+      const ebookMode = settings.monitor_ebook_mode;
+      const audioMode = settings.monitor_audiobook_mode;
+      setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
+      setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
       onSaved?.();
       onClose();
     } catch (e) {
@@ -97,7 +111,7 @@ export const EditAuthorModal = ({
     } finally {
       setSaving(false);
     }
-  }, [entityId, saving, deleting, ebookAuthorDir, audiobookAuthorDir, onSaved, onClose]);
+  }, [entityId, saving, deleting, ebookAuthorDir, audiobookAuthorDir, monitorEbookMode, monitorAudiobookMode, onSaved, onClose]);
 
   const handleDelete = useCallback(async () => {
     if (!entityId || deleting || saving) return;
@@ -131,6 +145,10 @@ export const EditAuthorModal = ({
     const settings = entity?.settings || {};
     setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
     setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
+    const ebookMode = settings.monitor_ebook_mode;
+    const audioMode = settings.monitor_audiobook_mode;
+    setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
+    setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
     setError(null);
     onClose();
   }, [saving, deleting, entity, onClose]);
@@ -212,6 +230,41 @@ export const EditAuthorModal = ({
                     disabled={loading || saving || deleting}
                   />
                 </div>
+              </div>
+
+              <div className="border-t border-[var(--border-muted)] pt-4 mt-4">
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Monitoring Settings</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-600 dark:text-gray-400">Monitor eBooks</label>
+                    <select
+                      value={monitorEbookMode}
+                      onChange={(e) => setMonitorEbookMode(e.target.value as 'all' | 'missing' | 'upcoming')}
+                      disabled={loading || saving || deleting}
+                      className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm disabled:opacity-50"
+                    >
+                      <option value="upcoming">Upcoming releases only</option>
+                      <option value="missing">All missing</option>
+                      <option value="all">All books</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-600 dark:text-gray-400">Monitor Audiobooks</label>
+                    <select
+                      value={monitorAudiobookMode}
+                      onChange={(e) => setMonitorAudiobookMode(e.target.value as 'all' | 'missing' | 'upcoming')}
+                      disabled={loading || saving || deleting}
+                      className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm disabled:opacity-50"
+                    >
+                      <option value="upcoming">Upcoming releases only</option>
+                      <option value="missing">All missing</option>
+                      <option value="all">All books</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  Controls which books are auto-monitored when syncing. "Upcoming" monitors unreleased books missing files. "Missing" monitors all books without files. "All" monitors every book.
+                </p>
               </div>
             </div>
 
