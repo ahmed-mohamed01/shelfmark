@@ -54,8 +54,6 @@ interface MonitoredBookListRow extends MonitoredBookRow {
   author_provider_id?: string;
   author_photo_url?: string;
   author_source_url?: string;
-  has_epub?: boolean;
-  has_m4b?: boolean;
 }
 
 interface MonitoredBooksSourceEntity {
@@ -246,36 +244,23 @@ const MONITORED_COUNTS_CACHE_KEY = 'monitoredCountsSnapshot';
 const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
-const MONITORED_EBOOK_FILE_EXTENSIONS = new Set(['epub', 'mobi', 'azw', 'azw3', 'pdf', 'cbz', 'cbr']);
-const MONITORED_AUDIOBOOK_FILE_EXTENSIONS = new Set(['m4b', 'mp3', 'm4a', 'flac', 'ogg', 'aac']);
 
-const getMonitoredBookRowKey = (
-  entityId: number,
-  provider?: string | null,
-  providerBookId?: string | null,
-): string | null => {
-  const normalizedProvider = (provider || '').trim().toLowerCase();
-  const normalizedProviderBookId = (providerBookId || '').trim().toLowerCase();
-  if (!normalizedProvider || !normalizedProviderBookId) {
-    return null;
-  }
-  return `${entityId}:${normalizedProvider}:${normalizedProviderBookId}`;
-};
+const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
 const bookTracksEbook = (book: MonitoredBookListRow): boolean => (
-  book.monitor_ebook === true || book.monitor_ebook === 1
+  isEnabledFlag(book.monitor_ebook)
 );
 
 const bookTracksAudiobook = (book: MonitoredBookListRow): boolean => (
-  book.monitor_audiobook === true || book.monitor_audiobook === 1
+  isEnabledFlag(book.monitor_audiobook)
 );
 
 const bookHasEbookFiles = (book: MonitoredBookListRow): boolean => (
-  book.has_epub === true
+  isEnabledFlag(book.has_ebook_available)
 );
 
 const bookHasAudiobookFiles = (book: MonitoredBookListRow): boolean => (
-  book.has_m4b === true
+  isEnabledFlag(book.has_audiobook_available)
 );
 
 const isMonitoredBookFulfilled = (book: MonitoredBookListRow): boolean => (
@@ -288,24 +273,6 @@ const isMonitoredBookDormant = (book: MonitoredBookListRow): boolean => (
   && !bookHasEbookFiles(book)
   && !bookHasAudiobookFiles(book)
 );
-
-const isMonitoredEbookFile = (file: MonitoredBookFileRow): boolean => {
-  const fileType = (file.file_type || '').trim().toLowerCase();
-  if (fileType === 'ebook') {
-    return true;
-  }
-  const ext = (file.ext || '').trim().toLowerCase();
-  return MONITORED_EBOOK_FILE_EXTENSIONS.has(ext);
-};
-
-const isMonitoredAudiobookFile = (file: MonitoredBookFileRow): boolean => {
-  const fileType = (file.file_type || '').trim().toLowerCase();
-  if (fileType === 'audiobook') {
-    return true;
-  }
-  const ext = (file.ext || '').trim().toLowerCase();
-  return MONITORED_AUDIOBOOK_FILE_EXTENSIONS.has(ext);
-};
 
 interface MonitoredCountsSnapshot {
   authors: number;
@@ -1104,11 +1071,8 @@ export const MonitoredPage = ({
 
       const responses = await Promise.allSettled(
         monitoredBooksSources.map(async (entity) => {
-          const [booksResponse, filesResponse] = await Promise.all([
-            listMonitoredBooks(entity.id),
-            listMonitoredBookFiles(entity.id),
-          ]);
-          return { entity, books: booksResponse.books, files: filesResponse.files };
+          const booksResponse = await listMonitoredBooks(entity.id);
+          return { entity, books: booksResponse.books };
         })
       );
 
@@ -1124,33 +1088,15 @@ export const MonitoredPage = ({
           failedCount += 1;
           continue;
         }
-        const { entity, books, files } = result.value;
+        const { entity, books } = result.value;
         const settings = entity.settings || {};
         const bookSettingsAuthorName = typeof settings.book_author === 'string' ? settings.book_author.trim() : '';
         const bookSettingsSourceUrl = typeof settings.book_source_url === 'string' ? settings.book_source_url.trim() : '';
-        const fileAvailabilityByBookKey = new Map<string, { has_epub: boolean; has_m4b: boolean }>();
-
-        for (const file of files || []) {
-          const rowKey = getMonitoredBookRowKey(entity.id, file.provider, file.provider_book_id);
-          if (!rowKey) {
-            continue;
-          }
-          const current = fileAvailabilityByBookKey.get(rowKey) || { has_epub: false, has_m4b: false };
-          if (isMonitoredEbookFile(file)) {
-            current.has_epub = true;
-          }
-          if (isMonitoredAudiobookFile(file)) {
-            current.has_m4b = true;
-          }
-          fileAvailabilityByBookKey.set(rowKey, current);
-        }
 
         for (const book of books || []) {
           const displayAuthor = entity.kind === 'book'
             ? (extractPrimaryAuthorName(book.authors || '') || bookSettingsAuthorName || entity.name || 'Unknown author')
             : entity.name;
-          const rowKey = getMonitoredBookRowKey(entity.id, book.provider, book.provider_book_id);
-          const fileAvailability = rowKey ? fileAvailabilityByBookKey.get(rowKey) : undefined;
           rows.push({
             ...book,
             author_entity_id: entity.id,
@@ -1158,8 +1104,6 @@ export const MonitoredPage = ({
             author_provider: entity.provider,
             author_provider_id: entity.provider_id,
             author_source_url: entity.cached_source_url || bookSettingsSourceUrl || undefined,
-            has_epub: fileAvailability?.has_epub ?? false,
-            has_m4b: fileAvailability?.has_m4b ?? false,
           });
         }
       }
@@ -2066,6 +2010,12 @@ export const MonitoredPage = ({
       series_name: book.series_name || undefined,
       series_position: book.series_position ?? undefined,
       series_count: book.series_count ?? undefined,
+      has_ebook_available: isEnabledFlag(book.has_ebook_available),
+      has_audiobook_available: isEnabledFlag(book.has_audiobook_available),
+      ebook_path: book.ebook_path || undefined,
+      audiobook_path: book.audiobook_path || undefined,
+      ebook_available_format: book.ebook_available_format || undefined,
+      audiobook_available_format: book.audiobook_available_format || undefined,
     };
   }, []);
 
@@ -2838,9 +2788,9 @@ export const MonitoredPage = ({
                                 ) : (
                                   <div className="py-1">
                                     {scopedMonitoredBooksSearchResults.map((row) => {
-                                      const hasEpub = row.has_epub === true || row.has_epub === 1;
-                                      const hasM4b = row.has_m4b === true || row.has_m4b === 1;
-                                      const hasDownload = hasEpub || hasM4b;
+                                      const hasEbookAvailable = isEnabledFlag(row.has_ebook_available);
+                                      const hasAudiobookAvailable = isEnabledFlag(row.has_audiobook_available);
+                                      const hasAnyAvailable = hasEbookAvailable || hasAudiobookAvailable;
                                       const hasSeries = Boolean(row.series_name);
                                       const seriesLabel = hasSeries
                                         ? `${row.series_name}${row.series_position != null ? ` #${row.series_position}` : ''}${row.series_count != null ? `/${row.series_count}` : ''}`
@@ -2853,7 +2803,7 @@ export const MonitoredPage = ({
                                           key={`${row.entity_id}:${row.book_provider || 'unknown'}:${row.book_provider_id || row.book_title}:${row.publish_year ?? 'na'}:${row.series_position ?? 'na'}`}
                                           type="button"
                                           onClick={() => handleMonitoredBookResultSelect(row)}
-                                          className={`w-full text-left px-3 py-2 border-b last:border-b-0 border-black/5 dark:border-white/5 hover-surface ${hasDownload ? 'bg-emerald-500/[0.07] dark:bg-emerald-500/[0.09]' : ''}`}
+                                          className={`w-full text-left px-3 py-2 border-b last:border-b-0 border-black/5 dark:border-white/5 hover-surface ${hasAnyAvailable ? 'bg-emerald-500/[0.07] dark:bg-emerald-500/[0.09]' : ''}`}
                                         >
                                           <div className="min-h-[84px] flex items-center justify-between gap-3">
                                             <div className="min-w-0 flex-1">
@@ -2870,15 +2820,15 @@ export const MonitoredPage = ({
                                               </div>
                                             </div>
                                             <div className="w-[92px] flex items-center justify-end gap-1 shrink-0">
-                                              {hasEpub ? (
-                                                <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">EPUB</span>
+                                              {hasEbookAvailable ? (
+                                                <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">{(row.ebook_available_format || 'ebook').toUpperCase()}</span>
                                               ) : null}
-                                              {hasM4b ? (
-                                                <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-violet-500/20 text-violet-700 dark:text-violet-300">M4B</span>
+                                              {hasAudiobookAvailable ? (
+                                                <span className="inline-flex items-center justify-center min-w-[40px] px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-violet-500/20 text-violet-700 dark:text-violet-300">{(row.audiobook_available_format || 'audio').toUpperCase()}</span>
                                               ) : null}
                                             </div>
                                           </div>
-                                          {(hasEpub || hasM4b) ? null : (
+                                          {hasAnyAvailable ? null : (
                                             <div className="sr-only">No downloaded files found</div>
                                           )}
                                         </button>

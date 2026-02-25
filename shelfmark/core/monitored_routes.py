@@ -208,19 +208,6 @@ def register_monitored_routes(
     # Release date parsing now uses parse_release_date from monitored_downloads
     # _parse_explicit_release_date and _parse_auto_search_release_date removed
 
-    def _book_has_file_type(
-        *,
-        by_book: dict[tuple[str, str], set[str]],
-        provider: str,
-        provider_book_id: str,
-        allowed_file_types: set[str],
-    ) -> bool:
-        key = (provider, provider_book_id)
-        types = by_book.get(key)
-        if not types:
-            return False
-        return any(ft in allowed_file_types for ft in types)
-
     def _write_monitored_book_attempt(
         *,
         user_id: int | None,
@@ -280,20 +267,12 @@ def register_monitored_routes(
         ebook_mode = _normalize_monitor_mode(settings.get("monitor_ebook_mode"))
         audio_mode = _normalize_monitor_mode(settings.get("monitor_audiobook_mode"))
 
-        by_book: dict[tuple[str, str], set[str]] = {}
-        for row in file_rows or []:
-            provider = str(row.get("provider") or "").strip()
-            provider_book_id = str(row.get("provider_book_id") or "").strip()
-            file_type = str(row.get("file_type") or "").strip().lower()
-            if not provider or not provider_book_id or not file_type:
-                continue
-            key = (provider, provider_book_id)
-            if key not in by_book:
-                by_book[key] = set()
-            by_book[key].add(file_type)
+        from shelfmark.core.monitored_files import summarize_monitored_book_availability
 
-        ebook_types = {"epub", "pdf", "mobi", "azw", "azw3"}
-        audio_types = {"m4b", "m4a", "mp3", "flac"}
+        availability_by_book = summarize_monitored_book_availability(
+            file_rows=file_rows or [],
+            user_id=db_user_id,
+        )
         today = date.today()
 
         for row in books:
@@ -302,18 +281,9 @@ def register_monitored_routes(
             if not provider or not provider_book_id:
                 continue
 
-            has_ebook = _book_has_file_type(
-                by_book=by_book,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                allowed_file_types=ebook_types,
-            )
-            has_audio = _book_has_file_type(
-                by_book=by_book,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                allowed_file_types=audio_types,
-            )
+            availability = availability_by_book.get((provider, provider_book_id), {})
+            has_ebook = bool(availability.get("has_ebook_available"))
+            has_audio = bool(availability.get("has_audiobook_available"))
             explicit_release_date = parse_release_date(row.get("release_date"))
 
             if ebook_mode == "all":
@@ -678,6 +648,61 @@ def register_monitored_routes(
             limit = 20
 
         rows = user_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
+        if rows:
+            from shelfmark.core.monitored_files import (
+                expand_monitored_file_rows_for_equivalent_books,
+                summarize_monitored_book_availability,
+            )
+
+            rows_by_entity: dict[int, list[dict[str, Any]]] = {}
+            for row in rows:
+                try:
+                    entity_id = int(row.get("entity_id"))
+                except Exception:
+                    continue
+                rows_by_entity.setdefault(entity_id, []).append(row)
+
+            availability_by_entity: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
+            for entity_id, entity_rows in rows_by_entity.items():
+                files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+                if not files:
+                    availability_by_entity[entity_id] = {}
+                    continue
+
+                books_for_alias: list[dict[str, Any]] = []
+                for entity_row in entity_rows:
+                    books_for_alias.append(
+                        {
+                            "provider": entity_row.get("book_provider"),
+                            "provider_book_id": entity_row.get("book_provider_id"),
+                            "title": entity_row.get("book_title"),
+                            "series_name": entity_row.get("series_name"),
+                            "series_position": entity_row.get("series_position"),
+                        }
+                    )
+                expanded_files = expand_monitored_file_rows_for_equivalent_books(
+                    books=books_for_alias,
+                    file_rows=files,
+                )
+                availability_by_entity[entity_id] = summarize_monitored_book_availability(
+                    file_rows=expanded_files,
+                    user_id=db_user_id,
+                )
+
+            for row in rows:
+                try:
+                    entity_id = int(row.get("entity_id"))
+                except Exception:
+                    entity_id = -1
+                provider = str(row.get("book_provider") or "").strip()
+                provider_book_id = str(row.get("book_provider_id") or "").strip()
+                payload = availability_by_entity.get(entity_id, {}).get((provider, provider_book_id), {})
+                row["has_ebook_available"] = bool(payload.get("has_ebook_available", False))
+                row["has_audiobook_available"] = bool(payload.get("has_audiobook_available", False))
+                row["ebook_path"] = payload.get("ebook_path")
+                row["audiobook_path"] = payload.get("audiobook_path")
+                row["ebook_available_format"] = payload.get("ebook_available_format")
+                row["audiobook_available_format"] = payload.get("audiobook_available_format")
         _transform_cached_cover_urls(rows, provider_key="book_provider", provider_id_key="book_provider_id")
         return jsonify({"results": rows})
 
@@ -830,6 +855,23 @@ def register_monitored_routes(
 
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
+
+        files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        if rows and files:
+            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
+            files = expand_monitored_file_rows_for_equivalent_books(
+                books=rows,
+                file_rows=files,
+            )
+
+        from shelfmark.core.monitored_files import with_monitored_book_availability
+
+        rows = with_monitored_book_availability(
+            books=rows,
+            file_rows=files,
+            user_id=db_user_id,
+        )
 
         _transform_cached_cover_urls(rows)
 
@@ -1251,22 +1293,14 @@ def register_monitored_routes(
                 file_rows=files,
             )
 
-        ebook_types = {"epub", "pdf", "mobi", "azw", "azw3"}
-        audio_types = {"m4b", "m4a", "mp3", "flac"}
-        wanted_types = ebook_types if content_type == "ebook" else audio_types
         monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
 
-        available_by_book: dict[tuple[str, str], set[str]] = {}
-        for row in files:
-            provider = str(row.get("provider") or "").strip()
-            provider_book_id = str(row.get("provider_book_id") or "").strip()
-            file_type = str(row.get("file_type") or "").strip().lower()
-            if not provider or not provider_book_id or not file_type:
-                continue
-            key = (provider, provider_book_id)
-            if key not in available_by_book:
-                available_by_book[key] = set()
-            available_by_book[key].add(file_type)
+        from shelfmark.core.monitored_files import summarize_monitored_book_availability
+
+        availability_by_book = summarize_monitored_book_availability(
+            file_rows=files,
+            user_id=db_user_id,
+        )
 
         candidates: list[dict[str, Any]] = []
         for row in books:
@@ -1276,8 +1310,12 @@ def register_monitored_routes(
                 continue
             if not bool(int(row.get(monitor_col) or 0)):
                 continue
-            file_types = available_by_book.get((provider, provider_book_id), set())
-            if any(ft in wanted_types for ft in file_types):
+            availability = availability_by_book.get((provider, provider_book_id), {})
+            if content_type == "ebook":
+                has_wanted_available = bool(availability.get("has_ebook_available"))
+            else:
+                has_wanted_available = bool(availability.get("has_audiobook_available"))
+            if has_wanted_available:
                 continue
             candidates.append(row)
 

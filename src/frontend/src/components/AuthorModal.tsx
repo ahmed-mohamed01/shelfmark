@@ -97,8 +97,28 @@ interface AuthorModalProps {
 }
 
 
-const EBOOK_MATCH_FORMATS = ['epub', 'pdf', 'mobi', 'azw', 'azw3'];
-const AUDIOBOOK_MATCH_FORMATS = ['m4b', 'm4a', 'mp3', 'flac'];
+const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
+
+const withMonitoredAvailability = (book: Book, rows: MonitoredBookRow[]): Book => {
+  const provider = (book.provider || '').trim();
+  const providerId = (book.provider_id || '').trim();
+  if (!provider || !providerId) {
+    return book;
+  }
+  const row = rows.find((r) => r.provider === provider && r.provider_book_id === providerId);
+  if (!row) {
+    return book;
+  }
+  return {
+    ...book,
+    has_ebook_available: isEnabledFlag(row.has_ebook_available),
+    has_audiobook_available: isEnabledFlag(row.has_audiobook_available),
+    ebook_path: row.ebook_path || undefined,
+    audiobook_path: row.audiobook_path || undefined,
+    ebook_available_format: row.ebook_available_format || undefined,
+    audiobook_available_format: row.audiobook_available_format || undefined,
+  };
+};
 
 const SEARCH_DROPDOWN_OPTIONS: Array<{
   contentType: ContentType;
@@ -652,10 +672,10 @@ export const AuthorModal = ({
 
     const match = books.find((book) => (book.provider || '') === provider && (book.provider_id || '') === providerId);
     if (match) {
-      setActiveBookDetails(match);
+      setActiveBookDetails(withMonitoredAvailability(match, monitoredBookRows));
     }
     setHasAppliedInitialBookSelection(true);
-  }, [books, hasAppliedInitialBookSelection, initialBookProvider, initialBookProviderId, isLoadingBooks]);
+  }, [books, hasAppliedInitialBookSelection, initialBookProvider, initialBookProviderId, isLoadingBooks, monitoredBookRows]);
 
   const handleRefreshAndScan = useCallback(async () => {
     if (!monitoredEntityId) {
@@ -677,8 +697,12 @@ export const AuthorModal = ({
       }
     } finally {
       try {
-        const resp = await listMonitoredBookFiles(monitoredEntityId);
-        setFiles(resp.files || []);
+        const [filesResp, booksResp] = await Promise.all([
+          listMonitoredBookFiles(monitoredEntityId),
+          listMonitoredBooks(monitoredEntityId),
+        ]);
+        setFiles(filesResp.files || []);
+        setMonitoredBookRows(booksResp.books || []);
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Failed to load matched files';
         console.warn('AuthorModal: failed to reload matched files after refresh', message);
@@ -700,33 +724,26 @@ export const AuthorModal = ({
     try {
       // Scan files first to get current availability
       await scanMonitoredEntityFiles(monitoredEntityId);
-      const filesResp = await listMonitoredBookFiles(monitoredEntityId);
+      const [filesResp, booksResp] = await Promise.all([
+        listMonitoredBookFiles(monitoredEntityId),
+        listMonitoredBooks(monitoredEntityId),
+      ]);
       setFiles(filesResp.files || []);
+      const refreshedMonitoredRows = booksResp.books || [];
+      setMonitoredBookRows(refreshedMonitoredRows);
 
-      // Build set of books that already have files for this content type
-      const matchFormats = contentType === 'ebook' ? EBOOK_MATCH_FORMATS : AUDIOBOOK_MATCH_FORMATS;
-      const availableBookKeys = new Set<string>();
-      for (const f of filesResp.files || []) {
-        const prov = typeof f.provider === 'string' ? f.provider : '';
-        const bid = typeof f.provider_book_id === 'string' ? f.provider_book_id : '';
-        const ft = typeof f.file_type === 'string' ? f.file_type.toLowerCase() : '';
-        if (prov && bid && matchFormats.includes(ft)) {
-          availableBookKeys.add(`${prov}:${bid}`);
-        }
-      }
-
-      // Filter candidates: monitored for this content type AND missing files
+      // Filter candidates: monitored for this content type AND still missing wanted format
       const monitorFlag = contentType === 'ebook' ? 'monitor_ebook' : 'monitor_audiobook';
-      const candidates = monitoredBookRows.filter((row) => {
+      const candidates = refreshedMonitoredRows.filter((row) => {
         const prov = row.provider || '';
         const bid = row.provider_book_id || '';
         if (!prov || !bid) return false;
-        // Check if monitored for this content type
         const isMonitored = Boolean(row[monitorFlag]);
         if (!isMonitored) return false;
-        // Check if already has files
-        const key = `${prov}:${bid}`;
-        if (availableBookKeys.has(key)) return false;
+        const hasWantedAvailable = contentType === 'ebook'
+          ? isEnabledFlag(row.has_ebook_available)
+          : isEnabledFlag(row.has_audiobook_available);
+        if (hasWantedAvailable) return false;
         return true;
       });
 
@@ -780,7 +797,7 @@ export const AuthorModal = ({
     } finally {
       setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: false }));
     }
-  }, [monitoredEntityId, onGetReleases, monitoredBookRows, triggerReleaseSearch]);
+  }, [monitoredEntityId, onGetReleases, triggerReleaseSearch]);
 
   useEffect(() => {
     if (!monitoredEntityId || !status || autoRefreshBusy) {
@@ -822,8 +839,12 @@ export const AuthorModal = ({
     void (async () => {
       try {
         await scanMonitoredEntityFiles(monitoredEntityId);
-        const resp = await listMonitoredBookFiles(monitoredEntityId);
-        setFiles(resp.files || []);
+        const [filesResp, booksResp] = await Promise.all([
+          listMonitoredBookFiles(monitoredEntityId),
+          listMonitoredBooks(monitoredEntityId),
+        ]);
+        setFiles(filesResp.files || []);
+        setMonitoredBookRows(booksResp.books || []);
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Auto refresh failed';
         console.warn('AuthorModal: auto refresh after download complete failed', message);
@@ -832,6 +853,10 @@ export const AuthorModal = ({
       }
     })();
   }, [monitoredEntityId, status, autoRefreshBusy, books, lastAutoRefreshSignatureRef]);
+
+  useEffect(() => {
+    setActiveBookDetails((prev) => (prev ? withMonitoredAvailability(prev, monitoredBookRows) : prev));
+  }, [monitoredBookRows]);
 
   useEffect(() => {
     try {
@@ -1373,28 +1398,39 @@ export const AuthorModal = ({
       if (nextSeriesKeys.length === prev.seriesKeys.length) {
         return prev;
       }
-      return { ...prev, seriesKeys: nextSeriesKeys };
+      return {
+        ...prev,
+        seriesKeys: nextSeriesKeys,
+      };
     });
   }, [seriesFilterOptions]);
 
-  const matchedFileTypesByBookKey = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    for (const f of files) {
-      const prov = typeof f.provider === 'string' ? f.provider : '';
-      const bid = typeof f.provider_book_id === 'string' ? f.provider_book_id : '';
-      if (!prov || !bid) continue;
-      const key = `${prov}:${bid}`;
-      const t = typeof f.file_type === 'string' ? f.file_type.trim().toLowerCase() : '';
-      if (!t) continue;
-      let set = map.get(key);
-      if (!set) {
-        set = new Set<string>();
-        map.set(key, set);
+  const monitoredAvailabilityByBookKey = useMemo(() => {
+    const map = new Map<string, {
+      hasEbook: boolean;
+      hasAudiobook: boolean;
+      ebookFormat?: string;
+      audiobookFormat?: string;
+    }>();
+    for (const row of monitoredBookRows) {
+      const provider = (row.provider || '').trim();
+      const providerId = (row.provider_book_id || '').trim();
+      if (!provider || !providerId) {
+        continue;
       }
-      set.add(t);
+      map.set(`${provider}:${providerId}`, {
+        hasEbook: isEnabledFlag(row.has_ebook_available),
+        hasAudiobook: isEnabledFlag(row.has_audiobook_available),
+        ebookFormat: typeof row.ebook_available_format === 'string' && row.ebook_available_format.trim()
+          ? row.ebook_available_format.trim().toLowerCase()
+          : undefined,
+        audiobookFormat: typeof row.audiobook_available_format === 'string' && row.audiobook_available_format.trim()
+          ? row.audiobook_available_format.trim().toLowerCase()
+          : undefined,
+      });
     }
     return map;
-  }, [files]);
+  }, [monitoredBookRows]);
 
   const activeBookFiles = useMemo(() => {
     if (!activeBookDetails) return [];
@@ -1464,10 +1500,10 @@ export const AuthorModal = ({
       const provider = book.provider || '';
       const providerId = book.provider_id || '';
       const key = provider && providerId ? `${provider}:${providerId}` : '';
-      const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-      const hasAny = Boolean(types && types.size > 0);
-      const hasEbook = Boolean(types && EBOOK_MATCH_FORMATS.some((format) => types.has(format)));
-      const hasAudiobook = Boolean(types && AUDIOBOOK_MATCH_FORMATS.some((format) => types.has(format)));
+      const availability = key ? monitoredAvailabilityByBookKey.get(key) : undefined;
+      const hasEbook = Boolean(availability?.hasEbook);
+      const hasAudiobook = Boolean(availability?.hasAudiobook);
+      const hasAny = hasEbook || hasAudiobook;
 
       switch (booksFilters.availability) {
         case 'missing_any':
@@ -1511,7 +1547,7 @@ export const AuthorModal = ({
         return { ...g, books: matching };
       })
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, activeBooksQuery, booksFilters, matchedFileTypesByBookKey]);
+  }, [groupedBooks, activeBooksQuery, booksFilters, monitoredAvailabilityByBookKey]);
 
   const activeFiltersCount = useMemo(() => {
     let count = booksFilters.availability !== 'all' ? 1 : 0;
@@ -1838,7 +1874,7 @@ export const AuthorModal = ({
           type="button"
           onClick={() => {
             close();
-            setActiveBookDetails(book);
+            setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows));
           }}
           className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
         >
@@ -1969,7 +2005,7 @@ export const AuthorModal = ({
           type="button"
           onClick={() => {
             if (!onGetReleases) {
-              setActiveBookDetails(book);
+              setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows));
               return;
             }
             void triggerReleaseSearch(book, defaultContentType, defaultAction);
@@ -2903,7 +2939,9 @@ export const AuthorModal = ({
                             const bid = book.provider_id || '';
                             if (!prov || !bid) return count;
                             const key = `${prov}:${bid}`;
-                            return count + (matchedFileTypesByBookKey.has(key) ? 1 : 0);
+                            const availability = monitoredAvailabilityByBookKey.get(key);
+                            const hasAny = Boolean(availability?.hasEbook || availability?.hasAudiobook);
+                            return count + (hasAny ? 1 : 0);
                           }, 0);
                           return (
                             <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
@@ -2961,8 +2999,17 @@ export const AuthorModal = ({
                                       const prov = book.provider || '';
                                       const bid = book.provider_id || '';
                                       const key = prov && bid ? `${prov}:${bid}` : '';
-                                      const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                      const sortedTypes = types ? Array.from(types).sort((a, b) => a.localeCompare(b)) : [];
+                                      const availability = key ? monitoredAvailabilityByBookKey.get(key) : undefined;
+                                      const sortedTypes = [availability?.ebookFormat, availability?.audiobookFormat].filter(
+                                        (format): format is string => typeof format === 'string' && format.length > 0,
+                                      );
+                                      const hasEbookAvailable = Boolean(availability?.hasEbook);
+                                      const hasAudiobookAvailable = Boolean(availability?.hasAudiobook);
+                                      const availabilityLabels = [
+                                        ...(hasEbookAvailable ? ['ebook'] : []),
+                                        ...(hasAudiobookAvailable ? ['audio'] : []),
+                                      ];
+                                      const displayTypes = sortedTypes.length > 0 ? sortedTypes : availabilityLabels;
                                       const seriesName = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
                                       const seriesLabel = seriesName && book.series_position != null 
                                         ? `${seriesName} #${book.series_position}` 
@@ -2987,14 +3034,14 @@ export const AuthorModal = ({
                                         <MonitoredBookCompactTile
                                           key={book.id}
                                           title={book.title || 'Untitled'}
-                                          onOpenDetails={() => setActiveBookDetails(book)}
+                                          onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))}
                                           onToggleSelect={() => toggleBookSelection(book.id)}
                                           isSelected={isSelected}
                                           hasActiveSelection={hasActiveBookSelection}
                                           seriesPosition={book.series_position}
                                           seriesCount={book.series_count}
-                                          primaryFormat={sortedTypes[0]}
-                                          extraFormatsCount={Math.max(0, sortedTypes.length - 1)}
+                                          primaryFormat={displayTypes[0]}
+                                          extraFormatsCount={Math.max(0, displayTypes.length - 1)}
                                           seriesLabel={seriesLabel}
                                           showSeriesName={showSeriesName}
                                           metaLine={metaLine}
@@ -3059,7 +3106,7 @@ export const AuthorModal = ({
                                               );
                                             })()}
                                             thumbnail={<BooksListThumbnail preview={book.preview} title={book.title} />}
-                                            onOpen={() => setActiveBookDetails(book)}
+                                            onOpen={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))}
                                             titleRow={(
                                               <div className="flex items-center gap-2 min-w-0">
                                                 <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>
@@ -3120,12 +3167,20 @@ export const AuthorModal = ({
                                                   const prov = book.provider || '';
                                                   const bid = book.provider_id || '';
                                                   const key = prov && bid ? `${prov}:${bid}` : '';
-                                                  const types = key ? matchedFileTypesByBookKey.get(key) : undefined;
-                                                  if (!types || types.size === 0) {
+                                                  const availability = key ? monitoredAvailabilityByBookKey.get(key) : undefined;
+                                                  const formats = [availability?.ebookFormat, availability?.audiobookFormat].filter(
+                                                    (format): format is string => typeof format === 'string' && format.length > 0,
+                                                  );
+                                                  const fallbackLabels = [
+                                                    ...(availability?.hasEbook ? ['ebook'] : []),
+                                                    ...(availability?.hasAudiobook ? ['audio'] : []),
+                                                  ];
+                                                  const displayFormats = formats.length > 0 ? formats : fallbackLabels;
+                                                  if (displayFormats.length === 0) {
                                                     return null;
                                                   }
 
-                                                  const sorted = Array.from(types).sort((a, b) => a.localeCompare(b));
+                                                  const sorted = [...displayFormats].sort((a, b) => a.localeCompare(b));
                                                   return (
                                                     <>
                                                       {sorted.slice(0, 2).map((t) => (

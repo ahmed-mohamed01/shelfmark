@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.user_db import UserDB
 from shelfmark.download.postprocess.policy import get_supported_audiobook_formats, get_supported_formats
@@ -326,6 +327,189 @@ def pick_best_audio_file(files: list[Path]) -> Path | None:
     return sorted(files, key=_key)[0]
 
 
+def _normalize_extensions(values: Any) -> set[str]:
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        raw_values = [segment.strip() for segment in values.split(",") if segment.strip()]
+    elif isinstance(values, (list, tuple, set)):
+        raw_values = [str(segment).strip() for segment in values if str(segment).strip()]
+    else:
+        return set()
+    return {ext.lower().lstrip(".") for ext in raw_values if ext}
+
+
+def resolve_monitored_format_preferences(
+    *,
+    user_id: int | None,
+    allowed_ebook_ext: set[str] | None = None,
+    allowed_audio_ext: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Resolve effective monitored file formats for ebooks and audiobooks.
+
+    Priority:
+    1) Explicit function args
+    2) Config singleton (user override aware)
+    3) Postprocess policy defaults
+    """
+
+    ebook_ext = _normalize_extensions(allowed_ebook_ext)
+    if not ebook_ext:
+        configured_ebook = core_config.config.get(
+            "SUPPORTED_FORMATS",
+            get_supported_formats(),
+            user_id=user_id,
+        )
+        ebook_ext = _normalize_extensions(configured_ebook)
+    if not ebook_ext:
+        ebook_ext = _normalize_extensions(get_supported_formats())
+
+    audio_ext = _normalize_extensions(allowed_audio_ext)
+    if not audio_ext:
+        configured_audio = core_config.config.get(
+            "SUPPORTED_AUDIOBOOK_FORMATS",
+            get_supported_audiobook_formats(),
+            user_id=user_id,
+        )
+        audio_ext = _normalize_extensions(configured_audio)
+    if not audio_ext:
+        audio_ext = _normalize_extensions(get_supported_audiobook_formats())
+
+    return ebook_ext, audio_ext
+
+
+def _infer_file_kind_and_format(
+    row: dict[str, Any],
+    *,
+    ebook_formats: set[str],
+    audiobook_formats: set[str],
+) -> tuple[str | None, str | None]:
+    file_type = str(row.get("file_type") or "").strip().lower()
+    ext = str(row.get("ext") or "").strip().lower().lstrip(".")
+    if not ext and file_type and file_type not in {"ebook", "audiobook"}:
+        ext = file_type.lstrip(".")
+
+    if file_type == "ebook":
+        return "ebook", ext or None
+    if file_type == "audiobook":
+        return "audiobook", ext or None
+    if ext and ext in ebook_formats:
+        return "ebook", ext
+    if ext and ext in audiobook_formats:
+        return "audiobook", ext
+    return None, ext or None
+
+
+def _format_rank(*, kind: str, fmt: str | None) -> int:
+    if not fmt:
+        return 999
+    ebook_priority = ["epub", "azw3", "azw", "mobi", "pdf", "cbz", "cbr", "fb2", "djvu"]
+    audio_priority = ["m4b", "m4a", "mp3", "flac", "aac", "ogg", "wma", "wav", "opus"]
+    order = ebook_priority if kind == "ebook" else audio_priority
+    try:
+        return order.index(fmt)
+    except ValueError:
+        return 500
+
+
+def summarize_monitored_book_availability(
+    *,
+    file_rows: list[dict[str, Any]],
+    user_id: int | None,
+    allowed_ebook_ext: set[str] | None = None,
+    allowed_audio_ext: set[str] | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Build canonical availability by monitored book.
+
+    Returns keyed by (provider, provider_book_id) and includes:
+    - has_ebook_available / has_audiobook_available
+    - ebook_path / audiobook_path
+    - ebook_available_format / audiobook_available_format
+    """
+
+    ebook_formats, audio_formats = resolve_monitored_format_preferences(
+        user_id=user_id,
+        allowed_ebook_ext=allowed_ebook_ext,
+        allowed_audio_ext=allowed_audio_ext,
+    )
+
+    summary: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in file_rows or []:
+        provider = str(row.get("provider") or "").strip()
+        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        if not provider or not provider_book_id:
+            continue
+        key = (provider, provider_book_id)
+        payload = summary.get(key)
+        if payload is None:
+            payload = {
+                "has_ebook_available": False,
+                "has_audiobook_available": False,
+                "ebook_path": None,
+                "audiobook_path": None,
+                "ebook_available_format": None,
+                "audiobook_available_format": None,
+            }
+            summary[key] = payload
+
+        kind, fmt = _infer_file_kind_and_format(
+            row,
+            ebook_formats=ebook_formats,
+            audiobook_formats=audio_formats,
+        )
+        if kind not in {"ebook", "audiobook"}:
+            continue
+
+        current_format_key = "ebook_available_format" if kind == "ebook" else "audiobook_available_format"
+        current_path_key = "ebook_path" if kind == "ebook" else "audiobook_path"
+        current_has_key = "has_ebook_available" if kind == "ebook" else "has_audiobook_available"
+
+        current_format = payload.get(current_format_key)
+        if not payload.get(current_has_key):
+            payload[current_has_key] = True
+            payload[current_format_key] = fmt
+            payload[current_path_key] = row.get("path")
+        else:
+            if _format_rank(kind=kind, fmt=fmt) < _format_rank(kind=kind, fmt=str(current_format or "") or None):
+                payload[current_format_key] = fmt
+                payload[current_path_key] = row.get("path")
+
+    return summary
+
+
+def with_monitored_book_availability(
+    *,
+    books: list[dict[str, Any]],
+    file_rows: list[dict[str, Any]],
+    user_id: int | None,
+    allowed_ebook_ext: set[str] | None = None,
+    allowed_audio_ext: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return monitored books enriched with canonical availability fields."""
+
+    availability = summarize_monitored_book_availability(
+        file_rows=file_rows,
+        user_id=user_id,
+        allowed_ebook_ext=allowed_ebook_ext,
+        allowed_audio_ext=allowed_audio_ext,
+    )
+
+    out: list[dict[str, Any]] = []
+    for row in books or []:
+        provider = str(row.get("provider") or "").strip()
+        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        payload = availability.get((provider, provider_book_id), {})
+        enriched = dict(row)
+        enriched["has_ebook_available"] = bool(payload.get("has_ebook_available", False))
+        enriched["has_audiobook_available"] = bool(payload.get("has_audiobook_available", False))
+        enriched["ebook_path"] = payload.get("ebook_path")
+        enriched["audiobook_path"] = payload.get("audiobook_path")
+        enriched["ebook_available_format"] = payload.get("ebook_available_format")
+        enriched["audiobook_available_format"] = payload.get("audiobook_available_format")
+        out.append(enriched)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Core scanning / pruning
 # ---------------------------------------------------------------------------
@@ -398,27 +582,13 @@ def scan_monitored_author_files(
     Returns scan stats and matched/unmatched payloads for API responses.
     """
 
-    raw_ebook_ext = allowed_ebook_ext
-    if raw_ebook_ext is None:
-        raw_ebook_ext = set(get_supported_formats())
-
-    effective_ebook_ext = {
-        ext if ext.startswith(".") else f".{ext}"
-        for ext in raw_ebook_ext
-        if isinstance(ext, str) and ext.strip().strip(".")
-    }
-    effective_ebook_ext = {ext.lower() for ext in effective_ebook_ext}
-
-    raw_audio_ext = allowed_audio_ext
-    if raw_audio_ext is None:
-        raw_audio_ext = set(get_supported_audiobook_formats())
-
-    effective_audio_ext = {
-        ext if ext.startswith(".") else f".{ext}"
-        for ext in raw_audio_ext
-        if isinstance(ext, str) and ext.strip().strip(".")
-    }
-    effective_audio_ext = {ext.lower() for ext in effective_audio_ext}
+    effective_ebook_names, effective_audio_names = resolve_monitored_format_preferences(
+        user_id=user_id,
+        allowed_ebook_ext=allowed_ebook_ext,
+        allowed_audio_ext=allowed_audio_ext,
+    )
+    effective_ebook_ext = {f".{ext}" for ext in effective_ebook_names}
+    effective_audio_ext = {f".{ext}" for ext in effective_audio_names}
 
     known_titles: list[tuple[dict[str, Any], str, str]] = []
     for row in books:

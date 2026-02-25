@@ -377,6 +377,12 @@ export interface MonitoredBookRow {
   audiobook_last_search_status?: string | null;
   ebook_last_search_at?: string | null;
   audiobook_last_search_at?: string | null;
+  has_ebook_available?: number | boolean;
+  has_audiobook_available?: number | boolean;
+  ebook_path?: string | null;
+  audiobook_path?: string | null;
+  ebook_available_format?: string | null;
+  audiobook_available_format?: string | null;
   no_release_date?: boolean;
   state: string;
   first_seen_at: string;
@@ -498,8 +504,12 @@ export interface MonitoredAuthorBookSearchRow {
   series_name?: string | null;
   series_position?: number | null;
   series_count?: number | null;
-  has_epub?: number | boolean;
-  has_m4b?: number | boolean;
+  has_ebook_available?: number | boolean;
+  has_audiobook_available?: number | boolean;
+  ebook_path?: string | null;
+  audiobook_path?: string | null;
+  ebook_available_format?: string | null;
+  audiobook_available_format?: string | null;
 }
 
 export const searchMonitoredAuthorBooks = async (

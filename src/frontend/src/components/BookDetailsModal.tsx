@@ -22,6 +22,8 @@ interface BookDetailsModalProps {
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
+const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
+
 export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
@@ -184,24 +186,32 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
   }, [files]);
 
   const hasEbookFile = useMemo(() => {
-    const ebookExts = new Set(['epub', 'mobi', 'azw', 'azw3', 'pdf', 'cbz', 'cbr']);
-    for (const f of files) {
-      const ext = (f.ext || '').trim().toLowerCase();
-      const fileType = (f.file_type || '').trim().toLowerCase();
-      if (fileType === 'ebook' || ebookExts.has(ext)) return true;
-    }
-    return false;
-  }, [files]);
+    return isEnabledFlag(enrichedBook?.has_ebook_available);
+  }, [enrichedBook?.has_ebook_available]);
 
   const hasAudiobookFile = useMemo(() => {
-    const audiobookExts = new Set(['m4b', 'mp3', 'm4a', 'flac', 'ogg', 'aac']);
-    for (const f of files) {
-      const ext = (f.ext || '').trim().toLowerCase();
-      const fileType = (f.file_type || '').trim().toLowerCase();
-      if (fileType === 'audiobook' || audiobookExts.has(ext)) return true;
+    return isEnabledFlag(enrichedBook?.has_audiobook_available);
+  }, [enrichedBook?.has_audiobook_available]);
+
+  const foundEbookPath = useMemo(() => {
+    const path = (enrichedBook?.ebook_path || '').trim();
+    return path || null;
+  }, [enrichedBook?.ebook_path]);
+
+  const foundAudiobookPath = useMemo(() => {
+    const path = (enrichedBook?.audiobook_path || '').trim();
+    return path || null;
+  }, [enrichedBook?.audiobook_path]);
+
+  const latestDownloaderFinalPath = useMemo(() => {
+    for (const row of historyRows) {
+      const path = (row.final_path || '').trim();
+      if (path) {
+        return path;
+      }
     }
-    return false;
-  }, [files]);
+    return null;
+  }, [historyRows]);
 
   const ebookMonitorLocked = hasEbookFile;
   const audiobookMonitorLocked = hasAudiobookFile;
@@ -459,6 +469,30 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   </div>
                 ) : null}
 
+                {(foundEbookPath || foundAudiobookPath || latestDownloaderFinalPath) ? (
+                  <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                    <div className="font-medium text-gray-600 dark:text-gray-300">Paths</div>
+                    {foundEbookPath ? (
+                      <div className="min-w-0 break-all">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (eBook):</span>{' '}
+                        <span>{foundEbookPath}</span>
+                      </div>
+                    ) : null}
+                    {foundAudiobookPath ? (
+                      <div className="min-w-0 break-all">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (Audiobook):</span>{' '}
+                        <span>{foundAudiobookPath}</span>
+                      </div>
+                    ) : null}
+                    {latestDownloaderFinalPath ? (
+                      <div className="min-w-0 break-all">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">Downloader moved to:</span>{' '}
+                        <span>{latestDownloaderFinalPath}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <div className="flex flex-wrap items-center gap-3 text-xs">
                   {(enrichedBook.isbn_13 || enrichedBook.isbn_10) ? (
                     <span className="text-gray-500 dark:text-gray-400">ISBN: {enrichedBook.isbn_13 || enrichedBook.isbn_10}</span>
@@ -532,7 +566,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                           disabled={ebookMonitorLocked}
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             ebookMonitorLocked
-                              ? 'bg-emerald-500/15 text-emerald-700/70 dark:text-emerald-300/70 cursor-not-allowed opacity-80'
+                              ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
                               : monitorEbook
                                 ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
                                 : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
@@ -565,7 +599,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                           disabled={audiobookMonitorLocked}
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             audiobookMonitorLocked
-                              ? 'bg-emerald-500/15 text-emerald-700/70 dark:text-emerald-300/70 cursor-not-allowed opacity-80'
+                              ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
                               : monitorAudiobook
                                 ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
                               : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'

@@ -777,7 +777,7 @@ class UserDB:
         query: str,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Search monitored author book entries with epub/m4b availability flags."""
+        """Search monitored author book entries."""
 
         normalized_query = (query or "").strip().lower()
         if not normalized_query:
@@ -805,16 +805,10 @@ class UserDB:
                     mb.cover_url AS cover_url,
                     mb.series_name AS series_name,
                     mb.series_position AS series_position,
-                    mb.series_count AS series_count,
-                    MAX(CASE WHEN LOWER(COALESCE(mbf.file_type, '')) = 'epub' THEN 1 ELSE 0 END) AS has_epub,
-                    MAX(CASE WHEN LOWER(COALESCE(mbf.file_type, '')) = 'm4b' THEN 1 ELSE 0 END) AS has_m4b
+                    mb.series_count AS series_count
                 FROM monitored_entities me
                 JOIN monitored_books mb
                   ON mb.entity_id = me.id
-                LEFT JOIN monitored_book_files mbf
-                  ON mbf.entity_id = mb.entity_id
-                 AND mbf.provider = mb.provider
-                 AND mbf.provider_book_id = mb.provider_book_id
                 WHERE me.user_id = :user_id
                   AND me.kind = 'author'
                   AND (
@@ -823,21 +817,6 @@ class UserDB:
                     OR LOWER(COALESCE(mb.series_name, '')) LIKE :like
                     OR LOWER(me.name) LIKE :like
                   )
-                GROUP BY
-                    me.id,
-                    me.name,
-                    me.provider,
-                    me.provider_id,
-                    author_photo_url,
-                    mb.provider,
-                    mb.provider_book_id,
-                    mb.title,
-                    mb.authors,
-                    mb.publish_year,
-                    mb.cover_url,
-                    mb.series_name,
-                    mb.series_position,
-                    mb.series_count
                 ORDER BY
                     CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN 0 ELSE 1 END,
                     CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN LOWER(COALESCE(mb.series_name, '')) END ASC,

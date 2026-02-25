@@ -43,6 +43,12 @@ export interface Book {
   genres?: string[];
   source_url?: string;         // Link to book on provider's site
   display_fields?: DisplayField[];  // Provider-specific display data
+  has_ebook_available?: boolean;
+  has_audiobook_available?: boolean;
+  ebook_path?: string;
+  audiobook_path?: string;
+  ebook_available_format?: string;
+  audiobook_available_format?: string;
   // Series info (if book is part of a series)
   series_name?: string;        // Name of the series
   series_position?: number;    // This book's position (e.g., 3, 1.5 for novellas)
