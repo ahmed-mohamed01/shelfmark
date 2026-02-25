@@ -1840,7 +1840,7 @@ export const AuthorModal = ({
             close();
             setActiveBookDetails(book);
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface"
+          className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
         >
           View info
         </button>
@@ -1857,7 +1857,7 @@ export const AuthorModal = ({
                     close();
                     void triggerReleaseSearch(book, option.contentType, option.action);
                   }}
-                  className={`w-full px-3 py-2 text-left text-sm hover-surface ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+                  className={`w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
                 >
                   {option.label}
                 </button>
@@ -1872,7 +1872,7 @@ export const AuthorModal = ({
               href={book.source_url}
               target="_blank"
               rel="noreferrer"
-              className="block w-full px-3 py-2 text-left text-sm hover-surface"
+              className="block w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
               onClick={() => close()}
             >
               View source
@@ -2893,7 +2893,7 @@ export const AuthorModal = ({
                     <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
                   ) : (
                     <>
-                      <div className="w-full rounded-xl overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
+                      <div className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
                         {filteredGroupedBooks.map((group, groupIndex) => {
                           const isCollapsed = collapsedGroups[group.key] ?? false;
                           const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));

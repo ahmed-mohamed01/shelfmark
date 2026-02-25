@@ -232,13 +232,15 @@ export const Dropdown = ({
       {isOpen && usePortal && createPortal(
         <div
           ref={panelRef}
-          className={`fixed border z-[9999] shadow-xl ${panelClassName || widthClassName}`}
+          className={`fixed inline-block border z-[9999] shadow-xl ${panelClassName || widthClassName}`}
           style={{
             background: 'var(--bg)',
             borderColor: 'var(--border-muted)',
             borderRadius: '0.5rem',
             top: portalPosition?.top ?? 0,
             left: portalPosition?.left ?? 0,
+            width: 'fit-content',
+            maxWidth: 'min(90vw, 28rem)',
           }}
         >
           <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
