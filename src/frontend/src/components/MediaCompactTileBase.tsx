@@ -10,6 +10,7 @@ interface MediaCompactTileBaseProps {
   subtitle?: string;
   metaLine?: string;
   footer?: ReactNode;
+  tooltip?: string;
 }
 
 export const MediaCompactTileBase = ({
@@ -22,16 +23,19 @@ export const MediaCompactTileBase = ({
   subtitle,
   metaLine,
   footer,
+  tooltip,
 }: MediaCompactTileBaseProps) => {
+  const computedTooltip = tooltip || [title, subtitle, metaLine].filter(Boolean).join('\n');
+
   return (
-    <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] p-2">
+    <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] overflow-hidden" title={computedTooltip}>
       {topLeftOverlay ? (
         <div className="absolute left-2 top-2 z-20">
           {topLeftOverlay}
         </div>
       ) : null}
       <button type="button" onClick={onOpen} className="block w-full text-left">
-        <div className="relative w-full rounded overflow-hidden">
+        <div className="relative w-full">
           {media}
           {topRightOverlay ? (
             <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">
@@ -39,8 +43,8 @@ export const MediaCompactTileBase = ({
             </div>
           ) : null}
         </div>
-        <div className="mt-1 flex items-center gap-1">
-          <p className="flex-1 min-w-0 text-xs font-semibold leading-snug line-clamp-2">{title || 'Untitled'}</p>
+        <div className="px-2 pt-1.5 flex items-center gap-1">
+          <p className="flex-1 min-w-0 text-xs font-semibold leading-snug truncate">{title || 'Untitled'}</p>
           {overflowMenu ? (
             <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
               {overflowMenu}
@@ -48,14 +52,15 @@ export const MediaCompactTileBase = ({
           ) : null}
         </div>
         {subtitle ? (
-          <p className="-mt-0.5 text-[10px] leading-tight text-gray-500 dark:text-gray-400 truncate">{subtitle}</p>
+          <p className="px-2 text-[10px] leading-tight text-gray-600 dark:text-gray-300 truncate">{subtitle}</p>
         ) : null}
         {metaLine ? (
-          <p className="-mt-0.5 text-[10px] leading-tight text-gray-500 dark:text-gray-400 truncate">{metaLine}</p>
+          <p className="px-2 text-[10px] leading-tight text-gray-500 dark:text-gray-400 truncate">{metaLine}</p>
         ) : null}
       </button>
 
-      {footer}
+      {footer ? <div className="px-2">{footer}</div> : null}
+      <div className="h-2" />
     </div>
   );
 };

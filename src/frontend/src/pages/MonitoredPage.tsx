@@ -2897,8 +2897,7 @@ export const MonitoredPage = ({
                     >
                       {monitoredAuthorsForCards.map((author) => {
                         const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
-                        const providerLabel = author.provider ? author.provider : null;
-                        const subtitle = providerLabel ? `${booksCountLabel} • ${providerLabel}` : booksCountLabel;
+                        const subtitle = booksCountLabel;
                         const authorEntityId = monitoredEntityIdByName.get((author.name || '').toLowerCase());
                         const isSelected = typeof authorEntityId === 'number'
                           ? Boolean(selectedMonitoredAuthorKeys[String(authorEntityId)])
