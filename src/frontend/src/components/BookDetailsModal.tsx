@@ -203,6 +203,9 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return false;
   }, [files]);
 
+  const ebookMonitorLocked = hasEbookFile;
+  const audiobookMonitorLocked = hasAudiobookFile;
+
   const genresSummary = useMemo(() => {
     if (!Array.isArray(enrichedBook?.genres) || enrichedBook.genres.length === 0) {
       return null;
@@ -521,14 +524,27 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
                         <button
                           type="button"
-                          onClick={() => onToggleMonitor('ebook')}
+                          onClick={() => {
+                            if (!ebookMonitorLocked) {
+                              onToggleMonitor('ebook');
+                            }
+                          }}
+                          disabled={ebookMonitorLocked}
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                            monitorEbook
-                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
-                              : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
+                            ebookMonitorLocked
+                              ? 'bg-emerald-500/15 text-emerald-700/70 dark:text-emerald-300/70 cursor-not-allowed opacity-80'
+                              : monitorEbook
+                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                                : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
                           }`}
+                          title={ebookMonitorLocked ? 'eBook already available; monitoring auto-paused' : 'Toggle eBook monitoring'}
                         >
-                          {monitorEbook ? (
+                          {ebookMonitorLocked ? (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
+                            </svg>
+                          ) : monitorEbook ? (
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                             </svg>
@@ -541,14 +557,27 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                         </button>
                         <button
                           type="button"
-                          onClick={() => onToggleMonitor('audiobook')}
+                          onClick={() => {
+                            if (!audiobookMonitorLocked) {
+                              onToggleMonitor('audiobook');
+                            }
+                          }}
+                          disabled={audiobookMonitorLocked}
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                            monitorAudiobook
-                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                            audiobookMonitorLocked
+                              ? 'bg-emerald-500/15 text-emerald-700/70 dark:text-emerald-300/70 cursor-not-allowed opacity-80'
+                              : monitorAudiobook
+                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
                               : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
                           }`}
+                          title={audiobookMonitorLocked ? 'Audiobook already available; monitoring auto-paused' : 'Toggle audiobook monitoring'}
                         >
-                          {monitorAudiobook ? (
+                          {audiobookMonitorLocked ? (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
+                            </svg>
+                          ) : monitorAudiobook ? (
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                             </svg>

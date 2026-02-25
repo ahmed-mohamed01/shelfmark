@@ -54,6 +54,8 @@ interface MonitoredBookListRow extends MonitoredBookRow {
   author_provider_id?: string;
   author_photo_url?: string;
   author_source_url?: string;
+  has_epub?: boolean;
+  has_m4b?: boolean;
 }
 
 interface MonitoredBooksSourceEntity {
@@ -243,6 +245,67 @@ const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
 const MONITORED_COUNTS_CACHE_KEY = 'monitoredCountsSnapshot';
 const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
+const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
+const MONITORED_EBOOK_FILE_EXTENSIONS = new Set(['epub', 'mobi', 'azw', 'azw3', 'pdf', 'cbz', 'cbr']);
+const MONITORED_AUDIOBOOK_FILE_EXTENSIONS = new Set(['m4b', 'mp3', 'm4a', 'flac', 'ogg', 'aac']);
+
+const getMonitoredBookRowKey = (
+  entityId: number,
+  provider?: string | null,
+  providerBookId?: string | null,
+): string | null => {
+  const normalizedProvider = (provider || '').trim().toLowerCase();
+  const normalizedProviderBookId = (providerBookId || '').trim().toLowerCase();
+  if (!normalizedProvider || !normalizedProviderBookId) {
+    return null;
+  }
+  return `${entityId}:${normalizedProvider}:${normalizedProviderBookId}`;
+};
+
+const bookTracksEbook = (book: MonitoredBookListRow): boolean => (
+  book.monitor_ebook === true || book.monitor_ebook === 1
+);
+
+const bookTracksAudiobook = (book: MonitoredBookListRow): boolean => (
+  book.monitor_audiobook === true || book.monitor_audiobook === 1
+);
+
+const bookHasEbookFiles = (book: MonitoredBookListRow): boolean => (
+  book.has_epub === true
+);
+
+const bookHasAudiobookFiles = (book: MonitoredBookListRow): boolean => (
+  book.has_m4b === true
+);
+
+const isMonitoredBookFulfilled = (book: MonitoredBookListRow): boolean => (
+  bookHasEbookFiles(book) || bookHasAudiobookFiles(book)
+);
+
+const isMonitoredBookDormant = (book: MonitoredBookListRow): boolean => (
+  !bookTracksEbook(book)
+  && !bookTracksAudiobook(book)
+  && !bookHasEbookFiles(book)
+  && !bookHasAudiobookFiles(book)
+);
+
+const isMonitoredEbookFile = (file: MonitoredBookFileRow): boolean => {
+  const fileType = (file.file_type || '').trim().toLowerCase();
+  if (fileType === 'ebook') {
+    return true;
+  }
+  const ext = (file.ext || '').trim().toLowerCase();
+  return MONITORED_EBOOK_FILE_EXTENSIONS.has(ext);
+};
+
+const isMonitoredAudiobookFile = (file: MonitoredBookFileRow): boolean => {
+  const fileType = (file.file_type || '').trim().toLowerCase();
+  if (fileType === 'audiobook') {
+    return true;
+  }
+  const ext = (file.ext || '').trim().toLowerCase();
+  return MONITORED_AUDIOBOOK_FILE_EXTENSIONS.has(ext);
+};
 
 interface MonitoredCountsSnapshot {
   authors: number;
@@ -409,6 +472,10 @@ export const MonitoredPage = ({
   const [monitoredBooksGroupBy, setMonitoredBooksGroupBy] = useState<'none' | 'author' | 'year'>(() => {
     const saved = localStorage.getItem('monitoredBooksGroupBy');
     return saved === 'author' || saved === 'year' ? saved : 'none';
+  });
+  const [monitoredBooksAvailabilityFilter, setMonitoredBooksAvailabilityFilter] = useState<'missing' | 'fulfilled'>(() => {
+    const saved = localStorage.getItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY);
+    return saved === 'fulfilled' ? 'fulfilled' : 'missing';
   });
   const [monitoredSortBy, setMonitoredSortBy] = useState<'alphabetical' | 'date_added' | 'books_count'>(() => {
     const saved = localStorage.getItem('monitoredAuthorSortBy');
@@ -804,14 +871,13 @@ export const MonitoredPage = ({
   }, [monitored, monitoredSortBy]);
 
   const monitoredBooksForTable = useMemo(() => {
-    const trackedOnly = monitoredBooksRows.filter((book) => (
-      book.monitor_ebook === true
-      || book.monitor_ebook === 1
-      || book.monitor_audiobook === true
-      || book.monitor_audiobook === 1
+    const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
+      bookTracksEbook(book)
+      || bookTracksAudiobook(book)
+      || isMonitoredBookFulfilled(book)
     ));
 
-    return trackedOnly.sort((a, b) => {
+    return trackedOrFulfilled.sort((a, b) => {
       if (monitoredBooksSortBy === 'year') {
         const aYear = typeof a.publish_year === 'number' ? a.publish_year : Number.POSITIVE_INFINITY;
         const bYear = typeof b.publish_year === 'number' ? b.publish_year : Number.POSITIVE_INFINITY;
@@ -841,6 +907,13 @@ export const MonitoredPage = ({
     return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, todayStartMs, currentYear));
   }, [monitoredBooksForTable, todayStartMs, currentYear]);
 
+  const filteredRegularMonitoredBooksByAvailability = useMemo(() => {
+    if (monitoredBooksAvailabilityFilter === 'fulfilled') {
+      return regularMonitoredBooksForTable.filter((book) => isMonitoredBookFulfilled(book));
+    }
+    return regularMonitoredBooksForTable.filter((book) => !isMonitoredBookFulfilled(book));
+  }, [regularMonitoredBooksForTable, monitoredBooksAvailabilityFilter]);
+
   const normalizedMonitoredBooksFilterQuery = monitoredBooksSearchQuery.trim().toLowerCase();
 
   const matchesMonitoredBooksFilter = useCallback((book: MonitoredBookListRow): boolean => {
@@ -857,14 +930,17 @@ export const MonitoredPage = ({
   }, [normalizedMonitoredBooksFilterQuery]);
 
   const filteredRegularMonitoredBooksForTable = useMemo(() => {
-    if (!normalizedMonitoredBooksFilterQuery || landingTab === 'authors') {
-      return regularMonitoredBooksForTable;
+    if (landingTab === 'authors') {
+      return filteredRegularMonitoredBooksByAvailability;
     }
-    return regularMonitoredBooksForTable.filter(matchesMonitoredBooksFilter);
+    if (!normalizedMonitoredBooksFilterQuery) {
+      return filteredRegularMonitoredBooksByAvailability;
+    }
+    return filteredRegularMonitoredBooksByAvailability.filter(matchesMonitoredBooksFilter);
   }, [
     normalizedMonitoredBooksFilterQuery,
     landingTab,
-    regularMonitoredBooksForTable,
+    filteredRegularMonitoredBooksByAvailability,
     matchesMonitoredBooksFilter,
   ]);
 
@@ -964,6 +1040,14 @@ export const MonitoredPage = ({
 
   useEffect(() => {
     try {
+      localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
+    } catch {
+      // ignore
+    }
+  }, [monitoredBooksAvailabilityFilter]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('monitoredLandingTab', landingTab);
     } catch {
       // ignore
@@ -1020,8 +1104,11 @@ export const MonitoredPage = ({
 
       const responses = await Promise.allSettled(
         monitoredBooksSources.map(async (entity) => {
-          const response = await listMonitoredBooks(entity.id);
-          return { entity, books: response.books };
+          const [booksResponse, filesResponse] = await Promise.all([
+            listMonitoredBooks(entity.id),
+            listMonitoredBookFiles(entity.id),
+          ]);
+          return { entity, books: booksResponse.books, files: filesResponse.files };
         })
       );
 
@@ -1037,14 +1124,33 @@ export const MonitoredPage = ({
           failedCount += 1;
           continue;
         }
-        const { entity, books } = result.value;
+        const { entity, books, files } = result.value;
         const settings = entity.settings || {};
         const bookSettingsAuthorName = typeof settings.book_author === 'string' ? settings.book_author.trim() : '';
         const bookSettingsSourceUrl = typeof settings.book_source_url === 'string' ? settings.book_source_url.trim() : '';
+        const fileAvailabilityByBookKey = new Map<string, { has_epub: boolean; has_m4b: boolean }>();
+
+        for (const file of files || []) {
+          const rowKey = getMonitoredBookRowKey(entity.id, file.provider, file.provider_book_id);
+          if (!rowKey) {
+            continue;
+          }
+          const current = fileAvailabilityByBookKey.get(rowKey) || { has_epub: false, has_m4b: false };
+          if (isMonitoredEbookFile(file)) {
+            current.has_epub = true;
+          }
+          if (isMonitoredAudiobookFile(file)) {
+            current.has_m4b = true;
+          }
+          fileAvailabilityByBookKey.set(rowKey, current);
+        }
+
         for (const book of books || []) {
           const displayAuthor = entity.kind === 'book'
             ? (extractPrimaryAuthorName(book.authors || '') || bookSettingsAuthorName || entity.name || 'Unknown author')
             : entity.name;
+          const rowKey = getMonitoredBookRowKey(entity.id, book.provider, book.provider_book_id);
+          const fileAvailability = rowKey ? fileAvailabilityByBookKey.get(rowKey) : undefined;
           rows.push({
             ...book,
             author_entity_id: entity.id,
@@ -1052,6 +1158,8 @@ export const MonitoredPage = ({
             author_provider: entity.provider,
             author_provider_id: entity.provider_id,
             author_source_url: entity.cached_source_url || bookSettingsSourceUrl || undefined,
+            has_epub: fileAvailability?.has_epub ?? false,
+            has_m4b: fileAvailability?.has_m4b ?? false,
           });
         }
       }
@@ -1097,7 +1205,7 @@ export const MonitoredPage = ({
   const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
   const monitoredBooksCountsReady = monitoredLoaded && (monitored.length === 0 || !monitoredBooksLoading);
   const displayAuthorsCount = monitoredLoaded ? monitored.length : (cachedMonitoredCounts?.authors ?? '–');
-  const displayBooksCount = monitoredBooksCountsReady ? regularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
+  const displayBooksCount = monitoredBooksCountsReady ? filteredRegularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
   const displayUpcomingCount = monitoredBooksCountsReady ? upcomingMonitoredBooksForTable.length : (cachedMonitoredCounts?.upcoming ?? '–');
   const displaySearchCount = monitoredLoaded
     ? (searchScope === 'books' ? bookSearchResults.length : authorResults.length)
@@ -2909,6 +3017,28 @@ export const MonitoredPage = ({
                             </span>
                           </button>
                         ) : null}
+                        {landingTab === 'books' ? (
+                          <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => setMonitoredBooksAvailabilityFilter('missing')}
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'missing' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                              aria-pressed={monitoredBooksAvailabilityFilter === 'missing'}
+                              title="Show missing monitored books"
+                            >
+                              Missing
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMonitoredBooksAvailabilityFilter('fulfilled')}
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'fulfilled' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                              aria-pressed={monitoredBooksAvailabilityFilter === 'fulfilled'}
+                              title="Show fulfilled monitored books"
+                            >
+                              Fulfilled
+                            </button>
+                          </div>
+                        ) : null}
                         <ViewModeToggle
                           value={monitoredBooksViewMode}
                           onChange={(next) => setMonitoredBooksViewMode(next as 'table' | 'compact')}
@@ -3124,8 +3254,10 @@ export const MonitoredPage = ({
                         ) : null}
                         {group.rows.map((book) => {
                           const isSelected = Boolean(selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]);
-                          const tracksEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
-                          const tracksAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+                          const tracksEbook = bookTracksEbook(book);
+                          const tracksAudiobook = bookTracksAudiobook(book);
+                          const isFulfilled = isMonitoredBookFulfilled(book);
+                          const isDormant = isMonitoredBookDormant(book);
                           const authorName = book.author_name || 'Unknown author';
                           const subtitleRow = (
                             <div className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
@@ -3158,6 +3290,14 @@ export const MonitoredPage = ({
                           );
                           const availabilitySlot = (
                             <div className="flex items-center justify-center gap-1">
+                              {isFulfilled ? (
+                                <span
+                                  className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-sky-500/20 text-sky-700 dark:text-sky-300"
+                                  title="Book files are available"
+                                >
+                                  Available
+                                </span>
+                              ) : null}
                               {tracksEbook ? (
                                 <span
                                   className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
@@ -3209,6 +3349,7 @@ export const MonitoredPage = ({
                               metaRow={metaRow}
                               availabilitySlot={availabilitySlot}
                               trailingSlot={renderMonitoredBookActions(book)}
+                              isDimmed={isDormant}
                             />
                           );
                         })}
@@ -3233,8 +3374,10 @@ export const MonitoredPage = ({
                         >
                           {group.rows.map((book) => {
                             const isSelected = Boolean(selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]);
-                            const tracksEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
-                            const tracksAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+                            const tracksEbook = bookTracksEbook(book);
+                            const tracksAudiobook = bookTracksAudiobook(book);
+                            const isFulfilled = isMonitoredBookFulfilled(book);
+                            const isDormant = isMonitoredBookDormant(book);
                             const authorName = book.author_name || 'Unknown author';
                             const badge = tracksEbook && tracksAudiobook ? 'eBook + Audio' : tracksEbook ? 'eBook' : 'Audio';
                             const seriesLabel = book.series_name
@@ -3282,10 +3425,18 @@ export const MonitoredPage = ({
                                     )}
                                   </button>
                                 )}
-                                topRightOverlay={badge ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">{badge}</span> : undefined}
+                                topRightOverlay={(
+                                  <>
+                                    {isFulfilled ? (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-sky-600/90 text-white text-[9px] font-semibold uppercase shadow">Available</span>
+                                    ) : null}
+                                    {badge ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">{badge}</span> : null}
+                                  </>
+                                )}
                                 subtitle={authorName}
                                 metaLine={seriesLabel || metaLine}
                                 overflowMenu={renderMonitoredBookActions(book, true)}
+                                isDimmed={isDormant}
                               />
                             );
                           })}
