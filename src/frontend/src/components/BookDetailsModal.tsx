@@ -183,6 +183,26 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [files]);
 
+  const hasEbookFile = useMemo(() => {
+    const ebookExts = new Set(['epub', 'mobi', 'azw', 'azw3', 'pdf', 'cbz', 'cbr']);
+    for (const f of files) {
+      const ext = (f.ext || '').trim().toLowerCase();
+      const fileType = (f.file_type || '').trim().toLowerCase();
+      if (fileType === 'ebook' || ebookExts.has(ext)) return true;
+    }
+    return false;
+  }, [files]);
+
+  const hasAudiobookFile = useMemo(() => {
+    const audiobookExts = new Set(['m4b', 'mp3', 'm4a', 'flac', 'ogg', 'aac']);
+    for (const f of files) {
+      const ext = (f.ext || '').trim().toLowerCase();
+      const fileType = (f.file_type || '').trim().toLowerCase();
+      if (fileType === 'audiobook' || audiobookExts.has(ext)) return true;
+    }
+    return false;
+  }, [files]);
+
   const genresSummary = useMemo(() => {
     if (!Array.isArray(enrichedBook?.genres) || enrichedBook.genres.length === 0) {
       return null;
@@ -455,49 +475,92 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   ) : null}
                 </div>
 
-                {monitoredEntityId && onToggleMonitor ? (
-                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[var(--border-muted)]">
-                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
-                    <button
-                      type="button"
-                      onClick={() => onToggleMonitor('ebook')}
-                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                        monitorEbook
-                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
-                          : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
-                      }`}
-                    >
-                      {monitorEbook ? (
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                        </svg>
-                      ) : (
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                        </svg>
-                      )}
-                      eBook
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onToggleMonitor('audiobook')}
-                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                        monitorAudiobook
-                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
-                          : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
-                      }`}
-                    >
-                      {monitorAudiobook ? (
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                        </svg>
-                      ) : (
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                        </svg>
-                      )}
-                      Audiobook
-                    </button>
+                {monitoredEntityId ? (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-[var(--border-muted)]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Available:</span>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
+                          hasEbookFile
+                            ? 'bg-blue-500/20 text-blue-700 dark:text-blue-300'
+                            : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'
+                        }`}
+                      >
+                        {hasEbookFile ? (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        )}
+                        eBook
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
+                          hasAudiobookFile
+                            ? 'bg-purple-500/20 text-purple-700 dark:text-purple-300'
+                            : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'
+                        }`}
+                      >
+                        {hasAudiobookFile ? (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        )}
+                        Audiobook
+                      </span>
+                    </div>
+                    {onToggleMonitor ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
+                        <button
+                          type="button"
+                          onClick={() => onToggleMonitor('ebook')}
+                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                            monitorEbook
+                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                              : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
+                          }`}
+                        >
+                          {monitorEbook ? (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                            </svg>
+                          ) : (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          )}
+                          eBook
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onToggleMonitor('audiobook')}
+                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                            monitorAudiobook
+                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
+                              : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
+                          }`}
+                        >
+                          {monitorAudiobook ? (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                            </svg>
+                          ) : (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          )}
+                          Audiobook
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 

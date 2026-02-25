@@ -1164,6 +1164,22 @@ export const MonitoredPage = ({
     getSearchRowKey,
   ]);
 
+  const activeBookMonitorState = useMemo(() => {
+    if (!activeBookSourceRow) return { monitorEbook: false, monitorAudiobook: false, row: null };
+    const provider = (activeBookSourceRow.provider || '').trim();
+    const providerId = (activeBookSourceRow.provider_book_id || '').trim();
+    const entityId = activeBookSourceRow.author_entity_id;
+    const currentRow = monitoredBooksRows.find(
+      (r) => r.author_entity_id === entityId && r.provider === provider && r.provider_book_id === providerId
+    );
+    if (!currentRow) return { monitorEbook: false, monitorAudiobook: false, row: null };
+    return {
+      monitorEbook: currentRow.monitor_ebook === true || currentRow.monitor_ebook === 1,
+      monitorAudiobook: currentRow.monitor_audiobook === true || currentRow.monitor_audiobook === 1,
+      row: currentRow,
+    };
+  }, [activeBookSourceRow, monitoredBooksRows]);
+
   const getMonitoredBookSelectionKey = useCallback((book: MonitoredBookListRow): string => {
     const provider = (book.provider || 'unknown').trim() || 'unknown';
     const providerBookId = (book.provider_book_id || String(book.id)).trim() || String(book.id);
@@ -3918,9 +3934,9 @@ export const MonitoredPage = ({
           }
           openMonitoredBookInAuthorPage(activeBookSourceRow);
         }}
-        monitorEbook={activeBookSourceRow ? (activeBookSourceRow.monitor_ebook === true || activeBookSourceRow.monitor_ebook === 1) : undefined}
-        monitorAudiobook={activeBookSourceRow ? (activeBookSourceRow.monitor_audiobook === true || activeBookSourceRow.monitor_audiobook === 1) : undefined}
-        onToggleMonitor={activeBookSourceRow ? (type) => void toggleSingleBookMonitor(activeBookSourceRow, type) : undefined}
+        monitorEbook={activeBookMonitorState.row ? activeBookMonitorState.monitorEbook : undefined}
+        monitorAudiobook={activeBookMonitorState.row ? activeBookMonitorState.monitorAudiobook : undefined}
+        onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
       />
 
       <FolderBrowserModal
