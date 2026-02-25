@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_downloads import parse_release_date, process_monitored_book
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.activity_service import ActivityService, build_download_item_key
@@ -204,47 +205,8 @@ def register_monitored_routes(
             return "all"
         return mode
 
-    def _parse_explicit_release_date(value: Any) -> date | None:
-        raw = str(value or "").strip()
-        if not raw:
-            return None
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
-            return None
-        try:
-            return datetime.strptime(raw, "%Y-%m-%d").date()
-        except Exception:
-            return None
-
-    def _parse_auto_search_release_date(value: Any) -> date | None:
-        if isinstance(value, date) and not isinstance(value, datetime):
-            return value
-
-        raw = str(value or "").strip()
-        if not raw:
-            return None
-
-        token = raw.split("T", 1)[0].split(" ", 1)[0].strip()
-        if not token:
-            return None
-
-        if re.fullmatch(r"\d{4}", token):
-            year = int(token)
-            return date(year, 1, 1)
-
-        if re.fullmatch(r"\d{4}-\d{2}", token):
-            year_str, month_str = token.split("-", 1)
-            try:
-                return date(int(year_str), int(month_str), 1)
-            except ValueError:
-                return None
-
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
-            try:
-                return date.fromisoformat(token)
-            except ValueError:
-                return None
-
-        return None
+    # Release date parsing now uses parse_release_date from monitored_downloads
+    # _parse_explicit_release_date and _parse_auto_search_release_date removed
 
     def _book_has_file_type(
         *,
@@ -352,7 +314,7 @@ def register_monitored_routes(
                 provider_book_id=provider_book_id,
                 allowed_file_types=audio_types,
             )
-            explicit_release_date = _parse_explicit_release_date(row.get("release_date"))
+            explicit_release_date = parse_release_date(row.get("release_date"))
 
             if ebook_mode == "all":
                 monitor_ebook = True
@@ -867,7 +829,7 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
 
         for row in rows:
-            row["no_release_date"] = _parse_explicit_release_date(row.get("release_date")) is None
+            row["no_release_date"] = parse_release_date(row.get("release_date")) is None
 
         _transform_cached_cover_urls(rows)
 
@@ -1338,13 +1300,11 @@ def register_monitored_routes(
         from shelfmark.core.config import config as app_config
         from shelfmark.core.release_matcher import rank_releases_for_book
         from shelfmark.core.search_plan import build_release_search_plan
-        from shelfmark.download import orchestrator as download_orchestrator
         from shelfmark.metadata_providers import get_provider, get_provider_kwargs
         from shelfmark.release_sources import get_source, list_available_sources
 
         threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        today_utc = datetime.now(timezone.utc).date()
 
         for row in candidates:
             provider = str(row.get("provider") or "").strip()
@@ -1353,38 +1313,9 @@ def register_monitored_routes(
             if not provider or not provider_book_id:
                 continue
 
-            explicit_release_date = _parse_auto_search_release_date(row.get("release_date"))
-            if explicit_release_date is not None and explicit_release_date > today_utc:
-                unreleased_message = f"Book is unreleased until {explicit_release_date.isoformat()}"
-                summary["unreleased"] += 1
-                _write_monitored_book_attempt(
-                    user_id=db_user_id,
-                    entity_id=entity_id,
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    content_type=content_type,
-                    attempted_at=now_iso,
-                    status="not_released",
-                    error_message=unreleased_message,
-                )
-                _emit_monitored_search_error(
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    title=book_title,
-                    reason="not_released",
-                    detail=unreleased_message,
-                )
-                continue
+            # Note: Release date check is handled by process_monitored_book() internally
 
             try:
-                failed_candidates = user_db.list_monitored_failed_candidate_source_ids(
-                    user_id=db_user_id,
-                    entity_id=entity_id,
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    content_type=content_type,
-                )
-
                 provider_instance = get_provider(provider, **get_provider_kwargs(provider))
                 book = provider_instance.get_book(provider_book_id)
                 if not book:
@@ -1408,6 +1339,7 @@ def register_monitored_routes(
                     )
                     continue
 
+                # Search all sources for releases
                 search_plan = build_release_search_plan(book, languages=None, manual_query=None, indexers=None)
                 all_releases: list[Any] = []
                 for source_row in list_available_sources():
@@ -1421,18 +1353,7 @@ def register_monitored_routes(
                     except Exception:
                         continue
 
-                scored = rank_releases_for_book(book, all_releases)
-                ranked = [release for release, _ in scored]
-                ranked = [
-                    release
-                    for release in ranked
-                    if (
-                        str(getattr(release, "source", "") or "").strip(),
-                        str(getattr(release, "source_id", "") or "").strip(),
-                    ) not in failed_candidates
-                ]
-
-                if not ranked:
+                if not all_releases:
                     summary["no_match"] += 1
                     _write_monitored_book_attempt(
                         user_id=db_user_id,
@@ -1451,88 +1372,58 @@ def register_monitored_routes(
                     )
                     continue
 
-                best = ranked[0]
-                best_source = str(getattr(best, "source", "") or "").strip() or None
-                best_source_id = str(getattr(best, "source_id", "") or "").strip() or None
-                best_title = str(getattr(best, "title", "") or "").strip() or None
-                extra = getattr(best, "extra", None)
-                score_raw = extra.get("match_score") if isinstance(extra, dict) else None
-                try:
-                    match_score = float(score_raw) if score_raw is not None else None
-                except (TypeError, ValueError):
-                    match_score = None
+                # Rank releases and convert to dicts for process_monitored_book
+                scored = rank_releases_for_book(book, all_releases)
+                release_dicts = []
+                for release, _ in scored:
+                    release_dict = asdict(release)
+                    release_dict["content_type"] = content_type
+                    release_dict["release_date"] = row.get("release_date")
+                    release_dicts.append(release_dict)
 
-                if match_score is None or match_score < threshold:
-                    summary["below_cutoff"] += 1
-                    _write_monitored_book_attempt(
-                        user_id=db_user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        content_type=content_type,
-                        attempted_at=now_iso,
-                        status="below_cutoff",
-                        source=best_source,
-                        source_id=best_source_id,
-                        release_title=best_title,
-                        match_score=match_score,
-                    )
-                    _emit_monitored_search_error(
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        title=book_title,
-                        reason="below_cutoff",
-                        detail=f"match_score={match_score}",
-                    )
-                    continue
-
-                release_payload = asdict(best)
-                release_payload["content_type"] = content_type
-                release_payload["monitored_entity_id"] = entity_id
-                release_payload["monitored_book_provider"] = provider
-                release_payload["monitored_book_provider_id"] = provider_book_id
-                release_payload["release_title"] = best_title
-                release_payload["match_score"] = match_score
-                release_payload["release_date"] = row.get("release_date")
-
-                success, error_message = download_orchestrator.queue_release(
-                    release_payload,
-                    user_id=db_user_id,
-                    username=session.get("user_id"),
-                )
-                if success:
-                    summary["queued"] += 1
-                    status = "queued"
-                else:
-                    if isinstance(error_message, str) and error_message.startswith("Book is unreleased until "):
-                        summary["unreleased"] += 1
-                        status = "not_released"
-                    else:
-                        summary["failed"] += 1
-                        status = "download_failed"
-
-                _write_monitored_book_attempt(
+                # Process through monitored_downloads - handles filtering, queueing, retry, history
+                success, message = process_monitored_book(
+                    release_dicts,
                     user_id=db_user_id,
                     entity_id=entity_id,
                     provider=provider,
                     provider_book_id=provider_book_id,
                     content_type=content_type,
-                    attempted_at=now_iso,
-                    status=status,
-                    source=best_source,
-                    source_id=best_source_id,
-                    release_title=best_title,
-                    match_score=match_score,
-                    error_message=error_message,
+                    min_match_score=threshold / 100.0,  # Convert from percentage to 0-1
                 )
-                if not success:
+
+                if success:
+                    summary["queued"] += 1
+                elif message == "Already in queue":
+                    pass  # Don't count as failure, just skip
+                elif "unreleased" in message.lower():
+                    summary["unreleased"] += 1
                     _emit_monitored_search_error(
                         provider=provider,
                         provider_book_id=provider_book_id,
                         title=book_title,
-                        reason="download_failed",
-                        detail=error_message,
+                        reason="not_released",
+                        detail=message,
                     )
+                elif "match score" in message.lower() or "no valid" in message.lower():
+                    summary["below_cutoff"] += 1
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="below_cutoff",
+                        detail=message,
+                    )
+                else:
+                    summary["failed"] += 1
+                    _emit_monitored_search_error(
+                        provider=provider,
+                        provider_book_id=provider_book_id,
+                        title=book_title,
+                        reason="error",
+                        detail=message,
+                    )
+
             except Exception as exc:
                 summary["failed"] += 1
                 _write_monitored_book_attempt(

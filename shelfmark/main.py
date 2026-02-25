@@ -142,7 +142,9 @@ except (sqlite3.OperationalError, OSError) as e:
 
 # Start download coordinator
 if user_db is not None:
-    backend.set_history_user_db(user_db)
+    from shelfmark.core.monitored_downloads import set_user_db, register_hooks
+    set_user_db(user_db)
+    register_hooks()
 backend.start()
 
 # Rate limiting for login attempts

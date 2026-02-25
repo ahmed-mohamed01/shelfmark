@@ -9,7 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from email.utils import parseaddr
 from pathlib import Path
 from threading import Event, Lock
@@ -27,131 +27,6 @@ from shelfmark.release_sources import direct_download, get_handler, get_source_d
 from shelfmark.release_sources.direct_download import SearchUnavailable
 
 logger = setup_logger(__name__)
-
-# Optional UserDB handle injected from main for monitored download history writes.
-_history_user_db: Any = None
-
-
-def set_history_user_db(user_db: Any) -> None:
-    """Inject UserDB dependency for monitored download history recording."""
-    global _history_user_db
-    _history_user_db = user_db
-
-
-def _record_monitored_download_history(task: DownloadTask, *, final_path: str) -> None:
-    if _history_user_db is None:
-        return
-
-    history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
-    if not isinstance(history_context, dict):
-        return
-
-    entity_id = history_context.get("entity_id")
-    provider = str(history_context.get("provider") or "").strip()
-    provider_book_id = str(history_context.get("provider_book_id") or "").strip()
-    user_id = task.user_id
-    if entity_id is None or not provider or not provider_book_id or user_id is None:
-        return
-
-    previous = _history_user_db.get_monitored_book_file_match(
-        user_id=int(user_id),
-        entity_id=int(entity_id),
-        provider=provider,
-        provider_book_id=provider_book_id,
-    )
-
-    overwrite_path = None
-    if isinstance(previous, dict):
-        previous_path = previous.get("path")
-        if isinstance(previous_path, str) and previous_path.strip():
-            overwrite_path = previous_path.strip()
-
-    raw_match_score = history_context.get("match_score")
-    try:
-        match_score = float(raw_match_score) if raw_match_score is not None else None
-    except (TypeError, ValueError):
-        match_score = None
-
-    downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
-
-    _history_user_db.insert_monitored_book_download_history(
-        user_id=int(user_id),
-        entity_id=int(entity_id),
-        provider=provider,
-        provider_book_id=provider_book_id,
-        downloaded_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        source=str(task.source or ""),
-        source_display_name=get_source_display_name(task.source),
-        title_after_rename=str(task.title or "").strip() or None,
-        match_score=match_score,
-        downloaded_filename=downloaded_filename,
-        final_path=str(final_path or "").strip(),
-        overwritten_path=overwrite_path,
-    )
-
-
-def _record_monitored_attempt_failure(task: DownloadTask, *, error_message: Optional[str] = None) -> None:
-    if _history_user_db is None or not isinstance(task.output_args, dict):
-        return
-
-    history_context = task.output_args.get("history_context")
-    if not isinstance(history_context, dict):
-        return
-
-    entity_id = history_context.get("entity_id")
-    provider = str(history_context.get("provider") or "").strip()
-    provider_book_id = str(history_context.get("provider_book_id") or "").strip()
-    user_id = task.user_id
-    if entity_id is None or not provider or not provider_book_id or user_id is None:
-        return
-
-    content_type = str(task.content_type or "ebook").strip().lower()
-    if content_type not in {"ebook", "audiobook"}:
-        content_type = "ebook"
-
-    try:
-        raw_match_score = history_context.get("match_score")
-        match_score = float(raw_match_score) if raw_match_score is not None else None
-    except (TypeError, ValueError):
-        match_score = None
-
-    failure_text = (error_message or task.status_message or "").strip() or None
-
-    _history_user_db.insert_monitored_book_attempt_history(
-        user_id=int(user_id),
-        entity_id=int(entity_id),
-        provider=provider,
-        provider_book_id=provider_book_id,
-        content_type=content_type,
-        attempted_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        status="download_failed",
-        source=str(task.source or "") or None,
-        source_id=str(task.task_id or "") or None,
-        release_title=str(history_context.get("release_title") or "") or None,
-        match_score=match_score,
-        error_message=failure_text,
-    )
-
-
-def _parse_release_date(value: Any) -> Optional[date]:
-    """Parse release date values from API/search payloads."""
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-
-    token = raw
-    if "T" in token:
-        token = token.split("T", 1)[0]
-    elif " " in token:
-        token = token.split(" ", 1)[0]
-
-    try:
-        return date.fromisoformat(token)
-    except ValueError:
-        return None
 
 
 # =============================================================================
@@ -329,15 +204,6 @@ def queue_release(
         series_name = release_data.get('series_name') or extra.get('series_name')
         series_position = release_data.get('series_position') or extra.get('series_position')
         subtitle = release_data.get('subtitle') or extra.get('subtitle')
-
-        explicit_release_date = _parse_release_date(
-            release_data.get('release_date')
-            or extra.get('release_date')
-            or extra.get('publication_date')
-            or extra.get('publish_date')
-        )
-        if explicit_release_date is not None and datetime.now(timezone.utc).date() < explicit_release_date:
-            return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
 
         monitored_entity_id = release_data.get('monitored_entity_id')
         monitored_book_provider = release_data.get('monitored_book_provider')
@@ -556,11 +422,6 @@ def _download_task(task_id: str, cancel_flag: Event) -> Optional[str]:
 
         # Handler returns temp path - orchestrator handles post-processing
         if not temp_path:
-            if not cancel_flag.is_set():
-                try:
-                    _record_monitored_attempt_failure(task)
-                except Exception as hist_exc:
-                    logger.warning("Task %s: failed to record monitored attempt failure: %s", task_id, hist_exc)
             return None
 
         temp_file = Path(temp_path)
@@ -591,16 +452,8 @@ def _download_task(task_id: str, cancel_flag: Event) -> Optional[str]:
         elif result:
             logger.info("Task %s: post-processing complete", task_id)
             logger.debug("Task %s: post-processing result: %s", task_id, result)
-            try:
-                _record_monitored_download_history(task, final_path=result)
-            except Exception as hist_exc:
-                logger.warning("Task %s: failed to record monitored download history: %s", task_id, hist_exc)
         else:
             logger.warning("Task %s: post-processing failed", task_id)
-            try:
-                _record_monitored_attempt_failure(task)
-            except Exception as hist_exc:
-                logger.warning("Task %s: failed to record monitored attempt failure: %s", task_id, hist_exc)
 
         try:
             handler.post_process_cleanup(task, success=bool(result))
@@ -617,10 +470,6 @@ def _download_task(task_id: str, cancel_flag: Event) -> Optional[str]:
             # Update task status so user sees the failure
             task = book_queue.get_task(task_id)
             if task:
-                try:
-                    _record_monitored_attempt_failure(task, error_message=str(e))
-                except Exception as hist_exc:
-                    logger.warning("Task %s: failed to record monitored attempt failure: %s", task_id, hist_exc)
                 book_queue.update_status(task_id, QueueStatus.ERROR)
                 # Check for known misconfiguration from earlier versions
                 if isinstance(e, PermissionError) and "/cwa-book-ingest" in str(e):
