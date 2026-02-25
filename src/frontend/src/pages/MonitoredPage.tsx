@@ -2032,7 +2032,7 @@ export const MonitoredPage = ({
             close();
             openMonitoredBookDetails(book);
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface"
+          className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
         >
           Open details
         </button>
@@ -2043,7 +2043,7 @@ export const MonitoredPage = ({
             close();
             openMonitoredBookInAuthorPage(book, 'ebook', 'interactive_search');
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface"
+          className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
         >
           Search eBooks
         </button>
@@ -2053,7 +2053,7 @@ export const MonitoredPage = ({
             close();
             openMonitoredBookInAuthorPage(book, 'audiobook', 'interactive_search');
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface"
+          className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
         >
           Search audiobooks
         </button>
@@ -2066,7 +2066,7 @@ export const MonitoredPage = ({
           onClick={() => {
             void toggleSingleBookMonitor(book, 'both');
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between whitespace-nowrap"
         >
           <span>Monitor Both</span>
           {isFullyMonitored ? (
@@ -2080,7 +2080,7 @@ export const MonitoredPage = ({
           onClick={() => {
             void toggleSingleBookMonitor(book, 'ebook');
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between whitespace-nowrap"
         >
           <span>Monitor eBook</span>
           {tracksEbook ? (
@@ -2094,7 +2094,7 @@ export const MonitoredPage = ({
           onClick={() => {
             void toggleSingleBookMonitor(book, 'audiobook');
           }}
-          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between"
+          className="w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between whitespace-nowrap"
         >
           <span>Monitor Audiobook</span>
           {tracksAudiobook ? (
@@ -2111,8 +2111,7 @@ export const MonitoredPage = ({
         <Dropdown
           widthClassName="w-auto"
           align="right"
-          usePortal
-          panelClassName="z-[2200] min-w-[220px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
           renderTrigger={({ isOpen, toggle }) => (
             <button
               type="button"
@@ -2121,7 +2120,7 @@ export const MonitoredPage = ({
               aria-label={`Book actions for ${book.title || 'this book'}`}
               title="Book actions"
             >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 12.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 18.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
               </svg>
             </button>
