@@ -6,7 +6,7 @@ interface MediaCompactTileBaseProps {
   onOpen: () => void;
   overflowMenu?: ReactNode;
   topLeftOverlay?: ReactNode;
-  topRightBadge?: string;
+  topRightOverlay?: ReactNode;
   subtitle?: string;
   metaLine?: string;
   footer?: ReactNode;
@@ -18,7 +18,7 @@ export const MediaCompactTileBase = ({
   onOpen,
   overflowMenu,
   topLeftOverlay,
-  topRightBadge,
+  topRightOverlay,
   subtitle,
   metaLine,
   footer,
@@ -30,13 +30,12 @@ export const MediaCompactTileBase = ({
           {topLeftOverlay}
         </div>
       ) : null}
-
       <button type="button" onClick={onOpen} className="block w-full text-left">
         <div className="relative w-full rounded overflow-hidden">
           {media}
-          {topRightBadge ? (
-            <div className="absolute right-1.5 top-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">
-              {topRightBadge}
+          {topRightOverlay ? (
+            <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">
+              {topRightOverlay}
             </div>
           ) : null}
         </div>

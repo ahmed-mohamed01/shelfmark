@@ -3109,7 +3109,7 @@ export const MonitoredPage = ({
                                     )}
                                   </button>
                                 )}
-                                topRightBadge={badge}
+                                topRightOverlay={badge ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">{badge}</span> : undefined}
                                 subtitle={authorName}
                                 metaLine={seriesLabel || metaLine}
                                 overflowMenu={renderMonitoredBookActions(book, true)}
