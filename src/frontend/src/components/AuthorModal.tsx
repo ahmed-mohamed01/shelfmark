@@ -1941,6 +1941,7 @@ export const AuthorModal = ({
       <Dropdown
         widthClassName="w-auto"
         align="right"
+        usePortal
         panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
         renderTrigger={({ isOpen, toggle }) => (
           <button

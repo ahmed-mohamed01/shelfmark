@@ -30,14 +30,14 @@ export const MediaCompactTileBase = ({
   const computedTooltip = tooltip || [title, subtitle, metaLine].filter(Boolean).join('\n');
 
   return (
-    <div className={`group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] overflow-hidden ${isDimmed ? 'opacity-50' : ''}`} title={computedTooltip}>
+    <div className={`group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] ${isDimmed ? 'opacity-50' : ''}`} title={computedTooltip}>
       {topLeftOverlay ? (
         <div className="absolute left-2 top-2 z-20">
           {topLeftOverlay}
         </div>
       ) : null}
       <button type="button" onClick={onOpen} className="block w-full text-left">
-        <div className="relative w-full">
+        <div className="relative w-full overflow-hidden rounded-t-xl">
           {media}
           {topRightOverlay ? (
             <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">

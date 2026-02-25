@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 // Find the closest scrollable ancestor element
 function getScrollableAncestor(element: HTMLElement | null): HTMLElement | null {
@@ -49,6 +50,8 @@ interface DropdownProps {
   renderTrigger?: (props: { isOpen: boolean; toggle: () => void }) => ReactNode;
   /** Disable max-height and overflow scrolling (for panels with nested dropdowns) */
   noScrollLimit?: boolean;
+  /** Render the panel in a portal to escape overflow:hidden containers */
+  usePortal?: boolean;
 }
 
 export const Dropdown = ({
@@ -62,11 +65,14 @@ export const Dropdown = ({
   disabled = false,
   renderTrigger,
   noScrollLimit = false,
+  usePortal = false,
 }: DropdownProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [panelDirection, setPanelDirection] = useState<'down' | 'up'>('down');
+  const [portalPosition, setPortalPosition] = useState<{ top: number; left: number; width: number } | null>(null);
 
   const toggleOpen = () => {
     if (disabled) return;
@@ -79,7 +85,11 @@ export const Dropdown = ({
     if (!isOpen) return;
 
     const handleClick = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      // Check if click is inside container or inside the portal panel
+      const isInsideContainer = containerRef.current?.contains(target);
+      const isInsidePanel = panelRef.current?.contains(target);
+      if (!isInsideContainer && !isInsidePanel) {
         close();
       }
     };
@@ -101,15 +111,16 @@ export const Dropdown = ({
 
   // Memoize the panel direction calculation
   const updatePanelDirection = useCallback(() => {
-    if (!containerRef.current || !panelRef.current) {
+    const triggerEl = usePortal ? triggerRef.current : containerRef.current;
+    if (!triggerEl || !panelRef.current) {
       return;
     }
 
-    const rect = containerRef.current.getBoundingClientRect();
+    const rect = triggerEl.getBoundingClientRect();
     const panelHeight = panelRef.current.offsetHeight || panelRef.current.scrollHeight;
 
     // Check if we're inside a scrollable container and use its bounds
-    const scrollableAncestor = getScrollableAncestor(containerRef.current);
+    const scrollableAncestor = getScrollableAncestor(triggerEl);
     const containerBottom = scrollableAncestor
       ? scrollableAncestor.getBoundingClientRect().bottom
       : window.innerHeight;
@@ -122,7 +133,17 @@ export const Dropdown = ({
     const shouldOpenUp = spaceBelow < panelHeight && spaceAbove >= panelHeight;
 
     setPanelDirection(shouldOpenUp ? 'up' : 'down');
-  }, []);
+
+    // Update portal position
+    if (usePortal) {
+      const panelWidth = panelRef.current.offsetWidth || 200;
+      setPortalPosition({
+        top: shouldOpenUp ? rect.top - panelHeight - 8 : rect.bottom + 8,
+        left: align === 'right' ? rect.right - panelWidth : rect.left,
+        width: panelWidth,
+      });
+    }
+  }, [usePortal, align]);
 
   useLayoutEffect(() => {
     if (!isOpen) return;
@@ -147,7 +168,7 @@ export const Dropdown = ({
           {label}
         </label>
       )}
-      <div className="relative">
+      <div className="relative" ref={triggerRef}>
         {renderTrigger ? (
           renderTrigger({ isOpen, toggle: toggleOpen })
         ) : (
@@ -182,7 +203,7 @@ export const Dropdown = ({
           </button>
         )}
 
-        {isOpen && (
+        {isOpen && !usePortal && (
           <div
             ref={panelRef}
             className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} ${
@@ -208,6 +229,24 @@ export const Dropdown = ({
           </div>
         )}
       </div>
+      {isOpen && usePortal && createPortal(
+        <div
+          ref={panelRef}
+          className={`fixed border z-[9999] shadow-xl ${panelClassName || widthClassName}`}
+          style={{
+            background: 'var(--bg)',
+            borderColor: 'var(--border-muted)',
+            borderRadius: '0.5rem',
+            top: portalPosition?.top ?? 0,
+            left: portalPosition?.left ?? 0,
+          }}
+        >
+          <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
+            {children({ close })}
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };
