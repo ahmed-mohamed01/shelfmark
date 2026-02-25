@@ -309,15 +309,20 @@ def iso_mtime(p: Path) -> str | None:
         return None
 
 
-def pick_best_audio_file(files: list[Path]) -> Path | None:
-    """Pick the best audio file from a list (prefer m4b, then by size)."""
+def pick_best_audio_file(
+    files: list[Path],
+    *,
+    format_rank: dict[str, int] | None = None,
+) -> Path | None:
+    """Pick the best audio file using user-configured format preference, then size."""
     if not files:
         return None
-    priority = {".m4b": 0, ".m4a": 1, ".mp3": 2, ".flac": 3}
+
+    rank_map = format_rank or {}
 
     def _key(p: Path) -> tuple[int, int]:
-        ext = p.suffix.lower()
-        pr = priority.get(ext, 99)
+        ext = p.suffix.lower().lstrip(".")
+        pr = rank_map.get(ext, 999)
         try:
             sz = int(p.stat().st_size)
         except Exception:
@@ -327,16 +332,94 @@ def pick_best_audio_file(files: list[Path]) -> Path | None:
     return sorted(files, key=_key)[0]
 
 
-def _normalize_extensions(values: Any) -> set[str]:
+def _parse_extension_tokens(values: Any, *, parse_orderable_items: bool = False) -> list[str]:
     if values is None:
-        return set()
+        return []
+
     if isinstance(values, str):
-        raw_values = [segment.strip() for segment in values.split(",") if segment.strip()]
-    elif isinstance(values, (list, tuple, set)):
-        raw_values = [str(segment).strip() for segment in values if str(segment).strip()]
-    else:
-        return set()
+        return [segment.strip() for segment in values.split(",") if segment.strip()]
+
+    if not isinstance(values, (list, tuple, set)):
+        return []
+
+    raw_values: list[str] = []
+    for segment in values:
+        if parse_orderable_items and isinstance(segment, dict):
+            if segment.get("enabled") is False:
+                continue
+            token = str(segment.get("id") or "").strip()
+        else:
+            token = str(segment).strip()
+        if token:
+            raw_values.append(token)
+    return raw_values
+
+
+def _normalize_extensions(values: Any) -> set[str]:
+    raw_values = _parse_extension_tokens(values)
     return {ext.lower().lstrip(".") for ext in raw_values if ext}
+
+
+def _normalize_ordered_extensions(values: Any) -> list[str]:
+    raw_values = _parse_extension_tokens(values, parse_orderable_items=True)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        ext = raw.lower().lstrip(".")
+        if not ext or ext in seen:
+            continue
+        seen.add(ext)
+        ordered.append(ext)
+    return ordered
+
+
+def _build_format_rank_map(*, preferred_order: list[str], allowed_formats: set[str]) -> dict[str, int]:
+    rank: dict[str, int] = {}
+    for ext in preferred_order:
+        if ext in allowed_formats and ext not in rank:
+            rank[ext] = len(rank)
+
+    for ext in sorted(allowed_formats):
+        if ext not in rank:
+            rank[ext] = len(rank)
+    return rank
+
+
+def resolve_monitored_format_rankings(
+    *,
+    user_id: int | None,
+    ebook_formats: set[str],
+    audiobook_formats: set[str],
+) -> tuple[dict[str, int], dict[str, int]]:
+    ebook_priority = _normalize_ordered_extensions(
+        core_config.config.get("EBOOK_FORMAT_PRIORITY", [], user_id=user_id)
+    )
+    if not ebook_priority:
+        ebook_priority = _normalize_ordered_extensions(
+            core_config.config.get(
+                "SUPPORTED_FORMATS",
+                get_supported_formats(),
+                user_id=user_id,
+            )
+        )
+
+    audiobook_priority = _normalize_ordered_extensions(
+        core_config.config.get("AUDIOBOOK_FORMAT_PRIORITY", [], user_id=user_id)
+    )
+    if not audiobook_priority:
+        audiobook_priority = _normalize_ordered_extensions(
+            core_config.config.get(
+                "SUPPORTED_AUDIOBOOK_FORMATS",
+                get_supported_audiobook_formats(),
+                user_id=user_id,
+            )
+        )
+
+    return (
+        _build_format_rank_map(preferred_order=ebook_priority, allowed_formats=ebook_formats),
+        _build_format_rank_map(preferred_order=audiobook_priority, allowed_formats=audiobook_formats),
+    )
 
 
 def resolve_monitored_format_preferences(
@@ -397,19 +480,20 @@ def _infer_file_kind_and_format(
         return "ebook", ext
     if ext and ext in audiobook_formats:
         return "audiobook", ext
+    if file_type or ext:
+        logger.debug(
+            "Skipping monitored availability row with unrecognized kind: file_type=%r ext=%r path=%r",
+            file_type or None,
+            ext or None,
+            row.get("path"),
+        )
     return None, ext or None
 
 
-def _format_rank(*, kind: str, fmt: str | None) -> int:
+def _format_rank(*, fmt: str | None, rank_by_format: dict[str, int]) -> int:
     if not fmt:
         return 999
-    ebook_priority = ["epub", "azw3", "azw", "mobi", "pdf", "cbz", "cbr", "fb2", "djvu"]
-    audio_priority = ["m4b", "m4a", "mp3", "flac", "aac", "ogg", "wma", "wav", "opus"]
-    order = ebook_priority if kind == "ebook" else audio_priority
-    try:
-        return order.index(fmt)
-    except ValueError:
-        return 500
+    return rank_by_format.get(fmt, 500)
 
 
 def summarize_monitored_book_availability(
@@ -431,6 +515,11 @@ def summarize_monitored_book_availability(
         user_id=user_id,
         allowed_ebook_ext=allowed_ebook_ext,
         allowed_audio_ext=allowed_audio_ext,
+    )
+    ebook_rank_by_format, audio_rank_by_format = resolve_monitored_format_rankings(
+        user_id=user_id,
+        ebook_formats=ebook_formats,
+        audiobook_formats=audio_formats,
     )
 
     summary: dict[tuple[str, str], dict[str, Any]] = {}
@@ -470,7 +559,11 @@ def summarize_monitored_book_availability(
             payload[current_format_key] = fmt
             payload[current_path_key] = row.get("path")
         else:
-            if _format_rank(kind=kind, fmt=fmt) < _format_rank(kind=kind, fmt=str(current_format or "") or None):
+            rank_by_format = ebook_rank_by_format if kind == "ebook" else audio_rank_by_format
+            if _format_rank(fmt=fmt, rank_by_format=rank_by_format) < _format_rank(
+                fmt=str(current_format or "") or None,
+                rank_by_format=rank_by_format,
+            ):
                 payload[current_format_key] = fmt
                 payload[current_path_key] = row.get("path")
 
@@ -565,6 +658,52 @@ def prune_stale_matched_files(
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 
 
+def _score_candidate_against_known_titles(
+    *,
+    candidate: str,
+    known_titles: list[tuple[dict[str, Any], str, str]],
+) -> tuple[float, dict[str, Any] | None, list[dict[str, Any]]]:
+    best_score = 0.0
+    best_row: dict[str, Any] | None = None
+    best_title = ""
+    scored: list[tuple[float, dict[str, Any], str]] = []
+
+    for row, match_title, display_title in known_titles:
+        score = score_title_match(candidate, match_title)
+        scored.append((score, row, display_title))
+        if score > best_score:
+            best_score = score
+            best_row = row
+            best_title = display_title
+        elif (
+            best_row is not None
+            and abs(score - best_score) < 1e-9
+            and prefer_row_on_tie(
+                candidate=candidate,
+                row=row,
+                display_title=display_title,
+                best_row=best_row,
+                best_display_title=best_title,
+            )
+        ):
+            best_row = row
+            best_title = display_title
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_matches = [
+        {
+            "title": title,
+            "provider": row.get("provider"),
+            "provider_book_id": row.get("provider_book_id"),
+            "score": float(score),
+        }
+        for (score, row, title) in scored[:5]
+        if title
+    ]
+
+    return best_score, best_row, top_matches
+
+
 def scan_monitored_author_files(
     *,
     user_db: UserDB,
@@ -586,6 +725,11 @@ def scan_monitored_author_files(
         user_id=user_id,
         allowed_ebook_ext=allowed_ebook_ext,
         allowed_audio_ext=allowed_audio_ext,
+    )
+    _, audio_rank_by_format = resolve_monitored_format_rankings(
+        user_id=user_id,
+        ebook_formats=effective_ebook_names,
+        audiobook_formats=effective_audio_names,
     )
     effective_ebook_ext = {f".{ext}" for ext in effective_ebook_names}
     effective_audio_ext = {f".{ext}" for ext in effective_audio_names}
@@ -627,42 +771,10 @@ def scan_monitored_author_files(
                 size_bytes = None
 
             candidate = normalize_candidate_title(p.stem, author_name)
-            best_score = 0.0
-            best_row: dict[str, Any] | None = None
-            best_title = ""
-            scored: list[tuple[float, dict[str, Any], str]] = []
-            for row, match_title, display_title in known_titles:
-                score = score_title_match(candidate, match_title)
-                scored.append((score, row, display_title))
-                if score > best_score:
-                    best_score = score
-                    best_row = row
-                    best_title = display_title
-                elif (
-                    best_row is not None
-                    and abs(score - best_score) < 1e-9
-                    and prefer_row_on_tie(
-                        candidate=candidate,
-                        row=row,
-                        display_title=display_title,
-                        best_row=best_row,
-                        best_display_title=best_title,
-                    )
-                ):
-                    best_row = row
-                    best_title = display_title
-
-            scored.sort(key=lambda x: x[0], reverse=True)
-            top_matches = [
-                {
-                    "title": t,
-                    "provider": r.get("provider"),
-                    "provider_book_id": r.get("provider_book_id"),
-                    "score": float(s),
-                }
-                for (s, r, t) in scored[:5]
-                if t
-            ]
+            best_score, best_row, top_matches = _score_candidate_against_known_titles(
+                candidate=candidate,
+                known_titles=known_titles,
+            )
 
             file_type = ext.lstrip(".")
             mtime = iso_mtime(p)
@@ -674,7 +786,7 @@ def scan_monitored_author_files(
 
                 match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
                 prev = best_by_book_and_type.get(match_key)
-                if prev is None or best_score >= prev:
+                if prev is None or best_score > prev:
                     best_by_book_and_type[match_key] = float(best_score)
                     user_db.upsert_monitored_book_file(
                         user_id=user_id,
@@ -731,8 +843,8 @@ def scan_monitored_author_files(
             except Exception:
                 continue
 
-            ext = p.suffix.lower()
-            if ext not in effective_audio_ext:
+            path_ext = p.suffix.lower()
+            if path_ext not in effective_audio_ext:
                 continue
 
             parent = p.parent
@@ -749,7 +861,7 @@ def scan_monitored_author_files(
             except Exception:
                 continue
 
-            best_file = pick_best_audio_file(audio_files)
+            best_file = pick_best_audio_file(audio_files, format_rank=audio_rank_by_format)
             if best_file is None:
                 continue
 
@@ -787,45 +899,13 @@ def scan_monitored_author_files(
                     combined = f"{folder_name} {series_name}"
 
             candidate = normalize_candidate_title(combined, author_name)
-            best_score = 0.0
-            best_row: dict[str, Any] | None = None
-            best_title = ""
-            scored: list[tuple[float, dict[str, Any], str]] = []
-            for row, match_title, display_title in known_titles:
-                score = score_title_match(candidate, match_title)
-                scored.append((score, row, display_title))
-                if score > best_score:
-                    best_score = score
-                    best_row = row
-                    best_title = display_title
-                elif (
-                    best_row is not None
-                    and abs(score - best_score) < 1e-9
-                    and prefer_row_on_tie(
-                        candidate=candidate,
-                        row=row,
-                        display_title=display_title,
-                        best_row=best_row,
-                        best_display_title=best_title,
-                    )
-                ):
-                    best_row = row
-                    best_title = display_title
+            best_score, best_row, top_matches = _score_candidate_against_known_titles(
+                candidate=candidate,
+                known_titles=known_titles,
+            )
 
-            scored.sort(key=lambda x: x[0], reverse=True)
-            top_matches = [
-                {
-                    "title": t,
-                    "provider": r.get("provider"),
-                    "provider_book_id": r.get("provider_book_id"),
-                    "score": float(s),
-                }
-                for (s, r, t) in scored[:5]
-                if t
-            ]
-
-            ext = best_file.suffix.lower()
-            file_type = ext.lstrip(".")
+            best_ext = best_file.suffix.lower()
+            file_type = best_ext.lstrip(".")
             mtime = iso_mtime(best_file)
             try:
                 size_bytes = int(best_file.stat().st_size)
@@ -842,7 +922,7 @@ def scan_monitored_author_files(
 
                 match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
                 prev = best_by_book_and_type.get(match_key)
-                if prev is None or best_score >= prev:
+                if prev is None or best_score > prev:
                     best_by_book_and_type[match_key] = float(best_score)
                     user_db.upsert_monitored_book_file(
                         user_id=user_id,
