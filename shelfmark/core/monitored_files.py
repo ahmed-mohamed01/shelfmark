@@ -258,14 +258,25 @@ def expand_monitored_file_rows_for_equivalent_books(
         books_by_key[(provider, provider_book_id)] = row
 
     alias_map: dict[tuple[str, str], set[tuple[str, str]]] = {key: set() for key in books_by_key}
-    book_items = list(books_by_key.items())
-    for idx in range(len(book_items)):
-        left_key, left_row = book_items[idx]
-        for jdx in range(idx + 1, len(book_items)):
-            right_key, right_row = book_items[jdx]
-            if _books_are_alias_equivalent(left_row, right_row):
-                alias_map[left_key].add(right_key)
-                alias_map[right_key].add(left_key)
+    keys_by_normalized_base: dict[str, list[tuple[str, str]]] = {}
+    for key, row in books_by_key.items():
+        normalized_base, _, _ = _alias_identity_for_book(row)
+        if not normalized_base:
+            continue
+        keys_by_normalized_base.setdefault(normalized_base, []).append(key)
+
+    for candidate_keys in keys_by_normalized_base.values():
+        if len(candidate_keys) < 2:
+            continue
+        for idx in range(len(candidate_keys)):
+            left_key = candidate_keys[idx]
+            left_row = books_by_key[left_key]
+            for jdx in range(idx + 1, len(candidate_keys)):
+                right_key = candidate_keys[jdx]
+                right_row = books_by_key[right_key]
+                if _books_are_alias_equivalent(left_row, right_row):
+                    alias_map[left_key].add(right_key)
+                    alias_map[right_key].add(left_key)
 
     expanded: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
