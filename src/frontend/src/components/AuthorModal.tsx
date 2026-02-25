@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, runMonitoredEntitySearch } from '../services/api';
+import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles } from '../services/api';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
@@ -435,6 +435,7 @@ export const AuthorModal = ({
   });
   const [monitorSearchSummary, setMonitorSearchSummary] = useState<string | null>(null);
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
+  const [monitoredBookRows, setMonitoredBookRows] = useState<MonitoredBookRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
@@ -688,29 +689,98 @@ export const AuthorModal = ({
   }, [monitoredEntityId]);
 
   const handleRunMonitoredSearch = useCallback(async (contentType: ContentType) => {
-    if (!monitoredEntityId) {
+    if (!monitoredEntityId || !onGetReleases) {
       return;
     }
 
     setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: true }));
     setMonitorSearchSummary(null);
     setFilesError(null);
+
     try {
+      // Scan files first to get current availability
       await scanMonitoredEntityFiles(monitoredEntityId);
-      const result = await runMonitoredEntitySearch(monitoredEntityId, contentType);
-      setMonitorSearchSummary(
-        `${contentType === 'ebook' ? 'eBook' : 'Audiobook'} search: ${result.queued} queued, ${result.no_match} no match, ${result.below_cutoff} below cutoff, ${result.failed} failed.`
-      );
-      setRefreshKey((k) => k + 1);
       const filesResp = await listMonitoredBookFiles(monitoredEntityId);
       setFiles(filesResp.files || []);
+
+      // Build set of books that already have files for this content type
+      const matchFormats = contentType === 'ebook' ? EBOOK_MATCH_FORMATS : AUDIOBOOK_MATCH_FORMATS;
+      const availableBookKeys = new Set<string>();
+      for (const f of filesResp.files || []) {
+        const prov = typeof f.provider === 'string' ? f.provider : '';
+        const bid = typeof f.provider_book_id === 'string' ? f.provider_book_id : '';
+        const ft = typeof f.file_type === 'string' ? f.file_type.toLowerCase() : '';
+        if (prov && bid && matchFormats.includes(ft)) {
+          availableBookKeys.add(`${prov}:${bid}`);
+        }
+      }
+
+      // Filter candidates: monitored for this content type AND missing files
+      const monitorFlag = contentType === 'ebook' ? 'monitor_ebook' : 'monitor_audiobook';
+      const candidates = monitoredBookRows.filter((row) => {
+        const prov = row.provider || '';
+        const bid = row.provider_book_id || '';
+        if (!prov || !bid) return false;
+        // Check if monitored for this content type
+        const isMonitored = Boolean(row[monitorFlag]);
+        if (!isMonitored) return false;
+        // Check if already has files
+        const key = `${prov}:${bid}`;
+        if (availableBookKeys.has(key)) return false;
+        return true;
+      });
+
+      if (candidates.length === 0) {
+        setMonitorSearchSummary(
+          `${contentType === 'ebook' ? 'eBook' : 'Audiobook'} search: No candidates to search (all have files or none monitored).`
+        );
+        return;
+      }
+
+      // Convert to Book format for triggerReleaseSearch
+      const candidateBooks: Book[] = candidates.map((row) => ({
+        id: `${row.provider || 'unknown'}:${row.provider_book_id || row.id}`,
+        title: row.title,
+        author: row.authors || '',
+        year: row.publish_year != null ? String(row.publish_year) : undefined,
+        release_date: row.release_date || undefined,
+        preview: row.cover_url || undefined,
+        isbn_13: row.isbn_13 || undefined,
+        provider: row.provider || undefined,
+        provider_id: row.provider_book_id || undefined,
+        series_name: row.series_name || undefined,
+        series_position: row.series_position != null ? row.series_position : undefined,
+        series_count: row.series_count != null ? row.series_count : undefined,
+      }));
+
+      // Process using batch auto-download (hooks into activity sidebar)
+      const batchId = `monitored:${monitoredEntityId}:${contentType}:${Date.now()}`;
+      const batchTotal = candidateBooks.length;
+
+      for (let idx = 0; idx < candidateBooks.length; idx += 1) {
+        const book = candidateBooks[idx];
+        await triggerReleaseSearch(book, contentType, 'auto_search_download', {
+          suppressPerBookAutoSearchToasts: true,
+          batchAutoDownload: {
+            batchId,
+            index: idx + 1,
+            total: batchTotal,
+            contentType,
+          },
+        });
+      }
+
+      // Refresh files after batch completes
+      const updatedFilesResp = await listMonitoredBookFiles(monitoredEntityId);
+      setFiles(updatedFilesResp.files || []);
+      setRefreshKey((k) => k + 1);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Monitored search failed';
       setFilesError(message);
     } finally {
       setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: false }));
     }
-  }, [monitoredEntityId]);
+  }, [monitoredEntityId, onGetReleases, monitoredBookRows, triggerReleaseSearch]);
 
   useEffect(() => {
     if (!monitoredEntityId || !status || autoRefreshBusy) {
@@ -1102,6 +1172,7 @@ export const AuthorModal = ({
             const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
             if (isCancelled) return;
             if (resp.books.length > 0) {
+              setMonitoredBookRows(resp.books);
               cachedBooks = resp.books.map(monitoredBookToBook);
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
