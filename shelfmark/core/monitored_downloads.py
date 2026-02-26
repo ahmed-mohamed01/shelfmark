@@ -143,24 +143,19 @@ def pre_process_releases(
     unreleased_count = 0
     below_cutoff_count = 0
     
-    # Get failed attempt source_ids to deprioritize
-    failed_source_ids: set = set()
+    # Get failed (source, source_id) pairs to deprioritize
+    failed_source_pairs: set[tuple[str, str]] = set()
     if _user_db is not None:
         try:
-            failed_attempts = _user_db.get_monitored_book_failed_attempts(
+            failed_source_pairs = _user_db.list_monitored_failed_candidate_source_ids(
                 user_id=user_id,
                 entity_id=entity_id,
                 provider=provider,
                 provider_book_id=provider_book_id,
                 content_type=content_type,
             )
-            if isinstance(failed_attempts, list):
-                for attempt in failed_attempts:
-                    source_id = attempt.get("source_id")
-                    if source_id:
-                        failed_source_ids.add(str(source_id))
         except Exception as e:
-            logger.warning("Failed to get failed attempts: %s", e)
+            logger.warning("Failed to get failed source IDs: %s", e)
     
     for release in releases:
         # Check release date
@@ -189,8 +184,9 @@ def pre_process_releases(
             continue
         
         # Mark if previously failed (for sorting)
-        source_id = str(release.get("source_id", ""))
-        release["_previously_failed"] = source_id in failed_source_ids
+        src = str(release.get("source", "")).strip()
+        src_id = str(release.get("source_id", "")).strip()
+        release["_previously_failed"] = bool(src and src_id and (src, src_id) in failed_source_pairs)
         release["_match_score"] = score
         valid_releases.append(release)
     
