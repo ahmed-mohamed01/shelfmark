@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_downloads import process_monitored_book
+from shelfmark.core.monitored_files import apply_monitor_modes_for_books, path_within_allowed_roots, resolve_allowed_roots
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_utils import extract_book_popularity
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
@@ -155,24 +156,6 @@ def register_monitored_routes(
 
         return unique or ["02:00", "14:00"]
 
-    def _normalize_monitor_mode(value: Any) -> str:
-        mode = str(value or "").strip().lower()
-        if mode not in {"all", "missing", "upcoming"}:
-            return "all"
-        return mode
-
-    def _compute_monitor_flag(mode: str, has_available: bool, explicit_release_date: Any, today: date) -> bool:
-        """Determine whether a book should be monitored given mode and availability."""
-        if mode == "all":
-            return True
-        if mode == "missing":
-            return not has_available
-        # "upcoming": only monitor future books we don't have yet
-        return bool(explicit_release_date is not None and explicit_release_date > today and not has_available)
-
-    # Release date parsing now uses parse_release_date from monitored_downloads
-    # _parse_explicit_release_date and _parse_auto_search_release_date removed
-
     def _write_monitored_book_attempt(
         *,
         user_id: int | None,
@@ -213,55 +196,6 @@ def register_monitored_routes(
             error_message=error_message,
         )
         return attempted_at_iso
-
-    def _apply_monitor_modes_for_books(
-        *,
-        db_user_id: int | None,
-        entity: dict[str, Any],
-        books: list[dict[str, Any]],
-        file_rows: list[dict[str, Any]] | None = None,
-    ) -> None:
-        if not books:
-            return
-
-        entity_id = int(entity.get("id") or 0)
-        if entity_id <= 0:
-            return
-
-        settings = entity.get("settings") if isinstance(entity.get("settings"), dict) else {}
-        ebook_mode = _normalize_monitor_mode(settings.get("monitor_ebook_mode"))
-        audio_mode = _normalize_monitor_mode(settings.get("monitor_audiobook_mode"))
-
-        from shelfmark.core.monitored_files import summarize_monitored_book_availability
-
-        availability_by_book = summarize_monitored_book_availability(
-            file_rows=file_rows or [],
-            user_id=db_user_id,
-        )
-        today = date.today()
-
-        for row in books:
-            provider = str(row.get("provider") or "").strip()
-            provider_book_id = str(row.get("provider_book_id") or "").strip()
-            if not provider or not provider_book_id:
-                continue
-
-            availability = availability_by_book.get((provider, provider_book_id), {})
-            has_ebook = bool(availability.get("has_ebook_available"))
-            has_audio = bool(availability.get("has_audiobook_available"))
-            explicit_release_date = parse_release_date(row.get("release_date"))
-
-            monitor_ebook = _compute_monitor_flag(ebook_mode, has_ebook, explicit_release_date, today)
-            monitor_audio = _compute_monitor_flag(audio_mode, has_audio, explicit_release_date, today)
-
-            user_db.set_monitored_book_monitor_flags(
-                user_id=db_user_id,
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                monitor_ebook=monitor_ebook,
-                monitor_audiobook=monitor_audio,
-            )
 
     def _sync_author_entity(*, db_user_id: int | None, entity: dict[str, Any], prefetch_covers: bool = False) -> int:
         if entity.get("kind") != "author":
@@ -357,7 +291,8 @@ def register_monitored_routes(
                 books=refreshed_books,
                 file_rows=existing_files,
             )
-        _apply_monitor_modes_for_books(
+        apply_monitor_modes_for_books(
+            user_db,
             db_user_id=db_user_id,
             entity=entity,
             books=refreshed_books,
@@ -437,68 +372,6 @@ def register_monitored_routes(
         app.extensions["monitored_refresh_scheduler_stop_event"] = stop_event
 
     _start_monitored_refresh_scheduler()
-
-    def _resolve_allowed_roots(*, db_user_id: int) -> list[Path]:
-        # Mirror the safety model in /api/fs/list: only allow browsing/scanning inside
-        # configured destinations + remembered monitored roots.
-        try:
-            from shelfmark.core.config import config as app_config
-        except Exception:
-            app_config = None
-
-        def _normalize_root(value: Any) -> str | None:
-            if not isinstance(value, str):
-                return None
-            v = value.strip().rstrip('/')
-            if not v or not v.startswith('/'):
-                return None
-            return v
-
-        allowed: list[Path] = []
-        if app_config is not None:
-            try:
-                dest = _normalize_root(app_config.get('DESTINATION', '/books', user_id=db_user_id))
-                if dest:
-                    allowed.append(Path(dest).resolve())
-                dest_audio = _normalize_root(app_config.get('DESTINATION_AUDIOBOOK', '', user_id=db_user_id))
-                if dest_audio:
-                    allowed.append(Path(dest_audio).resolve())
-            except Exception:
-                pass
-
-        try:
-            user_settings = user_db.get_user_settings(db_user_id) or {}
-        except Exception:
-            user_settings = {}
-
-        for key in ('MONITORED_EBOOK_ROOTS', 'MONITORED_AUDIOBOOK_ROOTS'):
-            roots_value = user_settings.get(key)
-            if isinstance(roots_value, list):
-                for item in roots_value:
-                    root = _normalize_root(item)
-                    if root:
-                        try:
-                            allowed.append(Path(root).resolve())
-                        except Exception:
-                            continue
-
-        unique: list[Path] = []
-        seen: set[str] = set()
-        for root in allowed:
-            s = str(root)
-            if s not in seen:
-                seen.add(s)
-                unique.append(root)
-        return unique
-
-    def _path_within_allowed_roots(*, path: Path, roots: list[Path]) -> bool:
-        for root in roots:
-            try:
-                path.relative_to(root)
-                return True
-            except Exception:
-                continue
-        return False
 
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
@@ -998,7 +871,7 @@ def register_monitored_routes(
         if (not ebook_dir or not ebook_dir.startswith('/')) and (not audiobook_dir or not audiobook_dir.startswith('/')):
             return jsonify({"error": "ebook_author_dir or audiobook_author_dir must be set"}), 400
 
-        roots = _resolve_allowed_roots(db_user_id=int(db_user_id or 0))
+        roots = resolve_allowed_roots(user_db, db_user_id=int(db_user_id or 0))
         if not roots:
             return jsonify({"error": "No allowed roots configured"}), 400
 
@@ -1011,7 +884,7 @@ def register_monitored_routes(
                 ebook_path = Path(ebook_dir).resolve()
             except Exception:
                 return jsonify({"error": "Invalid ebook_author_dir"}), 400
-            if not _path_within_allowed_roots(path=ebook_path, roots=roots):
+            if not path_within_allowed_roots(path=ebook_path, roots=roots):
                 return jsonify({"error": "Path not allowed"}), 403
             if not ebook_path.exists() or not ebook_path.is_dir():
                 dir_warnings["ebook_author_dir"] = "Directory not found"
@@ -1022,7 +895,7 @@ def register_monitored_routes(
                 audiobook_path = Path(audiobook_dir).resolve()
             except Exception:
                 return jsonify({"error": "Invalid audiobook_author_dir"}), 400
-            if not _path_within_allowed_roots(path=audiobook_path, roots=roots):
+            if not path_within_allowed_roots(path=audiobook_path, roots=roots):
                 return jsonify({"error": "Path not allowed"}), 403
             if not audiobook_path.exists() or not audiobook_path.is_dir():
                 dir_warnings["audiobook_author_dir"] = "Directory not found"
