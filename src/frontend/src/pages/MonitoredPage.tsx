@@ -252,6 +252,10 @@ const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
 
+// Computed once at module load — stable for the lifetime of the session.
+const _todayStartMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+const _currentYear = new Date(_todayStartMs).getFullYear();
+
 
 interface MonitoredCountsSnapshot {
   authors: number;
@@ -839,20 +843,13 @@ export const MonitoredPage = ({
     });
   }, [monitoredBooksRows, monitoredBooksSortBy]);
 
-  const todayStartMs = useMemo(() => {
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    return now.getTime();
-  }, []);
-  const currentYear = useMemo(() => new Date(todayStartMs).getFullYear(), [todayStartMs]);
-
   const upcomingMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => isUpcomingMonitoredBook(book, todayStartMs, currentYear));
-  }, [monitoredBooksForTable, todayStartMs, currentYear]);
+    return monitoredBooksForTable.filter((book) => isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
+  }, [monitoredBooksForTable]);
 
   const regularMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, todayStartMs, currentYear));
-  }, [monitoredBooksForTable, todayStartMs, currentYear]);
+    return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
+  }, [monitoredBooksForTable]);
 
   const filteredRegularMonitoredBooksByAvailability = useMemo(() => {
     if (monitoredBooksAvailabilityFilter === 'fulfilled') {
@@ -948,74 +945,28 @@ export const MonitoredPage = ({
   useEffect(() => {
     try {
       localStorage.setItem('authorViewMode', authorViewMode);
-    } catch {
-      // ignore
-    }
-  }, [authorViewMode]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredAuthorViewMode', monitoredViewMode);
-    } catch {
-      // ignore
-    }
-  }, [monitoredViewMode]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredBooksViewMode', monitoredBooksViewMode);
-    } catch {
-      // ignore
-    }
-  }, [monitoredBooksViewMode]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredBooksSortBy', monitoredBooksSortBy);
-    } catch {
-      // ignore
-    }
-  }, [monitoredBooksSortBy]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredBooksGroupBy', monitoredBooksGroupBy);
-    } catch {
-      // ignore
-    }
-  }, [monitoredBooksGroupBy]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
-    } catch {
-      // ignore
-    }
-  }, [monitoredBooksAvailabilityFilter]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredLandingTab', landingTab);
-    } catch {
-      // ignore
-    }
-  }, [landingTab]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
-    } catch {
-      // ignore
-    }
-  }, [monitoredSortBy]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('monitoredCompactMinWidth', String(monitoredCompactMinWidth));
     } catch {
       // ignore
     }
-  }, [monitoredCompactMinWidth]);
+  }, [
+    authorViewMode,
+    monitoredViewMode,
+    monitoredBooksViewMode,
+    monitoredBooksSortBy,
+    monitoredBooksGroupBy,
+    monitoredBooksAvailabilityFilter,
+    landingTab,
+    monitoredSortBy,
+    monitoredCompactMinWidth,
+  ]);
 
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);
 
