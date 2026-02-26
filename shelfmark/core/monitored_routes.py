@@ -218,6 +218,15 @@ def register_monitored_routes(
             return "all"
         return mode
 
+    def _compute_monitor_flag(mode: str, has_available: bool, explicit_release_date: Any, today: date) -> bool:
+        """Determine whether a book should be monitored given mode and availability."""
+        if mode == "all":
+            return True
+        if mode == "missing":
+            return not has_available
+        # "upcoming": only monitor future books we don't have yet
+        return bool(explicit_release_date is not None and explicit_release_date > today and not has_available)
+
     # Release date parsing now uses parse_release_date from monitored_downloads
     # _parse_explicit_release_date and _parse_auto_search_release_date removed
 
@@ -299,19 +308,8 @@ def register_monitored_routes(
             has_audio = bool(availability.get("has_audiobook_available"))
             explicit_release_date = parse_release_date(row.get("release_date"))
 
-            if ebook_mode == "all":
-                monitor_ebook = True
-            elif ebook_mode == "missing":
-                monitor_ebook = not has_ebook
-            else:
-                monitor_ebook = bool(explicit_release_date is not None and explicit_release_date > today and not has_ebook)
-
-            if audio_mode == "all":
-                monitor_audio = True
-            elif audio_mode == "missing":
-                monitor_audio = not has_audio
-            else:
-                monitor_audio = bool(explicit_release_date is not None and explicit_release_date > today and not has_audio)
+            monitor_ebook = _compute_monitor_flag(ebook_mode, has_ebook, explicit_release_date, today)
+            monitor_audio = _compute_monitor_flag(audio_mode, has_audio, explicit_release_date, today)
 
             user_db.set_monitored_book_monitor_flags(
                 user_id=db_user_id,
@@ -1370,7 +1368,6 @@ def register_monitored_routes(
         if not candidates:
             return jsonify(summary)
 
-        from dataclasses import asdict
         from shelfmark.core.config import config as app_config
         from shelfmark.core.release_matcher import rank_releases_for_book
         from shelfmark.core.search_plan import build_release_search_plan
