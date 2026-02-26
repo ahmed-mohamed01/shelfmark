@@ -56,6 +56,25 @@ def set_user_db(user_db: Any) -> None:
 
 
 # =============================================================================
+# Small parsing utilities
+# =============================================================================
+
+
+def _parse_float_safe(value: Any) -> Optional[float]:
+    """Return float(value) or None on failure."""
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_content_type(value: Any) -> str:
+    """Return 'ebook' or 'audiobook'; defaults to 'ebook' for unknown values."""
+    ct = str(value or "ebook").strip().lower()
+    return ct if ct in {"ebook", "audiobook"} else "ebook"
+
+
+# =============================================================================
 # Release Date Parsing
 # =============================================================================
 
@@ -271,11 +290,7 @@ def _record_download_history(task: DownloadTask) -> None:
         if isinstance(previous_path, str) and previous_path.strip():
             overwrite_path = previous_path.strip()
 
-    raw_match_score = history_context.get("match_score")
-    try:
-        match_score = float(raw_match_score) if raw_match_score is not None else None
-    except (TypeError, ValueError):
-        match_score = None
+    match_score = _parse_float_safe(history_context.get("match_score"))
 
     downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
     final_path = str(task.download_path or "").strip()
@@ -318,16 +333,8 @@ def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] 
     if entity_id is None or not provider or not provider_book_id or user_id is None:
         return
 
-    content_type = str(task.content_type or "ebook").strip().lower()
-    if content_type not in {"ebook", "audiobook"}:
-        content_type = "ebook"
-
-    try:
-        raw_match_score = history_context.get("match_score")
-        match_score = float(raw_match_score) if raw_match_score is not None else None
-    except (TypeError, ValueError):
-        match_score = None
-
+    content_type = _normalize_content_type(task.content_type)
+    match_score = _parse_float_safe(history_context.get("match_score"))
     failure_text = (error_message or task.status_message or "").strip() or None
 
     _user_db.insert_monitored_book_attempt_history(
@@ -484,8 +491,8 @@ def _get_pending_key_from_task(task: DownloadTask) -> Optional[str]:
     entity_id = history_context.get("entity_id")
     provider = str(history_context.get("provider") or "").strip()
     provider_book_id = str(history_context.get("provider_book_id") or "").strip()
-    content_type = str(task.content_type or "ebook").strip().lower()
-    
+    content_type = _normalize_content_type(task.content_type)
+
     if entity_id is None or not provider or not provider_book_id:
         return None
     
