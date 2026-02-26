@@ -71,6 +71,20 @@ const AudiobookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: st
   </svg>
 );
 
+// Per-content-type config avoids repeated ternary branches throughout the component.
+const CONTENT_TYPE_CONFIG = {
+  ebook: {
+    displayName: 'eBook',
+    monitorFlag: 'monitor_ebook' as const,
+    availabilityField: 'has_ebook_available' as const,
+  },
+  audiobook: {
+    displayName: 'Audiobook',
+    monitorFlag: 'monitor_audiobook' as const,
+    availabilityField: 'has_audiobook_available' as const,
+  },
+} satisfies Record<ContentType, { displayName: string; monitorFlag: string; availabilityField: string }>;
+
 export interface AuthorModalAuthor {
   name: string;
   provider?: string | null;
@@ -738,23 +752,19 @@ export const AuthorModal = ({
       setMonitoredBookRows(refreshedMonitoredRows);
 
       // Filter candidates: monitored for this content type AND still missing wanted format
-      const monitorFlag = contentType === 'ebook' ? 'monitor_ebook' : 'monitor_audiobook';
+      const { monitorFlag, availabilityField, displayName } = CONTENT_TYPE_CONFIG[contentType];
       const candidates = refreshedMonitoredRows.filter((row) => {
         const prov = row.provider || '';
         const bid = row.provider_book_id || '';
         if (!prov || !bid) return false;
-        const isMonitored = Boolean(row[monitorFlag]);
-        if (!isMonitored) return false;
-        const hasWantedAvailable = contentType === 'ebook'
-          ? isEnabledMonitoredFlag(row.has_ebook_available)
-          : isEnabledMonitoredFlag(row.has_audiobook_available);
-        if (hasWantedAvailable) return false;
+        if (!Boolean(row[monitorFlag])) return false;
+        if (isEnabledMonitoredFlag(row[availabilityField])) return false;
         return true;
       });
 
       if (candidates.length === 0) {
         setMonitorSearchSummary(
-          `${contentType === 'ebook' ? 'eBook' : 'Audiobook'} search: No candidates to search (all have files or none monitored).`
+          `${displayName} search: No candidates to search (all have files or none monitored).`
         );
         return;
       }
