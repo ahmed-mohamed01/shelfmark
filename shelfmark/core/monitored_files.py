@@ -21,6 +21,21 @@ logger = setup_logger(__name__)
 
 MAX_SCAN_FILES = 4000
 
+# Keyed by content kind ("ebook" / "audiobook") → field names used when
+# summarising and enriching availability payloads.
+_AVAILABILITY_FIELDS: dict[str, dict[str, str]] = {
+    "ebook": {
+        "has_key": "has_ebook_available",
+        "path_key": "ebook_path",
+        "format_key": "ebook_available_format",
+    },
+    "audiobook": {
+        "has_key": "has_audiobook_available",
+        "path_key": "audiobook_path",
+        "format_key": "audiobook_available_format",
+    },
+}
+
 _TAG_PATTERNS = [
     re.compile(r"\[[^\]]+\]"),
     re.compile(r"\([^\)]+\)"),
@@ -650,9 +665,10 @@ def summarize_monitored_book_availability(
         if kind not in {"ebook", "audiobook"}:
             continue
 
-        current_format_key = "ebook_available_format" if kind == "ebook" else "audiobook_available_format"
-        current_path_key = "ebook_path" if kind == "ebook" else "audiobook_path"
-        current_has_key = "has_ebook_available" if kind == "ebook" else "has_audiobook_available"
+        _fields = _AVAILABILITY_FIELDS[kind]
+        current_has_key = _fields["has_key"]
+        current_path_key = _fields["path_key"]
+        current_format_key = _fields["format_key"]
 
         current_format = payload.get(current_format_key)
         if not payload.get(current_has_key):
