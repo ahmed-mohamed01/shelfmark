@@ -26,6 +26,7 @@ import {
   updateSelfUser,
 } from './services/api';
 import { recordMonitoredBookAttempt } from './services/monitoredApi';
+import { useMonitoredState, getReleaseMatchScore } from './hooks/useMonitoredState';
 import { useToast } from './hooks/useToast';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
 import { useAuth } from './hooks/useAuth';
@@ -122,16 +123,10 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-const getReleaseMatchScore = (release: Release): number | null => {
-  const raw = release.extra?.match_score;
-  return typeof raw === 'number' ? raw : null;
-};
-
 function App() {
   const navigate = useNavigate();
   const { toasts, showToast, removeToast } = useToast();
   const { socket } = useSocket();
-  const [transientDownloadActivityItems, setTransientDownloadActivityItems] = useState<ActivityItem[]>([]);
 
   // Realtime status with WebSocket and polling fallback
   // Socket connection is managed by SocketProvider in main.tsx
@@ -184,9 +179,6 @@ function App() {
 
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
   const [contentType, setContentType] = useState<ContentType>(() => getInitialContentType());
-  const [showDualGetButtons, setShowDualGetButtons] = useState<boolean>(false);
-
-  const [releaseMonitoredEntityId, setReleaseMonitoredEntityId] = useState<number | null>(null);
 
   useEffect(() => {
     try {
@@ -243,42 +235,21 @@ function App() {
     socket,
   });
 
-  const dismissedDownloadTaskIds = useMemo(() => {
-    const result = new Set<string>();
-    for (const key of dismissedActivityKeys) {
-      if (typeof key !== 'string' || !key.startsWith('download:')) {
-        continue;
-      }
-      const taskId = key.substring('download:'.length).trim();
-      if (taskId) {
-        result.add(taskId);
-      }
-    }
-    return result;
-  }, [dismissedActivityKeys]);
+  const [config, setConfig] = useState<AppConfig | null>(null);
 
-  const isDownloadTaskDismissed = useCallback((taskId: string) => {
-    return dismissedDownloadTaskIds.has(taskId);
-  }, [dismissedDownloadTaskIds]);
+  const {
+    transientDownloadActivityItems,
+    setTransientDownloadActivityItems,
+    showDualGetButtons,
+    setShowDualGetButtons,
+    releaseMonitoredEntityId,
+    setReleaseMonitoredEntityId,
+    batchAutoStatsRef,
+    isDownloadTaskDismissed,
+    statusForButtonState,
+    transientOngoingCount,
+  } = useMonitoredState({ dismissedActivityKeys, currentStatus, config });
 
-  const statusForButtonState = useMemo(() => {
-    if (!currentStatus.complete || dismissedDownloadTaskIds.size === 0) {
-      return currentStatus;
-    }
-
-    const filteredComplete = Object.fromEntries(
-      Object.entries(currentStatus.complete).filter(([taskId]) => !dismissedDownloadTaskIds.has(taskId))
-    ) as Record<string, Book>;
-
-    if (Object.keys(filteredComplete).length === Object.keys(currentStatus.complete).length) {
-      return currentStatus;
-    }
-
-    return {
-      ...currentStatus,
-      complete: filteredComplete,
-    };
-  }, [currentStatus, dismissedDownloadTaskIds]);
   const showRequestsTab = useMemo(() => {
     if (requestRoleIsAdmin) {
       return true;
@@ -348,7 +319,6 @@ function App() {
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [releaseBook, setReleaseBook] = useState<Book | null>(null);
   const [releaseContentTypeOverride, setReleaseContentTypeOverride] = useState<ContentType | null>(null);
-  const [config, setConfig] = useState<AppConfig | null>(null);
   const [downloadsSidebarOpen, setDownloadsSidebarOpen] = useState(false);
   const [sidebarPinnedOpen, setSidebarPinnedOpen] = useState(false);
   const [headerHeight, setHeaderHeight] = useState(0);
@@ -371,13 +341,6 @@ function App() {
   const [configBannerOpen, setConfigBannerOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
-  useEffect(() => {
-    if (!config) {
-      return;
-    }
-    setShowDualGetButtons(Boolean(config.show_dual_get_buttons));
-  }, [config]);
-
   // Expose debug function to trigger onboarding from browser console
   useEffect(() => {
     (window as unknown as { showOnboarding: () => void }).showOnboarding = () => setOnboardingOpen(true);
@@ -394,15 +357,6 @@ function App() {
   // Track previous status and search mode for change detection
   const prevStatusRef = useRef<StatusData>({});
   const prevSearchModeRef = useRef<string | undefined>(undefined);
-  const batchAutoStatsRef = useRef<Record<string, {
-    total: number;
-    queued: number;
-    skipped: number;
-    failed: number;
-    started: boolean;
-    contentType: ContentType;
-  }>>({});
-
   // Calculate status counts for header badges (memoized)
   const statusCounts = useMemo(() => {
     const dismissedKeySet = new Set(dismissedActivityKeys);
@@ -427,16 +381,6 @@ function App() {
       currentStatus.downloading,
     ].reduce((sum, status) => sum + countVisibleDownloads(status, { filterDismissed: false }), 0);
 
-    const transientOngoing = transientDownloadActivityItems.filter((item) => (
-      item.kind === 'download'
-      && (
-        item.visualStatus === 'queued'
-        || item.visualStatus === 'resolving'
-        || item.visualStatus === 'locating'
-        || item.visualStatus === 'downloading'
-      )
-    )).length;
-
     const completed = countVisibleDownloads(currentStatus.complete, { filterDismissed: true });
     const errored = countVisibleDownloads(currentStatus.error, { filterDismissed: true });
     const pendingVisibleRequests = requestItems.filter((item) => {
@@ -448,12 +392,12 @@ function App() {
     }).length;
 
     return {
-      ongoing: ongoing + transientOngoing,
+      ongoing: ongoing + transientOngoingCount,
       completed,
       errored,
       pendingRequests: pendingVisibleRequests,
     };
-  }, [currentStatus, dismissedActivityKeys, requestItems, transientDownloadActivityItems]);
+  }, [currentStatus, dismissedActivityKeys, requestItems, transientOngoingCount]);
 
 
   // Compute visibility states
