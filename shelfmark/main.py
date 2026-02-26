@@ -117,13 +117,17 @@ _migrate_security_settings()
 # Initialize user database and register multi-user routes
 # If CONFIG_DIR doesn't exist or is read-only, multi-user features will be disabled
 import os as _os
+from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 _user_db_path = _os.path.join(_os.environ.get("CONFIG_DIR", "/config"), "users.db")
 user_db: UserDB | None = None
+monitored_db: MonitoredDB | None = None
 activity_service: ActivityService | None = None
 try:
     user_db = UserDB(_user_db_path)
     user_db.initialize()
+    monitored_db = MonitoredDB(_user_db_path)
+    monitored_db.initialize()
     activity_service = ActivityService(_user_db_path)
     import shelfmark.config.users_settings as _  # noqa: F401 - registers users tab
     from shelfmark.core.oidc_routes import register_oidc_routes
@@ -141,9 +145,9 @@ except (sqlite3.OperationalError, OSError) as e:
     user_db = None
 
 # Start download coordinator
-if user_db is not None:
-    from shelfmark.core.monitored_downloads import set_user_db, register_hooks
-    set_user_db(user_db)
+if monitored_db is not None:
+    from shelfmark.core.monitored_downloads import set_monitored_db, register_hooks
+    set_monitored_db(monitored_db)
     register_hooks()
 backend.start()
 
@@ -456,6 +460,7 @@ if user_db is not None:
         register_monitored_routes(
             app,
             user_db,
+            monitored_db,
             resolve_auth_mode=lambda: get_auth_mode(),
             activity_service=activity_service,
         )
@@ -948,11 +953,11 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
             monitored_entity_id_int = release_payload.get("monitored_entity_id")
             if (
                 monitored_entity_id_int is not None
-                and user_db is not None
+                and monitored_db is not None
                 and db_user_id is not None
                 and str(release_payload.get("content_type") or "").strip().lower() == "ebook"
             ):
-                entity = user_db.get_monitored_entity(
+                entity = monitored_db.get_monitored_entity(
                     user_id=int(db_user_id),
                     entity_id=int(monitored_entity_id_int),
                 )

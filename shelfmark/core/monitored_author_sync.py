@@ -14,7 +14,7 @@ from dataclasses import asdict
 from typing import Any
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.user_db import UserDB
+from shelfmark.core.monitored_db import MonitoredDB
 
 logger = setup_logger(__name__)
 
@@ -68,7 +68,7 @@ def transform_cached_cover_urls(
 
 
 def sync_author_entity(
-    user_db: UserDB,
+    user_db: MonitoredDB,
     *,
     db_user_id: int | None,
     entity: dict[str, Any],
@@ -81,7 +81,7 @@ def sync_author_entity(
     monitor-mode flags based on current availability.
 
     Args:
-        user_db: Database access object.
+        user_db: MonitoredDB instance.
         db_user_id: The user context for this sync.
         entity: Monitored entity row (must have kind="author").
         prefetch_covers: If True, download cover images into the local cache.

@@ -19,6 +19,7 @@ from shelfmark.core.monitored_utils import extract_book_popularity
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.activity_service import ActivityService, build_download_item_key
+from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -88,6 +89,7 @@ def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tup
 def register_monitored_routes(
     app: Flask,
     user_db: UserDB,
+    monitored_db: MonitoredDB,
     *,
     resolve_auth_mode: Callable[[], str],
     activity_service: ActivityService | None = None,
@@ -147,7 +149,7 @@ def register_monitored_routes(
                             total_entities = 0
                             total_books = 0
                             for uid in sorted(user_ids):
-                                entities = user_db.list_monitored_entities(user_id=uid)
+                                entities = monitored_db.list_monitored_entities(user_id=uid)
                                 for entity in entities:
                                     if not bool(int(entity.get("enabled") or 0)):
                                         continue
@@ -155,11 +157,11 @@ def register_monitored_routes(
                                         continue
                                     total_entities += 1
                                     try:
-                                        total_books += sync_author_entity(user_db, db_user_id=uid, entity=entity, prefetch_covers=True)
+                                        total_books += sync_author_entity(monitored_db, db_user_id=uid, entity=entity, prefetch_covers=True)
                                     except Exception as exc:
                                         logger.warning("Scheduled monitored sync failed entity_id=%s user_id=%s: %s", entity.get("id"), uid, exc)
                                         try:
-                                            user_db.update_monitored_entity_check(
+                                            monitored_db.update_monitored_entity_check(
                                                 entity_id=int(entity.get("id") or 0),
                                                 last_error=str(exc),
                                             )
@@ -190,7 +192,7 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -206,7 +208,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -227,7 +229,7 @@ def register_monitored_routes(
         merged_settings.update(settings_patch)
 
         try:
-            updated = user_db.create_monitored_entity(
+            updated = monitored_db.create_monitored_entity(
                 user_id=db_user_id,
                 kind=str(entity.get("kind") or "author"),
                 provider=entity.get("provider"),
@@ -247,8 +249,8 @@ def register_monitored_routes(
             )
         )
         if should_reapply_monitor_modes:
-            books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
-            existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+            books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+            existing_files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
             if books and existing_files:
                 from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -256,7 +258,8 @@ def register_monitored_routes(
                     books=books,
                     file_rows=existing_files,
                 )
-            _apply_monitor_modes_for_books(
+            apply_monitor_modes_for_books(
+                monitored_db,
                 db_user_id=db_user_id,
                 entity=updated,
                 books=books,
@@ -271,7 +274,7 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        rows = user_db.list_monitored_entities(user_id=db_user_id)
+        rows = monitored_db.list_monitored_entities(user_id=db_user_id)
 
         # Enrich with cached author details (bio, source_url) if available
         try:
@@ -309,7 +312,7 @@ def register_monitored_routes(
         except (TypeError, ValueError):
             limit = 20
 
-        rows = user_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
+        rows = monitored_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
         if rows:
             from shelfmark.core.monitored_files import (
                 expand_monitored_file_rows_for_equivalent_books,
@@ -326,7 +329,7 @@ def register_monitored_routes(
 
             availability_by_entity: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
             for entity_id, entity_rows in rows_by_entity.items():
-                files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+                files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
                 if not files:
                     availability_by_entity[entity_id] = {}
                     continue
@@ -405,7 +408,7 @@ def register_monitored_routes(
             return jsonify({"error": "settings must be an object"}), 400
 
         try:
-            row = user_db.create_monitored_entity(
+            row = monitored_db.create_monitored_entity(
                 user_id=db_user_id,
                 kind=kind,
                 provider=provider,
@@ -458,7 +461,7 @@ def register_monitored_routes(
                 logger.warning("Book monitor metadata seed failed provider=%s provider_id=%s: %s", provider, provider_id, exc)
 
             try:
-                user_db.upsert_monitored_book(
+                monitored_db.upsert_monitored_book(
                     user_id=db_user_id,
                     entity_id=int(row.get("id")),
                     provider=provider,
@@ -477,7 +480,7 @@ def register_monitored_routes(
                     readers_count=seeded_readers_count,
                     state="discovered",
                 )
-                user_db.set_monitored_book_monitor_flags(
+                monitored_db.set_monitored_book_monitor_flags(
                     user_id=db_user_id,
                     entity_id=int(row.get("id")),
                     provider=provider,
@@ -500,7 +503,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        deleted = user_db.delete_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        deleted = monitored_db.delete_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if not deleted:
             return jsonify({"error": "Not found"}), 404
         return jsonify({"ok": True})
@@ -511,14 +514,14 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        rows = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
+        rows = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
 
-        files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
         if rows and files:
             from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -537,7 +540,7 @@ def register_monitored_routes(
         transform_cached_cover_urls(rows)
 
         # Include last_checked_at so the frontend can decide whether to refresh
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         last_checked_at = entity.get("last_checked_at") if entity else None
 
         return jsonify({"books": rows, "last_checked_at": last_checked_at})
@@ -548,10 +551,10 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        rows = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id)
+        rows = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
         if books and rows:
             from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -578,7 +581,7 @@ def register_monitored_routes(
         except (TypeError, ValueError):
             limit = 50
 
-        rows = user_db.list_monitored_book_download_history(
+        rows = monitored_db.list_monitored_book_download_history(
             user_id=db_user_id,
             entity_id=entity_id,
             provider=provider,
@@ -587,7 +590,7 @@ def register_monitored_routes(
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        attempt_rows = user_db.list_monitored_book_attempt_history(
+        attempt_rows = monitored_db.list_monitored_book_attempt_history(
             user_id=db_user_id,
             entity_id=entity_id,
             provider=provider,
@@ -604,7 +607,7 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -637,7 +640,7 @@ def register_monitored_routes(
             except (TypeError, ValueError):
                 match_score = None
 
-        write_monitored_book_attempt(user_db,
+        write_monitored_book_attempt(monitored_db,
             user_id=db_user_id,
             entity_id=entity_id,
             provider=provider,
@@ -662,7 +665,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
         if entity.get("kind") != "author":
@@ -716,14 +719,14 @@ def register_monitored_routes(
             # Harden: clear all matched files when both directories are gone
             from shelfmark.core.monitored_files import clear_entity_matched_files
             try:
-                clear_entity_matched_files(user_db=user_db, user_id=db_user_id, entity_id=entity_id)
+                clear_entity_matched_files(monitored_db=monitored_db, user_id=db_user_id, entity_id=entity_id)
             except Exception as exc:
                 logger.warning("Failed clearing matched files for missing dirs entity_id=%s: %s", entity_id, exc)
             if dir_warnings:
                 return jsonify({"error": "Directory not found", "details": dir_warnings, "files_cleared": True}), 404
             return jsonify({"error": "Directory not found", "files_cleared": True}), 404
 
-        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
+        books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if books is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -731,7 +734,7 @@ def register_monitored_routes(
             from shelfmark.core.monitored_files import scan_monitored_author_files
 
             scan_results = scan_monitored_author_files(
-                user_db=user_db,
+                monitored_db=monitored_db,
                 user_id=db_user_id,
                 entity_id=entity_id,
                 books=books,
@@ -746,7 +749,8 @@ def register_monitored_routes(
             existing_files = scan_results.get("existing_files") or []
             missing_books = scan_results.get("missing_books") or []
 
-            _apply_monitor_modes_for_books(
+            apply_monitor_modes_for_books(
+                monitored_db,
                 db_user_id=db_user_id,
                 entity=entity,
                 books=books,
@@ -762,7 +766,7 @@ def register_monitored_routes(
                 merged_settings["last_audiobook_scan_at"] = scan_at
             merged_settings.pop("last_ebook_scan_error", None)
             merged_settings.pop("last_audiobook_scan_error", None)
-            user_db.create_monitored_entity(
+            monitored_db.create_monitored_entity(
                 user_id=db_user_id,
                 kind=str(entity.get("kind") or "author"),
                 provider=entity.get("provider"),
@@ -799,7 +803,7 @@ def register_monitored_routes(
                     merged_settings["last_ebook_scan_error"] = str(exc)
                 if audiobook_dir:
                     merged_settings["last_audiobook_scan_error"] = str(exc)
-                user_db.create_monitored_entity(
+                monitored_db.create_monitored_entity(
                     user_id=db_user_id,
                     kind=str(entity.get("kind") or "author"),
                     provider=entity.get("provider"),
@@ -839,7 +843,7 @@ def register_monitored_routes(
                 "series_count": item.get("series_count"),
             })
 
-        count = user_db.batch_update_monitored_books_series(
+        count = monitored_db.batch_update_monitored_books_series(
             user_id=db_user_id,
             entity_id=entity_id,
             updates=updates,
@@ -881,7 +885,7 @@ def register_monitored_routes(
             if monitor_ebook is None and monitor_audiobook is None:
                 continue
 
-            ok = user_db.set_monitored_book_monitor_flags(
+            ok = monitored_db.set_monitored_book_monitor_flags(
                 user_id=db_user_id,
                 entity_id=entity_id,
                 provider=provider,
@@ -904,7 +908,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
         if entity.get("kind") != "author":
@@ -944,8 +948,8 @@ def register_monitored_routes(
             except Exception:
                 pass
 
-        books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
-        files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
         if books and files:
             from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -1018,7 +1022,7 @@ def register_monitored_routes(
                 book = provider_instance.get_book(provider_book_id)
                 if not book:
                     summary["no_match"] += 1
-                    write_monitored_book_attempt(user_db,
+                    write_monitored_book_attempt(monitored_db,
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1053,7 +1057,7 @@ def register_monitored_routes(
 
                 if not all_releases:
                     summary["no_match"] += 1
-                    write_monitored_book_attempt(user_db,
+                    write_monitored_book_attempt(monitored_db,
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1124,7 +1128,7 @@ def register_monitored_routes(
 
             except Exception as exc:
                 summary["failed"] += 1
-                write_monitored_book_attempt(user_db,
+                write_monitored_book_attempt(monitored_db,
                     user_id=db_user_id,
                     entity_id=entity_id,
                     provider=provider,
@@ -1154,7 +1158,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -1162,10 +1166,10 @@ def register_monitored_routes(
             return jsonify({"error": "Sync is only supported for author entities"}), 400
 
         try:
-            discovered = sync_author_entity(user_db, db_user_id=db_user_id, entity=entity, prefetch_covers=True)
+            discovered = sync_author_entity(monitored_db, db_user_id=db_user_id, entity=entity, prefetch_covers=True)
             return jsonify({"ok": True, "discovered": discovered})
 
         except Exception as exc:
             logger.warning("Monitored sync failed entity_id=%s: %s", entity_id, exc)
-            user_db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
+            monitored_db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
             return jsonify({"error": "Sync failed"}), 500

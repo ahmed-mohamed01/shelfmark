@@ -827,7 +827,7 @@ def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
 def pre_process_releases(
     releases: List[Dict[str, Any]],
     *,
-    user_db: Any = None,
+    user_db: Any = None,  # MonitoredDB instance; kept as user_db for call-site compatibility
     user_id: int,
     entity_id: int,
     provider: str,

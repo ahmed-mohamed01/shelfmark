@@ -40,7 +40,7 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
 
     main_module.user_db.set_user_settings(user["id"], {"MONITORED_EBOOK_ROOTS": [str(tmp_path)]})
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -52,7 +52,7 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
     plain_book_id = f"plain-{uuid.uuid4().hex[:8]}"
     subtitle_book_id = f"sub-{uuid.uuid4().hex[:8]}"
 
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",
@@ -61,7 +61,7 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
         authors="CasualFarmer",
         publish_year=2024,
     )
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",

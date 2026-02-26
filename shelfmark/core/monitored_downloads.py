@@ -20,7 +20,7 @@ from shelfmark.release_sources import get_source_display_name
 
 logger = setup_logger(__name__)
 
-# UserDB handle injected at startup
+# MonitoredDB handle injected at startup
 _user_db: Any = None
 
 # Pending releases for retry logic: key = "entity_id:provider:provider_book_id:content_type"
@@ -49,10 +49,10 @@ def _pending_key(entity_id: int, provider: str, provider_book_id: str, content_t
     return f"{entity_id}:{provider}:{provider_book_id}:{content_type}"
 
 
-def set_user_db(user_db: Any) -> None:
-    """Inject UserDB dependency for monitored download history recording."""
+def set_monitored_db(monitored_db: Any) -> None:
+    """Inject MonitoredDB dependency for monitored download history recording."""
     global _user_db
-    _user_db = user_db
+    _user_db = monitored_db
 
 
 # =============================================================================

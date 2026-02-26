@@ -32,7 +32,7 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -44,7 +44,7 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
     provider = "hardcover"
     provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
 
-    main_module.user_db.insert_monitored_book_download_history(
+    main_module.monitored_db.insert_monitored_book_download_history(
         user_id=user["id"],
         entity_id=entity["id"],
         provider=provider,
@@ -58,7 +58,7 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
         final_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013).epub",
         overwritten_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013)_1.epub",
     )
-    main_module.user_db.insert_monitored_book_attempt_history(
+    main_module.monitored_db.insert_monitored_book_attempt_history(
         user_id=user["id"],
         entity_id=entity["id"],
         provider=provider,
@@ -101,7 +101,7 @@ def test_monitored_book_history_endpoint_requires_provider_params(main_module, c
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -119,7 +119,7 @@ def test_record_monitored_book_attempt_endpoint_persists_and_is_returned(main_mo
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -130,7 +130,7 @@ def test_record_monitored_book_attempt_endpoint_persists_and_is_returned(main_mo
 
     provider = "hardcover"
     provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider=provider,

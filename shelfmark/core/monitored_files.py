@@ -10,6 +10,7 @@ from typing import Any
 
 import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 from shelfmark.download.postprocess.policy import get_supported_audiobook_formats, get_supported_formats
 
@@ -135,7 +136,7 @@ def _is_series_container(parent: Path, audio_exts: set[str]) -> bool:
 
 def _record_scan_match(
     *,
-    user_db: UserDB,
+    monitored_db: MonitoredDB,
     user_id: int,
     entity_id: int,
     file_path: Path,
@@ -163,7 +164,7 @@ def _record_scan_match(
         prev = best_by_book_and_type.get(match_key)
         if prev is None or best_score > prev:
             best_by_book_and_type[match_key] = float(best_score)
-            user_db.upsert_monitored_book_file(
+            monitored_db.upsert_monitored_book_file(
                 user_id=user_id,
                 entity_id=entity_id,
                 provider=provider,
@@ -726,17 +727,17 @@ def with_monitored_book_availability(
 
 def clear_entity_matched_files(
     *,
-    user_db: UserDB,
+    monitored_db: MonitoredDB,
     user_id: int | None,
     entity_id: int,
 ) -> int:
     """Clear all matched file rows for an entity. Returns count deleted."""
-    return user_db.prune_monitored_book_files(user_id=user_id, entity_id=entity_id, keep_paths=[])
+    return monitored_db.prune_monitored_book_files(user_id=user_id, entity_id=entity_id, keep_paths=[])
 
 
 def prune_stale_matched_files(
     *,
-    user_db: UserDB,
+    monitored_db: MonitoredDB,
     user_id: int | None,
     entity_id: int,
     scanned_roots: list[Path],
@@ -750,7 +751,7 @@ def prune_stale_matched_files(
         return
 
     try:
-        existing_files = user_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+        existing_files = monitored_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
         keep: list[str] = []
         for row in existing_files:
             path = row.get("path")
@@ -769,7 +770,7 @@ def prune_stale_matched_files(
                 continue
             if path in seen_paths and Path(path).exists():
                 keep.append(path)
-        user_db.prune_monitored_book_files(user_id=user_id, entity_id=entity_id, keep_paths=keep)
+        monitored_db.prune_monitored_book_files(user_id=user_id, entity_id=entity_id, keep_paths=keep)
     except Exception as exc:
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 
@@ -822,7 +823,7 @@ def _score_candidate_against_known_titles(
 
 def scan_monitored_author_files(
     *,
-    user_db: UserDB,
+    monitored_db: MonitoredDB,
     user_id: int | None,
     entity_id: int,
     books: list[dict[str, Any]],
@@ -895,7 +896,7 @@ def scan_monitored_author_files(
             file_type = ext.lstrip(".")
             mtime = iso_mtime(p)
             _record_scan_match(
-                user_db=user_db,
+                monitored_db=monitored_db,
                 user_id=user_id,
                 entity_id=entity_id,
                 file_path=p,
@@ -977,7 +978,7 @@ def scan_monitored_author_files(
             seen_paths.add(str(best_file))
 
             _record_scan_match(
-                user_db=user_db,
+                monitored_db=monitored_db,
                 user_id=user_id,
                 entity_id=entity_id,
                 file_path=best_file,
@@ -996,14 +997,14 @@ def scan_monitored_author_files(
 
     scanned_roots = [p for p in [ebook_path, audiobook_path] if p is not None]
     prune_stale_matched_files(
-        user_db=user_db,
+        monitored_db=monitored_db,
         user_id=user_id,
         entity_id=entity_id,
         scanned_roots=scanned_roots,
         seen_paths=seen_paths,
     )
 
-    existing_files = user_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+    existing_files = monitored_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
     expanded_existing_files = expand_monitored_file_rows_for_equivalent_books(
         books=books,
         file_rows=existing_files,
@@ -1084,7 +1085,7 @@ def compute_monitor_flag(
 
 
 def apply_monitor_modes_for_books(
-    user_db: UserDB,
+    monitored_db: MonitoredDB,
     *,
     db_user_id: int | None,
     entity: dict[str, Any],
@@ -1130,7 +1131,7 @@ def apply_monitor_modes_for_books(
         monitor_ebook = compute_monitor_flag(ebook_mode, has_ebook, explicit_release_date, today)
         monitor_audio = compute_monitor_flag(audio_mode, has_audio, explicit_release_date, today)
 
-        user_db.set_monitored_book_monitor_flags(
+        monitored_db.set_monitored_book_monitor_flags(
             user_id=db_user_id,
             entity_id=entity_id,
             provider=provider,

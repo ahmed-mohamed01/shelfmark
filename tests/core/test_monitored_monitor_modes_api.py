@@ -46,7 +46,7 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
         },
     )
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -62,7 +62,7 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
 
     future_date = (date.today() + timedelta(days=20)).isoformat()
 
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",
@@ -71,7 +71,7 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
         authors="Author One",
         release_date=future_date,
     )
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",
@@ -114,7 +114,7 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
         },
     )
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -128,7 +128,7 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
         },
     )
 
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",
@@ -137,7 +137,7 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
         authors="Author One",
         release_date="2025-01-01",
     )
-    main_module.user_db.upsert_monitored_book_file(
+    main_module.monitored_db.upsert_monitored_book_file(
         user_id=user["id"],
         entity_id=entity["id"],
         provider="hardcover",
@@ -169,7 +169,7 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
-    entity = main_module.user_db.create_monitored_entity(
+    entity = main_module.monitored_db.create_monitored_entity(
         user_id=user["id"],
         kind="author",
         provider="hardcover",
@@ -181,7 +181,7 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
     provider = "hardcover"
     provider_book_id = "book-future-guard"
     future_year = date.today().year + 1
-    main_module.user_db.upsert_monitored_book(
+    main_module.monitored_db.upsert_monitored_book(
         user_id=user["id"],
         entity_id=entity["id"],
         provider=provider,
@@ -190,7 +190,7 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
         authors="Author One",
         release_date=str(future_year),
     )
-    main_module.user_db.set_monitored_book_monitor_flags(
+    main_module.monitored_db.set_monitored_book_monitor_flags(
         user_id=user["id"],
         entity_id=entity["id"],
         provider=provider,
