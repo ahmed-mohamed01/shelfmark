@@ -90,6 +90,107 @@ def normalize_candidate_title(raw: str, author_name: str) -> str:
     return s
 
 
+def _row_provider_key(row: dict[str, Any]) -> tuple[str, str]:
+    """Extract (provider, provider_book_id) as stripped strings from a row dict."""
+    return (
+        str(row.get("provider") or "").strip(),
+        str(row.get("provider_book_id") or "").strip(),
+    )
+
+
+def _is_series_container(parent: Path, audio_exts: set[str]) -> bool:
+    """Return True if parent contains sub-directories that hold audio files."""
+    try:
+        for child in parent.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                has_audio = any(
+                    fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in audio_exts
+                    for fp in child.iterdir()
+                )
+            except Exception:
+                has_audio = False
+            if has_audio:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _record_scan_match(
+    *,
+    user_db: UserDB,
+    user_id: int,
+    entity_id: int,
+    file_path: Path,
+    file_type: str,
+    size_bytes: int | None,
+    mtime: str,
+    candidate: str,
+    best_score: float,
+    best_row: dict[str, Any] | None,
+    top_matches: list[Any],
+    match_reason: str,
+    best_by_book_and_type: dict[tuple[str, str, str], float],
+    matched: list[dict[str, Any]],
+    unmatched: list[dict[str, Any]],
+) -> None:
+    """Record a single scan result: upsert to DB if best, append to matched or unmatched."""
+    path_str = str(file_path)
+    if best_row is not None and best_score >= 0.55:
+        p = best_row.get("provider")
+        bid = best_row.get("provider_book_id")
+        provider: str | None = str(p) if p is not None else None
+        provider_book_id: str | None = str(bid) if bid is not None else None
+
+        match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
+        prev = best_by_book_and_type.get(match_key)
+        if prev is None or best_score > prev:
+            best_by_book_and_type[match_key] = float(best_score)
+            user_db.upsert_monitored_book_file(
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                path=path_str,
+                ext=file_type,
+                file_type=file_type,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                confidence=float(best_score),
+                match_reason=match_reason,
+            )
+
+        matched.append({
+            "path": path_str,
+            "ext": file_type,
+            "file_type": file_type,
+            "size_bytes": size_bytes,
+            "mtime": mtime,
+            "candidate": candidate,
+            "match": {
+                "provider": provider,
+                "provider_book_id": provider_book_id,
+                "title": best_row.get("title"),
+                "confidence": float(best_score),
+                "reason": match_reason,
+                "top_matches": top_matches,
+            },
+        })
+    else:
+        unmatched.append({
+            "path": path_str,
+            "ext": file_type,
+            "file_type": file_type,
+            "size_bytes": size_bytes,
+            "mtime": mtime,
+            "candidate": candidate,
+            "best_score": float(best_score),
+            "top_matches": top_matches,
+        })
+
+
 def title_match_variants(raw_title: str) -> list[str]:
     """Generate variants of a title for matching (e.g., with/without subtitle)."""
     title = (raw_title or "").strip()
@@ -101,15 +202,7 @@ def title_match_variants(raw_title: str) -> list[str]:
     if colon_base and colon_base.lower() != title.lower():
         variants.append(colon_base)
 
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for value in variants:
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(value)
-    return deduped
+    return list({v.lower(): v for v in variants}.values())
 
 
 def extract_volume_markers(s: str) -> dict[str, int]:
@@ -251,8 +344,7 @@ def expand_monitored_file_rows_for_equivalent_books(
 
     books_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in books:
-        provider = str(row.get("provider") or "").strip()
-        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        provider, provider_book_id = _row_provider_key(row)
         if not provider or not provider_book_id:
             continue
         books_by_key[(provider, provider_book_id)] = row
@@ -294,8 +386,7 @@ def expand_monitored_file_rows_for_equivalent_books(
         expanded.append(cloned)
 
     for row in file_rows:
-        provider = str(row.get("provider") or "").strip()
-        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        provider, provider_book_id = _row_provider_key(row)
         if not provider or not provider_book_id:
             continue
 
@@ -535,8 +626,7 @@ def summarize_monitored_book_availability(
 
     summary: dict[tuple[str, str], dict[str, Any]] = {}
     for row in file_rows or []:
-        provider = str(row.get("provider") or "").strip()
-        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        provider, provider_book_id = _row_provider_key(row)
         if not provider or not provider_book_id:
             continue
         key = (provider, provider_book_id)
@@ -600,8 +690,7 @@ def with_monitored_book_availability(
 
     out: list[dict[str, Any]] = []
     for row in books or []:
-        provider = str(row.get("provider") or "").strip()
-        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        provider, provider_book_id = _row_provider_key(row)
         payload = availability.get((provider, provider_book_id), {})
         enriched = dict(row)
         enriched["has_ebook_available"] = bool(payload.get("has_ebook_available", False))
@@ -789,61 +878,23 @@ def scan_monitored_author_files(
 
             file_type = ext.lstrip(".")
             mtime = iso_mtime(p)
-            if best_row is not None and best_score >= 0.55:
-                provider = best_row.get("provider")
-                provider_book_id = best_row.get("provider_book_id")
-                provider = str(provider) if provider is not None else None
-                provider_book_id = str(provider_book_id) if provider_book_id is not None else None
-
-                match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
-                prev = best_by_book_and_type.get(match_key)
-                if prev is None or best_score > prev:
-                    best_by_book_and_type[match_key] = float(best_score)
-                    user_db.upsert_monitored_book_file(
-                        user_id=user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        path=str(p),
-                        ext=file_type,
-                        file_type=file_type,
-                        size_bytes=size_bytes,
-                        mtime=mtime,
-                        confidence=float(best_score),
-                        match_reason="filename_title_fuzzy",
-                    )
-
-                matched.append(
-                    {
-                        "path": str(p),
-                        "ext": file_type,
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "match": {
-                            "provider": provider,
-                            "provider_book_id": provider_book_id,
-                            "title": best_row.get("title"),
-                            "confidence": float(best_score),
-                            "reason": "filename_title_fuzzy",
-                            "top_matches": top_matches,
-                        },
-                    }
-                )
-            else:
-                unmatched.append(
-                    {
-                        "path": str(p),
-                        "ext": file_type,
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "best_score": float(best_score),
-                        "top_matches": top_matches,
-                    }
-                )
+            _record_scan_match(
+                user_db=user_db,
+                user_id=user_id,
+                entity_id=entity_id,
+                file_path=p,
+                file_type=file_type,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                candidate=candidate,
+                best_score=best_score,
+                best_row=best_row,
+                top_matches=top_matches,
+                match_reason="filename_title_fuzzy",
+                best_by_book_and_type=best_by_book_and_type,
+                matched=matched,
+                unmatched=unmatched,
+            )
 
     if audiobook_path is not None:
         seen_dirs: set[str] = set()
@@ -882,23 +933,7 @@ def scan_monitored_author_files(
             folder_name = parent.name
             series_name = parent.parent.name if parent.parent and parent.parent != audiobook_path else ""
 
-            is_series_container = False
-            try:
-                for child in parent.iterdir():
-                    if not child.is_dir():
-                        continue
-                    try:
-                        has_audio = any(
-                            fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in effective_audio_ext
-                            for fp in child.iterdir()
-                        )
-                    except Exception:
-                        has_audio = False
-                    if has_audio:
-                        is_series_container = True
-                        break
-            except Exception:
-                is_series_container = False
+            is_series_container = _is_series_container(parent, effective_audio_ext)
 
             if is_series_container:
                 combined = best_file.stem
@@ -925,61 +960,23 @@ def scan_monitored_author_files(
 
             seen_paths.add(str(best_file))
 
-            if best_row is not None and best_score >= 0.55:
-                provider = best_row.get("provider")
-                provider_book_id = best_row.get("provider_book_id")
-                provider = str(provider) if provider is not None else None
-                provider_book_id = str(provider_book_id) if provider_book_id is not None else None
-
-                match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
-                prev = best_by_book_and_type.get(match_key)
-                if prev is None or best_score > prev:
-                    best_by_book_and_type[match_key] = float(best_score)
-                    user_db.upsert_monitored_book_file(
-                        user_id=user_id,
-                        entity_id=entity_id,
-                        provider=provider,
-                        provider_book_id=provider_book_id,
-                        path=str(best_file),
-                        ext=file_type,
-                        file_type=file_type,
-                        size_bytes=size_bytes,
-                        mtime=mtime,
-                        confidence=float(best_score),
-                        match_reason="folder_title_fuzzy",
-                    )
-
-                matched.append(
-                    {
-                        "path": str(best_file),
-                        "ext": file_type,
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "match": {
-                            "provider": provider,
-                            "provider_book_id": provider_book_id,
-                            "title": best_row.get("title"),
-                            "confidence": float(best_score),
-                            "reason": "folder_title_fuzzy",
-                            "top_matches": top_matches,
-                        },
-                    }
-                )
-            else:
-                unmatched.append(
-                    {
-                        "path": str(best_file),
-                        "ext": file_type,
-                        "file_type": file_type,
-                        "size_bytes": size_bytes,
-                        "mtime": mtime,
-                        "candidate": candidate,
-                        "best_score": float(best_score),
-                        "top_matches": top_matches,
-                    }
-                )
+            _record_scan_match(
+                user_db=user_db,
+                user_id=user_id,
+                entity_id=entity_id,
+                file_path=best_file,
+                file_type=file_type,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                candidate=candidate,
+                best_score=best_score,
+                best_row=best_row,
+                top_matches=top_matches,
+                match_reason="folder_title_fuzzy",
+                best_by_book_and_type=best_by_book_and_type,
+                matched=matched,
+                unmatched=unmatched,
+            )
 
     scanned_roots = [p for p in [ebook_path, audiobook_path] if p is not None]
     prune_stale_matched_files(
