@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from typing import Any, Callable
@@ -98,7 +99,15 @@ def register_monitored_routes(
         if not rows:
             return
 
-        from shelfmark.core.utils import transform_cover_url
+        from shelfmark.config.env import is_covers_cache_enabled
+        from shelfmark.core.config import config as app_config
+        from shelfmark.core.utils import normalize_base_path
+
+        covers_cache_enabled = is_covers_cache_enabled()
+        if not covers_cache_enabled:
+            return
+
+        base_path = normalize_base_path(app_config.get("URL_BASE", ""))
 
         for row in rows:
             if not isinstance(row, dict):
@@ -120,7 +129,11 @@ def register_monitored_routes(
                     cache_id = f"monitored_{fallback_id}"
 
             if cache_id:
-                row["cover_url"] = transform_cover_url(cover_url, cache_id)
+                encoded_url = base64.urlsafe_b64encode(cover_url.encode()).decode()
+                if base_path:
+                    row["cover_url"] = f"{base_path}/api/covers/{cache_id}?url={encoded_url}"
+                else:
+                    row["cover_url"] = f"/api/covers/{cache_id}?url={encoded_url}"
 
     def _parse_float_from_text(value: str) -> float | None:
         match = re.search(r"-?\d+(?:\.\d+)?", value or "")
@@ -872,7 +885,6 @@ def register_monitored_routes(
             file_rows=files,
             user_id=db_user_id,
         )
-
         _transform_cached_cover_urls(rows)
 
         # Include last_checked_at so the frontend can decide whether to refresh

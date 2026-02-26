@@ -512,6 +512,9 @@ export interface MonitoredAuthorBookSearchRow {
   audiobook_available_format?: string | null;
 }
 
+const inFlightMonitoredBookFilesRequests = new Map<number, Promise<{ files: MonitoredBookFileRow[] }>>();
+const inFlightMonitoredBooksRequests = new Map<number, Promise<MonitoredBooksResponse>>();
+
 export const searchMonitoredAuthorBooks = async (
   query: string,
   limit: number = 20,
@@ -523,7 +526,17 @@ export const searchMonitoredAuthorBooks = async (
 };
 
 export const listMonitoredBookFiles = async (entityId: number): Promise<{ files: MonitoredBookFileRow[] }> => {
-  return fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API.monitored}/${entityId}/files`);
+  const existing = inFlightMonitoredBookFilesRequests.get(entityId);
+  if (existing) {
+    return existing;
+  }
+
+  const request = fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API.monitored}/${entityId}/files`).finally(() => {
+    inFlightMonitoredBookFilesRequests.delete(entityId);
+  });
+
+  inFlightMonitoredBookFilesRequests.set(entityId, request);
+  return request;
 };
 
 export const listMonitoredBookDownloadHistory = async (
@@ -653,7 +666,17 @@ export interface MonitoredBooksResponse {
 }
 
 export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBooksResponse> => {
-  return fetchJSON<MonitoredBooksResponse>(`${API.monitored}/${entityId}/books`);
+  const existing = inFlightMonitoredBooksRequests.get(entityId);
+  if (existing) {
+    return existing;
+  }
+
+  const request = fetchJSON<MonitoredBooksResponse>(`${API.monitored}/${entityId}/books`).finally(() => {
+    inFlightMonitoredBooksRequests.delete(entityId);
+  });
+
+  inFlightMonitoredBooksRequests.set(entityId, request);
+  return request;
 };
 
 export const updateMonitoredBooksSeries = async (
