@@ -103,10 +103,24 @@ def _verify_transfer_size(
 
 
 def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
-    """Write data atomically.
+    """Write data to a file with atomic collision detection.
 
-    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
-    Set overwrite_existing=True to replace destination in place.
+    If the destination already exists, retries with counter suffix (_1, _2, etc.)
+    until a unique path is found.
+    Set overwrite_existing=True to replace the destination in place (uses a
+    temp file + os.replace for atomicity).
+
+    Args:
+        dest_path: Desired destination path
+        data: Bytes to write
+        max_attempts: Maximum collision retries before raising error
+        overwrite_existing: Replace destination in place instead of suffixing
+
+    Returns:
+        Path where file was actually written (may differ from dest_path)
+
+    Raises:
+        RuntimeError: If no unique path found after max_attempts
     """
     if overwrite_existing:
         temp_path = _create_temp_path(dest_path)
@@ -134,6 +148,7 @@ def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100, *, overw
     for attempt in range(max_attempts):
         try_path = dest_path if attempt == 0 else parent / f"{base}_{attempt}{ext}"
         try:
+            # O_CREAT | O_EXCL fails atomically if file exists
             fd = run_blocking_io(
                 os.open,
                 str(try_path),
@@ -289,10 +304,29 @@ def _publish_temp_file(temp_path: Path, dest_path: Path) -> bool:
 
 
 def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
-    """Move a file atomically.
+    """Move a file with collision detection.
 
-    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
-    Set overwrite_existing=True to replace destination in place.
+    Uses os.rename() for same-filesystem moves (atomic, triggers inotify events),
+    falls back to copy-then-publish for cross-filesystem moves.
+
+    Note: We use os.rename() instead of hardlink+unlink because os.rename()
+    triggers proper inotify IN_MOVED_TO events that file watchers (like Calibre's
+    auto-add) rely on to detect new files.
+
+    Set overwrite_existing=True to replace the destination in place (uses os.replace
+    for atomicity, with cross-filesystem fallback).
+
+    Args:
+        source_path: Source file to move
+        dest_path: Desired destination path
+        max_attempts: Maximum collision retries before raising error
+        overwrite_existing: Replace destination in place instead of suffixing
+
+    Returns:
+        Path where file was actually moved (may differ from dest_path)
+
+    Raises:
+        RuntimeError: If no unique path found after max_attempts
     """
     if overwrite_existing:
         try:
@@ -369,13 +403,17 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100, *, 
     for attempt in range(max_attempts):
         try_path = dest_path if attempt == 0 else parent / f"{base}_{attempt}{ext}"
 
+        # Check for existing file (os.rename would overwrite on Unix)
         claimed = False
         if run_blocking_io(try_path.exists):
+            # Some filesystems can report false positives for exists() with
+            # special characters. Probe with O_EXCL to confirm.
             claimed = _claim_destination(try_path)
             if not claimed:
                 continue
 
         try:
+            # os.rename is atomic on same filesystem and triggers inotify events
             if claimed:
                 run_blocking_io(os.replace, str(source_path), str(try_path))
             else:
@@ -384,10 +422,12 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100, *, 
                 logger.info(f"File collision resolved: {try_path.name}")
             return try_path
         except FileExistsError:
+            # Race condition: file created between exists() check and rename()
             if claimed:
                 run_blocking_io(try_path.unlink, missing_ok=True)
             continue
         except OSError as e:
+            # Cross-filesystem - copy to temp and publish atomically.
             if e.errno != errno.EXDEV:
                 if claimed:
                     run_blocking_io(try_path.unlink, missing_ok=True)
@@ -476,10 +516,23 @@ def atomic_move(source_path: Path, dest_path: Path, max_attempts: int = 100, *, 
 
 
 def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
-    """Create a hardlink atomically.
+    """Create a hardlink with atomic collision detection.
 
-    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
-    Set overwrite_existing=True to replace destination in place.
+    Set overwrite_existing=True to replace the destination in place (creates
+    hardlink via temp + os.replace; falls back to atomic_copy on cross-device or
+    link-count errors).
+
+    Args:
+        source_path: Source file to link from
+        dest_path: Desired destination path for the link
+        max_attempts: Maximum collision retries before raising error
+        overwrite_existing: Replace destination in place instead of suffixing
+
+    Returns:
+        Path where link was actually created (may differ from dest_path)
+
+    Raises:
+        RuntimeError: If no unique path found after max_attempts
     """
     if overwrite_existing:
         temp_path = _create_temp_path(dest_path)
@@ -543,10 +596,23 @@ def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100,
 
 
 def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
-    """Copy a file atomically.
+    """Copy a file with atomic collision detection.
 
-    Default behavior preserves existing files by suffixing collisions (_1, _2, ...).
-    Set overwrite_existing=True to replace destination in place.
+    Uses a temp file in the destination directory and publishes it atomically,
+    avoiding partial files on failure.
+    Set overwrite_existing=True to replace the destination in place.
+
+    Args:
+        source_path: Source file to copy
+        dest_path: Desired destination path
+        max_attempts: Maximum collision retries before raising error
+        overwrite_existing: Replace destination in place instead of suffixing
+
+    Returns:
+        Path where file was actually copied (may differ from dest_path)
+
+    Raises:
+        RuntimeError: If no unique path found after max_attempts
     """
     expected_size = run_blocking_io(source_path.stat).st_size
 
@@ -605,6 +671,7 @@ def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100, *, 
             try:
                 run_blocking_io(shutil.copy2, str(source_path), str(temp_path))
             except (PermissionError, OSError) as e:
+                # Handle NFS permission errors immediately here
                 if _is_permission_error(e):
                     log_transfer_permission_context(
                         "atomic_copy",

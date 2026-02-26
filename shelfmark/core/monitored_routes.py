@@ -158,6 +158,61 @@ def enrich_release_for_monitored(
     return release_payload
 
 
+def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tuple[dict[str, Any], int | None]:
+    """Return monitored-feature config dict entries and the resolved user_id.
+
+    Extracted from api_config() to keep main.py lean. Returns a tuple of
+    (additions_dict, config_user_id) where config_user_id should be forwarded
+    to other per-user app_config.get() calls in the same request.
+    """
+    config_user_id: int | None = None
+    try:
+        config_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
+    except (TypeError, ValueError):
+        config_user_id = None
+
+    default_action_raw = str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
+
+    default_action_map: dict[str, tuple[str, str]] = {
+        "ebook_interactive_search": ("ebook", "interactive_search"),
+        "ebook_auto_search_download": ("ebook", "auto_search_download"),
+        "audiobook_interactive_search": ("audiobook", "interactive_search"),
+        "audiobook_auto_search_download": ("audiobook", "auto_search_download"),
+    }
+
+    default_content_type, default_action = default_action_map.get(default_action_raw, (None, None))  # type: ignore[assignment]
+    if default_content_type is None or default_action is None:
+        # Backward compatibility for legacy split settings.
+        fallback_content_type = app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook")
+        fallback_content_type = "audiobook" if str(fallback_content_type).strip().lower() == "audiobook" else "ebook"
+        fallback_action = app_config.get(
+            "RELEASE_PRIMARY_ACTION_AUDIOBOOK"
+            if fallback_content_type == "audiobook"
+            else "RELEASE_PRIMARY_ACTION_EBOOK",
+            app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
+        )
+        fallback_action = (
+            "auto_search_download"
+            if str(fallback_action).strip().lower() == "auto_search_download"
+            else "interactive_search"
+        )
+        default_content_type, default_action = fallback_content_type, fallback_action
+
+    return {
+        "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id),
+        "release_primary_default_action": f"{default_content_type}_{default_action}",
+        "release_primary_content_type": default_content_type,
+        "release_primary_action_ebook": (
+            default_action if default_content_type == "ebook" else "interactive_search"
+        ),
+        "release_primary_action_audiobook": (
+            default_action if default_content_type == "audiobook" else "interactive_search"
+        ),
+        "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
+        "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
+    }, config_user_id
+
+
 def register_monitored_routes(
     app: Flask,
     user_db: UserDB,

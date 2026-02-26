@@ -1,6 +1,9 @@
 """Settings tab for release scoring/matching — registered from monitored branch."""
 from __future__ import annotations
 
+import re
+from typing import Any, Dict
+
 from shelfmark.core.settings_registry import (
     register_settings,
     NumberField,
@@ -260,3 +263,38 @@ def release_scoring_settings():
             max_value=30,
         ),
     ]
+
+
+def validate_monitored_refresh_times(values: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Validate and normalise MONITORED_REFRESH_TIMES in *values*.
+
+    Returns an error dict if the value is invalid, or ``None`` when valid
+    (values is updated in place with the normalised schedule string).
+    """
+    raw_schedule = str(values.get("MONITORED_REFRESH_TIMES") or "").strip()
+    if not raw_schedule:
+        raw_schedule = "02:00,14:00"
+
+    parts = [segment.strip() for segment in raw_schedule.split(",") if segment.strip()]
+    if not parts:
+        return {
+            "error": True,
+            "message": "Monitored refresh times must include at least one time in HH:MM format",
+            "values": values,
+        }
+
+    normalized_parts: list[str] = []
+    seen_parts: set[str] = set()
+    for part in parts:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", part):
+            return {
+                "error": True,
+                "message": f"Invalid monitored refresh time '{part}'. Use 24-hour HH:MM (e.g. 02:00,14:00)",
+                "values": values,
+            }
+        if part not in seen_parts:
+            normalized_parts.append(part)
+            seen_parts.add(part)
+
+    values["MONITORED_REFRESH_TIMES"] = ",".join(normalized_parts)
+    return None

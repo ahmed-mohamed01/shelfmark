@@ -939,40 +939,9 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         )
         from shelfmark.config.env import _is_config_dir_writable
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
+        from shelfmark.core.monitored_routes import get_monitored_config_additions
 
-        config_user_id = None
-        raw_db_user_id = session.get("db_user_id")
-        try:
-            config_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
-        except (TypeError, ValueError):
-            config_user_id = None
-
-        default_action_raw = str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
-
-        default_action_map = {
-            "ebook_interactive_search": ("ebook", "interactive_search"),
-            "ebook_auto_search_download": ("ebook", "auto_search_download"),
-            "audiobook_interactive_search": ("audiobook", "interactive_search"),
-            "audiobook_auto_search_download": ("audiobook", "auto_search_download"),
-        }
-
-        default_content_type, default_action = default_action_map.get(default_action_raw, (None, None))
-        if default_content_type is None or default_action is None:
-            # Backward compatibility for legacy split settings.
-            fallback_content_type = app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook")
-            fallback_content_type = "audiobook" if str(fallback_content_type).strip().lower() == "audiobook" else "ebook"
-            fallback_action = app_config.get(
-                "RELEASE_PRIMARY_ACTION_AUDIOBOOK"
-                if fallback_content_type == "audiobook"
-                else "RELEASE_PRIMARY_ACTION_EBOOK",
-                app_config.get("RELEASE_PRIMARY_ACTION", "interactive_search"),
-            )
-            fallback_action = (
-                "auto_search_download"
-                if str(fallback_action).strip().lower() == "auto_search_download"
-                else "interactive_search"
-            )
-            default_content_type, default_action = fallback_content_type, fallback_action
+        monitored_cfg, config_user_id = get_monitored_config_additions(app_config, session.get("db_user_id"))
 
         config = {
             "calibre_web_url": app_config.get("CALIBRE_WEB_URL", ""),
@@ -984,16 +953,7 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "default_language": app_config.BOOK_LANGUAGE,
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
-            "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id),
-            "release_primary_default_action": f"{default_content_type}_{default_action}",
-            "release_primary_content_type": default_content_type,
-            "release_primary_action_ebook": (
-                default_action if default_content_type == "ebook" else "interactive_search"
-            ),
-            "release_primary_action_audiobook": (
-                default_action if default_content_type == "audiobook" else "interactive_search"
-            ),
-            "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
+            **monitored_cfg,
             "search_mode": app_config.get("SEARCH_MODE", "direct", user_id=config_user_id),
             "metadata_sort_options": get_provider_sort_options(),
             "metadata_search_fields": get_provider_search_fields(),
@@ -1001,7 +961,6 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder", user_id=config_user_id),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True, user_id=config_user_id),
             "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False, user_id=config_user_id),
-            "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
             "settings_enabled": _is_config_dir_writable(),
             "onboarding_complete": _get_onboarding_complete(),
             # Default sort orders
