@@ -34,6 +34,13 @@ import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
 import { ResultsSection } from '../components/ResultsSection';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
+import {
+  isEnabledMonitoredFlag,
+  isMonitoredBookDormantState,
+  monitoredBookHasAnyAvailable,
+  monitoredBookTracksAudiobook,
+  monitoredBookTracksEbook,
+} from '../utils/monitoredBookState';
 
 interface MonitoredAuthor {
   id: number;
@@ -245,33 +252,20 @@ const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
 
-const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
-
 const bookTracksEbook = (book: MonitoredBookListRow): boolean => (
-  isEnabledFlag(book.monitor_ebook)
+  monitoredBookTracksEbook(book)
 );
 
 const bookTracksAudiobook = (book: MonitoredBookListRow): boolean => (
-  isEnabledFlag(book.monitor_audiobook)
-);
-
-const bookHasEbookFiles = (book: MonitoredBookListRow): boolean => (
-  isEnabledFlag(book.has_ebook_available)
-);
-
-const bookHasAudiobookFiles = (book: MonitoredBookListRow): boolean => (
-  isEnabledFlag(book.has_audiobook_available)
+  monitoredBookTracksAudiobook(book)
 );
 
 const isMonitoredBookFulfilled = (book: MonitoredBookListRow): boolean => (
-  bookHasEbookFiles(book) || bookHasAudiobookFiles(book)
+  monitoredBookHasAnyAvailable(book)
 );
 
 const isMonitoredBookDormant = (book: MonitoredBookListRow): boolean => (
-  !bookTracksEbook(book)
-  && !bookTracksAudiobook(book)
-  && !bookHasEbookFiles(book)
-  && !bookHasAudiobookFiles(book)
+  isMonitoredBookDormantState(book)
 );
 
 interface MonitoredCountsSnapshot {
@@ -1227,8 +1221,8 @@ export const MonitoredPage = ({
     );
     if (!currentRow) return { monitorEbook: false, monitorAudiobook: false, row: null };
     return {
-      monitorEbook: currentRow.monitor_ebook === true || currentRow.monitor_ebook === 1,
-      monitorAudiobook: currentRow.monitor_audiobook === true || currentRow.monitor_audiobook === 1,
+      monitorEbook: bookTracksEbook(currentRow),
+      monitorAudiobook: bookTracksAudiobook(currentRow),
       row: currentRow,
     };
   }, [activeBookSourceRow, monitoredBooksRows]);
@@ -1343,8 +1337,8 @@ export const MonitoredPage = ({
     const providerBookId = (book.provider_book_id || '').trim();
     if (!provider || !providerBookId) return;
 
-    const currentEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
-    const currentAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+    const currentEbook = bookTracksEbook(book);
+    const currentAudiobook = bookTracksAudiobook(book);
 
     const patch: { provider: string; provider_book_id: string; monitor_ebook?: boolean; monitor_audiobook?: boolean } = {
       provider,
@@ -2015,8 +2009,8 @@ export const MonitoredPage = ({
       series_name: book.series_name || undefined,
       series_position: book.series_position ?? undefined,
       series_count: book.series_count ?? undefined,
-      has_ebook_available: isEnabledFlag(book.has_ebook_available),
-      has_audiobook_available: isEnabledFlag(book.has_audiobook_available),
+      has_ebook_available: isEnabledMonitoredFlag(book.has_ebook_available),
+      has_audiobook_available: isEnabledMonitoredFlag(book.has_audiobook_available),
       ebook_path: book.ebook_path || undefined,
       audiobook_path: book.audiobook_path || undefined,
       ebook_available_format: book.ebook_available_format || undefined,
@@ -2083,8 +2077,8 @@ export const MonitoredPage = ({
   }, [navigateToAuthorPage]);
 
   const renderMonitoredBookActions = useCallback((book: MonitoredBookListRow, compact = false) => {
-    const tracksEbook = book.monitor_ebook === true || book.monitor_ebook === 1;
-    const tracksAudiobook = book.monitor_audiobook === true || book.monitor_audiobook === 1;
+    const tracksEbook = bookTracksEbook(book);
+    const tracksAudiobook = bookTracksAudiobook(book);
     const isFullyMonitored = tracksEbook && tracksAudiobook;
 
     const menuContent = ({ close }: { close: () => void }) => (
@@ -2793,8 +2787,8 @@ export const MonitoredPage = ({
                                 ) : (
                                   <div className="py-1">
                                     {scopedMonitoredBooksSearchResults.map((row) => {
-                                      const hasEbookAvailable = isEnabledFlag(row.has_ebook_available);
-                                      const hasAudiobookAvailable = isEnabledFlag(row.has_audiobook_available);
+                                      const hasEbookAvailable = isEnabledMonitoredFlag(row.has_ebook_available);
+                                      const hasAudiobookAvailable = isEnabledMonitoredFlag(row.has_audiobook_available);
                                       const hasAnyAvailable = hasEbookAvailable || hasAudiobookAvailable;
                                       const hasSeries = Boolean(row.series_name);
                                       const seriesLabel = hasSeries
