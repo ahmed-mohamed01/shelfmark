@@ -11,7 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_downloads import process_monitored_book
+from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
 from shelfmark.core.monitored_author_sync import sync_author_entity, transform_cached_cover_urls
 from shelfmark.core.monitored_files import apply_monitor_modes_for_books, path_within_allowed_roots, resolve_allowed_roots
 from shelfmark.core.monitored_release_scoring import parse_release_date
@@ -111,46 +111,6 @@ def register_monitored_routes(
 
         return unique or ["02:00", "14:00"]
 
-    def _write_monitored_book_attempt(
-        *,
-        user_id: int | None,
-        entity_id: int,
-        provider: str,
-        provider_book_id: str,
-        content_type: str,
-        status: str,
-        attempted_at: str | None = None,
-        source: str | None = None,
-        source_id: str | None = None,
-        release_title: str | None = None,
-        match_score: float | None = None,
-        error_message: str | None = None,
-    ) -> str:
-        attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        user_db.set_monitored_book_search_status(
-            user_id=user_id,
-            entity_id=entity_id,
-            provider=provider,
-            provider_book_id=provider_book_id,
-            content_type=content_type,
-            status=status,
-            searched_at=attempted_at_iso,
-        )
-        user_db.insert_monitored_book_attempt_history(
-            user_id=user_id,
-            entity_id=entity_id,
-            provider=provider,
-            provider_book_id=provider_book_id,
-            content_type=content_type,
-            attempted_at=attempted_at_iso,
-            status=status,
-            source=source,
-            source_id=source_id,
-            release_title=release_title,
-            match_score=match_score,
-            error_message=error_message,
-        )
-        return attempted_at_iso
 
 
     def _start_monitored_refresh_scheduler() -> None:
@@ -677,7 +637,7 @@ def register_monitored_routes(
             except (TypeError, ValueError):
                 match_score = None
 
-        _write_monitored_book_attempt(
+        write_monitored_book_attempt(user_db,
             user_id=db_user_id,
             entity_id=entity_id,
             provider=provider,
@@ -1058,7 +1018,7 @@ def register_monitored_routes(
                 book = provider_instance.get_book(provider_book_id)
                 if not book:
                     summary["no_match"] += 1
-                    _write_monitored_book_attempt(
+                    write_monitored_book_attempt(user_db,
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1093,7 +1053,7 @@ def register_monitored_routes(
 
                 if not all_releases:
                     summary["no_match"] += 1
-                    _write_monitored_book_attempt(
+                    write_monitored_book_attempt(user_db,
                         user_id=db_user_id,
                         entity_id=entity_id,
                         provider=provider,
@@ -1164,7 +1124,7 @@ def register_monitored_routes(
 
             except Exception as exc:
                 summary["failed"] += 1
-                _write_monitored_book_attempt(
+                write_monitored_book_attempt(user_db,
                     user_id=db_user_id,
                     entity_id=entity_id,
                     provider=provider,

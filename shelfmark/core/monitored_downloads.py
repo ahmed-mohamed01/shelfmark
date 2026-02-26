@@ -493,3 +493,74 @@ def get_pending_count() -> int:
     """Get count of books currently pending/in-queue."""
     with _pending_lock:
         return len(_pending_releases)
+
+
+# =============================================================================
+# Attempt Recording
+# =============================================================================
+
+
+def write_monitored_book_attempt(
+    user_db: Any,
+    *,
+    user_id: int | None,
+    entity_id: int,
+    provider: str,
+    provider_book_id: str,
+    content_type: str,
+    status: str,
+    attempted_at: str | None = None,
+    source: str | None = None,
+    source_id: str | None = None,
+    release_title: str | None = None,
+    match_score: float | None = None,
+    error_message: str | None = None,
+) -> str:
+    """Record a monitored book search attempt and update its search status.
+
+    Writes to both set_monitored_book_search_status and
+    insert_monitored_book_attempt_history in a single call.
+
+    Args:
+        user_db: Database access object.
+        user_id: The user context for this attempt.
+        entity_id: The monitored entity ID.
+        provider: Metadata provider (e.g. "hardcover").
+        provider_book_id: Provider's book identifier.
+        content_type: "ebook" or "audiobook".
+        status: Attempt status string (e.g. "no_match", "error", "queued").
+        attempted_at: ISO timestamp; defaults to current UTC time if omitted.
+        source: Release source name, if any.
+        source_id: Release source identifier, if any.
+        release_title: Title of the attempted release, if any.
+        match_score: Scoring value for the release, if any.
+        error_message: Error description, if any.
+
+    Returns:
+        The ISO timestamp used for this attempt.
+    """
+    attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    user_db.set_monitored_book_search_status(
+        user_id=user_id,
+        entity_id=entity_id,
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type=content_type,
+        status=status,
+        searched_at=attempted_at_iso,
+    )
+    user_db.insert_monitored_book_attempt_history(
+        user_id=user_id,
+        entity_id=entity_id,
+        provider=provider,
+        provider_book_id=provider_book_id,
+        content_type=content_type,
+        attempted_at=attempted_at_iso,
+        status=status,
+        source=source,
+        source_id=source_id,
+        release_title=release_title,
+        match_score=match_score,
+        error_message=error_message,
+    )
+    return attempted_at_iso
