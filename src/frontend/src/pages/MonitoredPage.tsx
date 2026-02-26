@@ -206,17 +206,17 @@ const SEARCH_VIEW_ICON_COMPACT_LINES = (
   </svg>
 );
 
-const BookRowThumbnail = ({ coverUrl, title }: { coverUrl?: string | null; title: string }) => {
+const RowThumbnail = ({ url, alt, placeholder }: { url?: string | null; alt: string; placeholder: string }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  if (!coverUrl || imageError) {
+  if (!url || imageError) {
     return (
       <div
         className="w-7 h-10 sm:w-10 sm:h-14 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300"
-        aria-label="No cover available"
+        aria-label={`No ${placeholder.toLowerCase()} available`}
       >
-        No Cover
+        {placeholder}
       </div>
     );
   }
@@ -227,8 +227,8 @@ const BookRowThumbnail = ({ coverUrl, title }: { coverUrl?: string | null; title
         <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
       )}
       <img
-        src={coverUrl}
-        alt={title || 'Book cover'}
+        src={url}
+        alt={alt}
         className="w-full h-full object-cover object-top"
         loading="lazy"
         onLoad={() => setImageLoaded(true)}
@@ -326,38 +326,6 @@ const selectFallbackPhotoFromMonitoredBooks = (books: MonitoredBookRow[]): strin
   return bestCover;
 };
 
-const AuthorRowThumbnail = ({ photo_url, name }: { photo_url?: string; name: string }) => {
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [imageError, setImageError] = useState(false);
-
-  if (!photo_url || imageError) {
-    return (
-      <div
-        className="w-7 h-10 sm:w-10 sm:h-14 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[8px] sm:text-[9px] font-medium text-gray-500 dark:text-gray-300"
-        aria-label="No photo available"
-      >
-        No Photo
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative w-7 h-10 sm:w-10 sm:h-14 rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70">
-      {!imageLoaded && (
-        <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
-      )}
-      <img
-        src={photo_url}
-        alt={name}
-        className="w-full h-full object-cover object-top"
-        loading="lazy"
-        onLoad={() => setImageLoaded(true)}
-        onError={() => setImageError(true)}
-        style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}
-      />
-    </div>
-  );
-};
 
 export const MonitoredPage = ({
   onActivityClick,
@@ -3068,7 +3036,7 @@ export const MonitoredPage = ({
                             key={`${author.provider}:${author.provider_id}`}
                             name={author.name || 'Unknown author'}
                             subtitle={subtitle}
-                            thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={author.name || 'Unknown author'} />}
+                            thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Unknown author'} placeholder="No Photo" />}
                             onOpen={() => navigateToAuthorPage({ ...author, monitoredEntityId: authorEntityId ?? null })}
                             onEdit={typeof authorEntityId === 'number' ? () => void openEditAuthorModal(authorEntityId, author.name || 'Unknown author') : undefined}
                             onToggleSelect={typeof authorEntityId === 'number' ? () => toggleMonitoredAuthorSelection(authorEntityId) : undefined}
@@ -3227,7 +3195,7 @@ export const MonitoredPage = ({
                                   )}
                                 </button>
                               )}
-                              thumbnail={<BookRowThumbnail coverUrl={book.cover_url} title={book.title || 'Unknown title'} />}
+                              thumbnail={<RowThumbnail url={book.cover_url} alt={book.title || 'Unknown title'} placeholder="No Cover" />}
                               onOpen={() => openMonitoredBookDetails(book)}
                               titleRow={titleRow}
                               subtitleRow={subtitleRow}
@@ -3543,7 +3511,7 @@ export const MonitoredPage = ({
                           key={`${author.provider}:${author.provider_id}`}
                           name={name || 'Unknown author'}
                           subtitle={subtitle}
-                          thumbnail={<AuthorRowThumbnail photo_url={author.photo_url || undefined} name={name || 'Unknown author'} />}
+                          thumbnail={<RowThumbnail url={author.photo_url} alt={name || 'Unknown author'} placeholder="No Photo" />}
                           onOpen={() => navigateToAuthorPage(author)}
                           trailingAction={(
                             <button
