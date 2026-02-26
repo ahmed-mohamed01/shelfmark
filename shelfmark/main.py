@@ -2613,7 +2613,7 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
             get_provider_kwargs,
         )
         from shelfmark.release_sources import get_source, list_available_sources, serialize_column_config
-        from shelfmark.core.release_matcher import rank_releases_for_book
+        from shelfmark.core.monitored_release_scoring import rank_releases_for_book
         from dataclasses import asdict
 
         provider = request.args.get('provider', '').strip()

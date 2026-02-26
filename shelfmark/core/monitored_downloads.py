@@ -9,12 +9,12 @@ the core orchestrator module. This module handles:
 
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, QueueStatus
+from shelfmark.core.monitored_release_scoring import is_book_released, parse_release_date, pre_process_releases
 from shelfmark.core.queue import book_queue
 from shelfmark.release_sources import get_source_display_name
 
@@ -72,164 +72,6 @@ def _normalize_content_type(value: Any) -> str:
     """Return 'ebook' or 'audiobook'; defaults to 'ebook' for unknown values."""
     ct = str(value or "ebook").strip().lower()
     return ct if ct in {"ebook", "audiobook"} else "ebook"
-
-
-# =============================================================================
-# Release Date Parsing
-# =============================================================================
-
-
-def parse_release_date(value: Any) -> Optional[date]:
-    """Parse release date values from API/search payloads."""
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-
-    token = raw
-    if "T" in token:
-        token = token.split("T", 1)[0]
-    elif " " in token:
-        token = token.split(" ", 1)[0]
-
-    try:
-        return date.fromisoformat(token)
-    except ValueError:
-        return None
-
-
-def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
-    """Check if a book has been released based on its release date.
-    
-    Returns:
-        Tuple of (is_released, parsed_date).
-        is_released is True if no date or date is in the past.
-    """
-    parsed = parse_release_date(release_date)
-    if parsed is None:
-        return True, None  # No date = assume released
-    
-    today = datetime.now(timezone.utc).date()
-    return parsed <= today, parsed
-
-
-# =============================================================================
-# Pre-Processing: Filter and Rank Releases
-# =============================================================================
-
-
-def pre_process_releases(
-    releases: List[Dict[str, Any]],
-    *,
-    user_id: int,
-    entity_id: int,
-    provider: str,
-    provider_book_id: str,
-    content_type: str = "ebook",
-    min_match_score: Optional[float] = None,
-) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Pre-process releases for a monitored book before queuing.
-    
-    Filters releases by:
-    1. Release date (must be released)
-    2. Match score cutoff
-    3. Previous failed attempts (deprioritize but don't exclude)
-    
-    Args:
-        releases: List of release dicts from search
-        user_id: Current user ID
-        entity_id: Monitored entity ID
-        provider: Book provider (e.g., 'goodreads')
-        provider_book_id: Provider's book ID
-        content_type: 'ebook' or 'audiobook'
-        min_match_score: Minimum match score cutoff (uses config default if None)
-    
-    Returns:
-        Tuple of (valid_releases, rejection_reason).
-        valid_releases is sorted by score (highest first), with failed attempts last.
-        rejection_reason is set if no valid releases found.
-    """
-    if not releases:
-        return [], "No releases found"
-    
-    # Get cutoff from config if not specified
-    if min_match_score is None:
-        min_match_score = float(config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 0.7, user_id=user_id))
-    
-    valid_releases: List[Dict[str, Any]] = []
-    unreleased_count = 0
-    below_cutoff_count = 0
-    
-    # Get failed (source, source_id) pairs to deprioritize
-    failed_source_pairs: set[tuple[str, str]] = set()
-    if _user_db is not None:
-        try:
-            failed_source_pairs = _user_db.list_monitored_failed_candidate_source_ids(
-                user_id=user_id,
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                content_type=content_type,
-            )
-        except Exception as e:
-            logger.warning("Failed to get failed source IDs: %s", e)
-    
-    for release in releases:
-        # Check release date
-        release_date = (
-            release.get("release_date")
-            or release.get("extra", {}).get("release_date")
-            or release.get("extra", {}).get("publication_date")
-        )
-        is_released, parsed_date = is_book_released(release_date)
-        if not is_released:
-            unreleased_count += 1
-            logger.debug("Skipping unreleased: %s (releases %s)", release.get("title"), parsed_date)
-            continue
-        
-        # Check match score
-        extra = release.get("extra", {})
-        match_score = release.get("match_score") or extra.get("match_score")
-        try:
-            score = float(match_score) if match_score is not None else 0.0
-        except (TypeError, ValueError):
-            score = 0.0
-        
-        if score < min_match_score:
-            below_cutoff_count += 1
-            logger.debug("Skipping below cutoff: %s (score %.2f < %.2f)", release.get("title"), score, min_match_score)
-            continue
-        
-        # Mark if previously failed (for sorting)
-        src = str(release.get("source", "")).strip()
-        src_id = str(release.get("source_id", "")).strip()
-        release["_previously_failed"] = bool(src and src_id and (src, src_id) in failed_source_pairs)
-        release["_match_score"] = score
-        valid_releases.append(release)
-    
-    if not valid_releases:
-        if unreleased_count > 0 and below_cutoff_count == 0:
-            return [], f"Book is unreleased"
-        elif below_cutoff_count > 0:
-            return [], f"No releases meet minimum match score ({min_match_score:.0%})"
-        else:
-            return [], "No valid releases found"
-    
-    # Sort: highest score first, previously failed last
-    valid_releases.sort(
-        key=lambda r: (not r.get("_previously_failed", False), r.get("_match_score", 0)),
-        reverse=True
-    )
-    
-    logger.info(
-        "Pre-processed %d releases: %d valid, %d unreleased, %d below cutoff, %d previously failed",
-        len(releases), len(valid_releases), unreleased_count, below_cutoff_count,
-        sum(1 for r in valid_releases if r.get("_previously_failed"))
-    )
-    
-    return valid_releases, None
 
 
 # =============================================================================
@@ -413,6 +255,7 @@ def process_monitored_book(
     # Pre-process releases
     valid_releases, error = pre_process_releases(
         releases,
+        user_db=_user_db,
         user_id=user_id,
         entity_id=entity_id,
         provider=provider,

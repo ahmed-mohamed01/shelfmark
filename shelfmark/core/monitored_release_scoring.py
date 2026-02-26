@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from shelfmark.core.config import config as app_config
+from shelfmark.core.logger import setup_logger
 from shelfmark.metadata_providers import BookMetadata
 from shelfmark.release_sources import Release
+
+logger = setup_logger(__name__)
 
 
 _WORD_NUMBER_MAP: Dict[str, float] = {
@@ -769,3 +773,157 @@ def rank_releases_for_book(book: BookMetadata, releases: List[Release]) -> List[
 
     scored.sort(key=lambda item: item[1].score, reverse=True)
     return scored
+
+
+# =============================================================================
+# Release Date Utilities
+# =============================================================================
+
+
+def parse_release_date(value: Any) -> Optional[date]:
+    """Parse release date values from API/search payloads."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    token = raw
+    if "T" in token:
+        token = token.split("T", 1)[0]
+    elif " " in token:
+        token = token.split(" ", 1)[0]
+
+    try:
+        return date.fromisoformat(token)
+    except ValueError:
+        return None
+
+
+def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
+    """Check if a book has been released based on its release date.
+
+    Returns:
+        Tuple of (is_released, parsed_date).
+        is_released is True if no date or date is in the past.
+    """
+    parsed = parse_release_date(release_date)
+    if parsed is None:
+        return True, None  # No date = assume released
+
+    today = datetime.now(timezone.utc).date()
+    return parsed <= today, parsed
+
+
+# =============================================================================
+# Pre-Processing: Filter and Rank Releases
+# =============================================================================
+
+
+def pre_process_releases(
+    releases: List[Dict[str, Any]],
+    *,
+    user_db: Any = None,
+    user_id: int,
+    entity_id: int,
+    provider: str,
+    provider_book_id: str,
+    content_type: str = "ebook",
+    min_match_score: Optional[float] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Pre-process releases for a monitored book before queuing.
+
+    Filters releases by:
+    1. Release date (must be released)
+    2. Match score cutoff
+    3. Previous failed attempts (deprioritize but don't exclude)
+
+    Args:
+        releases: List of release dicts from search
+        user_db: UserDB instance for failed-source lookup (optional)
+        user_id: Current user ID
+        entity_id: Monitored entity ID
+        provider: Book provider (e.g., 'hardcover')
+        provider_book_id: Provider's book ID
+        content_type: 'ebook' or 'audiobook'
+        min_match_score: Minimum match score cutoff (uses config default if None)
+
+    Returns:
+        Tuple of (valid_releases, rejection_reason).
+        valid_releases is sorted by score (highest first), with failed attempts last.
+        rejection_reason is set if no valid releases found.
+    """
+    if not releases:
+        return [], "No releases found"
+
+    if min_match_score is None:
+        min_match_score = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 0.7, user_id=user_id))
+
+    valid_releases: List[Dict[str, Any]] = []
+    unreleased_count = 0
+    below_cutoff_count = 0
+
+    failed_source_pairs: set[tuple[str, str]] = set()
+    if user_db is not None:
+        try:
+            failed_source_pairs = user_db.list_monitored_failed_candidate_source_ids(
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+            )
+        except Exception as e:
+            logger.warning("Failed to get failed source IDs: %s", e)
+
+    for release in releases:
+        release_date = (
+            release.get("release_date")
+            or release.get("extra", {}).get("release_date")
+            or release.get("extra", {}).get("publication_date")
+        )
+        is_released, parsed_date = is_book_released(release_date)
+        if not is_released:
+            unreleased_count += 1
+            logger.debug("Skipping unreleased: %s (releases %s)", release.get("title"), parsed_date)
+            continue
+
+        extra = release.get("extra", {})
+        match_score = release.get("match_score") or extra.get("match_score")
+        try:
+            score = float(match_score) if match_score is not None else 0.0
+        except (TypeError, ValueError):
+            score = 0.0
+
+        if score < min_match_score:
+            below_cutoff_count += 1
+            logger.debug("Skipping below cutoff: %s (score %.2f < %.2f)", release.get("title"), score, min_match_score)
+            continue
+
+        src = str(release.get("source", "")).strip()
+        src_id = str(release.get("source_id", "")).strip()
+        release["_previously_failed"] = bool(src and src_id and (src, src_id) in failed_source_pairs)
+        release["_match_score"] = score
+        valid_releases.append(release)
+
+    if not valid_releases:
+        if unreleased_count > 0 and below_cutoff_count == 0:
+            return [], "Book is unreleased"
+        elif below_cutoff_count > 0:
+            return [], f"No releases meet minimum match score ({min_match_score:.0%})"
+        else:
+            return [], "No valid releases found"
+
+    valid_releases.sort(
+        key=lambda r: (not r.get("_previously_failed", False), r.get("_match_score", 0)),
+        reverse=True,
+    )
+
+    logger.info(
+        "Pre-processed %d releases: %d valid, %d unreleased, %d below cutoff, %d previously failed",
+        len(releases), len(valid_releases), unreleased_count, below_cutoff_count,
+        sum(1 for r in valid_releases if r.get("_previously_failed")),
+    )
+
+    return valid_releases, None

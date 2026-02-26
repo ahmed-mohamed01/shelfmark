@@ -12,7 +12,8 @@ from pathlib import Path
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_downloads import parse_release_date, process_monitored_book
+from shelfmark.core.monitored_downloads import process_monitored_book
+from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.activity_service import ActivityService, build_download_item_key
@@ -1369,7 +1370,7 @@ def register_monitored_routes(
             return jsonify(summary)
 
         from shelfmark.core.config import config as app_config
-        from shelfmark.core.release_matcher import rank_releases_for_book
+        from shelfmark.core.monitored_release_scoring import rank_releases_for_book
         from shelfmark.core.search_plan import build_release_search_plan
         from shelfmark.metadata_providers import get_provider, get_provider_kwargs
         from shelfmark.release_sources import get_source, list_available_sources
