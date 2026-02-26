@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, session
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_downloads import process_monitored_book
 from shelfmark.core.monitored_release_scoring import parse_release_date
+from shelfmark.core.monitored_utils import extract_book_popularity
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.activity_service import ActivityService, build_download_item_key
@@ -135,65 +136,6 @@ def register_monitored_routes(
                     row["cover_url"] = f"{base_path}/api/covers/{cache_id}?url={encoded_url}"
                 else:
                     row["cover_url"] = f"/api/covers/{cache_id}?url={encoded_url}"
-
-    def _parse_float_from_text(value: str) -> float | None:
-        match = re.search(r"-?\d+(?:\.\d+)?", value or "")
-        if not match:
-            return None
-        try:
-            parsed = float(match.group(0))
-        except Exception:
-            return None
-        return parsed if parsed == parsed else None
-
-    def _parse_int_from_text(value: str) -> int | None:
-        digits_only = re.sub(r"[^\d]", "", value or "")
-        if not digits_only:
-            return None
-        try:
-            return int(digits_only)
-        except Exception:
-            return None
-
-    def _extract_book_popularity(display_fields: Any) -> tuple[float | None, int | None, int | None]:
-        if not isinstance(display_fields, list):
-            return None, None, None
-
-        rating: float | None = None
-        ratings_count: int | None = None
-        readers_count: int | None = None
-
-        for raw in display_fields:
-            if not isinstance(raw, dict):
-                continue
-            icon = str(raw.get("icon") or "").strip().lower()
-            label = str(raw.get("label") or "").strip().lower()
-            value = str(raw.get("value") or "")
-
-            if rating is None and (icon == "star" or "rating" in label):
-                maybe_rating = _parse_float_from_text(value)
-                if maybe_rating is not None and maybe_rating <= 10:
-                    rating = maybe_rating
-
-                paren_match = re.search(r"\(([^)]+)\)", value)
-                if paren_match and ratings_count is None:
-                    parsed_count = _parse_int_from_text(paren_match.group(1))
-                    if parsed_count is not None:
-                        ratings_count = parsed_count
-                continue
-
-            if ratings_count is None and re.search(r"ratings?", label):
-                parsed_count = _parse_int_from_text(value)
-                if parsed_count is not None:
-                    ratings_count = parsed_count
-                continue
-
-            if readers_count is None and (icon == "users" or re.search(r"readers?|users?|followers?|people", label)):
-                parsed_readers = _parse_int_from_text(value)
-                if parsed_readers is not None:
-                    readers_count = parsed_readers
-
-        return rating, ratings_count, readers_count
 
     def _parse_schedule_times(raw_value: Any) -> list[str]:
         raw = str(raw_value or "").strip()
@@ -367,7 +309,7 @@ def register_monitored_routes(
                 payload = asdict(book)
                 authors = payload.get("authors")
                 authors_str = ", ".join(authors) if isinstance(authors, list) else None
-                rating, ratings_count, readers_count = _extract_book_popularity(payload.get("display_fields"))
+                rating, ratings_count, readers_count = extract_book_popularity(payload.get("display_fields"))
                 provider_book_id = str(payload.get("provider_id") or "")
                 provider_value = str(payload.get("provider") or provider_name)
                 cover_url = payload.get("cover_url")
@@ -827,7 +769,7 @@ def register_monitored_routes(
                         seeded_series_name = payload.get("series_name")
                         seeded_series_position = payload.get("series_position")
                         seeded_series_count = payload.get("series_count")
-                        seeded_rating, seeded_ratings_count, seeded_readers_count = _extract_book_popularity(payload.get("display_fields"))
+                        seeded_rating, seeded_ratings_count, seeded_readers_count = extract_book_popularity(payload.get("display_fields"))
             except Exception as exc:
                 logger.warning("Book monitor metadata seed failed provider=%s provider_id=%s: %s", provider, provider_id, exc)
 
