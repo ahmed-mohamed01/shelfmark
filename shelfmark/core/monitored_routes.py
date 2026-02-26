@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from typing import Any, Callable
@@ -13,6 +12,7 @@ from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_downloads import process_monitored_book
+from shelfmark.core.monitored_author_sync import sync_author_entity, transform_cached_cover_urls
 from shelfmark.core.monitored_files import apply_monitor_modes_for_books, path_within_allowed_roots, resolve_allowed_roots
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_utils import extract_book_popularity
@@ -93,51 +93,6 @@ def register_monitored_routes(
     activity_service: ActivityService | None = None,
 ) -> None:
 
-    def _transform_cached_cover_urls(
-        rows: list[dict[str, Any]],
-        *,
-        provider_key: str = "provider",
-        provider_id_key: str = "provider_book_id",
-    ) -> None:
-        if not rows:
-            return
-
-        from shelfmark.config.env import is_covers_cache_enabled
-        from shelfmark.core.config import config as app_config
-        from shelfmark.core.utils import normalize_base_path
-
-        covers_cache_enabled = is_covers_cache_enabled()
-        if not covers_cache_enabled:
-            return
-
-        base_path = normalize_base_path(app_config.get("URL_BASE", ""))
-
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-
-            cover_url = row.get("cover_url")
-            if not isinstance(cover_url, str) or not cover_url:
-                continue
-
-            provider = str(row.get(provider_key) or "").strip()
-            provider_book_id = str(row.get(provider_id_key) or "").strip()
-
-            cache_id = ""
-            if provider and provider_book_id:
-                cache_id = f"{provider}_{provider_book_id}"
-            else:
-                fallback_id = str(row.get("id") or "").strip()
-                if fallback_id:
-                    cache_id = f"monitored_{fallback_id}"
-
-            if cache_id:
-                encoded_url = base64.urlsafe_b64encode(cover_url.encode()).decode()
-                if base_path:
-                    row["cover_url"] = f"{base_path}/api/covers/{cache_id}?url={encoded_url}"
-                else:
-                    row["cover_url"] = f"/api/covers/{cache_id}?url={encoded_url}"
-
     def _parse_schedule_times(raw_value: Any) -> list[str]:
         raw = str(raw_value or "").strip()
         if not raw:
@@ -197,110 +152,6 @@ def register_monitored_routes(
         )
         return attempted_at_iso
 
-    def _sync_author_entity(*, db_user_id: int | None, entity: dict[str, Any], prefetch_covers: bool = False) -> int:
-        if entity.get("kind") != "author":
-            raise ValueError("Sync is only supported for author entities")
-
-        entity_id = int(entity.get("id"))
-        author_name = str(entity.get("name") or "")
-        provider_name = str(entity.get("provider") or "hardcover")
-
-        from shelfmark.metadata_providers import MetadataSearchOptions, SortOrder, get_provider_kwargs, get_provider
-
-        provider = get_provider(provider_name, **get_provider_kwargs(provider_name))
-        if not provider.is_available():
-            raise RuntimeError(f"Metadata provider '{provider_name}' is not available")
-
-        cache = None
-        covers_enabled = False
-        if prefetch_covers:
-            try:
-                from shelfmark.config.env import is_covers_cache_enabled
-                covers_enabled = bool(is_covers_cache_enabled())
-                if covers_enabled:
-                    from shelfmark.core.image_cache import get_image_cache
-
-                    cache = get_image_cache()
-            except Exception:
-                cache = None
-                covers_enabled = False
-
-        limit = 40
-        page = 1
-        has_more = True
-        discovered = 0
-
-        while has_more and page <= 15 and discovered < 600:
-            options = MetadataSearchOptions(
-                query="",
-                limit=limit,
-                page=page,
-                sort=SortOrder.RELEVANCE,
-                fields={"author": author_name},
-            )
-            result = provider.search_paginated(options)
-            for book in result.books:
-                payload = asdict(book)
-                authors = payload.get("authors")
-                authors_str = ", ".join(authors) if isinstance(authors, list) else None
-                rating, ratings_count, readers_count = extract_book_popularity(payload.get("display_fields"))
-                provider_book_id = str(payload.get("provider_id") or "")
-                provider_value = str(payload.get("provider") or provider_name)
-                cover_url = payload.get("cover_url")
-
-                user_db.upsert_monitored_book(
-                    user_id=db_user_id,
-                    entity_id=entity_id,
-                    provider=provider_value,
-                    provider_book_id=provider_book_id,
-                    title=str(payload.get("title") or ""),
-                    authors=authors_str,
-                    publish_year=payload.get("publish_year"),
-                    release_date=payload.get("release_date"),
-                    isbn_13=payload.get("isbn_13"),
-                    cover_url=cover_url,
-                    series_name=payload.get("series_name"),
-                    series_position=payload.get("series_position"),
-                    series_count=payload.get("series_count"),
-                    rating=rating,
-                    ratings_count=ratings_count,
-                    readers_count=readers_count,
-                    state="discovered",
-                )
-
-                if covers_enabled and cache is not None and isinstance(cover_url, str) and cover_url.strip():
-                    cache_id = f"{provider_value}_{provider_book_id}"
-                    try:
-                        # Avoid network fetch if we already have a cached cover.
-                        if cache.get(cache_id) is None:
-                            cache.fetch_and_cache(cache_id, cover_url)
-                    except Exception:
-                        pass
-
-                discovered += 1
-
-            has_more = bool(getattr(result, "has_more", False))
-            page += 1
-
-        refreshed_books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
-        existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
-        if refreshed_books and existing_files:
-            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
-
-            existing_files = expand_monitored_file_rows_for_equivalent_books(
-                books=refreshed_books,
-                file_rows=existing_files,
-            )
-        apply_monitor_modes_for_books(
-            user_db,
-            db_user_id=db_user_id,
-            entity=entity,
-            books=refreshed_books,
-            file_rows=existing_files,
-        )
-
-        user_db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
-        return discovered
 
     def _start_monitored_refresh_scheduler() -> None:
         if app.config.get("TESTING"):
@@ -344,7 +195,7 @@ def register_monitored_routes(
                                         continue
                                     total_entities += 1
                                     try:
-                                        total_books += _sync_author_entity(db_user_id=uid, entity=entity, prefetch_covers=True)
+                                        total_books += sync_author_entity(user_db, db_user_id=uid, entity=entity, prefetch_covers=True)
                                     except Exception as exc:
                                         logger.warning("Scheduled monitored sync failed entity_id=%s user_id=%s: %s", entity.get("id"), uid, exc)
                                         try:
@@ -554,7 +405,7 @@ def register_monitored_routes(
                 row["audiobook_path"] = payload.get("audiobook_path")
                 row["ebook_available_format"] = payload.get("ebook_available_format")
                 row["audiobook_available_format"] = payload.get("audiobook_available_format")
-        _transform_cached_cover_urls(rows, provider_key="book_provider", provider_id_key="book_provider_id")
+        transform_cached_cover_urls(rows, provider_key="book_provider", provider_id_key="book_provider_id")
         return jsonify({"results": rows})
 
     @app.route("/api/monitored", methods=["POST"])
@@ -723,7 +574,7 @@ def register_monitored_routes(
             file_rows=files,
             user_id=db_user_id,
         )
-        _transform_cached_cover_urls(rows)
+        transform_cached_cover_urls(rows)
 
         # Include last_checked_at so the frontend can decide whether to refresh
         entity = user_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
@@ -1351,7 +1202,7 @@ def register_monitored_routes(
             return jsonify({"error": "Sync is only supported for author entities"}), 400
 
         try:
-            discovered = _sync_author_entity(db_user_id=db_user_id, entity=entity, prefetch_covers=True)
+            discovered = sync_author_entity(user_db, db_user_id=db_user_id, entity=entity, prefetch_covers=True)
             return jsonify({"ok": True, "discovered": discovered})
 
         except Exception as exc:
