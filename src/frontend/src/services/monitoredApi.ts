@@ -358,6 +358,47 @@ export const recordMonitoredBookAttempt = async (
   });
 };
 
+export interface RecordAutoSearchAttemptParams {
+  monitoredEntityId?: number | null;
+  provider?: string | null;
+  providerBookId?: string | null;
+  contentType: RecordMonitoredBookAttemptPayload['content_type'];
+  status: 'no_match' | 'below_cutoff' | 'not_released' | 'error';
+  source?: string;
+  sourceId?: string;
+  releaseTitle?: string;
+  matchScore?: number | null;
+  errorMessage?: string;
+}
+
+export const recordMonitoredAutoSearchAttempt = async (
+  params: RecordAutoSearchAttemptParams,
+): Promise<void> => {
+  const provider = String(params.provider || '').trim();
+  const providerBookId = String(params.providerBookId || '').trim();
+  if (!params.monitoredEntityId || !provider || !providerBookId) {
+    return;
+  }
+  try {
+    await recordMonitoredBookAttempt(params.monitoredEntityId, {
+      provider,
+      provider_book_id: providerBookId,
+      content_type: params.contentType,
+      status: params.status,
+      source: params.source,
+      source_id: params.sourceId,
+      release_title: params.releaseTitle,
+      match_score: typeof params.matchScore === 'number' ? params.matchScore : undefined,
+      error_message: params.errorMessage,
+    });
+  } catch (err) {
+    console.warn(
+      'Failed to record monitored auto-search attempt:',
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+};
+
 export const runMonitoredEntitySearch = async (
   entityId: number,
   contentType: 'ebook' | 'audiobook',

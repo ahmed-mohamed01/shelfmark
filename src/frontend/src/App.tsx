@@ -16,7 +16,6 @@ import {
 import {
   getBookInfo,
   getMetadataBookInfo,
-  getReleases,
   downloadBook,
   downloadRelease,
   cancelDownload,
@@ -25,8 +24,8 @@ import {
   isApiResponseError,
   updateSelfUser,
 } from './services/api';
-import { recordMonitoredBookAttempt } from './services/monitoredApi';
-import { useMonitoredState, getReleaseMatchScore } from './hooks/useMonitoredState';
+import { useMonitoredState } from './hooks/useMonitoredState';
+import { useMonitoredAutoSearch } from './hooks/useMonitoredAutoSearch';
 import { useToast } from './hooks/useToast';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
 import { useAuth } from './hooks/useAuth';
@@ -47,7 +46,6 @@ import { RequestConfirmationModal } from './components/RequestConfirmationModal'
 import { ToastContainer } from './components/ToastContainer';
 import { Footer } from './components/Footer';
 import { ActivitySidebar } from './components/activity';
-import { ActivityItem } from './components/activity/activityTypes';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoredPage } from './pages/MonitoredPage';
 import { SelfSettingsModal, SettingsModal } from './components/settings';
@@ -784,562 +782,6 @@ function App() {
     }
   };
 
-  const fetchAutoSearchReleases = async (
-    provider: string,
-    providerId: string,
-    contentType: ContentType,
-  ) => {
-    // Keep auto-search strict: provider + provider_id lookup only, no title/author/manual query expansion.
-    return getReleases(
-      provider,
-      providerId,
-      undefined,
-      undefined,
-      undefined,
-      false,
-      defaultLanguageCodes,
-      contentType,
-    );
-  };
-
-  const extractAutoSearchReleaseDateCandidate = (book: Book): string | null => {
-    const explicit = String(book.release_date || '').trim();
-    if (explicit) return explicit;
-
-    const fields = Array.isArray(book.display_fields) ? book.display_fields : [];
-    for (const field of fields) {
-      const label = String(field?.label || '').trim().toLowerCase();
-      const value = String(field?.value || '').trim();
-      if (!label || !value) continue;
-      const isReleaseLabel =
-        label.includes('released') ||
-        label.includes('release date') ||
-        label.includes('publish date') ||
-        label.includes('publication date') ||
-        label === 'release' ||
-        label === 'published' ||
-        label === 'publication';
-      if (isReleaseLabel) {
-        return value;
-      }
-    }
-    return null;
-  };
-
-  const getUnreleasedUntilDateForAutoSearch = (book: Book): string | null => {
-    const rawCandidate = extractAutoSearchReleaseDateCandidate(book);
-    if (!rawCandidate) return null;
-    const candidate = rawCandidate.trim();
-    const today = new Date();
-    const currentYear = today.getUTCFullYear();
-
-    if (/^\d{4}$/.test(candidate)) {
-      const year = Number.parseInt(candidate, 10);
-      if (Number.isFinite(year) && year > currentYear) {
-        return `${year}-01-01`;
-      }
-      return null;
-    }
-
-    const token = candidate.split('T', 1)[0].split(' ', 1)[0].trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
-      const parsed = new Date(`${token}T00:00:00Z`);
-      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now()) {
-        return token;
-      }
-      return null;
-    }
-
-    if (/^\d{4}-\d{2}$/.test(token)) {
-      const parsed = new Date(`${token}-01T00:00:00Z`);
-      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now()) {
-        return `${token}-01`;
-      }
-      return null;
-    }
-
-    const embeddedYear = candidate.match(/\b(19|20)\d{2}\b/);
-    if (embeddedYear) {
-      const year = Number.parseInt(embeddedYear[0], 10);
-      if (Number.isFinite(year) && year > currentYear) {
-        return `${year}-01-01`;
-      }
-    }
-
-    return null;
-  };
-
-  const recordMonitoredAutoSearchAttempt = async (params: {
-    monitoredEntityId?: number | null;
-    provider?: string | null;
-    providerBookId?: string | null;
-    contentType: ContentType;
-    status: 'no_match' | 'below_cutoff' | 'not_released' | 'error';
-    source?: string;
-    sourceId?: string;
-    releaseTitle?: string;
-    matchScore?: number | null;
-    errorMessage?: string;
-  }): Promise<void> => {
-    const provider = String(params.provider || '').trim();
-    const providerBookId = String(params.providerBookId || '').trim();
-    if (!params.monitoredEntityId || !provider || !providerBookId) {
-      return;
-    }
-    try {
-      await recordMonitoredBookAttempt(params.monitoredEntityId, {
-        provider,
-        provider_book_id: providerBookId,
-        content_type: params.contentType,
-        status: params.status,
-        source: params.source,
-        source_id: params.sourceId,
-        release_title: params.releaseTitle,
-        match_score: typeof params.matchScore === 'number' ? params.matchScore : undefined,
-        error_message: params.errorMessage,
-      });
-    } catch (err) {
-      console.warn(
-        'Failed to record monitored auto-search attempt:',
-        err instanceof Error ? err.message : String(err)
-      );
-    }
-  };
-
-  // Universal-mode "Get" action (open releases, request-book, or block by policy).
-  const openReleasesForBook = async (
-    book: Book,
-    releaseContentType: ContentType,
-    monitoredEntityId?: number | null,
-    actionOverride?: ReleasePrimaryAction,
-    options?: OpenReleasesOptions,
-  ) => {
-    let mode = getUniversalDefaultPolicyMode();
-    const normalizedContentType = toContentType(releaseContentType);
-    policyTrace('universal.get:start', {
-      bookId: book.id,
-      contentType: normalizedContentType,
-      cachedMode: mode,
-      isAdmin: requestRoleIsAdmin,
-    });
-    try {
-      const latestPolicy = await refreshRequestPolicy({ force: true });
-      const effectiveIsAdmin = latestPolicy ? Boolean(latestPolicy.is_admin) : requestRoleIsAdmin;
-      mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, normalizedContentType);
-      policyTrace('universal.get:resolved', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-        resolvedMode: mode,
-        effectiveIsAdmin,
-        defaults: latestPolicy?.defaults ?? null,
-        requestsEnabled: latestPolicy?.requests_enabled ?? null,
-      });
-    } catch (error) {
-      console.warn('Failed to refresh request policy before universal action:', error);
-      // In no-auth mode the request-policy endpoint can be unavailable; ensure the
-      // "Get" action still works by falling back to direct download/release search.
-      mode = 'download';
-      policyTrace('universal.get:refresh_failed', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-        mode,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    if (mode === 'blocked') {
-      policyTrace('universal.get:block', { bookId: book.id, contentType: normalizedContentType });
-      showToast('This title is unavailable by policy', 'error');
-      return;
-    }
-
-    if (mode === 'request_book') {
-      policyTrace('universal.get:request_modal', {
-        bookId: book.id,
-        requestLevel: 'book',
-        contentType: normalizedContentType,
-      });
-      openRequestConfirmation({
-        book_data: buildMetadataBookRequestData(book, normalizedContentType),
-        release_data: null,
-        context: {
-          source: '*',
-          content_type: normalizedContentType,
-          request_level: 'book',
-        },
-      });
-      return;
-    }
-
-    const configuredPrimaryAction = normalizedContentType === 'audiobook'
-      ? config?.release_primary_action_audiobook
-      : config?.release_primary_action_ebook;
-    const releasePrimaryAction = actionOverride || configuredPrimaryAction || 'interactive_search';
-    const isForcedAutoAction = actionOverride === 'auto_search_download';
-    const batchAuto = options?.batchAutoDownload;
-    const isBatchAutoSearch = Boolean(isForcedAutoAction && batchAuto);
-    const suppressPerBookAutoSearchToasts = Boolean(options?.suppressPerBookAutoSearchToasts || isBatchAutoSearch);
-    const batchMasterActivityId = batchAuto
-      ? `auto-search-batch:${batchAuto.batchId}:${normalizedContentType}`
-      : null;
-    const batchStatsKey = batchMasterActivityId || '';
-    const updateBatchMasterActivity = (params: { statusDetail: string; progress: number; visualStatus?: ActivityItem['visualStatus']; statusLabel?: string; progressAnimated?: boolean; }) => {
-      if (!isBatchAutoSearch || !batchMasterActivityId || !batchAuto) {
-        return;
-      }
-      const masterActivityId = batchMasterActivityId;
-      setTransientDownloadActivityItems((prev) => {
-        const next = [...prev];
-        const existingIndex = next.findIndex((item) => item.id === masterActivityId);
-        const baseItem: ActivityItem = existingIndex >= 0
-          ? next[existingIndex]
-          : {
-            id: masterActivityId,
-            kind: 'download',
-            visualStatus: 'resolving',
-            title: batchAuto.contentType === 'audiobook' ? 'Batch audiobook auto-download' : 'Batch ebook auto-download',
-            author: 'Monitored books',
-            preview: book.preview,
-            metaLine: [
-              batchAuto.contentType === 'audiobook' ? 'AUDIOBOOK' : 'EBOOK',
-              username || undefined,
-            ].filter(Boolean).join(' · '),
-            statusLabel: 'Resolving',
-            statusDetail: '',
-            progress: 10,
-            progressAnimated: true,
-            timestamp: Date.now() / 1000,
-            username: username || undefined,
-          };
-        const updated: ActivityItem = {
-          ...baseItem,
-          preview: book.preview || baseItem.preview,
-          visualStatus: params.visualStatus || baseItem.visualStatus,
-          statusLabel: params.statusLabel || baseItem.statusLabel,
-          statusDetail: params.statusDetail,
-          progress: params.progress,
-          progressAnimated: params.progressAnimated ?? true,
-          timestamp: Date.now() / 1000,
-        };
-        if (existingIndex >= 0) {
-          next[existingIndex] = updated;
-        } else {
-          next.unshift(updated);
-        }
-        return next;
-      });
-    };
-    const autoDownloadMinMatchScore = typeof config?.auto_download_min_match_score === 'number'
-      ? config.auto_download_min_match_score
-      : 75;
-
-    if (isBatchAutoSearch && batchAuto && batchStatsKey) {
-      if (!batchAutoStatsRef.current[batchStatsKey]) {
-        batchAutoStatsRef.current[batchStatsKey] = {
-          total: batchAuto.total,
-          queued: 0,
-          skipped: 0,
-          failed: 0,
-          started: false,
-          contentType: batchAuto.contentType,
-        };
-      }
-      if (!batchAutoStatsRef.current[batchStatsKey].started) {
-        batchAutoStatsRef.current[batchStatsKey].started = true;
-        showToast('Batch processing downloads started…', 'info');
-      }
-      updateBatchMasterActivity({
-        statusDetail: `Processing book ${batchAuto.index}/${batchAuto.total} (pre-process)…`,
-        progress: Math.max(5, Math.min(95, Math.round(((batchAuto.index - 1) / Math.max(1, batchAuto.total)) * 100))),
-        visualStatus: 'resolving',
-        statusLabel: 'Resolving',
-        progressAnimated: true,
-      });
-    }
-
-    if (releasePrimaryAction === 'auto_search_download') {
-      if (!book.provider || !book.provider_id) {
-        if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
-          showToast(
-            isForcedAutoAction
-              ? 'Auto search requires provider-linked metadata. Skipping this selected book.'
-              : 'Auto search requires provider-linked book metadata. Opening interactive search instead.',
-            'info'
-          );
-        }
-        if (isBatchAutoSearch && batchStatsKey) {
-          batchAutoStatsRef.current[batchStatsKey].skipped += 1;
-        }
-        if (isForcedAutoAction) {
-          return;
-        }
-      } else {
-        const unreleasedUntil = getUnreleasedUntilDateForAutoSearch(book);
-        if (unreleasedUntil) {
-          const unreleasedMessage = `Book is unreleased until ${unreleasedUntil}`;
-          policyTrace('universal.get:auto_search:skip_unreleased', {
-            bookId: book.id,
-            contentType: normalizedContentType,
-            unreleasedUntil,
-          });
-          void recordMonitoredAutoSearchAttempt({
-            monitoredEntityId,
-            provider: book.provider,
-            providerBookId: book.provider_id,
-            contentType: normalizedContentType,
-            status: 'not_released',
-            errorMessage: unreleasedMessage,
-          });
-          if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
-            showToast(`${unreleasedMessage}. Skipping auto-search.`, 'info');
-          }
-          if (isBatchAutoSearch && batchAuto && batchStatsKey) {
-            batchAutoStatsRef.current[batchStatsKey].skipped += 1;
-            updateBatchMasterActivity({
-              statusDetail: `Skipped ${batchAuto.index}/${batchAuto.total} (unreleased)`,
-              progress: Math.max(10, Math.min(95, Math.round((batchAuto.index / Math.max(1, batchAuto.total)) * 100))),
-              visualStatus: 'resolving',
-              statusLabel: 'Resolving',
-              progressAnimated: true,
-            });
-          }
-          return;
-        }
-
-        let processingActivityId: string | null = null;
-        let processingToastId: string | null = null;
-        if (!isBatchAutoSearch) {
-          const nonBatchProcessingId = `auto-search:${book.id}:${Date.now()}`;
-          processingActivityId = nonBatchProcessingId;
-          setTransientDownloadActivityItems((prev) => [
-            {
-              id: nonBatchProcessingId,
-              kind: 'download',
-              visualStatus: 'resolving',
-              title: book.title || 'Unknown title',
-              author: book.author || 'Unknown author',
-              preview: book.preview,
-              metaLine: [
-                normalizedContentType === 'audiobook' ? 'AUDIOBOOK' : 'EBOOK',
-                book.format?.toUpperCase(),
-                username || undefined,
-              ].filter(Boolean).join(' · '),
-              statusLabel: 'Resolving',
-              statusDetail: `Processing releases for ${book.title || 'selected book'}...`,
-              progress: 15,
-              progressAnimated: true,
-              timestamp: Date.now() / 1000,
-              username: username || undefined,
-            },
-            ...prev,
-          ]);
-          processingToastId = showToast(`Processing releases for ${book.title || 'selected book'}...`, 'info', true);
-        }
-        try {
-          policyTrace('universal.get:auto_search:start', {
-            bookId: book.id,
-            contentType: normalizedContentType,
-            minMatchScore: autoDownloadMinMatchScore,
-          });
-          const response = await fetchAutoSearchReleases(
-            book.provider,
-            book.provider_id,
-            normalizedContentType,
-          );
-
-          const bestRelease = [...(response.releases || [])].sort((a, b) => {
-            return (getReleaseMatchScore(b) || 0) - (getReleaseMatchScore(a) || 0);
-          })[0];
-
-          const bestMatchScore = bestRelease ? getReleaseMatchScore(bestRelease) : null;
-          if (bestRelease && bestMatchScore !== null && bestMatchScore >= autoDownloadMinMatchScore) {
-            policyTrace('universal.get:auto_search:queue_best', {
-              bookId: book.id,
-              releaseId: bestRelease.source_id,
-              source: bestRelease.source,
-              contentType: normalizedContentType,
-              matchScore: bestMatchScore,
-            });
-            if (!suppressPerBookAutoSearchToasts) {
-              showToast(`Starting download (match ${bestMatchScore})`, 'info');
-            }
-            await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null);
-            if (!suppressPerBookAutoSearchToasts) {
-              showToast(`Queued top match (score ${bestMatchScore})`, 'success');
-            }
-            if (isBatchAutoSearch && batchAuto && batchStatsKey) {
-              batchAutoStatsRef.current[batchStatsKey].queued += 1;
-              updateBatchMasterActivity({
-                statusDetail: `Queued ${batchAuto.index}/${batchAuto.total} for download`,
-                progress: Math.max(10, Math.min(95, Math.round((batchAuto.index / Math.max(1, batchAuto.total)) * 100))),
-                visualStatus: 'locating',
-                statusLabel: 'Locating',
-                progressAnimated: true,
-              });
-            }
-            return;
-          }
-
-          policyTrace('universal.get:auto_search:fallback_interactive', {
-            bookId: book.id,
-            contentType: normalizedContentType,
-            reason: bestRelease ? 'below_threshold' : 'no_results',
-            bestMatchScore,
-            minMatchScore: autoDownloadMinMatchScore,
-          });
-          void recordMonitoredAutoSearchAttempt({
-            monitoredEntityId,
-            provider: book.provider,
-            providerBookId: book.provider_id,
-            contentType: normalizedContentType,
-            status: bestRelease ? 'below_cutoff' : 'no_match',
-            source: bestRelease?.source,
-            sourceId: bestRelease?.source_id,
-            releaseTitle: bestRelease?.title,
-            matchScore: bestMatchScore,
-          });
-          if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
-            showToast(
-              isForcedAutoAction
-                ? 'No release met auto-download cutoff for selected book.'
-                : 'No release met auto-download cutoff. Opening interactive search.',
-              'info'
-            );
-          }
-          if (isBatchAutoSearch && batchStatsKey) {
-            batchAutoStatsRef.current[batchStatsKey].skipped += 1;
-          }
-          if (isForcedAutoAction) {
-            return;
-          }
-        } catch (error) {
-          console.error('Auto search + download failed, falling back to interactive search:', error);
-          policyTrace('universal.get:auto_search:error', {
-            bookId: book.id,
-            contentType: normalizedContentType,
-            message: error instanceof Error ? error.message : String(error),
-          });
-          void recordMonitoredAutoSearchAttempt({
-            monitoredEntityId,
-            provider: book.provider,
-            providerBookId: book.provider_id,
-            contentType: normalizedContentType,
-            status: 'error',
-            errorMessage: error instanceof Error ? error.message : String(error),
-          });
-          if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
-            showToast(
-              isForcedAutoAction
-                ? 'Auto search failed for selected book.'
-                : 'Auto search failed. Opening interactive search.',
-              'error'
-            );
-          }
-          if (isBatchAutoSearch && batchStatsKey) {
-            batchAutoStatsRef.current[batchStatsKey].failed += 1;
-          }
-          if (isForcedAutoAction) {
-            return;
-          }
-        } finally {
-          if (processingActivityId) {
-            setTransientDownloadActivityItems((prev) => prev.filter((item) => item.id !== processingActivityId));
-          }
-          if (processingToastId) {
-            removeToast(processingToastId);
-          }
-          if (isBatchAutoSearch && batchAuto && batchStatsKey && batchAuto.index >= batchAuto.total) {
-            const batchStats = batchAutoStatsRef.current[batchStatsKey];
-            if (batchStats) {
-              const total = Math.max(1, batchStats.total || 0);
-              const processed = batchStats.queued + batchStats.skipped + batchStats.failed;
-              const completedLabel = batchStats.failed > 0 ? 'Error' : 'Complete';
-              const completedVisualStatus: ActivityItem['visualStatus'] = batchStats.failed > 0 ? 'error' : 'complete';
-              updateBatchMasterActivity({
-                statusDetail: `${batchStats.queued}/${total} queued · ${batchStats.skipped} skipped · ${batchStats.failed} failed`,
-                progress: Math.max(95, Math.min(100, Math.round((processed / total) * 100))),
-                visualStatus: completedVisualStatus,
-                statusLabel: completedLabel,
-                progressAnimated: false,
-              });
-              showToast(
-                `Batch pre-processing finished: ${batchStats.queued} queued, ${batchStats.skipped} skipped, ${batchStats.failed} failed.`,
-                batchStats.failed > 0 ? 'error' : 'success'
-              );
-              delete batchAutoStatsRef.current[batchStatsKey];
-            }
-          }
-        }
-      }
-    }
-
-    if (book.provider && book.provider_id) {
-      try {
-        policyTrace('universal.get:open_release_modal', {
-          bookId: book.id,
-          contentType: normalizedContentType,
-        });
-        const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
-        setReleaseContentTypeOverride(normalizedContentType);
-        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
-        setReleaseBook({
-          ...book,
-          description: fullBook.description || book.description,
-          series_name: fullBook.series_name,
-          series_position: fullBook.series_position,
-          series_count: fullBook.series_count,
-        });
-      } catch (error) {
-        console.error('Failed to load book description, using search data:', error);
-        policyTrace('universal.get:open_release_modal_fallback', {
-          bookId: book.id,
-          contentType: normalizedContentType,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        setReleaseContentTypeOverride(normalizedContentType);
-        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
-        setReleaseBook(book);
-      }
-    } else {
-      policyTrace('universal.get:open_release_modal_no_provider', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-      });
-      setReleaseContentTypeOverride(normalizedContentType);
-      setReleaseMonitoredEntityId(monitoredEntityId ?? null);
-      setReleaseBook(book);
-    }
-  };
-
-  const handleGetReleases = async (book: Book) => {
-    return openReleasesForBook(book, contentType, undefined, 'interactive_search');
-  };
-
-  const handleGetReleasesAuto = async (book: Book) => {
-    return openReleasesForBook(book, contentType, undefined, 'auto_search_download');
-  };
-
-  const handleDualGetButtonsToggle = useCallback((value: boolean) => {
-    setShowDualGetButtons(value);
-    setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: value } : prev));
-
-    if (!isAuthenticated) {
-      return;
-    }
-
-    void updateSelfUser({
-      settings: {
-        SHOW_DUAL_GET_BUTTONS: value,
-      },
-    }).catch((error) => {
-      console.error('Failed to save dual Get button preference:', error);
-      setShowDualGetButtons(!value);
-      setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: !value } : prev));
-      showToast('Failed to save preference', 'error');
-    });
-  }, [isAuthenticated, showToast]);
-
-  // Handle download from ReleaseModal (universal mode release rows).
   const handleReleaseDownload = async (
     book: Book,
     release: Release,
@@ -1430,6 +872,158 @@ function App() {
     }
   };
 
+  const { executeAutoSearch } = useMonitoredAutoSearch({
+    config,
+    username,
+    showToast,
+    removeToast,
+    setTransientDownloadActivityItems,
+    batchAutoStatsRef,
+    handleReleaseDownload,
+  });
+
+  // Universal-mode "Get" action (open releases, request-book, or block by policy).
+  const openReleasesForBook = async (
+    book: Book,
+    releaseContentType: ContentType,
+    monitoredEntityId?: number | null,
+    actionOverride?: ReleasePrimaryAction,
+    options?: OpenReleasesOptions,
+  ) => {
+    let mode = getUniversalDefaultPolicyMode();
+    const normalizedContentType = toContentType(releaseContentType);
+    policyTrace('universal.get:start', {
+      bookId: book.id,
+      contentType: normalizedContentType,
+      cachedMode: mode,
+      isAdmin: requestRoleIsAdmin,
+    });
+    try {
+      const latestPolicy = await refreshRequestPolicy({ force: true });
+      const effectiveIsAdmin = latestPolicy ? Boolean(latestPolicy.is_admin) : requestRoleIsAdmin;
+      mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, normalizedContentType);
+      policyTrace('universal.get:resolved', {
+        bookId: book.id,
+        contentType: normalizedContentType,
+        resolvedMode: mode,
+        effectiveIsAdmin,
+        defaults: latestPolicy?.defaults ?? null,
+        requestsEnabled: latestPolicy?.requests_enabled ?? null,
+      });
+    } catch (error) {
+      console.warn('Failed to refresh request policy before universal action:', error);
+      // In no-auth mode the request-policy endpoint can be unavailable; ensure the
+      // "Get" action still works by falling back to direct download/release search.
+      mode = 'download';
+      policyTrace('universal.get:refresh_failed', {
+        bookId: book.id,
+        contentType: normalizedContentType,
+        mode,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (mode === 'blocked') {
+      policyTrace('universal.get:block', { bookId: book.id, contentType: normalizedContentType });
+      showToast('This title is unavailable by policy', 'error');
+      return;
+    }
+
+    if (mode === 'request_book') {
+      policyTrace('universal.get:request_modal', {
+        bookId: book.id,
+        requestLevel: 'book',
+        contentType: normalizedContentType,
+      });
+      openRequestConfirmation({
+        book_data: buildMetadataBookRequestData(book, normalizedContentType),
+        release_data: null,
+        context: {
+          source: '*',
+          content_type: normalizedContentType,
+          request_level: 'book',
+        },
+      });
+      return;
+    }
+
+    const configuredPrimaryAction = normalizedContentType === 'audiobook'
+      ? config?.release_primary_action_audiobook
+      : config?.release_primary_action_ebook;
+    const releasePrimaryAction = actionOverride || configuredPrimaryAction || 'interactive_search';
+
+    if (releasePrimaryAction === 'auto_search_download') {
+      const result = await executeAutoSearch(book, normalizedContentType, monitoredEntityId, actionOverride, options);
+      if (result !== 'fallback') return;
+    }
+
+    if (book.provider && book.provider_id) {
+      try {
+        policyTrace('universal.get:open_release_modal', {
+          bookId: book.id,
+          contentType: normalizedContentType,
+        });
+        const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
+        setReleaseContentTypeOverride(normalizedContentType);
+        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+        setReleaseBook({
+          ...book,
+          description: fullBook.description || book.description,
+          series_name: fullBook.series_name,
+          series_position: fullBook.series_position,
+          series_count: fullBook.series_count,
+        });
+      } catch (error) {
+        console.error('Failed to load book description, using search data:', error);
+        policyTrace('universal.get:open_release_modal_fallback', {
+          bookId: book.id,
+          contentType: normalizedContentType,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        setReleaseContentTypeOverride(normalizedContentType);
+        setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+        setReleaseBook(book);
+      }
+    } else {
+      policyTrace('universal.get:open_release_modal_no_provider', {
+        bookId: book.id,
+        contentType: normalizedContentType,
+      });
+      setReleaseContentTypeOverride(normalizedContentType);
+      setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+      setReleaseBook(book);
+    }
+  };
+
+  const handleGetReleases = async (book: Book) => {
+    return openReleasesForBook(book, contentType, undefined, 'interactive_search');
+  };
+
+  const handleGetReleasesAuto = async (book: Book) => {
+    return openReleasesForBook(book, contentType, undefined, 'auto_search_download');
+  };
+
+  const handleDualGetButtonsToggle = useCallback((value: boolean) => {
+    setShowDualGetButtons(value);
+    setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: value } : prev));
+
+    if (!isAuthenticated) {
+      return;
+    }
+
+    void updateSelfUser({
+      settings: {
+        SHOW_DUAL_GET_BUTTONS: value,
+      },
+    }).catch((error) => {
+      console.error('Failed to save dual Get button preference:', error);
+      setShowDualGetButtons(!value);
+      setConfig((prev) => (prev ? { ...prev, show_dual_get_buttons: !value } : prev));
+      showToast('Failed to save preference', 'error');
+    });
+  }, [isAuthenticated, showToast]);
+
+  // Handle download from ReleaseModal (universal mode release rows).
   const handleReleaseRequest = useCallback(
     async (book: Book, release: Release, releaseContentType: ContentType): Promise<void> => {
       void refreshRequestPolicy();

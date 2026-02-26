@@ -7,7 +7,7 @@ export const getReleaseMatchScore = (release: Release): number | null => {
   return typeof raw === 'number' ? raw : null;
 };
 
-interface BatchAutoStats {
+export interface BatchAutoStats {
   total: number;
   queued: number;
   skipped: number;
