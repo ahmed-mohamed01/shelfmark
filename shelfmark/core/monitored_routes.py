@@ -86,6 +86,78 @@ def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tup
     return True, None
 
 
+def resolve_download_db_user_id(session_obj: Any, auth_mode: str, user_db: UserDB | None) -> int | None:
+    """Resolve DB user id for download queue ownership/history writes.
+
+    In auth-none mode, sessions may not carry db_user_id. Fall back to the
+    global monitor user so monitored history writes are still associated with
+    the correct entity owner.
+    """
+    raw_db_user_id = session_obj.get("db_user_id")
+    if raw_db_user_id is not None:
+        try:
+            return int(raw_db_user_id)
+        except (TypeError, ValueError):
+            pass
+
+    if auth_mode != "none" or user_db is None:
+        return None
+
+    try:
+        return _resolve_global_monitor_user_id(user_db)
+    except Exception:
+        return None
+
+
+def enrich_release_for_monitored(
+    release_payload: dict[str, Any],
+    monitored_db: MonitoredDB | None,
+    db_user_id: int | None,
+) -> dict[str, Any]:
+    """Inject output overrides for monitored-entity downloads.
+
+    Normalises the monitored_entity_id field and, when the download targets an
+    ebook from a monitored author, sets destination / template overrides so the
+    file lands in the correct author directory.
+    """
+    monitored_entity_id = release_payload.get("monitored_entity_id")
+    if monitored_entity_id is not None:
+        try:
+            release_payload = dict(release_payload)
+            release_payload["monitored_entity_id"] = int(monitored_entity_id)
+        except (TypeError, ValueError):
+            release_payload = dict(release_payload)
+            release_payload.pop("monitored_entity_id", None)
+
+    try:
+        monitored_entity_id_int = release_payload.get("monitored_entity_id")
+        if (
+            monitored_entity_id_int is not None
+            and monitored_db is not None
+            and db_user_id is not None
+            and str(release_payload.get("content_type") or "").strip().lower() == "ebook"
+        ):
+            entity = monitored_db.get_monitored_entity(
+                user_id=int(db_user_id),
+                entity_id=int(monitored_entity_id_int),
+            )
+            settings = entity.get("settings") if isinstance(entity, dict) else None
+            if not isinstance(settings, dict):
+                settings = {}
+
+            ebook_author_dir = settings.get("ebook_author_dir")
+            if isinstance(ebook_author_dir, str) and ebook_author_dir.strip().startswith("/"):
+                release_payload = dict(release_payload)
+                release_payload["destination_override"] = ebook_author_dir.strip().rstrip("/")
+                release_payload["file_organization_override"] = "organize"
+                # Destination is already the author folder, so template starts at Series.
+                release_payload["template_override"] = "{Series}/{Title} - {Author} ({Year})"
+    except Exception:
+        pass
+
+    return release_payload
+
+
 def register_monitored_routes(
     app: Flask,
     user_db: UserDB,
@@ -1173,3 +1245,431 @@ def register_monitored_routes(
             logger.warning("Monitored sync failed entity_id=%s: %s", entity_id, exc)
             monitored_db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
             return jsonify({"error": "Sync failed"}), 500
+
+    # ------------------------------------------------------------------
+    # File system directory browser (for monitored folder picker UI)
+    # ------------------------------------------------------------------
+
+    @app.route("/api/fs/list", methods=["GET"])
+    def api_fs_list():
+        """List directories for folder browsing UI.
+
+        Query parameters:
+          - path: absolute path to list; if omitted, returns allowed roots.
+
+        Safety:
+          Only lists directories within allowed roots derived from config and per-user settings.
+        """
+        from shelfmark.core.config import config as app_config
+
+        if user_db is None:
+            return jsonify({"error": "Filesystem browsing unavailable"}), 503
+
+        raw_user_id = session.get("db_user_id")
+        try:
+            db_user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid user context"}), 400
+
+        requested = (request.args.get("path") or "").strip()
+
+        def _normalize_root(value: Any) -> str | None:
+            if not isinstance(value, str):
+                return None
+            v = value.strip().rstrip("/")
+            if not v or not v.startswith("/"):
+                return None
+            return v
+
+        # Allowed roots: configured destinations + remembered monitored roots.
+        allowed_roots: list[Path] = []
+        try:
+            dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
+            if dest:
+                allowed_roots.append(Path(dest).resolve())
+            dest_audio = _normalize_root(app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id))
+            if dest_audio:
+                allowed_roots.append(Path(dest_audio).resolve())
+        except Exception:
+            pass
+
+        try:
+            user_settings = user_db.get_user_settings(db_user_id)
+        except Exception:
+            user_settings = {}
+
+        for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
+            roots_value = user_settings.get(key)
+            if isinstance(roots_value, list):
+                for item in roots_value:
+                    root = _normalize_root(item)
+                    if root:
+                        allowed_roots.append(Path(root).resolve())
+
+        # De-dupe
+        unique_roots: list[Path] = []
+        seen: set[str] = set()
+        for root in allowed_roots:
+            s = str(root)
+            if s not in seen:
+                seen.add(s)
+                unique_roots.append(root)
+
+        if not requested:
+            return jsonify({
+                "path": None,
+                "parent": None,
+                "directories": [
+                    {"name": p.name or str(p), "path": str(p)}
+                    for p in unique_roots
+                ],
+            })
+
+        if not requested.startswith("/"):
+            return jsonify({"error": "path must be absolute"}), 400
+
+        try:
+            requested_path = Path(requested).resolve()
+        except Exception:
+            return jsonify({"error": "Invalid path"}), 400
+
+        # Ensure requested path is within at least one allowed root.
+        allowed = False
+        for root in unique_roots:
+            try:
+                requested_path.relative_to(root)
+                allowed = True
+                break
+            except Exception:
+                continue
+
+        if not allowed:
+            return jsonify({"error": "Path not allowed"}), 403
+
+        if not requested_path.exists() or not requested_path.is_dir():
+            return jsonify({"error": "Directory not found"}), 404
+
+        try:
+            children: list[dict[str, str]] = []
+            for entry in sorted(requested_path.iterdir(), key=lambda p: p.name.lower()):
+                try:
+                    if entry.is_dir():
+                        children.append({"name": entry.name, "path": str(entry)})
+                except Exception:
+                    continue
+        except Exception as exc:
+            return jsonify({"error": f"Failed to list directory: {exc}"}), 500
+
+        parent: str | None = None
+        try:
+            if requested_path.parent != requested_path:
+                for root in unique_roots:
+                    try:
+                        requested_path.parent.relative_to(root)
+                        parent = str(requested_path.parent)
+                        break
+                    except Exception:
+                        continue
+        except Exception:
+            parent = None
+
+        return jsonify({
+            "path": str(requested_path),
+            "parent": parent,
+            "directories": children,
+        })
+
+    # ------------------------------------------------------------------
+    # Metadata author search (hardcover-specific, used by monitored UI)
+    # ------------------------------------------------------------------
+
+    @app.route("/api/metadata/authors/search", methods=["GET"])
+    def api_metadata_author_search():
+        """Search for authors using the configured metadata provider."""
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        try:
+            from shelfmark.metadata_providers import get_configured_provider
+            from shelfmark.core.utils import transform_cover_url
+
+            query = request.args.get("query", "").strip()
+            content_type = request.args.get("content_type", "ebook").strip()
+
+            try:
+                limit = min(int(request.args.get("limit", 20)), 50)
+            except ValueError:
+                limit = 20
+
+            try:
+                page = max(1, int(request.args.get("page", 1)))
+            except ValueError:
+                page = 1
+
+            if not query:
+                return jsonify({"error": "'query' is required"}), 400
+
+            provider = get_configured_provider(content_type=content_type)
+            if not provider:
+                return jsonify({
+                    "error": "No metadata provider configured",
+                    "message": "No metadata provider configured. Enable one in Settings."
+                }), 503
+
+            if not provider.is_available():
+                return jsonify({
+                    "error": f"Metadata provider '{provider.name}' is not available",
+                    "message": f"{getattr(provider, 'display_name', provider.name)} is not available. Check configuration in Settings."
+                }), 503
+
+            if provider.name != "hardcover":
+                return jsonify({
+                    "provider": provider.name,
+                    "query": query,
+                    "page": page,
+                    "supports_authors": False,
+                    "authors": [],
+                })
+
+            from shelfmark.metadata_providers.hardcover import HardcoverProvider
+            if not isinstance(provider, HardcoverProvider):
+                return jsonify({
+                    "provider": provider.name,
+                    "query": query,
+                    "page": page,
+                    "supports_authors": False,
+                    "authors": [],
+                })
+
+            graphql_query = """
+            query SearchAuthors($query: String!, $limit: Int!, $page: Int!) {
+                search(query: $query, query_type: "Author", per_page: $limit, page: $page) {
+                    results
+                }
+            }
+            """
+
+            result = provider._execute_query(graphql_query, {
+                "query": query,
+                "limit": limit,
+                "page": page,
+            })
+            if not result:
+                return jsonify({
+                    "provider": provider.name,
+                    "query": query,
+                    "page": page,
+                    "supports_authors": True,
+                    "authors": [],
+                })
+
+            results_obj = result.get("search", {}).get("results", {})
+            hits = []
+            found_count = 0
+            if isinstance(results_obj, dict):
+                hits = results_obj.get("hits", [])
+                found_count = results_obj.get("found", 0) or 0
+            elif isinstance(results_obj, list):
+                hits = results_obj
+
+            authors = []
+            for hit in hits:
+                item = hit.get("document", hit) if isinstance(hit, dict) else hit
+                if not isinstance(item, dict):
+                    continue
+
+                author_id = item.get("id")
+                name = item.get("name")
+                if not author_id or not name:
+                    continue
+
+                photo_url = None
+                for key in ("image", "cached_image", "photo", "avatar"):
+                    value = item.get(key)
+                    if value:
+                        if isinstance(value, str):
+                            photo_url = value
+                            break
+                        if isinstance(value, dict) and value.get("url"):
+                            photo_url = value.get("url")
+                            break
+
+                if photo_url:
+                    cache_id = f"hardcover_author_{author_id}"
+                    photo_url = transform_cover_url(photo_url, cache_id)
+
+                author_payload: dict[str, Any] = {
+                    "provider": "hardcover",
+                    "provider_id": str(author_id),
+                    "name": str(name),
+                    "photo_url": photo_url,
+                    "bio": item.get("bio") or item.get("description"),
+                    "born_year": item.get("born_year") or item.get("birth_year"),
+                    "source_url": None,
+                    "stats": {
+                        "books_count": item.get("books_count") or item.get("works_count"),
+                        "users_count": item.get("users_count"),
+                        "ratings_count": item.get("ratings_count"),
+                        "rating": item.get("rating"),
+                    },
+                }
+
+                slug = item.get("slug")
+                if slug and isinstance(slug, str):
+                    author_payload["source_url"] = f"https://hardcover.app/authors/{slug}"
+
+                authors.append(author_payload)
+
+            has_more = False
+            if found_count and isinstance(found_count, int):
+                results_so_far = (page - 1) * limit + len(hits)
+                has_more = results_so_far < found_count
+            else:
+                has_more = len(authors) >= limit
+
+            return jsonify({
+                "provider": provider.name,
+                "query": query,
+                "page": page,
+                "total_found": found_count,
+                "has_more": has_more,
+                "supports_authors": True,
+                "authors": authors,
+            })
+
+        except Exception as e:
+            logger.error_trace(f"Metadata author search error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/metadata/authors/<provider>/<author_id>", methods=["GET"])
+    def api_metadata_author(provider: str, author_id: str):
+        """Get detailed author information from a metadata provider."""
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        try:
+            from shelfmark.metadata_providers import (
+                get_provider,
+                is_provider_registered,
+                get_provider_kwargs,
+            )
+            from shelfmark.core.utils import transform_cover_url
+
+            if not is_provider_registered(provider):
+                return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
+
+            kwargs = get_provider_kwargs(provider)
+            prov = get_provider(provider, **kwargs)
+            if not prov.is_available():
+                return jsonify({"error": f"Provider '{provider}' is not available"}), 503
+
+            if provider != "hardcover":
+                return jsonify({
+                    "provider": provider,
+                    "provider_id": str(author_id),
+                    "supports_authors": False,
+                    "author": None,
+                })
+
+            from shelfmark.metadata_providers.hardcover import HardcoverProvider
+            if not isinstance(prov, HardcoverProvider):
+                return jsonify({
+                    "provider": provider,
+                    "provider_id": str(author_id),
+                    "supports_authors": False,
+                    "author": None,
+                })
+
+            from shelfmark.core.metadata_cache import get_metadata_file_cache
+            mcache = get_metadata_file_cache()
+            cached = mcache.get("authors", provider, author_id)
+            if cached is not None:
+                return jsonify(cached)
+
+            graphql_query = """
+            query GetAuthor($id: Int!) {
+                authors(where: {id: {_eq: $id}}, limit: 1) {
+                    id
+                    name
+                    slug
+                    bio
+                    image { url }
+                    books_count
+                }
+            }
+            """
+
+            try:
+                author_id_int = int(author_id)
+            except ValueError:
+                return jsonify({"error": "Invalid author_id"}), 400
+
+            result = prov._execute_query(graphql_query, {"id": author_id_int})
+            if not result:
+                return jsonify({
+                    "provider": provider,
+                    "provider_id": str(author_id),
+                    "supports_authors": True,
+                    "author": None,
+                }), 404
+
+            authors = result.get("authors", [])
+            if not authors:
+                return jsonify({
+                    "provider": provider,
+                    "provider_id": str(author_id),
+                    "supports_authors": True,
+                    "author": None,
+                }), 404
+
+            author = authors[0]
+
+            photo_url = None
+            image_obj = author.get("image")
+            if isinstance(image_obj, dict) and image_obj.get("url"):
+                photo_url = image_obj["url"]
+            elif isinstance(image_obj, str) and image_obj:
+                photo_url = image_obj
+            if not photo_url:
+                photo_url = author.get("cached_image")
+            if photo_url:
+                cache_id = f"hardcover_author_{author.get('id')}"
+                photo_url = transform_cover_url(photo_url, cache_id)
+
+            payload: dict[str, Any] = {
+                "provider": "hardcover",
+                "provider_id": str(author.get("id")),
+                "name": author.get("name") or "",
+                "photo_url": photo_url,
+                "bio": author.get("bio"),
+                "born_year": author.get("born_year"),
+                "source_url": None,
+                "stats": {
+                    "books_count": author.get("books_count"),
+                    "users_count": author.get("users_count"),
+                    "ratings_count": author.get("ratings_count"),
+                    "rating": author.get("rating"),
+                },
+            }
+
+            slug = author.get("slug")
+            if slug and isinstance(slug, str):
+                payload["source_url"] = f"https://hardcover.app/authors/{slug}"
+
+            response_data = {
+                "provider": provider,
+                "provider_id": str(author_id),
+                "supports_authors": True,
+                "author": payload,
+            }
+
+            mcache.set("authors", provider, author_id, response_data)
+            return jsonify(response_data)
+
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error_trace(f"Metadata author details error: {e}")
+            return jsonify({"error": str(e)}), 500
