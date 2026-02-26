@@ -614,6 +614,30 @@ def register_monitored_routes(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        should_reapply_monitor_modes = (
+            str(updated.get("kind") or "").strip().lower() == "author"
+            and (
+                "monitor_ebook_mode" in settings_patch
+                or "monitor_audiobook_mode" in settings_patch
+            )
+        )
+        if should_reapply_monitor_modes:
+            books = user_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+            existing_files = user_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+            if books and existing_files:
+                from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
+                existing_files = expand_monitored_file_rows_for_equivalent_books(
+                    books=books,
+                    file_rows=existing_files,
+                )
+            _apply_monitor_modes_for_books(
+                db_user_id=db_user_id,
+                entity=updated,
+                books=books,
+                file_rows=existing_files,
+            )
+
         return jsonify(updated)
 
     @app.route("/api/monitored", methods=["GET"])

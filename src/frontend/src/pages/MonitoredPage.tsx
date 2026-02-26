@@ -460,6 +460,7 @@ export const MonitoredPage = ({
   });
   const [monitored, setMonitored] = useState<MonitoredAuthor[]>([]);
   const [monitoredBooksSources, setMonitoredBooksSources] = useState<MonitoredBooksSourceEntity[]>([]);
+  const [monitoredBooksReloadTick, setMonitoredBooksReloadTick] = useState(0);
   const [monitoredLoaded, setMonitoredLoaded] = useState(false);
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
@@ -1116,7 +1117,7 @@ export const MonitoredPage = ({
     return () => {
       alive = false;
     };
-  }, [monitored]);
+  }, [monitored, monitoredBooksReloadTick]);
 
   const monitoredEntityIdByName = useMemo(() => {
     const map = new Map<string, number>();
@@ -1972,6 +1973,10 @@ export const MonitoredPage = ({
       setMonitoredBooksRows((prev) => prev.filter((book) => book.author_entity_id !== entityId));
     }
   }, [editAuthorModalState]);
+
+  const handleEditAuthorSaved = useCallback(() => {
+    setMonitoredBooksReloadTick((prev) => prev + 1);
+  }, []);
 
   const handleMonitoredBookResultSelect = useCallback((row: MonitoredAuthorBookSearchRow) => {
     const matchingAuthor = monitored.find((item) => item.id === row.entity_id);
@@ -4083,6 +4088,7 @@ export const MonitoredPage = ({
         authorName={editAuthorModalState.authorName}
         onClose={closeEditAuthorModal}
         onDeleted={handleEditAuthorDeleted}
+        onSaved={handleEditAuthorSaved}
       />
     </div>
   );
