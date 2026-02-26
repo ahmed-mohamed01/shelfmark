@@ -3,6 +3,26 @@ import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity } from '../se
 import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
+type MonitorMode = 'all' | 'missing' | 'upcoming';
+
+interface ParsedEntitySettings {
+  ebookAuthorDir: string;
+  audiobookAuthorDir: string;
+  monitorEbookMode: MonitorMode;
+  monitorAudiobookMode: MonitorMode;
+}
+
+function parseEntitySettings(settings: Record<string, unknown>): ParsedEntitySettings {
+  const validateMode = (v: unknown): MonitorMode =>
+    v === 'all' || v === 'missing' ? v : 'upcoming';
+  return {
+    ebookAuthorDir: typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '',
+    audiobookAuthorDir: typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '',
+    monitorEbookMode: validateMode(settings.monitor_ebook_mode),
+    monitorAudiobookMode: validateMode(settings.monitor_audiobook_mode),
+  };
+}
+
 interface EditAuthorModalProps {
   open: boolean;
   entityId: number | null;
@@ -26,8 +46,8 @@ export const EditAuthorModal = ({
   const [error, setError] = useState<string | null>(null);
   const [ebookAuthorDir, setEbookAuthorDir] = useState('');
   const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
-  const [monitorEbookMode, setMonitorEbookMode] = useState<'all' | 'missing' | 'upcoming'>('upcoming');
-  const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<'all' | 'missing' | 'upcoming'>('upcoming');
+  const [monitorEbookMode, setMonitorEbookMode] = useState<MonitorMode>('upcoming');
+  const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<MonitorMode>('upcoming');
   const [entity, setEntity] = useState<MonitoredEntity | null>(null);
   const [folderBrowserState, setFolderBrowserState] = useState<{
     open: boolean;
@@ -59,13 +79,11 @@ export const EditAuthorModal = ({
         const loadedEntity = await getMonitoredEntity(entityId);
         if (!alive) return;
         setEntity(loadedEntity);
-        const settings = loadedEntity.settings || {};
-        setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-        setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-        const ebookMode = settings.monitor_ebook_mode;
-        const audioMode = settings.monitor_audiobook_mode;
-        setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
-        setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
+        const parsed = parseEntitySettings(loadedEntity.settings || {});
+        setEbookAuthorDir(parsed.ebookAuthorDir);
+        setAudiobookAuthorDir(parsed.audiobookAuthorDir);
+        setMonitorEbookMode(parsed.monitorEbookMode);
+        setMonitorAudiobookMode(parsed.monitorAudiobookMode);
       } catch (e) {
         if (!alive) return;
         const message = e instanceof Error ? e.message : 'Failed to load author settings';
@@ -96,13 +114,11 @@ export const EditAuthorModal = ({
         },
       });
       setEntity(updated);
-      const settings = updated.settings || {};
-      setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : ebookAuthorDir);
-      setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : audiobookAuthorDir);
-      const ebookMode = settings.monitor_ebook_mode;
-      const audioMode = settings.monitor_audiobook_mode;
-      setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
-      setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
+      const parsed = parseEntitySettings(updated.settings || {});
+      setEbookAuthorDir(parsed.ebookAuthorDir);
+      setAudiobookAuthorDir(parsed.audiobookAuthorDir);
+      setMonitorEbookMode(parsed.monitorEbookMode);
+      setMonitorAudiobookMode(parsed.monitorAudiobookMode);
       onSaved?.();
       onClose();
     } catch (e) {
@@ -142,13 +158,11 @@ export const EditAuthorModal = ({
 
   const handleCancel = useCallback(() => {
     if (saving || deleting) return;
-    const settings = entity?.settings || {};
-    setEbookAuthorDir(typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '');
-    setAudiobookAuthorDir(typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '');
-    const ebookMode = settings.monitor_ebook_mode;
-    const audioMode = settings.monitor_audiobook_mode;
-    setMonitorEbookMode(ebookMode === 'all' || ebookMode === 'missing' ? ebookMode : 'upcoming');
-    setMonitorAudiobookMode(audioMode === 'all' || audioMode === 'missing' ? audioMode : 'upcoming');
+    const parsed = parseEntitySettings(entity?.settings || {});
+    setEbookAuthorDir(parsed.ebookAuthorDir);
+    setAudiobookAuthorDir(parsed.audiobookAuthorDir);
+    setMonitorEbookMode(parsed.monitorEbookMode);
+    setMonitorAudiobookMode(parsed.monitorAudiobookMode);
     setError(null);
     onClose();
   }, [saving, deleting, entity, onClose]);
@@ -239,7 +253,7 @@ export const EditAuthorModal = ({
                     <label className="text-xs text-gray-600 dark:text-gray-400">Monitor eBooks</label>
                     <select
                       value={monitorEbookMode}
-                      onChange={(e) => setMonitorEbookMode(e.target.value as 'all' | 'missing' | 'upcoming')}
+                      onChange={(e) => setMonitorEbookMode(e.target.value as MonitorMode)}
                       disabled={loading || saving || deleting}
                       className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm disabled:opacity-50"
                     >
@@ -252,7 +266,7 @@ export const EditAuthorModal = ({
                     <label className="text-xs text-gray-600 dark:text-gray-400">Monitor Audiobooks</label>
                     <select
                       value={monitorAudiobookMode}
-                      onChange={(e) => setMonitorAudiobookMode(e.target.value as 'all' | 'missing' | 'upcoming')}
+                      onChange={(e) => setMonitorAudiobookMode(e.target.value as MonitorMode)}
                       disabled={loading || saving || deleting}
                       className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm disabled:opacity-50"
                     >
