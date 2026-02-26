@@ -23,9 +23,9 @@ import {
   getConfig,
   createRequest,
   isApiResponseError,
-  recordMonitoredBookAttempt,
   updateSelfUser,
 } from './services/api';
+import { recordMonitoredBookAttempt } from './services/monitoredApi';
 import { useToast } from './hooks/useToast';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
 import { useAuth } from './hooks/useAuth';

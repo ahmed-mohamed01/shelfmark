@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fsListDirectories, FsDirectoryEntry } from '../services/api';
+import { fsListDirectories, FsDirectoryEntry } from '../services/monitoredApi';
 
 interface FolderBrowserModalProps {
   open: boolean;

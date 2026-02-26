@@ -3,24 +3,26 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import {
+  getSelfUserEditContext,
+  updateSelfUser,
+  searchMetadata,
+} from '../services/api';
+import {
   createMonitoredEntity,
   listMonitoredEntities,
   listMonitoredBooks,
   listMonitoredBookFiles,
   updateMonitoredBooksMonitorFlags,
-  getSelfUserEditContext,
   fsListDirectories,
-  updateSelfUser,
   MetadataAuthor,
   MonitoredEntity,
   MonitoredBookFileRow,
   MonitoredBookRow,
   MonitoredAuthorBookSearchRow,
   searchMonitoredAuthorBooks,
-  searchMetadata,
   searchMetadataAuthors,
-} from '../services/api';
-import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
+  deleteMonitoredAuthorsByIds,
+} from '../services/monitoredApi';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { EditAuthorModal } from '../components/EditAuthorModal';
 import { Dropdown } from '../components/Dropdown';

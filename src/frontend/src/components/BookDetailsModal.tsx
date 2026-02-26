@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Book, ContentType } from '../types';
+import { getMetadataBookInfo } from '../services/api';
 import {
-  getMetadataBookInfo,
   listMonitoredBookDownloadHistory,
   MonitoredBookAttemptHistoryRow,
   MonitoredBookDownloadHistoryRow,
   MonitoredBookFileRow,
-} from '../services/api';
+} from '../services/monitoredApi';
 import { getFormatColor } from '../utils/colorMaps';
 
 interface BookDetailsModalProps {

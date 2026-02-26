@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataAuthorInfo, getMetadataBookInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, searchMetadata, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, updateMonitoredBooksMonitorFlags } from '../services/api';
+import { getMetadataBookInfo, searchMetadata } from '../services/api';
+import { getMetadataAuthorInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, updateMonitoredBooksMonitorFlags } from '../services/monitoredApi';
 import { withBasePath } from '../utils/basePath';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';

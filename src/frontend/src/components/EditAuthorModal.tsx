@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity } from '../services/api';
-import { deleteMonitoredAuthorsByIds } from '../services/monitoredAuthors';
+import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, deleteMonitoredAuthorsByIds } from '../services/monitoredApi';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 type MonitorMode = 'all' | 'missing' | 'upcoming';

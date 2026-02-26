@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MetadataAuthor } from '../../services/api';
+import { MetadataAuthor } from '../../services/monitoredApi';
 
 const SkeletonLoader = () => (
   <div className="w-full h-full bg-gradient-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
