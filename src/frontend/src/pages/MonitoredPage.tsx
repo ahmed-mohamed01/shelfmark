@@ -252,21 +252,6 @@ const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
 
-const bookTracksEbook = (book: MonitoredBookListRow): boolean => (
-  monitoredBookTracksEbook(book)
-);
-
-const bookTracksAudiobook = (book: MonitoredBookListRow): boolean => (
-  monitoredBookTracksAudiobook(book)
-);
-
-const isMonitoredBookFulfilled = (book: MonitoredBookListRow): boolean => (
-  monitoredBookHasAnyAvailable(book)
-);
-
-const isMonitoredBookDormant = (book: MonitoredBookListRow): boolean => (
-  isMonitoredBookDormantState(book)
-);
 
 interface MonitoredCountsSnapshot {
   authors: number;
@@ -834,9 +819,9 @@ export const MonitoredPage = ({
 
   const monitoredBooksForTable = useMemo(() => {
     const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
-      bookTracksEbook(book)
-      || bookTracksAudiobook(book)
-      || isMonitoredBookFulfilled(book)
+      monitoredBookTracksEbook(book)
+      || monitoredBookTracksAudiobook(book)
+      || monitoredBookHasAnyAvailable(book)
     ));
 
     return trackedOrFulfilled.sort((a, b) => {
@@ -871,9 +856,9 @@ export const MonitoredPage = ({
 
   const filteredRegularMonitoredBooksByAvailability = useMemo(() => {
     if (monitoredBooksAvailabilityFilter === 'fulfilled') {
-      return regularMonitoredBooksForTable.filter((book) => isMonitoredBookFulfilled(book));
+      return regularMonitoredBooksForTable.filter((book) => monitoredBookHasAnyAvailable(book));
     }
-    return regularMonitoredBooksForTable.filter((book) => !isMonitoredBookFulfilled(book));
+    return regularMonitoredBooksForTable.filter((book) => !monitoredBookHasAnyAvailable(book));
   }, [regularMonitoredBooksForTable, monitoredBooksAvailabilityFilter]);
 
   const normalizedMonitoredBooksFilterQuery = monitoredBooksSearchQuery.trim().toLowerCase();
@@ -1221,8 +1206,8 @@ export const MonitoredPage = ({
     );
     if (!currentRow) return { monitorEbook: false, monitorAudiobook: false, row: null };
     return {
-      monitorEbook: bookTracksEbook(currentRow),
-      monitorAudiobook: bookTracksAudiobook(currentRow),
+      monitorEbook: monitoredBookTracksEbook(currentRow),
+      monitorAudiobook: monitoredBookTracksAudiobook(currentRow),
       row: currentRow,
     };
   }, [activeBookSourceRow, monitoredBooksRows]);
@@ -1337,8 +1322,8 @@ export const MonitoredPage = ({
     const providerBookId = (book.provider_book_id || '').trim();
     if (!provider || !providerBookId) return;
 
-    const currentEbook = bookTracksEbook(book);
-    const currentAudiobook = bookTracksAudiobook(book);
+    const currentEbook = monitoredBookTracksEbook(book);
+    const currentAudiobook = monitoredBookTracksAudiobook(book);
 
     const patch: { provider: string; provider_book_id: string; monitor_ebook?: boolean; monitor_audiobook?: boolean } = {
       provider,
@@ -2077,8 +2062,8 @@ export const MonitoredPage = ({
   }, [navigateToAuthorPage]);
 
   const renderMonitoredBookActions = useCallback((book: MonitoredBookListRow, compact = false) => {
-    const tracksEbook = bookTracksEbook(book);
-    const tracksAudiobook = bookTracksAudiobook(book);
+    const tracksEbook = monitoredBookTracksEbook(book);
+    const tracksAudiobook = monitoredBookTracksAudiobook(book);
     const isFullyMonitored = tracksEbook && tracksAudiobook;
 
     const menuContent = ({ close }: { close: () => void }) => (
@@ -3203,10 +3188,10 @@ export const MonitoredPage = ({
                         ) : null}
                         {group.rows.map((book) => {
                           const isSelected = Boolean(selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]);
-                          const tracksEbook = bookTracksEbook(book);
-                          const tracksAudiobook = bookTracksAudiobook(book);
-                          const isFulfilled = isMonitoredBookFulfilled(book);
-                          const isDormant = isMonitoredBookDormant(book);
+                          const tracksEbook = monitoredBookTracksEbook(book);
+                          const tracksAudiobook = monitoredBookTracksAudiobook(book);
+                          const isFulfilled = monitoredBookHasAnyAvailable(book);
+                          const isDormant = isMonitoredBookDormantState(book);
                           const authorName = book.author_name || 'Unknown author';
                           const subtitleRow = (
                             <div className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
@@ -3323,10 +3308,10 @@ export const MonitoredPage = ({
                         >
                           {group.rows.map((book) => {
                             const isSelected = Boolean(selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]);
-                            const tracksEbook = bookTracksEbook(book);
-                            const tracksAudiobook = bookTracksAudiobook(book);
-                            const isFulfilled = isMonitoredBookFulfilled(book);
-                            const isDormant = isMonitoredBookDormant(book);
+                            const tracksEbook = monitoredBookTracksEbook(book);
+                            const tracksAudiobook = monitoredBookTracksAudiobook(book);
+                            const isFulfilled = monitoredBookHasAnyAvailable(book);
+                            const isDormant = isMonitoredBookDormantState(book);
                             const authorName = book.author_name || 'Unknown author';
                             const badge = tracksEbook && tracksAudiobook ? 'eBook + Audio' : tracksEbook ? 'eBook' : 'Audio';
                             const seriesLabel = book.series_name
