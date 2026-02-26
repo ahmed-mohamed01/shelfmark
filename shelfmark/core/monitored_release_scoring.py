@@ -246,44 +246,39 @@ def _extract_series_number_after_series_name(series_name: str, release_title: st
     return number
 
 
+def _parse_series_num(value: str) -> Optional[float]:
+    """Parse a series number from a string via word-to-number and pattern extraction."""
+    parsed = _word_to_number(value.strip().lower())
+    if parsed is not None and parsed <= 200:
+        return parsed
+    parsed = _extract_series_number(value)
+    if parsed is not None and parsed <= 200:
+        return parsed
+    return None
+
+
 def _extract_release_series_number(release: Release, series_name: Optional[str]) -> Optional[float]:
     """Best-effort series number extraction from source metadata first, then title."""
     extra = release.extra if isinstance(release.extra, dict) else {}
 
     # Prefer explicit metadata fields when available.
-    direct_keys = [
-        "series_position",
-        "series_number",
-        "book_number",
-        "book_num",
-        "volume",
-        "vol",
-        "part",
-        "book",
-        "number",
-    ]
-    for key in direct_keys:
+    for key in ("series_position", "series_number", "book_number", "book_num",
+                "volume", "vol", "part", "book", "number"):
         value = extra.get(key)
         if value is None:
             continue
-        parsed = _word_to_number(str(value).strip().lower())
-        if parsed is not None and parsed <= 200:
-            return parsed
-        parsed = _extract_series_number(str(value))
-        if parsed is not None and parsed <= 200:
-            return parsed
+        result = _parse_series_num(str(value))
+        if result is not None:
+            return result
 
     torznab_attrs = extra.get("torznab_attrs") if isinstance(extra.get("torznab_attrs"), dict) else {}
     for key in ("series", "seriesnumber", "book", "booknumber", "volume", "vol", "part"):
         value = torznab_attrs.get(key)
         if not isinstance(value, str) or not value.strip():
             continue
-        parsed = _word_to_number(value.strip().lower())
-        if parsed is not None and parsed <= 200:
-            return parsed
-        parsed = _extract_series_number(value)
-        if parsed is not None and parsed <= 200:
-            return parsed
+        result = _parse_series_num(value)
+        if result is not None:
+            return result
 
     release_num = _extract_series_number(release.title)
     if release_num is not None:
@@ -355,9 +350,7 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
 
     # If the canonical metadata title appears as a full phrase inside the
     # release title, treat it as a top-quality title match.
-    if candidate_norm == release_norm:
-        return _LOW_INFORMATION_TITLE_MAX_SCORE if is_low_information_candidate else 60
-    if candidate_norm and f" {candidate_norm} " in f" {release_norm} ":
+    if candidate_norm == release_norm or (candidate_norm and f" {candidate_norm} " in f" {release_norm} "):
         return _LOW_INFORMATION_TITLE_MAX_SCORE if is_low_information_candidate else 60
 
     score = 0
@@ -386,16 +379,18 @@ def _get_title_candidates(book: BookMetadata) -> List[str]:
     return [c for c in candidates if c]
 
 
-def _score_title(book: BookMetadata, release: Release) -> int:
-    return max(_score_single_title_candidate(c, release.title) for c in _get_title_candidates(book))
+def _score_title(book: BookMetadata, release: Release, *, _candidates: Optional[List[str]] = None) -> int:
+    candidates = _candidates if _candidates is not None else _get_title_candidates(book)
+    return max(_score_single_title_candidate(c, release.title) for c in candidates)
 
 
-def _has_distinctive_title_overlap(book: BookMetadata, release: Release) -> bool:
+def _has_distinctive_title_overlap(book: BookMetadata, release: Release, *, _candidates: Optional[List[str]] = None) -> bool:
+    candidates = _candidates if _candidates is not None else _get_title_candidates(book)
     release_distinct = set(_distinctive_tokens(release.title))
     if not release_distinct:
         return False
 
-    for candidate in _get_title_candidates(book):
+    for candidate in candidates:
         candidate_distinct = set(_distinctive_tokens(candidate))
         if candidate_distinct and (candidate_distinct & release_distinct):
             return True
@@ -628,8 +623,14 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
     )
 
 
-def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchScore:
-    scoring_config = _get_release_scoring_config()
+def score_release_match(
+    book: BookMetadata,
+    release: Release,
+    *,
+    scoring_config: Optional[ReleaseScoringConfig] = None,
+) -> ReleaseMatchScore:
+    if scoring_config is None:
+        scoring_config = _get_release_scoring_config()
     title_norm = _normalize_text(release.title)
     for forbidden in scoring_config.forbidden_words:
         if forbidden in title_norm:
@@ -641,10 +642,11 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
                 reject_reason=f"forbidden:{forbidden}",
             )
 
-    title_score = _score_title(book, release)
+    title_candidates = _get_title_candidates(book)
+    title_score = _score_title(book, release, _candidates=title_candidates)
     author_score = _score_author(book, release)
     has_release_author = _has_release_author_signal(release)
-    has_distinctive_title_overlap = _has_distinctive_title_overlap(book, release)
+    has_distinctive_title_overlap = _has_distinctive_title_overlap(book, release, _candidates=title_candidates)
 
     # Guardrail: if title match is only coming from low-information tokens
     # (e.g. "book six") with no distinctive overlap, reject as unrelated.
@@ -759,9 +761,10 @@ def score_release_match(book: BookMetadata, release: Release) -> ReleaseMatchSco
 
 
 def rank_releases_for_book(book: BookMetadata, releases: List[Release]) -> List[Tuple[Release, ReleaseMatchScore]]:
+    scoring_config = _get_release_scoring_config()
     scored: List[Tuple[Release, ReleaseMatchScore]] = []
     for release in releases:
-        match = score_release_match(book, release)
+        match = score_release_match(book, release, scoring_config=scoring_config)
         if not isinstance(release.extra, dict):
             release.extra = {}
         release.extra["match_score"] = match.score
