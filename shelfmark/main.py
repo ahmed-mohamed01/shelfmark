@@ -21,8 +21,9 @@ from shelfmark.download import orchestrator as backend
 from shelfmark.release_sources.direct_download import SearchUnavailable
 from shelfmark.config.settings import _SUPPORTED_BOOK_LANGUAGE
 from shelfmark.config.env import (
-    BUILD_VERSION, CONFIG_DIR, CWA_DB_PATH, DEBUG, FLASK_HOST, FLASK_PORT,
-    RELEASE_VERSION, _is_config_dir_writable,
+    BUILD_VERSION, CONFIG_DIR, CWA_DB_PATH, DEBUG, HIDE_LOCAL_AUTH,
+    FLASK_HOST, FLASK_PORT, OIDC_AUTO_REDIRECT, RELEASE_VERSION,
+    _is_config_dir_writable,
 )
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
@@ -605,6 +606,20 @@ def proxy_auth_middleware():
     except Exception as e:
         logger.error(f"Proxy auth middleware error: {e}")
         return jsonify({"error": "Authentication error"}), 500
+
+@app.after_request
+def set_security_headers(response: Response) -> Response:
+    """Add baseline security headers to every response."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+    )
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Embedder-Policy", "credentialless")
+    return response
+
 
 def login_required(f):
     @wraps(f)
@@ -1622,6 +1637,9 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
         if auth_mode == "proxy":
             return jsonify({"error": "Proxy authentication is enabled"}), 401
 
+        if auth_mode == "oidc" and HIDE_LOCAL_AUTH:
+            return jsonify({"error": "Local authentication is disabled"}), 403
+
         username = data.get('username', '').strip()
         password = data.get('password', '')
         remember_me = data.get('remember_me', False)
@@ -1820,11 +1838,15 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
             if logout_url:
                 response_data["logout_url"] = logout_url
 
-        # Add custom OIDC button label if configured
+        # Add custom OIDC button label and SSO enforcement flags if configured
         if auth_mode == "oidc":
             oidc_button_label = security_config.get("OIDC_BUTTON_LABEL", "")
             if oidc_button_label:
                 response_data["oidc_button_label"] = oidc_button_label
+            if HIDE_LOCAL_AUTH:
+                response_data["hide_local_auth"] = True
+            if OIDC_AUTO_REDIRECT:
+                response_data["oidc_auto_redirect"] = True
         
         return jsonify(response_data)
     except Exception as e:
@@ -2071,6 +2093,7 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
     """
     try:
         from shelfmark.metadata_providers import (
+            BookMetadata,
             get_provider,
             is_provider_registered,
             get_provider_kwargs,
@@ -2101,27 +2124,70 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
         if not provider or not book_id:
             return jsonify({"error": "Parameters 'provider' and 'book_id' are required"}), 400
 
-        if not is_provider_registered(provider):
-            return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
+        # Direct mode request approvals can open ReleaseModal with provider=direct_download.
+        # In that flow, treat the direct result as release-search context instead of requiring
+        # a metadata provider registration.
+        if provider == "direct_download":
+            direct_book = backend.get_book_info(book_id)
+            if not isinstance(direct_book, dict):
+                return jsonify({"error": "Book not found in direct source"}), 404
 
-        # Get book metadata from provider
-        kwargs = get_provider_kwargs(provider)
-        prov = get_provider(provider, **kwargs)
-        book = prov.get_book(book_id)
+            resolved_title = title_param or str(direct_book.get("title") or "").strip() or "Unknown title"
+            resolved_author = author_param or str(direct_book.get("author") or "").strip()
+            authors = [part.strip() for part in resolved_author.split(",") if part.strip()]
+            if not authors and resolved_author:
+                authors = [resolved_author]
 
-        if not book:
-            return jsonify({"error": "Book not found in metadata provider"}), 404
+            raw_publish_year = direct_book.get("year")
+            publish_year = None
+            if isinstance(raw_publish_year, int):
+                publish_year = raw_publish_year
+            elif isinstance(raw_publish_year, str):
+                normalized_year = raw_publish_year.strip()
+                if normalized_year.isdigit():
+                    publish_year = int(normalized_year)
 
-        # Override title from frontend if available (search results may have better data)
-        # Note: We intentionally DON'T override authors here - get_book() now returns
-        # filtered authors (primary authors only, excluding translators/narrators),
-        # which gives better release search results than the unfiltered search data
-        if title_param:
-            book.title = title_param
+            book = BookMetadata(
+                provider="direct_download",
+                provider_id=book_id,
+                provider_display_name="Direct Download",
+                title=resolved_title,
+                search_title=resolved_title,
+                search_author=resolved_author or None,
+                authors=authors,
+                cover_url=direct_book.get("preview"),
+                description=direct_book.get("description"),
+                publisher=direct_book.get("publisher"),
+                publish_year=publish_year,
+                language=direct_book.get("language"),
+                source_url=direct_book.get("source_url"),
+            )
+        else:
+            if not is_provider_registered(provider):
+                return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
+
+            # Get book metadata from provider
+            kwargs = get_provider_kwargs(provider)
+            prov = get_provider(provider, **kwargs)
+            book = prov.get_book(book_id)
+
+            if not book:
+                return jsonify({"error": "Book not found in metadata provider"}), 404
+
+            # Override title from frontend if available (search results may have better data)
+            # Note: We intentionally DON'T override authors here - get_book() now returns
+            # filtered authors (primary authors only, excluding translators/narrators),
+            # which gives better release search results than the unfiltered search data
+            if title_param:
+                book.title = title_param
 
         # Determine which release sources to search
         if source_filter:
             sources_to_search = [source_filter]
+        elif provider == "direct_download":
+            # Direct mode has no metadata-provider fanout; keep release browsing focused
+            # on Direct Download results (same dataset as legacy direct search).
+            sources_to_search = ["direct_download"]
         else:
             # Search only enabled sources
             sources_to_search = [src["name"] for src in list_available_sources() if src["enabled"]]

@@ -12,6 +12,7 @@ import {
   CreateRequestPayload,
   ReleasePrimaryAction,
   OpenReleasesOptions,
+  isMetadataBook,
 } from './types';
 import {
   getBookInfo,
@@ -157,9 +158,12 @@ function App() {
     username,
     displayName,
     oidcButtonLabel,
+    hideLocalAuth,
+    oidcAutoRedirect,
     loginError,
     isLoggingIn,
     setIsAuthenticated,
+    refreshAuth,
     handleLogin,
     handleLogout,
   } = useAuth({
@@ -654,12 +658,6 @@ function App() {
     }
   };
 
-  // Handle "Find Downloads" from DetailsModal
-  const handleFindDownloads = (book: Book) => {
-    setSelectedBook(null);
-    setReleaseBook(book);
-  };
-
   const submitRequest = useCallback(
     async (payload: CreateRequestPayload, successMessage: string): Promise<boolean> => {
       try {
@@ -874,7 +872,7 @@ function App() {
 
   const { executeAutoSearch } = useMonitoredAutoSearch({
     config,
-    username,
+    username: username ?? undefined,
     showToast,
     removeToast,
     setTransientDownloadActivityItems,
@@ -1098,9 +1096,22 @@ function App() {
       record: RequestRecord,
       options?: {
         browseOnly?: boolean;
+        manualApproval?: boolean;
       }
     ) => {
       if (!requestRoleIsAdmin) {
+        return;
+      }
+
+      if (options?.manualApproval) {
+        try {
+          await fulfilSidebarRequest(requestId, undefined, undefined, true);
+          await refreshActivitySnapshot();
+          showToast('Request approved', 'success');
+          await fetchStatus();
+        } catch (error) {
+          showToast(getErrorMessage(error, 'Failed to approve request'), 'error');
+        }
         return;
       }
 
@@ -1392,9 +1403,16 @@ function App() {
             book={selectedBook}
             onClose={() => setSelectedBook(null)}
             onDownload={handleDownload}
-            onFindDownloads={handleFindDownloads}
+            onFindDownloads={(book) => {
+              setSelectedBook(null);
+              void handleGetReleases(book);
+            }}
             onSearchSeries={handleSearchSeries}
-            buttonState={getDirectActionButtonState(selectedBook.id)}
+            buttonState={
+              isMetadataBook(selectedBook)
+                ? getUniversalActionButtonState(selectedBook.id)
+                : getDirectActionButtonState(selectedBook.id)
+            }
           />
         )}
 
@@ -1420,6 +1438,8 @@ function App() {
             defaultReleaseSource={config?.default_release_source}
             showMatchScore={config?.show_release_match_score !== false}
             onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
+            defaultShowManualQuery={isBrowseFulfilMode}
+            isRequestMode={isBrowseFulfilMode}
           />
         )}
         {pendingRequestPayload && (
@@ -1497,6 +1517,8 @@ function App() {
               isLoading={isLoggingIn}
               authMode={authMode}
               oidcButtonLabel={oidcButtonLabel}
+              hideLocalAuth={hideLocalAuth}
+              oidcAutoRedirect={oidcAutoRedirect}
             />
           )
         }
@@ -1602,6 +1624,7 @@ function App() {
       onClose={() => setSettingsOpen(false)}
       onShowToast={showToast}
       onSettingsSaved={handleSettingsSaved}
+      onRefreshAuth={refreshAuth}
     />
 
     <SelfSettingsModal

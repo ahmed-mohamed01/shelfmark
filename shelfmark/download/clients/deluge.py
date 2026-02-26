@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import requests
 
 from shelfmark.core.config import config
+from shelfmark.download.network import get_ssl_verify
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.download.clients import (
@@ -97,6 +98,7 @@ class DelugeClient(DownloadClient):
         self._rpc_id = 0
 
         self._category = str(config.get("DELUGE_CATEGORY", "books") or "books")
+        self._download_dir = str(config.get("DELUGE_DOWNLOAD_DIR", "") or "")
 
     def _next_rpc_id(self) -> int:
         self._rpc_id += 1
@@ -109,7 +111,7 @@ class DelugeClient(DownloadClient):
             "params": list(params),
         }
 
-        response = self._session.post(self._rpc_url, json=payload, timeout=timeout)
+        response = self._session.post(self._rpc_url, json=payload, timeout=timeout, verify=get_ssl_verify(self._rpc_url))
         response.raise_for_status()
 
         data = response.json()
@@ -232,6 +234,8 @@ class DelugeClient(DownloadClient):
                 raise Exception("Failed to fetch torrent file")
 
             options: dict[str, Any] = {}
+            if self._download_dir:
+                options["download_location"] = self._download_dir
 
             if torrent_info.is_magnet:
                 magnet_url = torrent_info.magnet_url or url

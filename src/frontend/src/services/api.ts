@@ -605,6 +605,7 @@ export interface SelfUserEditContext {
   deliveryPreferences: DeliveryPreferencesResponse | null;
   notificationPreferences: DeliveryPreferencesResponse | null;
   userOverridableKeys: string[];
+  visibleUserSettingsSections?: string[];
 }
 
 export const getAdminUsers = async (): Promise<AdminUser[]> => {

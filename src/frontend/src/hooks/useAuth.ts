@@ -18,9 +18,12 @@ interface UseAuthReturn {
   username: string | null;
   displayName: string | null;
   oidcButtonLabel: string | null;
+  hideLocalAuth: boolean;
+  oidcAutoRedirect: boolean;
   loginError: string | null;
   isLoggingIn: boolean;
   setIsAuthenticated: (value: boolean) => void;
+  refreshAuth: () => Promise<void>;
   handleLogin: (credentials: LoginCredentials) => Promise<void>;
   handleLogout: () => Promise<void>;
 }
@@ -38,6 +41,8 @@ export function useAuth(options: UseAuthOptions = {}): UseAuthReturn {
   const [username, setUsername] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [oidcButtonLabel, setOidcButtonLabel] = useState<string | null>(null);
+  const [hideLocalAuth, setHideLocalAuth] = useState<boolean>(false);
+  const [oidcAutoRedirect, setOidcAutoRedirect] = useState<boolean>(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
@@ -49,6 +54,8 @@ export function useAuth(options: UseAuthOptions = {}): UseAuthReturn {
     setUsername(response.username || null);
     setDisplayName(response.display_name || null);
     setOidcButtonLabel(response.oidc_button_label || null);
+    setHideLocalAuth(response.hide_local_auth || false);
+    setOidcAutoRedirect(response.oidc_auto_redirect || false);
   }, []);
 
   const refreshSocketSession = useCallback(() => {
@@ -107,6 +114,14 @@ export function useAuth(options: UseAuthOptions = {}): UseAuthReturn {
     };
   }, [applyAuthResponse]);
 
+  const refreshAuth = useCallback(async () => {
+    try {
+      applyAuthResponse(await checkAuth());
+    } catch (error) {
+      console.error('Auth refresh failed:', error);
+    }
+  }, [applyAuthResponse]);
+
   const handleLogin = useCallback(async (credentials: LoginCredentials) => {
     setIsLoggingIn(true);
     setLoginError(null);
@@ -139,19 +154,24 @@ export function useAuth(options: UseAuthOptions = {}): UseAuthReturn {
         window.location.href = logout_url;
         return;
       }
+      try {
+        // Reload auth settings after session clear so /login has current auth-mode UI config.
+        applyAuthResponse(await checkAuth());
+      } catch (error) {
+        console.error('Post-logout auth refresh failed:', error);
+        setIsAuthenticated(false);
+        setIsAdmin(false);
+        setUsername(null);
+        setDisplayName(null);
+      }
       refreshSocketSession();
-      setIsAuthenticated(false);
-      setIsAdmin(false);
-      setUsername(null);
-      setDisplayName(null);
-      setOidcButtonLabel(null);
       onLogoutSuccess?.();
       navigate('/login', { replace: true });
     } catch (error) {
       console.error('Logout failed:', error);
       showToast?.('Logout failed', 'error');
     }
-  }, [navigate, onLogoutSuccess, refreshSocketSession, showToast]);
+  }, [navigate, onLogoutSuccess, refreshSocketSession, showToast, applyAuthResponse]);
 
   return {
     isAuthenticated,
@@ -162,9 +182,12 @@ export function useAuth(options: UseAuthOptions = {}): UseAuthReturn {
     username,
     displayName,
     oidcButtonLabel,
+    hideLocalAuth,
+    oidcAutoRedirect,
     loginError,
     isLoggingIn,
     setIsAuthenticated,
+    refreshAuth,
     handleLogin,
     handleLogout,
   };

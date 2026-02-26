@@ -1,13 +1,13 @@
 """qBittorrent download client for Prowlarr integration."""
 
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Tuple
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
+from shelfmark.download.network import get_ssl_verify
 from shelfmark.download.clients import (
     DownloadClient,
     DownloadStatus,
@@ -137,8 +137,10 @@ class QBittorrentClient(DownloadClient):
             host=self._base_url,
             username=config.get("QBITTORRENT_USERNAME", ""),
             password=config.get("QBITTORRENT_PASSWORD", ""),
+            VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(self._base_url),
         )
         self._category = config.get("QBITTORRENT_CATEGORY", "books")
+        self._download_dir = config.get("QBITTORRENT_DOWNLOAD_DIR", "")
         self._tags = _normalize_tags(config.get("QBITTORRENT_TAG", []))
 
 
@@ -306,6 +308,8 @@ class QBittorrentClient(DownloadClient):
                 "category": category,
                 "rename": name,
             }
+            if self._download_dir:
+                add_kwargs["save_path"] = self._download_dir
             if tags:
                 add_kwargs["tags"] = ",".join(tags)
 
@@ -500,37 +504,14 @@ class QBittorrentClient(DownloadClient):
 
         Centralizes the logic shared by `get_status()` and `get_download_path()`:
         - accept `content_path` only when it's not equal to `save_path`
-        - when the torrent is complete and both `content_path` and `save_path` are present,
-          prefer a path rooted at `save_path` to avoid races where qBittorrent briefly reports
-          a temp/incomplete `content_path` and then moves the payload
         - otherwise derive via properties+files
         - finally fall back to `save_path + name`
         """
-
-        torrent_progress = getattr(torrent, "progress", 0.0)
-        try:
-            progress = float(torrent_progress)
-        except (TypeError, ValueError):
-            progress = 0.0
 
         # Prefer content_path, but treat content_path == save_path as invalid.
         content_path = getattr(torrent, "content_path", "")
         save_path = getattr(torrent, "save_path", "")
         if content_path and (not save_path or str(content_path) != str(save_path)):
-            # When using a temp/incomplete directory, qBittorrent can briefly keep reporting
-            # `content_path` under that temp path right at completion, then move the files
-            # into `save_path`. Returning the temp path can race with that move.
-            if save_path and progress >= 1.0:
-                # Use the basename of content_path under save_path (works for single-file
-                # torrents and multi-file torrents where content_path is a top-level dir).
-                try:
-                    content_basename = str(Path(str(content_path)).name)
-                except Exception:
-                    content_basename = ""
-                rooted = self._build_path(str(save_path), content_basename)
-                if rooted:
-                    return rooted
-
             return str(content_path)
 
         download_id = getattr(torrent, "hash", "")

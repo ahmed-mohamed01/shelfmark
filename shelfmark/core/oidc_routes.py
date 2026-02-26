@@ -5,6 +5,7 @@ Business logic remains in oidc_auth.py.
 """
 
 from typing import Any
+from urllib.parse import quote
 
 from authlib.jose.errors import InvalidClaimError
 from authlib.integrations.flask_client import OAuth
@@ -18,6 +19,7 @@ from shelfmark.core.oidc_auth import (
 )
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.user_db import UserDB
+from shelfmark.download.network import get_ssl_verify
 
 logger = setup_logger(__name__)
 oauth = OAuth()
@@ -37,14 +39,20 @@ def _normalize_claims(raw_claims: Any) -> dict[str, Any]:
         return {}
 
 
-def _is_email_verified(claims: dict[str, Any]) -> bool:
-    """Normalize provider-specific email_verified values into a strict boolean."""
-    value = claims.get("email_verified", False)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
+def _has_username_or_email(claims: dict[str, Any]) -> bool:
+    """Return True when claims include a usable username or email."""
+    for key in ("preferred_username", "email"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
     return False
+
+
+def _login_error_url(message: str) -> str:
+    """Build a login URL (with script_root) that includes an OIDC error message."""
+    script_root = request.script_root.rstrip("/")
+    login_url = f"{script_root}/login" if script_root else "/login"
+    return f"{login_url}?oidc_error={quote(message)}"
 
 
 def _get_oidc_client() -> tuple[Any, dict[str, Any]]:
@@ -73,6 +81,11 @@ def _get_oidc_client() -> tuple[Any, dict[str, Any]]:
     if admin_group and use_admin_group and group_claim and group_claim not in scopes:
         scopes.append(group_claim)
 
+    def _ssl_compliance_fix(session, **kwargs):
+        """Set session.verify based on the Certificate Validation setting."""
+        session.verify = get_ssl_verify(discovery_url)
+        return session
+
     oauth._clients.pop("shelfmark_idp", None)
     oauth.register(
         name="shelfmark_idp",
@@ -83,6 +96,7 @@ def _get_oidc_client() -> tuple[Any, dict[str, Any]]:
             "scope": " ".join(scopes),
             "code_challenge_method": "S256",
         },
+        compliance_fix=_ssl_compliance_fix,
         overwrite=True,
     )
 
@@ -117,7 +131,7 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
             error = request.args.get("error")
             if error:
                 logger.warning(f"OIDC callback error from IdP: {error}")
-                return jsonify({"error": "Authentication failed"}), 400
+                return redirect(_login_error_url("Authentication failed"))
 
             client, config = _get_oidc_client()
             try:
@@ -141,32 +155,31 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
                     provider_issuer or "<unknown>",
                 )
                 if claim_name == "iss":
-                    return (
-                        jsonify(
-                            {
-                                "error": (
-                                    "OIDC issuer validation failed. Verify your discovery URL and IdP issuer/"
-                                    "external URL configuration."
-                                )
-                            }
-                        ),
-                        400,
+                    msg = (
+                        "OIDC issuer validation failed. Verify your discovery URL and IdP issuer/"
+                        "external URL configuration."
                     )
+                    return redirect(_login_error_url(msg))
 
-                return jsonify({"error": f"OIDC token claim validation failed: {claim_name}"}), 400
+                return redirect(_login_error_url(f"OIDC token claim validation failed: {claim_name}"))
             claims = _normalize_claims(token.get("userinfo"))
 
-            # If userinfo isn't present in token payload, request it explicitly.
-            if not claims:
+            # If userinfo is missing or claims are too sparse, request it explicitly.
+            if not claims or not _has_username_or_email(claims):
+                fetched_claims: dict[str, Any] = {}
                 try:
-                    claims = _normalize_claims(client.userinfo(token=token))
+                    fetched_claims = _normalize_claims(client.userinfo(token=token))
                 except TypeError:
-                    claims = _normalize_claims(client.userinfo())
+                    fetched_claims = _normalize_claims(client.userinfo())
                 except Exception as e:
                     logger.error(f"Failed to fetch OIDC userinfo: {e}")
+                if fetched_claims:
+                    claims = {**claims, **fetched_claims}
 
             if not claims:
-                raise ValueError("OIDC authentication failed: missing user claims")
+                msg = "OIDC authentication failed: missing user claims"
+                logger.error(msg)
+                return redirect(_login_error_url(msg))
 
             group_claim = config.get("OIDC_GROUP_CLAIM", "groups")
             admin_group = config.get("OIDC_ADMIN_GROUP", "")
@@ -180,7 +193,7 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
             if admin_group and use_admin_group:
                 is_admin = admin_group in groups
 
-            allow_email_link = bool(user_info.get("email")) and _is_email_verified(claims)
+            allow_email_link = bool(user_info.get("email"))
             user = provision_oidc_user(
                 user_db,
                 user_info,
@@ -192,7 +205,7 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
                 logger.warning(
                     f"OIDC login rejected: auto-provision disabled for {user_info['username']}"
                 )
-                return jsonify({"error": "Account not found. Contact your administrator."}), 403
+                return redirect(_login_error_url("Account not found. Contact your administrator."))
 
             session["user_id"] = user["username"]
             session["is_admin"] = user.get("role") == "admin"
@@ -204,7 +217,7 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
 
         except ValueError as e:
             logger.error(f"OIDC callback error: {e}")
-            return jsonify({"error": str(e)}), 400
+            return redirect(_login_error_url(str(e)))
         except Exception as e:
             logger.error(f"OIDC callback error: {e}")
-            return jsonify({"error": "Authentication failed"}), 500
+            return redirect(_login_error_url("Authentication failed"))

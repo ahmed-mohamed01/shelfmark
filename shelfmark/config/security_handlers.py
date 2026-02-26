@@ -5,9 +5,10 @@ from typing import Any, Callable
 
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.core.user_db import UserDB
+from shelfmark.download.network import get_ssl_verify
 
 
-_OIDC_LOCKOUT_MESSAGE = "Create a local admin account first (Users tab) before enabling OIDC. This ensures you can still log in with a password if SSO is unavailable."
+_OIDC_LOCKOUT_MESSAGE = "A local admin account with a password is required before enabling OIDC. Use the 'Go to Users' button above to create one. This ensures you can still sign in if your identity provider is unavailable."
 
 
 def _has_local_password_admin() -> bool:
@@ -47,17 +48,19 @@ def on_save_security(
 def test_oidc_connection(
     *,
     load_security_config: Callable[[], dict[str, Any]],
+    current_values: dict[str, Any] | None = None,
     logger: Any,
 ) -> dict[str, Any]:
     """Fetch and validate the configured OIDC discovery document."""
     import requests
 
     try:
-        discovery_url = load_security_config().get("OIDC_DISCOVERY_URL", "")
+        # Prefer the current (unsaved) form value over the saved config
+        discovery_url = (current_values or {}).get("OIDC_DISCOVERY_URL") or load_security_config().get("OIDC_DISCOVERY_URL", "")
         if not discovery_url:
             return {"success": False, "message": "Discovery URL is not configured."}
 
-        response = requests.get(discovery_url, timeout=10)
+        response = requests.get(discovery_url, timeout=10, verify=get_ssl_verify(discovery_url))
         response.raise_for_status()
         document = response.json()
 
