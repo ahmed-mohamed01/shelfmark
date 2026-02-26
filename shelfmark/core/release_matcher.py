@@ -374,13 +374,16 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     return score
 
 
-def _score_title(book: BookMetadata, release: Release) -> int:
+def _get_title_candidates(book: BookMetadata) -> List[str]:
     candidates = [book.title, book.search_title or ""]
     if book.subtitle:
         candidates.append(f"{book.title} {book.subtitle}")
-    candidates.extend(list((book.titles_by_language or {}).values()))
+    candidates.extend((book.titles_by_language or {}).values())
+    return [c for c in candidates if c]
 
-    return max(_score_single_title_candidate(candidate, release.title) for candidate in candidates if candidate)
+
+def _score_title(book: BookMetadata, release: Release) -> int:
+    return max(_score_single_title_candidate(c, release.title) for c in _get_title_candidates(book))
 
 
 def _has_distinctive_title_overlap(book: BookMetadata, release: Release) -> bool:
@@ -388,14 +391,7 @@ def _has_distinctive_title_overlap(book: BookMetadata, release: Release) -> bool
     if not release_distinct:
         return False
 
-    candidates = [book.title, book.search_title or ""]
-    if book.subtitle:
-        candidates.append(f"{book.title} {book.subtitle}")
-    candidates.extend(list((book.titles_by_language or {}).values()))
-
-    for candidate in candidates:
-        if not candidate:
-            continue
+    for candidate in _get_title_candidates(book):
         candidate_distinct = set(_distinctive_tokens(candidate))
         if candidate_distinct and (candidate_distinct & release_distinct):
             return True
