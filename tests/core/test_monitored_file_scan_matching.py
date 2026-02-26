@@ -98,3 +98,39 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
     }
     assert plain_book_id in book_ids_for_path
     assert subtitle_book_id in book_ids_for_path
+
+
+def test_scan_files_skips_unreadable_paths_instead_of_failing(main_module, client, tmp_path: Path):
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    author_dir = tmp_path / "Unreadable Author"
+    author_dir.mkdir(parents=True, exist_ok=True)
+
+    main_module.user_db.set_user_settings(user["id"], {"MONITORED_EBOOK_ROOTS": [str(tmp_path)]})
+
+    entity = main_module.monitored_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Unreadable Author",
+        settings={"ebook_author_dir": str(author_dir)},
+    )
+
+    main_module.monitored_db.upsert_monitored_book(
+        user_id=user["id"],
+        entity_id=entity["id"],
+        provider="hardcover",
+        provider_book_id=f"book-{uuid.uuid4().hex[:8]}",
+        title="Any Book",
+        authors="Unreadable Author",
+        publish_year=2024,
+    )
+
+    with patch("shelfmark.core.monitored_files.os.walk", side_effect=PermissionError("permission denied")):
+        response = client.post(f"/api/monitored/{entity['id']}/scan-files")
+
+    assert response.status_code == 200
+    payload = response.get_json() or {}
+    assert payload.get("ok") is True

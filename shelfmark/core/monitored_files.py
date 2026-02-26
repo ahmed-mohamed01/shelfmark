@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -100,7 +101,19 @@ def normalize_candidate_title(raw: str, author_name: str) -> str:
     )
     a = (author_name or "").strip()
     if a:
-        s = re.sub(rf"\s*[-–—:]\s*{re.escape(a)}\s*$", " ", s, flags=re.IGNORECASE)
+        # Exact match: "Title - Author" (end)
+        s_stripped = re.sub(rf"\s*[-–—:]\s*{re.escape(a)}\s*$", " ", s, flags=re.IGNORECASE)
+        if s_stripped == s:
+            # Multi-author fallback: "Title - Author1, Author2" where author appears anywhere
+            # in a dash-delimited block at the end (e.g. different author order)
+            s_stripped = re.sub(
+                rf"\s*[-–—]\s*[^-–—]*{re.escape(a)}[^-–—]*$",
+                " ",
+                s,
+                flags=re.IGNORECASE,
+            )
+        s = s_stripped
+        # "Author - Title" (start)
         s = re.sub(rf"^\s*{re.escape(a)}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -425,6 +438,22 @@ def iso_mtime(p: Path) -> str | None:
         return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
     except Exception:
         return None
+
+
+def _iter_files_recursive_safe(root: Path) -> list[Path]:
+    """Return all files under *root*, skipping unreadable paths gracefully."""
+    files: list[Path] = []
+
+    def _onerror(err: OSError) -> None:
+        logger.warning("Skipping unreadable monitored scan path root=%s: %s", root, err)
+
+    try:
+        for dirpath, _, filenames in os.walk(root, topdown=True, followlinks=False, onerror=_onerror):
+            for filename in filenames:
+                files.append(Path(dirpath) / filename)
+    except Exception as exc:
+        logger.warning("Failed walking monitored scan root=%s: %s", root, exc)
+    return files
 
 
 def pick_best_audio_file(
@@ -867,7 +896,7 @@ def scan_monitored_author_files(
     seen_paths: set[str] = set()
 
     if ebook_path is not None:
-        for p in ebook_path.rglob("*"):
+        for p in _iter_files_recursive_safe(ebook_path):
             if scanned_ebook_files >= MAX_SCAN_FILES:
                 break
             try:
@@ -915,7 +944,7 @@ def scan_monitored_author_files(
 
     if audiobook_path is not None:
         seen_dirs: set[str] = set()
-        for p in audiobook_path.rglob("*"):
+        for p in _iter_files_recursive_safe(audiobook_path):
             try:
                 if not p.is_file() or p.is_symlink():
                     continue
