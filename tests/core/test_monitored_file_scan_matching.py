@@ -3,14 +3,15 @@ from __future__ import annotations
 import importlib
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 
 @pytest.fixture(scope="module")
 def main_module():
-    with patch("shelfmark.download.orchestrator.start"):
+    orchestrator_stub = MagicMock()
+    with patch.dict("sys.modules", {"shelfmark.download.orchestrator": orchestrator_stub}):
         import shelfmark.main as main
 
         importlib.reload(main)
