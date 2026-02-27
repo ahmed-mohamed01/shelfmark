@@ -969,6 +969,7 @@ export const AuthorModal = ({
       series_name: (row.series_name || '').trim() || undefined,
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
+      language: (row.language || '').trim() || undefined,
       display_fields: [
         ...(typeof row.release_date === 'string' && row.release_date.trim()
           ? [{
@@ -1222,8 +1223,9 @@ export const AuthorModal = ({
             const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
             if (isCancelled) return;
             if (resp.books.length > 0) {
-              setMonitoredBookRows(resp.books);
-              cachedBooks = resp.books.map(monitoredBookToBook);
+              const visibleRows = resp.books.filter((row) => !Boolean(Number(row.hidden || 0)));
+              setMonitoredBookRows(visibleRows);
+              cachedBooks = visibleRows.map(monitoredBookToBook);
               setBooks(cachedBooks);
               setIsLoadingBooks(false);
 

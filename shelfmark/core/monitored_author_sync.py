@@ -15,8 +15,36 @@ from typing import Any
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
+from shelfmark.metadata_providers import normalize_language_code
 
 logger = setup_logger(__name__)
+
+
+def normalize_preferred_languages(raw: Any) -> set[str] | None:
+    if raw is None:
+        return None
+
+    values: list[Any]
+    if isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = [part for part in str(raw).split(",")]
+
+    normalized = {
+        lang
+        for lang in (normalize_language_code(value) for value in values)
+        if lang
+    }
+    return normalized or None
+
+
+def should_hide_book_for_language(*, book_language: str | None, preferred_languages: set[str] | None) -> bool:
+    if not preferred_languages:
+        return False
+    normalized_book_language = normalize_language_code(book_language)
+    if not normalized_book_language:
+        return False
+    return normalized_book_language not in preferred_languages
 
 
 def transform_cached_cover_urls(
@@ -73,6 +101,7 @@ def sync_author_entity(
     db_user_id: int | None,
     entity: dict[str, Any],
     prefetch_covers: bool = False,
+    preferred_languages: set[str] | None = None,
 ) -> int:
     """Fetch all books for a monitored author and upsert them into the local DB.
 
@@ -135,6 +164,25 @@ def sync_author_entity(
             fields={"author": author_name},
         )
         result = provider.search_paginated(options)
+
+        language_by_provider_id: dict[str, str | None] = {}
+        if preferred_languages and hasattr(provider, "get_book_languages_batch"):
+            provider_ids = [
+                str(getattr(book, "provider_id", "") or "").strip()
+                for book in result.books
+                if str(getattr(book, "provider_id", "") or "").strip()
+            ]
+            try:
+                raw_lang_map = provider.get_book_languages_batch(provider_ids)
+            except Exception:
+                raw_lang_map = {}
+            if isinstance(raw_lang_map, dict):
+                for key, value in raw_lang_map.items():
+                    normalized_key = str(key or "").strip()
+                    if not normalized_key:
+                        continue
+                    language_by_provider_id[normalized_key] = normalize_language_code(value)
+
         for book in result.books:
             payload = asdict(book)
             authors = payload.get("authors")
@@ -143,6 +191,9 @@ def sync_author_entity(
             provider_book_id = str(payload.get("provider_id") or "")
             provider_value = str(payload.get("provider") or provider_name)
             cover_url = payload.get("cover_url")
+            language = normalize_language_code(payload.get("language"))
+            if not language and provider_book_id:
+                language = language_by_provider_id.get(provider_book_id)
 
             user_db.upsert_monitored_book(
                 user_id=db_user_id,
@@ -158,6 +209,11 @@ def sync_author_entity(
                 series_name=payload.get("series_name"),
                 series_position=payload.get("series_position"),
                 series_count=payload.get("series_count"),
+                language=language,
+                hidden=should_hide_book_for_language(
+                    book_language=language,
+                    preferred_languages=preferred_languages,
+                ),
                 rating=rating,
                 ratings_count=ratings_count,
                 readers_count=readers_count,

@@ -161,6 +161,62 @@ class BookMetadata:
     titles_by_language: Dict[str, str] = field(default_factory=dict)
 
 
+_LANGUAGE_NAME_TO_CODE: Dict[str, str] = {
+    "english": "en",
+    "spanish": "es",
+    "french": "fr",
+    "german": "de",
+    "italian": "it",
+    "portuguese": "pt",
+    "turkish": "tr",
+    "russian": "ru",
+    "japanese": "ja",
+    "polish": "pl",
+    "dutch": "nl",
+}
+
+_LANGUAGE_CODE3_TO_CODE2: Dict[str, str] = {
+    "eng": "en",
+    "spa": "es",
+    "fra": "fr",
+    "fre": "fr",
+    "deu": "de",
+    "ger": "de",
+    "ita": "it",
+    "por": "pt",
+    "tur": "tr",
+    "rus": "ru",
+    "jpn": "ja",
+    "pol": "pl",
+    "nld": "nl",
+    "dut": "nl",
+}
+
+
+def normalize_language_code(raw: Any) -> Optional[str]:
+    """Normalize language identifiers to stable short codes when possible."""
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if not value:
+        return None
+    value = value.replace("_", "-")
+
+    if value in _LANGUAGE_NAME_TO_CODE:
+        return _LANGUAGE_NAME_TO_CODE[value]
+
+    primary = value.split("-", 1)[0]
+    if not primary:
+        return None
+    if primary in _LANGUAGE_NAME_TO_CODE:
+        return _LANGUAGE_NAME_TO_CODE[primary]
+    if primary in _LANGUAGE_CODE3_TO_CODE2:
+        return _LANGUAGE_CODE3_TO_CODE2[primary]
+    if len(primary) in {2, 3}:
+        return primary
+    return None
+
+
 def group_languages_by_localized_title(
     base_title: str,
     languages: Optional[List[str]],

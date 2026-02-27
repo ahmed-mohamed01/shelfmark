@@ -12,7 +12,13 @@ from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
-from shelfmark.core.monitored_author_sync import sync_author_entity, transform_cached_cover_urls
+from shelfmark.core.monitored_author_sync import (
+    normalize_preferred_languages,
+    should_hide_book_for_language,
+    sync_author_entity,
+    transform_cached_cover_urls,
+)
+from shelfmark.metadata_providers import normalize_language_code
 from shelfmark.core.monitored_files import apply_monitor_modes_for_books, path_within_allowed_roots, resolve_allowed_roots
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_utils import extract_book_popularity
@@ -84,6 +90,22 @@ def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tup
     if blocked_count == 2:
         return False, "Monitoring is unavailable by policy"
     return True, None
+
+
+def _resolve_preferred_languages_for_user(user_db: UserDB, db_user_id: int | None) -> set[str] | None:
+    from shelfmark.core.config import config as app_config
+
+    user_langs: set[str] | None = None
+    if db_user_id is not None:
+        try:
+            settings = user_db.get_user_settings(db_user_id) or {}
+        except Exception:
+            settings = {}
+        user_langs = normalize_preferred_languages(settings.get("BOOK_LANGUAGE"))
+        if user_langs:
+            return user_langs
+
+    return normalize_preferred_languages(app_config.get("BOOK_LANGUAGE", []))
 
 
 def resolve_download_db_user_id(session_obj: Any, auth_mode: str, user_db: UserDB | None) -> int | None:
@@ -276,6 +298,7 @@ def register_monitored_routes(
                             total_entities = 0
                             total_books = 0
                             for uid in sorted(user_ids):
+                                preferred_languages = _resolve_preferred_languages_for_user(user_db, uid)
                                 entities = monitored_db.list_monitored_entities(user_id=uid)
                                 for entity in entities:
                                     if not bool(int(entity.get("enabled") or 0)):
@@ -284,7 +307,13 @@ def register_monitored_routes(
                                         continue
                                     total_entities += 1
                                     try:
-                                        total_books += sync_author_entity(monitored_db, db_user_id=uid, entity=entity, prefetch_covers=True)
+                                        total_books += sync_author_entity(
+                                            monitored_db,
+                                            db_user_id=uid,
+                                            entity=entity,
+                                            prefetch_covers=True,
+                                            preferred_languages=preferred_languages,
+                                        )
                                     except Exception as exc:
                                         logger.warning("Scheduled monitored sync failed entity_id=%s user_id=%s: %s", entity.get("id"), uid, exc)
                                         try:
@@ -560,9 +589,11 @@ def register_monitored_routes(
             seeded_series_name: str | None = None
             seeded_series_position: float | None = None
             seeded_series_count: int | None = None
+            seeded_language: str | None = None
             seeded_rating: float | None = None
             seeded_ratings_count: int | None = None
             seeded_readers_count: int | None = None
+            preferred_languages = _resolve_preferred_languages_for_user(user_db, db_user_id)
 
             try:
                 from shelfmark.metadata_providers import get_provider, get_provider_kwargs
@@ -583,6 +614,7 @@ def register_monitored_routes(
                         seeded_series_name = payload.get("series_name")
                         seeded_series_position = payload.get("series_position")
                         seeded_series_count = payload.get("series_count")
+                        seeded_language = normalize_language_code(payload.get("language"))
                         seeded_rating, seeded_ratings_count, seeded_readers_count = extract_book_popularity(payload.get("display_fields"))
             except Exception as exc:
                 logger.warning("Book monitor metadata seed failed provider=%s provider_id=%s: %s", provider, provider_id, exc)
@@ -602,6 +634,11 @@ def register_monitored_routes(
                     series_name=seeded_series_name,
                     series_position=seeded_series_position,
                     series_count=seeded_series_count,
+                    language=seeded_language,
+                    hidden=should_hide_book_for_language(
+                        book_language=seeded_language,
+                        preferred_languages=preferred_languages,
+                    ),
                     rating=seeded_rating,
                     ratings_count=seeded_ratings_count,
                     readers_count=seeded_readers_count,
@@ -641,9 +678,24 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
+        preferred_languages = _resolve_preferred_languages_for_user(user_db, db_user_id)
+        try:
+            monitored_db.update_monitored_books_hidden_flags(
+                user_id=db_user_id,
+                entity_id=entity_id,
+                preferred_languages=preferred_languages,
+            )
+        except Exception as exc:
+            logger.debug("Failed updating monitored hidden flags entity_id=%s: %s", entity_id, exc)
+
         rows = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
+
+        include_hidden_raw = str(request.args.get("include_hidden", "")).strip().lower()
+        include_hidden = include_hidden_raw in {"1", "true", "yes"}
+        if not include_hidden:
+            rows = [row for row in rows if not bool(int(row.get("hidden") or 0))]
 
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
@@ -1293,7 +1345,13 @@ def register_monitored_routes(
             return jsonify({"error": "Sync is only supported for author entities"}), 400
 
         try:
-            discovered = sync_author_entity(monitored_db, db_user_id=db_user_id, entity=entity, prefetch_covers=True)
+            discovered = sync_author_entity(
+                monitored_db,
+                db_user_id=db_user_id,
+                entity=entity,
+                prefetch_covers=True,
+                preferred_languages=_resolve_preferred_languages_for_user(user_db, db_user_id),
+            )
             return jsonify({"ok": True, "discovered": discovered})
 
         except Exception as exc:

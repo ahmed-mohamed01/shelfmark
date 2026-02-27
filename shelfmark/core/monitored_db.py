@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     series_name TEXT,
     series_position REAL,
     series_count INTEGER,
+    language TEXT,
+    hidden INTEGER NOT NULL DEFAULT 0,
     rating REAL,
     ratings_count INTEGER,
     readers_count INTEGER,
@@ -153,6 +155,7 @@ class MonitoredDB:
                 self._migrate_monitored_books_series_columns(conn)
                 self._migrate_monitored_books_popularity_columns(conn)
                 self._migrate_monitored_books_release_date_column(conn)
+                self._migrate_monitored_books_language_columns(conn)
                 self._migrate_monitored_book_files_table(conn)
                 self._migrate_monitored_book_download_history_table(conn)
                 self._migrate_monitored_books_monitor_columns(conn)
@@ -390,6 +393,61 @@ class MonitoredDB:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def update_monitored_books_hidden_flags(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        preferred_languages: set[str] | None,
+    ) -> int:
+        """Recompute hidden flags for an entity's monitored books."""
+
+        normalized_preferred = {
+            str(lang).strip().lower()
+            for lang in (preferred_languages or set())
+            if str(lang).strip()
+        }
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return 0
+
+                if not normalized_preferred:
+                    cur = conn.execute(
+                        """
+                        UPDATE monitored_books
+                        SET hidden = 0
+                        WHERE entity_id = ?
+                        """,
+                        (entity_id,),
+                    )
+                    conn.commit()
+                    return int(cur.rowcount or 0)
+
+                placeholders = ",".join(["?"] * len(normalized_preferred))
+                cur = conn.execute(
+                    f"""
+                    UPDATE monitored_books
+                    SET hidden = CASE
+                        WHEN language IS NULL OR TRIM(language) = '' THEN 0
+                        WHEN LOWER(language) IN ({placeholders}) THEN 0
+                        ELSE 1
+                    END
+                    WHERE entity_id = ?
+                    """,
+                    (*sorted(normalized_preferred), entity_id),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)
+            finally:
+                conn.close()
 
     def set_monitored_book_monitor_flags(
         self,
@@ -693,6 +751,7 @@ class MonitoredDB:
                   ON mb.entity_id = me.id
                 WHERE me.user_id = :user_id
                   AND me.kind = 'author'
+                  AND COALESCE(mb.hidden, 0) = 0
                   AND (
                     LOWER(mb.title) LIKE :like
                     OR LOWER(COALESCE(mb.authors, '')) LIKE :like
@@ -737,6 +796,8 @@ class MonitoredDB:
         series_name: str | None = None,
         series_position: float | None = None,
         series_count: int | None = None,
+        language: str | None = None,
+        hidden: bool = False,
         rating: float | None = None,
         ratings_count: int | None = None,
         readers_count: int | None = None,
@@ -763,6 +824,14 @@ class MonitoredDB:
             candidate = str(release_date).strip()
             if candidate:
                 release_date_value = candidate
+
+        language_value: str | None = None
+        if language is not None:
+            candidate = str(language).strip().lower()
+            if candidate:
+                language_value = candidate
+
+        hidden_value = 1 if hidden else 0
 
         rating_value: float | None = None
         if rating is not None:
@@ -811,12 +880,14 @@ class MonitoredDB:
                         series_name,
                         series_position,
                         series_count,
+                        language,
+                        hidden,
                         rating,
                         ratings_count,
                         readers_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
@@ -828,6 +899,8 @@ class MonitoredDB:
                         series_name=COALESCE(NULLIF(excluded.series_name, ''), monitored_books.series_name),
                         series_position=COALESCE(excluded.series_position, monitored_books.series_position),
                         series_count=COALESCE(excluded.series_count, monitored_books.series_count),
+                        language=COALESCE(NULLIF(excluded.language, ''), monitored_books.language),
+                        hidden=excluded.hidden,
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
@@ -846,6 +919,8 @@ class MonitoredDB:
                         series_name,
                         series_position,
                         series_count,
+                        language_value,
+                        hidden_value,
                         rating_value,
                         ratings_count_value,
                         readers_count_value,
@@ -1328,6 +1403,17 @@ class MonitoredDB:
         column_names = {str(col["name"]) for col in rows}
         if "release_date" not in column_names:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date TEXT")
+
+    def _migrate_monitored_books_language_columns(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has language and hidden columns."""
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return
+        column_names = {str(col["name"]) for col in rows}
+        if "language" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN language TEXT")
+        if "hidden" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
 
     def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
         """Ensure monitored_book_files table exists for older DBs."""

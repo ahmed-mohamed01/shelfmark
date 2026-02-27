@@ -25,6 +25,7 @@ from shelfmark.metadata_providers import (
     SearchResult,
     SearchType,
     SortOrder,
+    normalize_language_code,
     register_provider,
     register_provider_kwargs,
     TextSearchField,
@@ -99,6 +100,21 @@ def _extract_release_date(data: Dict) -> Optional[str]:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _extract_language_from_search_item(item: Dict) -> Optional[str]:
+    for key in ("language", "language_code", "language_code2", "lang"):
+        normalized = normalize_language_code(item.get(key))
+        if normalized:
+            return normalized
+
+    languages = item.get("languages")
+    if isinstance(languages, list):
+        for lang in languages:
+            normalized = normalize_language_code(lang)
+            if normalized:
+                return normalized
+    return None
 
 
 def _build_source_url(slug: str) -> Optional[str]:
@@ -707,6 +723,7 @@ class HardcoverProvider(MetadataProvider):
             publish_year = _extract_publish_year(item)
             release_date = _extract_release_date(item)
             source_url = _build_source_url(item.get("slug", ""))
+            language = _extract_language_from_search_item(item)
 
             # Build display fields from Hardcover-specific data
             display_fields = []
@@ -749,6 +766,7 @@ class HardcoverProvider(MetadataProvider):
                 description=full_description,
                 publish_year=publish_year,
                 release_date=release_date,
+                language=language,
                 source_url=source_url,
                 display_fields=display_fields,
             )
@@ -757,6 +775,74 @@ class HardcoverProvider(MetadataProvider):
         except Exception as e:
             logger.debug(f"Failed to parse Hardcover search result: {e}")
             return None
+
+    def get_book_languages_batch(self, book_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Fetch primary language code for many books in one GraphQL request."""
+        if not self.api_key:
+            return {}
+
+        normalized_ids: List[int] = []
+        seen: set[int] = set()
+        for raw in book_ids:
+            try:
+                bid = int(str(raw).strip())
+            except (TypeError, ValueError):
+                continue
+            if bid <= 0 or bid in seen:
+                continue
+            seen.add(bid)
+            normalized_ids.append(bid)
+
+        if not normalized_ids:
+            return {}
+
+        graphql_query = """
+        query GetBookLanguages($ids: [Int!]) {
+            books(where: {id: {_in: $ids}}, limit: 250) {
+                id
+                editions(
+                    distinct_on: language_id
+                    order_by: [{language_id: asc}, {users_count: desc}]
+                    limit: 50
+                ) {
+                    language {
+                        code2
+                        code3
+                    }
+                }
+            }
+        }
+        """
+
+        try:
+            result = self._execute_query(graphql_query, {"ids": normalized_ids})
+            books = (result or {}).get("books") or []
+            languages_by_id: Dict[str, Optional[str]] = {}
+            for row in books:
+                if not isinstance(row, dict):
+                    continue
+                raw_id = row.get("id")
+                if raw_id is None:
+                    continue
+                editions = row.get("editions") or []
+                language: Optional[str] = None
+                for edition in editions:
+                    if not isinstance(edition, dict):
+                        continue
+                    lang_data = edition.get("language")
+                    if not isinstance(lang_data, dict):
+                        continue
+                    language = (
+                        normalize_language_code(lang_data.get("code2"))
+                        or normalize_language_code(lang_data.get("code3"))
+                    )
+                    if language:
+                        break
+                languages_by_id[str(raw_id)] = language
+            return languages_by_id
+        except Exception as exc:
+            logger.debug("Hardcover batched language fetch failed for %s ids: %s", len(normalized_ids), exc)
+            return {}
 
     def _parse_book(self, book: Dict) -> BookMetadata:
         """Parse a book object into BookMetadata."""
@@ -868,6 +954,18 @@ class HardcoverProvider(MetadataProvider):
                 if code3 and code3 not in titles_by_language:
                     titles_by_language[code3] = edition_title
 
+        language: Optional[str] = None
+        for edition in editions:
+            lang_data = edition.get("language")
+            if not isinstance(lang_data, dict):
+                continue
+            language = (
+                normalize_language_code(lang_data.get("code2"))
+                or normalize_language_code(lang_data.get("code3"))
+            )
+            if language:
+                break
+
         return BookMetadata(
              provider="hardcover",
              provider_id=str(book["id"]),
@@ -883,6 +981,7 @@ class HardcoverProvider(MetadataProvider):
              description=full_description,
              publish_year=publish_year,
              release_date=release_date,
+             language=language,
              genres=genres,
              source_url=source_url,
              series_name=series_name,

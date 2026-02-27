@@ -1910,6 +1910,7 @@ export const MonitoredPage = ({
       provider: book.provider || undefined,
       provider_id: book.provider_book_id || undefined,
       release_date: book.release_date || undefined,
+      language: (book.language || '').trim() || undefined,
       isbn_13: book.isbn_13 || undefined,
       source_url: undefined,
       series_name: book.series_name || undefined,
