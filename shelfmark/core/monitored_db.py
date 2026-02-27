@@ -969,50 +969,23 @@ class MonitoredDB:
                 if not exists:
                     raise ValueError("Monitored entity not found")
 
-                conn.execute(
-                    """
-                    INSERT INTO monitored_book_files (
-                        entity_id,
-                        provider,
-                        provider_book_id,
-                        path,
-                        ext,
-                        file_type,
-                        size_bytes,
-                        mtime,
-                        confidence,
-                        match_reason,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(entity_id, path)
-                    DO UPDATE SET
-                        provider=excluded.provider,
-                        provider_book_id=excluded.provider_book_id,
-                        ext=excluded.ext,
-                        file_type=excluded.file_type,
-                        size_bytes=excluded.size_bytes,
-                        mtime=excluded.mtime,
-                        confidence=excluded.confidence,
-                        match_reason=excluded.match_reason,
-                        updated_at=CURRENT_TIMESTAMP
-                    """,
-                    (
-                        entity_id,
-                        provider,
-                        provider_book_id,
-                        normalized_path,
-                        ext,
-                        file_type,
-                        size_bytes,
-                        mtime,
-                        confidence,
-                        match_reason,
-                    ),
-                )
-
-                # Enforce uniqueness (entity_id, provider, provider_book_id, file_type)
                 if provider and provider_book_id and file_type:
+                    # Prevent path-key collisions when re-pointing an existing
+                    # (provider, provider_book_id, file_type) match to a new file path.
+                    conn.execute(
+                        """
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND path = ?
+                          AND NOT (
+                            provider = ?
+                            AND provider_book_id = ?
+                            AND file_type = ?
+                          )
+                        """,
+                        (entity_id, normalized_path, provider, provider_book_id, file_type),
+                    )
+
                     conn.execute(
                         """
                         INSERT INTO monitored_book_files (
@@ -1033,6 +1006,48 @@ class MonitoredDB:
                         DO UPDATE SET
                             path=excluded.path,
                             ext=excluded.ext,
+                            size_bytes=excluded.size_bytes,
+                            mtime=excluded.mtime,
+                            confidence=excluded.confidence,
+                            match_reason=excluded.match_reason,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            normalized_path,
+                            ext,
+                            file_type,
+                            size_bytes,
+                            mtime,
+                            confidence,
+                            match_reason,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO monitored_book_files (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            path,
+                            ext,
+                            file_type,
+                            size_bytes,
+                            mtime,
+                            confidence,
+                            match_reason,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(entity_id, path)
+                        DO UPDATE SET
+                            provider=excluded.provider,
+                            provider_book_id=excluded.provider_book_id,
+                            ext=excluded.ext,
+                            file_type=excluded.file_type,
                             size_bytes=excluded.size_bytes,
                             mtime=excluded.mtime,
                             confidence=excluded.confidence,
