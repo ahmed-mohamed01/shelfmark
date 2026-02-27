@@ -28,6 +28,7 @@ export interface Book {
   release_date?: string;
   info?: Record<string, string | string[]>;
   description?: string;
+  is_compilation?: boolean;
   download_path?: string;
   progress?: number;
   status_message?: string;  // Detailed status message (e.g., "Trying Libgen (2/5)")

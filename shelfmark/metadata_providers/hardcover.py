@@ -767,6 +767,7 @@ class HardcoverProvider(MetadataProvider):
                 publish_year=publish_year,
                 release_date=release_date,
                 language=language,
+                is_compilation=bool(item.get("compilation")),
                 source_url=source_url,
                 display_fields=display_fields,
             )

@@ -137,6 +137,7 @@ export interface MonitoredBookRow {
   series_count?: number | null;
   language?: string | null;
   hidden?: number | boolean;
+  is_compilation?: number | boolean;
   rating?: number | null;
   ratings_count?: number | null;
   readers_count?: number | null;

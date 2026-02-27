@@ -18,6 +18,7 @@ export interface MetadataBookData {
   publish_year?: number;
   release_date?: string;
   language?: string;
+  is_compilation?: boolean;
   genres?: string[];
   source_url?: string;
   display_fields?: Array<{
@@ -50,6 +51,7 @@ export function transformMetadataToBook(data: MetadataBookData): Book {
     publisher: data.publisher,
     release_date: data.release_date,
     description: data.description,
+    is_compilation: Boolean(data.is_compilation),
     provider: data.provider,
     provider_display_name: data.provider_display_name,
     provider_id: data.provider_id,

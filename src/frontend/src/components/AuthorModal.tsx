@@ -438,6 +438,10 @@ export const AuthorModal = ({
     if (saved === 'compact' || saved === 'card') return 'compact';
     return 'table';
   });
+  const [showCompilationsInView, setShowCompilationsInView] = useState<boolean>(() => {
+    const saved = localStorage.getItem('authorBooksShowCompilations');
+    return saved !== 'false';
+  });
   const [booksCompactMinWidth, setBooksCompactMinWidth] = useState<number>(() => {
     const raw = localStorage.getItem('authorBooksCompactMinWidth');
     const parsed = raw ? Number(raw) : Number.NaN;
@@ -892,6 +896,14 @@ export const AuthorModal = ({
 
   useEffect(() => {
     try {
+      localStorage.setItem('authorBooksShowCompilations', showCompilationsInView ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+  }, [showCompilationsInView]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('authorBooksCompactMinWidth', String(booksCompactMinWidth));
     } catch {
       // ignore
@@ -970,6 +982,7 @@ export const AuthorModal = ({
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
       language: (row.language || '').trim() || undefined,
+      is_compilation: Boolean(Number(row.is_compilation || 0)),
       display_fields: [
         ...(typeof row.release_date === 'string' && row.release_date.trim()
           ? [{
@@ -1571,6 +1584,11 @@ export const AuthorModal = ({
       return !releaseDateRaw;
     };
 
+    const passesCompilationFilter = (book: Book): boolean => {
+      if (showCompilationsInView) return true;
+      return !Boolean(book.is_compilation);
+    };
+
     const passesAvailabilityFilter = (book: Book): boolean => {
       if (booksFilters.availability === 'all') return true;
       const availability = getMonitoredAvailabilityForBook(book);
@@ -1605,7 +1623,10 @@ export const AuthorModal = ({
         }
 
         const booksPassingFilters = g.books.filter((book) => (
-          passesAvailabilityFilter(book) && passesUpcomingFilter(book) && passesNoReleaseDateFilter(book)
+          passesAvailabilityFilter(book)
+          && passesUpcomingFilter(book)
+          && passesNoReleaseDateFilter(book)
+          && passesCompilationFilter(book)
         ));
         if (booksPassingFilters.length === 0) return null;
 
@@ -1620,7 +1641,7 @@ export const AuthorModal = ({
         return { ...g, books: matching };
       })
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, activeBooksQuery, booksFilters, getMonitoredAvailabilityForBook]);
+  }, [groupedBooks, activeBooksQuery, booksFilters, getMonitoredAvailabilityForBook, showCompilationsInView]);
 
   const activeFiltersCount = useMemo(() => {
     let count = booksFilters.availability !== 'all' ? 1 : 0;
@@ -2871,6 +2892,15 @@ export const AuthorModal = ({
                           >
                             <span>{allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}</span>
                             {allVisibleBooksSelected ? <span>✓</span> : null}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowCompilationsInView((prev) => !prev)}
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${showCompilationsInView ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            title="Show or hide compilation/boxed editions"
+                          >
+                            <span>Show compilations</span>
+                            {showCompilationsInView ? <span>✓</span> : null}
                           </button>
                           <div className="border-t border-[var(--border-muted)] my-1" />
                           <div className="px-3 py-2">

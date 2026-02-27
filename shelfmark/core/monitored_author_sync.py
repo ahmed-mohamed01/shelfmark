@@ -192,6 +192,7 @@ def sync_author_entity(
             provider_value = str(payload.get("provider") or provider_name)
             cover_url = payload.get("cover_url")
             language = normalize_language_code(payload.get("language"))
+            is_compilation = bool(payload.get("is_compilation"))
             if not language and provider_book_id:
                 language = language_by_provider_id.get(provider_book_id)
 
@@ -214,6 +215,7 @@ def sync_author_entity(
                     book_language=language,
                     preferred_languages=preferred_languages,
                 ),
+                is_compilation=is_compilation,
                 rating=rating,
                 ratings_count=ratings_count,
                 readers_count=readers_count,

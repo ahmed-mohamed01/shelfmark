@@ -590,6 +590,7 @@ def register_monitored_routes(
             seeded_series_position: float | None = None
             seeded_series_count: int | None = None
             seeded_language: str | None = None
+            seeded_is_compilation: bool | None = None
             seeded_rating: float | None = None
             seeded_ratings_count: int | None = None
             seeded_readers_count: int | None = None
@@ -615,6 +616,7 @@ def register_monitored_routes(
                         seeded_series_position = payload.get("series_position")
                         seeded_series_count = payload.get("series_count")
                         seeded_language = normalize_language_code(payload.get("language"))
+                        seeded_is_compilation = bool(payload.get("is_compilation"))
                         seeded_rating, seeded_ratings_count, seeded_readers_count = extract_book_popularity(payload.get("display_fields"))
             except Exception as exc:
                 logger.warning("Book monitor metadata seed failed provider=%s provider_id=%s: %s", provider, provider_id, exc)
@@ -639,6 +641,7 @@ def register_monitored_routes(
                         book_language=seeded_language,
                         preferred_languages=preferred_languages,
                     ),
+                    is_compilation=seeded_is_compilation,
                     rating=seeded_rating,
                     ratings_count=seeded_ratings_count,
                     readers_count=seeded_readers_count,

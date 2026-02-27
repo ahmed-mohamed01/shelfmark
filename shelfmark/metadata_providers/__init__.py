@@ -142,6 +142,7 @@ class BookMetadata:
     publish_year: Optional[int] = None
     release_date: Optional[str] = None  # Full release/publication date when provider exposes it
     language: Optional[str] = None
+    is_compilation: Optional[bool] = None
     genres: List[str] = field(default_factory=list)
     source_url: Optional[str] = None  # Link to book on provider's site
     subtitle: Optional[str] = None  # Book subtitle, if any

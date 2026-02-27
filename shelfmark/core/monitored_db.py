@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     series_count INTEGER,
     language TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
+    is_compilation INTEGER NOT NULL DEFAULT 0,
     rating REAL,
     ratings_count INTEGER,
     readers_count INTEGER,
@@ -156,6 +157,7 @@ class MonitoredDB:
                 self._migrate_monitored_books_popularity_columns(conn)
                 self._migrate_monitored_books_release_date_column(conn)
                 self._migrate_monitored_books_language_columns(conn)
+                self._migrate_monitored_books_compilation_column(conn)
                 self._migrate_monitored_book_files_table(conn)
                 self._migrate_monitored_book_download_history_table(conn)
                 self._migrate_monitored_books_monitor_columns(conn)
@@ -798,6 +800,7 @@ class MonitoredDB:
         series_count: int | None = None,
         language: str | None = None,
         hidden: bool = False,
+        is_compilation: bool | None = None,
         rating: float | None = None,
         ratings_count: int | None = None,
         readers_count: int | None = None,
@@ -832,6 +835,7 @@ class MonitoredDB:
                 language_value = candidate
 
         hidden_value = 1 if hidden else 0
+        compilation_value = 1 if bool(is_compilation) else 0
 
         rating_value: float | None = None
         if rating is not None:
@@ -882,12 +886,13 @@ class MonitoredDB:
                         series_count,
                         language,
                         hidden,
+                        is_compilation,
                         rating,
                         ratings_count,
                         readers_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
@@ -901,6 +906,7 @@ class MonitoredDB:
                         series_count=COALESCE(excluded.series_count, monitored_books.series_count),
                         language=COALESCE(NULLIF(excluded.language, ''), monitored_books.language),
                         hidden=excluded.hidden,
+                        is_compilation=excluded.is_compilation,
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
@@ -921,6 +927,7 @@ class MonitoredDB:
                         series_count,
                         language_value,
                         hidden_value,
+                        compilation_value,
                         rating_value,
                         ratings_count_value,
                         readers_count_value,
@@ -1414,6 +1421,15 @@ class MonitoredDB:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN language TEXT")
         if "hidden" not in column_names:
             conn.execute("ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+
+    def _migrate_monitored_books_compilation_column(self, conn: sqlite3.Connection) -> None:
+        """Ensure monitored_books has is_compilation column."""
+        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
+        if not rows:
+            return
+        column_names = {str(col["name"]) for col in rows}
+        if "is_compilation" not in column_names:
+            conn.execute("ALTER TABLE monitored_books ADD COLUMN is_compilation INTEGER NOT NULL DEFAULT 0")
 
     def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
         """Ensure monitored_book_files table exists for older DBs."""
