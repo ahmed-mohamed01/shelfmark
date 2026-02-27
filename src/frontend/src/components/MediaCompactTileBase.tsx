@@ -45,13 +45,8 @@ export const MediaCompactTileBase = ({
             </div>
           ) : null}
         </div>
-        <div className="pl-2 pr-0.5 pt-1.5 flex items-center gap-0.5">
-          <p className={`flex-1 min-w-0 text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
-          {overflowMenu ? (
-            <div className="flex-shrink-0 -mr-0.5" onClick={(e) => e.stopPropagation()}>
-              {overflowMenu}
-            </div>
-          ) : null}
+        <div className={`pl-2 pr-0.5 pt-1.5 ${overflowMenu ? 'pr-7' : ''}`}>
+          <p className={`min-w-0 text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
         </div>
         {subtitle ? (
           <p className={`px-2 text-[10px] leading-tight text-gray-600 dark:text-gray-300 truncate ${isDimmed ? 'opacity-50' : ''}`}>{subtitle}</p>
@@ -60,6 +55,12 @@ export const MediaCompactTileBase = ({
           <p className={`px-2 text-[10px] leading-tight text-gray-500 dark:text-gray-400 truncate ${isDimmed ? 'opacity-50' : ''}`}>{metaLine}</p>
         ) : null}
       </button>
+
+      {overflowMenu ? (
+        <div className="absolute right-1.5 top-[calc(100%-2.15rem)] z-30" onClick={(e) => e.stopPropagation()}>
+          {overflowMenu}
+        </div>
+      ) : null}
 
       {footer ? <div className={`px-2 ${isDimmed ? 'opacity-50' : ''}`}>{footer}</div> : null}
       <div className="h-2" />

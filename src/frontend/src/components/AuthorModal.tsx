@@ -966,7 +966,7 @@ export const AuthorModal = ({
       isbn_13: row.isbn_13 || undefined,
       provider: row.provider || undefined,
       provider_id: row.provider_book_id || undefined,
-      series_name: row.series_name || undefined,
+      series_name: (row.series_name || '').trim() || undefined,
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
       display_fields: [
@@ -993,12 +993,15 @@ export const AuthorModal = ({
       ],
     });
 
-    const enrichSeriesInfo = async (allBooks: Book[]): Promise<Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>> => {
+    const enrichSeriesInfo = async (
+      allBooks: Book[],
+      opts?: { maxEnrich?: number },
+    ): Promise<Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>> => {
       const candidates = allBooks
         .filter((book) => Boolean(book.provider && book.provider_id))
         .filter((book) => !(book.series_name && book.series_position != null));
 
-      const maxEnrich = 40;
+      const maxEnrich = Math.max(1, opts?.maxEnrich ?? 40);
       const batchSize = 5;
       const toEnrich = candidates.slice(0, maxEnrich);
 
@@ -1084,7 +1087,13 @@ export const AuthorModal = ({
 
       setIsLoadingBooks(false);
 
-      const seriesUpdates = await enrichSeriesInfo(allFreshBooks);
+      const missingSeriesCount = allFreshBooks.filter((book) => {
+        const seriesName = (book.series_name || '').trim();
+        return !seriesName || book.series_position == null;
+      }).length;
+      const seriesUpdates = await enrichSeriesInfo(allFreshBooks, {
+        maxEnrich: Math.max(40, Math.min(300, missingSeriesCount || 40)),
+      });
       if (isCancelled) return;
 
       const providerSeriesUpdates = allFreshBooks
@@ -1222,12 +1231,48 @@ export const AuthorModal = ({
                 const seriesName = (book.series_name || '').trim();
                 return seriesName.length > 0;
               });
+              const cachedHasMissingSeriesMetadata = cachedBooks.some((book) => {
+                const seriesName = (book.series_name || '').trim();
+                return !seriesName || book.series_position == null;
+              });
 
               // Scheduled backend refresh keeps monitored author data fresh.
               // On open, prefer cached DB rows when grouping metadata is already present.
               // If cache lacks series data, fetch provider to avoid showing everything as standalone.
-              if (!forceRefresh && cachedHasSeriesGrouping) {
+              if (!forceRefresh && cachedHasSeriesGrouping && !cachedHasMissingSeriesMetadata) {
                 skipProviderRefresh = true;
+              }
+
+              if (!forceRefresh && cachedHasSeriesGrouping && cachedHasMissingSeriesMetadata) {
+                setIsRefreshing(true);
+                const cachedSeriesUpdates = await enrichSeriesInfo(cachedBooks, { maxEnrich: 240 });
+                if (isCancelled) return;
+
+                let refreshedBooksForDecision = cachedBooks;
+                if (monitoredEntityId && cachedSeriesUpdates.length > 0) {
+                  try {
+                    await updateMonitoredBooksSeries(monitoredEntityId, cachedSeriesUpdates);
+                    const refreshed = await listMonitoredBooks(monitoredEntityId);
+                    if (isCancelled) return;
+                    setMonitoredBookRows(refreshed.books || []);
+                    refreshedBooksForDecision = (refreshed.books || []).map(monitoredBookToBook);
+                    setBooks(refreshedBooksForDecision);
+                  } catch (error) {
+                    console.warn('AuthorModal: failed to persist cached series enrichment', {
+                      monitoredEntityId,
+                      attemptedSeriesUpdates: cachedSeriesUpdates.length,
+                      error: error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                }
+
+                const stillMissingSeriesMetadata = refreshedBooksForDecision.some((book) => {
+                  const seriesName = (book.series_name || '').trim();
+                  return !seriesName || book.series_position == null;
+                });
+
+                setIsRefreshing(false);
+                skipProviderRefresh = !stillMissingSeriesMetadata;
               }
             }
           } catch {
@@ -1364,7 +1409,7 @@ export const AuthorModal = ({
     if (booksSort === 'series_asc' || booksSort === 'series_desc') {
       const groupMap = new Map<string, Book[]>();
       for (const b of books) {
-        const key = b.series_name || '__standalone__';
+        const key = (b.series_name || '').trim() || '__standalone__';
         const list = groupMap.get(key);
         if (list) list.push(b);
         else groupMap.set(key, [b]);
