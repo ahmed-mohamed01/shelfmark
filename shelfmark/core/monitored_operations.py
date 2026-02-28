@@ -1,0 +1,454 @@
+"""Orchestration layer for the monitored feature.
+
+Composes data ops (monitored_db_ops), file ops (monitored_files), and download
+ops (monitored_downloads) into complete, repeatable operations. Route handlers
+and the scheduler import only from this module.
+
+Import graph: monitored_operations → monitored_db_ops, monitored_files,
+              monitored_downloads, monitored_utils, monitored_types
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_db import MonitoredDB
+from shelfmark.core.monitored_db_ops import (
+    apply_language_filters,
+    fetch_author_metadata,
+    fetch_book_releases,
+    prune_deleted_books,
+)
+from shelfmark.core.monitored_types import (
+    AvailabilityData,
+    MonitoredEntityNotFound,
+    MonitoredPathError,
+    RefreshResult,
+    ScanResult,
+    SearchSummary,
+)
+
+logger = setup_logger(__name__)
+
+
+# =============================================================================
+# Author refresh
+# =============================================================================
+
+
+def refresh_author(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    preferred_languages: set[str] | None = None,
+    prefetch_covers: bool = False,
+) -> RefreshResult:
+    """Refresh author metadata from provider and update DB state.
+
+    1. Fetches all books from provider and upserts to DB.
+    2. Prunes books no longer at the provider.
+    3. Applies language-based hidden flags.
+    4. Re-applies monitor modes based on current file state.
+    5. Clears last_error on the entity.
+
+    Raises:
+        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
+        MonitoredProviderError: If the provider is unavailable.
+    """
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None or entity.get("kind") != "author":
+        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
+
+    books = fetch_author_metadata(
+        db,
+        entity=entity,
+        user_id=user_id,
+        preferred_languages=preferred_languages,
+        prefetch_covers=prefetch_covers,
+    )
+
+    # Prune books that disappeared from the provider
+    current_provider_ids = {
+        f"{b.get('provider')}:{b.get('provider_book_id')}"
+        for b in books
+        if b.get("provider") and b.get("provider_book_id")
+    }
+    books_pruned = prune_deleted_books(
+        db,
+        entity_id=entity_id,
+        user_id=user_id,
+        current_provider_ids=current_provider_ids,
+    )
+
+    apply_language_filters(db, entity_id=entity_id, user_id=user_id, preferred_languages=preferred_languages)
+
+    # Re-load books after pruning to pass accurate list to monitor modes
+    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    existing_files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+
+    if books and existing_files:
+        from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+        existing_files = expand_monitored_file_rows_for_equivalent_books(
+            books=books, file_rows=existing_files
+        )
+
+    from shelfmark.core.monitored_files import apply_monitor_modes_for_books
+    apply_monitor_modes_for_books(
+        db, db_user_id=user_id, entity=entity, books=books, file_rows=existing_files
+    )
+
+    db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
+    return RefreshResult(books_upserted=len(books), books_pruned=books_pruned)
+
+
+# =============================================================================
+# Book availability
+# =============================================================================
+
+
+def compute_book_availability(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+) -> AvailabilityData:
+    """Load books and files, expand alias-equivalent books, summarize availability.
+
+    Returns an AvailabilityData with enriched books, expanded files, and a
+    keyed availability dict for fast per-book lookups.
+    """
+    from shelfmark.core.monitored_files import (
+        expand_monitored_file_rows_for_equivalent_books,
+        summarize_monitored_book_availability,
+    )
+
+    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+
+    if books and files:
+        files = expand_monitored_file_rows_for_equivalent_books(books=books, file_rows=files)
+
+    availability_by_book = summarize_monitored_book_availability(file_rows=files, user_id=user_id)
+
+    return AvailabilityData(
+        books=books,
+        files=files,
+        availability_by_book=availability_by_book,
+    )
+
+
+# =============================================================================
+# File scanning
+# =============================================================================
+
+
+def update_file_availability(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    allowed_roots: list[Path],
+) -> ScanResult:
+    """Validate configured paths, scan files, apply monitor modes, update timestamps.
+
+    Raises:
+        MonitoredEntityNotFound: If the entity does not exist.
+        MonitoredPathError: If neither ebook nor audiobook dir is configured.
+    """
+    from shelfmark.core.monitored_files import (
+        apply_monitor_modes_for_books,
+        clear_entity_matched_files,
+        path_within_allowed_roots,
+        scan_monitored_author_files,
+    )
+
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None:
+        raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
+
+    settings = entity.get("settings") or {}
+    author_name = str(entity.get("name") or "").strip()
+
+    ebook_dir_raw = settings.get("ebook_author_dir")
+    ebook_dir = str(ebook_dir_raw).strip().rstrip("/") if isinstance(ebook_dir_raw, str) else ""
+    audiobook_dir_raw = settings.get("audiobook_author_dir")
+    audiobook_dir = str(audiobook_dir_raw).strip().rstrip("/") if isinstance(audiobook_dir_raw, str) else ""
+
+    if (not ebook_dir or not ebook_dir.startswith("/")) and (
+        not audiobook_dir or not audiobook_dir.startswith("/")
+    ):
+        raise MonitoredPathError("ebook_author_dir or audiobook_author_dir must be set")
+
+    ebook_path: Path | None = None
+    audiobook_path: Path | None = None
+    warnings: dict[str, str] = {}
+
+    if ebook_dir:
+        try:
+            p = Path(ebook_dir).resolve()
+        except Exception:
+            raise MonitoredPathError("Invalid ebook_author_dir")
+        if not path_within_allowed_roots(path=p, roots=allowed_roots):
+            raise MonitoredPathError("ebook_author_dir is not within allowed roots")
+        if not p.exists() or not p.is_dir():
+            warnings["ebook_author_dir"] = "Directory not found"
+        else:
+            ebook_path = p
+
+    if audiobook_dir:
+        try:
+            p = Path(audiobook_dir).resolve()
+        except Exception:
+            raise MonitoredPathError("Invalid audiobook_author_dir")
+        if not path_within_allowed_roots(path=p, roots=allowed_roots):
+            raise MonitoredPathError("audiobook_author_dir is not within allowed roots")
+        if not p.exists() or not p.is_dir():
+            warnings["audiobook_author_dir"] = "Directory not found"
+        else:
+            audiobook_path = p
+
+    if ebook_path is None and audiobook_path is None:
+        try:
+            clear_entity_matched_files(monitored_db=db, user_id=user_id, entity_id=entity_id)
+        except Exception as exc:
+            logger.warning("Failed clearing matched files entity_id=%s: %s", entity_id, exc)
+        raise MonitoredPathError("directories_not_found")
+
+    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+
+    scan_data = scan_monitored_author_files(
+        monitored_db=db,
+        user_id=user_id,
+        entity_id=entity_id,
+        books=books,
+        author_name=author_name,
+        ebook_path=ebook_path,
+        audiobook_path=audiobook_path,
+    )
+    existing_files = scan_data.get("existing_files") or []
+
+    apply_monitor_modes_for_books(
+        db, db_user_id=user_id, entity=entity, books=books, file_rows=existing_files
+    )
+
+    # Update scan timestamps
+    scan_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    merged_settings = dict(settings)
+    if ebook_path is not None:
+        merged_settings["last_ebook_scan_at"] = scan_at
+    if audiobook_path is not None:
+        merged_settings["last_audiobook_scan_at"] = scan_at
+    merged_settings.pop("last_ebook_scan_error", None)
+    merged_settings.pop("last_audiobook_scan_error", None)
+    db.create_monitored_entity(
+        user_id=user_id,
+        kind=str(entity.get("kind") or "author"),
+        provider=entity.get("provider"),
+        provider_id=entity.get("provider_id"),
+        name=str(entity.get("name") or "").strip() or "Unknown",
+        enabled=bool(int(entity.get("enabled") or 0)),
+        settings=merged_settings,
+    )
+
+    return ScanResult(
+        entity_id=entity_id,
+        matched=scan_data.get("matched") or [],
+        unmatched=scan_data.get("unmatched") or [],
+        missing_books=scan_data.get("missing_books") or [],
+        scanned_ebook_files=int(scan_data.get("scanned_ebook_files") or 0),
+        scanned_audio_folders=int(scan_data.get("scanned_audio_folders") or 0),
+        ebook_dir=str(ebook_path) if ebook_path else None,
+        audiobook_dir=str(audiobook_path) if audiobook_path else None,
+        warnings=warnings,
+    )
+
+
+def record_scan_error(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    error: Exception,
+    ebook_dir: str,
+    audiobook_dir: str,
+) -> None:
+    """Persist scan error to entity settings. Called from route on scan failure."""
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None:
+        return
+    settings = dict(entity.get("settings") or {})
+    if ebook_dir:
+        settings["last_ebook_scan_error"] = str(error)
+    if audiobook_dir:
+        settings["last_audiobook_scan_error"] = str(error)
+    try:
+        db.create_monitored_entity(
+            user_id=user_id,
+            kind=str(entity.get("kind") or "author"),
+            provider=entity.get("provider"),
+            provider_id=entity.get("provider_id"),
+            name=str(entity.get("name") or "").strip() or "Unknown",
+            enabled=bool(int(entity.get("enabled") or 0)),
+            settings=settings,
+        )
+    except Exception:
+        pass
+
+
+# =============================================================================
+# Missing book search
+# =============================================================================
+
+
+def search_missing_books(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    content_type: str = "ebook",
+    min_match_score: float | None = None,
+    activity_service: Any = None,
+) -> SearchSummary:
+    """Find monitored books with no existing file and queue downloads for them.
+
+    1. Loads current availability for the entity.
+    2. Filters to books that are monitored for content_type and have no file.
+    3. For each candidate: fetches releases, calls process_monitored_book().
+    4. Returns a SearchSummary with counts.
+
+    Raises:
+        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
+    """
+    from shelfmark.core.activity_service import build_download_item_key
+    from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
+    from shelfmark.metadata_providers import get_provider, get_provider_kwargs
+
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None or entity.get("kind") != "author":
+        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
+
+    availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
+    monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
+    has_file_key = "has_ebook_available" if content_type == "ebook" else "has_audiobook_available"
+
+    candidates = [
+        row for row in availability.books
+        if bool(int(row.get(monitor_col) or 0))
+        and str(row.get("provider") or "").strip()
+        and str(row.get("provider_book_id") or "").strip()
+        and not bool(availability.availability_by_book.get(
+            (str(row.get("provider") or "").strip(), str(row.get("provider_book_id") or "").strip()), {}
+        ).get(has_file_key))
+    ]
+
+    summary = SearchSummary(
+        entity_id=entity_id,
+        content_type=content_type,
+        total_candidates=len(candidates),
+    )
+
+    if not candidates:
+        return summary
+
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _emit_error(*, provider: str, provider_book_id: str, title: str | None, reason: str, detail: str | None = None) -> None:
+        if activity_service is None or user_id is None:
+            return
+        try:
+            task_id = f"monitored-search:{entity_id}:{provider}:{provider_book_id}:{content_type}"
+            activity_service.record_terminal_snapshot(
+                user_id=int(user_id),
+                item_type="download",
+                item_key=build_download_item_key(task_id),
+                origin="direct",
+                final_status="error",
+                source_id=provider_book_id,
+                snapshot={
+                    "kind": "monitored_search",
+                    "entity_id": entity_id,
+                    "content_type": content_type,
+                    "provider": provider,
+                    "provider_book_id": provider_book_id,
+                    "title": title,
+                    "reason": reason,
+                    "detail": detail,
+                },
+            )
+        except Exception:
+            pass
+
+    for row in candidates:
+        provider = str(row.get("provider") or "").strip()
+        provider_book_id = str(row.get("provider_book_id") or "").strip()
+        book_title = str(row.get("title") or "").strip() or None
+
+        try:
+            provider_instance = get_provider(provider, **get_provider_kwargs(provider))
+            book = provider_instance.get_book(provider_book_id)
+            if not book:
+                summary.no_match += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="no_match", error_message="book_not_found",
+                )
+                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="no_match", detail="book_not_found")
+                continue
+
+            release_dicts = fetch_book_releases(book, content_type=content_type)
+
+            # Attach release_date from DB row so process_monitored_book can check unreleased
+            for rd in release_dicts:
+                rd["release_date"] = row.get("release_date")
+
+            if not release_dicts:
+                summary.no_match += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="no_match",
+                )
+                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="no_match")
+                continue
+
+            success, message = process_monitored_book(
+                release_dicts,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                min_match_score=min_match_score,
+            )
+
+            if success:
+                summary.queued += 1
+            elif message == "Already in queue":
+                pass
+            elif "unreleased" in message.lower():
+                summary.unreleased += 1
+                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="not_released", detail=message)
+            elif "match score" in message.lower() or "no valid" in message.lower():
+                summary.below_cutoff += 1
+                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="below_cutoff", detail=message)
+            else:
+                summary.failed += 1
+                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="error", detail=message)
+
+        except Exception as exc:
+            summary.failed += 1
+            write_monitored_book_attempt(
+                db, user_id=user_id, entity_id=entity_id,
+                provider=provider, provider_book_id=provider_book_id,
+                content_type=content_type, attempted_at=now_iso,
+                status="error", error_message=str(exc),
+            )
+            _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="error", detail=str(exc))
+
+    return summary

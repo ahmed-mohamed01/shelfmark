@@ -8,13 +8,14 @@ the core orchestrator module. This module handles:
 """
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, QueueStatus
 from shelfmark.core.monitored_release_scoring import is_book_released, parse_release_date, pre_process_releases
+from shelfmark.core.monitored_utils import normalize_content_type as _normalize_content_type, parse_float_safe as _parse_float_safe
 from shelfmark.core.queue import book_queue
 from shelfmark.release_sources import get_source_display_name
 
@@ -57,25 +58,6 @@ def set_monitored_db(monitored_db: Any) -> None:
     """Inject MonitoredDB dependency for monitored download history recording."""
     global _user_db
     _user_db = monitored_db
-
-
-# =============================================================================
-# Small parsing utilities
-# =============================================================================
-
-
-def _parse_float_safe(value: Any) -> Optional[float]:
-    """Return float(value) or None on failure."""
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalize_content_type(value: Any) -> str:
-    """Return 'ebook' or 'audiobook'; defaults to 'ebook' for unknown values."""
-    ct = str(value or "ebook").strip().lower()
-    return ct if ct in {"ebook", "audiobook"} else "ebook"
 
 
 # =============================================================================
@@ -430,38 +412,6 @@ def _try_next_release(task: DownloadTask) -> None:
         logger.warning("Failed to queue fallback for %s: %s", key, msg)
 
 
-# =============================================================================
-# Batch Processing
-# =============================================================================
-
-# Default batch size for processing multiple books
-DEFAULT_BATCH_SIZE = 10
-
-
-@dataclass
-class BookDownloadRequest:
-    """Request to download a monitored book."""
-    releases: List[Dict[str, Any]]
-    entity_id: int
-    provider: str
-    provider_book_id: str
-    content_type: str = "ebook"
-    destination_override: Optional[str] = None
-    file_organization_override: Optional[str] = None
-    template_override: Optional[str] = None
-
-
-@dataclass
-class BatchResult:
-    """Result of batch processing."""
-    queued: int = 0
-    skipped_in_queue: int = 0
-    skipped_unreleased: int = 0
-    skipped_no_match: int = 0
-    failed: int = 0
-    errors: List[str] = field(default_factory=list)
-
-
 def is_book_pending(
     entity_id: int,
     provider: str,
@@ -472,78 +422,6 @@ def is_book_pending(
     key = _pending_key(entity_id, provider, provider_book_id, content_type)
     with _pending_lock:
         return key in _pending_releases
-
-
-def process_batch(
-    requests: List[BookDownloadRequest],
-    *,
-    user_id: int,
-    min_match_score: Optional[float] = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> BatchResult:
-    """Process multiple book download requests in batches.
-    
-    Processes books in chunks of batch_size, with each batch queuing up to
-    batch_size books before moving to the next batch. Books already in queue
-    are skipped.
-    
-    Args:
-        requests: List of book download requests
-        user_id: Current user ID
-        min_match_score: Minimum match score cutoff (0.0-1.0)
-        batch_size: Max books to queue per batch (default 10)
-    
-    Returns:
-        BatchResult with counts of queued, skipped, failed.
-    """
-    result = BatchResult()
-    
-    for i, req in enumerate(requests):
-        # Process in batches - check how many are currently pending
-        with _pending_lock:
-            current_pending = len(_pending_releases)
-        
-        if current_pending >= batch_size:
-            # Wait indicator - caller should check queue status
-            logger.info(
-                "Batch limit reached (%d pending), processed %d/%d books",
-                current_pending, i, len(requests)
-            )
-            # Continue processing but don't queue more until space frees up
-            # In practice, the skip-if-pending guard handles this
-        
-        success, message = process_monitored_book(
-            req.releases,
-            user_id=user_id,
-            entity_id=req.entity_id,
-            provider=req.provider,
-            provider_book_id=req.provider_book_id,
-            content_type=req.content_type,
-            min_match_score=min_match_score,
-            destination_override=req.destination_override,
-            file_organization_override=req.file_organization_override,
-            template_override=req.template_override,
-        )
-        
-        if success:
-            result.queued += 1
-        elif message == "Already in queue":
-            result.skipped_in_queue += 1
-        elif "unreleased" in message.lower():
-            result.skipped_unreleased += 1
-        elif "match score" in message.lower() or "no valid" in message.lower():
-            result.skipped_no_match += 1
-        else:
-            result.failed += 1
-            result.errors.append(f"{req.provider_book_id}: {message}")
-    
-    logger.info(
-        "Batch complete: %d queued, %d in-queue, %d unreleased, %d no-match, %d failed",
-        result.queued, result.skipped_in_queue, result.skipped_unreleased,
-        result.skipped_no_match, result.failed
-    )
-    
-    return result
 
 
 def get_pending_count() -> int:

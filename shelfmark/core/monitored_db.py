@@ -148,20 +148,11 @@ class MonitoredDB:
         return conn
 
     def initialize(self) -> None:
-        """Create monitored tables and run migrations if needed."""
+        """Create monitored tables if they don't exist."""
         with self._lock:
             conn = self._connect()
             try:
                 conn.executescript(_CREATE_MONITORED_TABLES_SQL)
-                self._migrate_monitored_books_series_columns(conn)
-                self._migrate_monitored_books_popularity_columns(conn)
-                self._migrate_monitored_books_release_date_column(conn)
-                self._migrate_monitored_books_language_columns(conn)
-                self._migrate_monitored_books_compilation_column(conn)
-                self._migrate_monitored_book_files_table(conn)
-                self._migrate_monitored_book_download_history_table(conn)
-                self._migrate_monitored_books_monitor_columns(conn)
-                self._migrate_monitored_book_attempt_history_table(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -1011,6 +1002,51 @@ class MonitoredDB:
                 conn.close()
         return updated
 
+    def delete_monitored_book(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+    ) -> bool:
+        """Delete a monitored book and cascade-delete its file matches and history records."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    DELETE FROM monitored_book_files
+                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    """,
+                    (entity_id, user_id, provider, provider_book_id),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM monitored_book_download_history
+                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    """,
+                    (entity_id, user_id, provider, provider_book_id),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM monitored_book_attempt_history
+                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    """,
+                    (entity_id, user_id, provider, provider_book_id),
+                )
+                cursor = conn.execute(
+                    """
+                    DELETE FROM monitored_books
+                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    """,
+                    (entity_id, user_id, provider, provider_book_id),
+                )
+                conn.commit()
+                return bool(cursor.rowcount)
+            finally:
+                conn.close()
+
     # =========================================================================
     # File tracking
     # =========================================================================
@@ -1372,301 +1408,3 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    # =========================================================================
-    # Migrations
-    # =========================================================================
-
-    def _migrate_monitored_books_series_columns(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has series_name, series_position, series_count columns."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return  # table doesn't exist yet (will be created by _CREATE_MONITORED_TABLES_SQL)
-        column_names = {str(col["name"]) for col in rows}
-        if "series_name" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_name TEXT")
-        if "series_position" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_position REAL")
-        if "series_count" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN series_count INTEGER")
-
-    def _migrate_monitored_books_popularity_columns(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has rating, ratings_count, readers_count columns."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return
-        column_names = {str(col["name"]) for col in rows}
-        if "rating" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN rating REAL")
-        if "ratings_count" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN ratings_count INTEGER")
-        if "readers_count" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN readers_count INTEGER")
-
-    def _migrate_monitored_books_release_date_column(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has release_date column."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return
-        column_names = {str(col["name"]) for col in rows}
-        if "release_date" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date TEXT")
-
-    def _migrate_monitored_books_language_columns(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has language and hidden columns."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return
-        column_names = {str(col["name"]) for col in rows}
-        if "language" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN language TEXT")
-        if "hidden" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
-
-    def _migrate_monitored_books_compilation_column(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has is_compilation column."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return
-        column_names = {str(col["name"]) for col in rows}
-        if "is_compilation" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN is_compilation INTEGER NOT NULL DEFAULT 0")
-
-    def _migrate_monitored_book_files_table(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_book_files table exists for older DBs."""
-
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_files'"
-        ).fetchone()
-        if exists:
-            return
-
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS monitored_book_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
-                provider TEXT,
-                provider_book_id TEXT,
-                path TEXT NOT NULL,
-                ext TEXT,
-                file_type TEXT,
-                size_bytes INTEGER,
-                mtime TIMESTAMP,
-                confidence REAL,
-                match_reason TEXT,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(entity_id, path),
-                UNIQUE(entity_id, provider, provider_book_id, file_type)
-            );
-            CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
-            ON monitored_book_files (entity_id, updated_at DESC);
-            """
-        )
-
-    def _migrate_monitored_book_download_history_table(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_book_download_history exists for older DBs."""
-
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_download_history'"
-        ).fetchone()
-        if not exists:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS monitored_book_download_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
-                    provider TEXT NOT NULL,
-                    provider_book_id TEXT NOT NULL,
-                    downloaded_at TIMESTAMP NOT NULL,
-                    source TEXT,
-                    source_display_name TEXT,
-                    title_after_rename TEXT,
-                    match_score REAL,
-                    downloaded_filename TEXT,
-                    final_path TEXT,
-                    overwritten_path TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS idx_monitored_book_download_history_lookup
-                ON monitored_book_download_history (entity_id, provider, provider_book_id, downloaded_at DESC, id DESC);
-                """
-            )
-            return
-
-        columns = conn.execute("PRAGMA table_info(monitored_book_download_history)").fetchall()
-        column_names = {str(col["name"]) for col in columns}
-        if "downloaded_filename" not in column_names:
-            conn.execute("ALTER TABLE monitored_book_download_history ADD COLUMN downloaded_filename TEXT")
-
-        # Canonicalize legacy rows so downloaded_filename is the only pre-rename source of truth.
-        if "title_before_rename" in column_names:
-            conn.execute(
-                """
-                UPDATE monitored_book_download_history
-                SET downloaded_filename = title_before_rename
-                WHERE (downloaded_filename IS NULL OR TRIM(downloaded_filename) = '')
-                  AND title_before_rename IS NOT NULL
-                  AND TRIM(title_before_rename) != ''
-                """
-            )
-
-    def _migrate_monitored_books_monitor_columns(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_books has per-format monitor/search columns."""
-        rows = conn.execute("PRAGMA table_info(monitored_books)").fetchall()
-        if not rows:
-            return
-        column_names = {str(col["name"]) for col in rows}
-
-        if "monitor_ebook" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_ebook INTEGER NOT NULL DEFAULT 1")
-        if "monitor_audiobook" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_audiobook INTEGER NOT NULL DEFAULT 1")
-        if "ebook_last_search_status" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN ebook_last_search_status TEXT")
-        if "audiobook_last_search_status" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN audiobook_last_search_status TEXT")
-        if "ebook_last_search_at" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN ebook_last_search_at TIMESTAMP")
-        if "audiobook_last_search_at" not in column_names:
-            conn.execute("ALTER TABLE monitored_books ADD COLUMN audiobook_last_search_at TIMESTAMP")
-
-    def _migrate_monitored_book_attempt_history_table(self, conn: sqlite3.Connection) -> None:
-        """Ensure monitored_book_attempt_history exists for older DBs."""
-
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitored_book_attempt_history'"
-        ).fetchone()
-        if not exists:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
-                    provider TEXT NOT NULL,
-                    provider_book_id TEXT NOT NULL,
-                    content_type TEXT NOT NULL,
-                    attempted_at TIMESTAMP NOT NULL,
-                    status TEXT NOT NULL,
-                    source TEXT,
-                    source_id TEXT,
-                    release_title TEXT,
-                    match_score REAL,
-                    error_message TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
-                ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_failed_candidate
-                ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, status, source, source_id);
-                """
-            )
-            return
-
-        columns = conn.execute("PRAGMA table_info(monitored_book_attempt_history)").fetchall()
-        column_names = {str(col["name"]) for col in columns}
-
-        # Legacy schema (outcome/message/candidate_key) must be rebuilt to the
-        # new schema used by monitored auto-search (status/error_message/etc.).
-        if "status" not in column_names:
-            legacy_table = "monitored_book_attempt_history_legacy_tmp"
-            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-            conn.execute(
-                f"ALTER TABLE monitored_book_attempt_history RENAME TO {legacy_table}"
-            )
-
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
-                    provider TEXT NOT NULL,
-                    provider_book_id TEXT NOT NULL,
-                    content_type TEXT NOT NULL,
-                    attempted_at TIMESTAMP NOT NULL,
-                    status TEXT NOT NULL,
-                    source TEXT,
-                    source_id TEXT,
-                    release_title TEXT,
-                    match_score REAL,
-                    error_message TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            )
-
-            legacy_columns = conn.execute(f"PRAGMA table_info({legacy_table})").fetchall()
-            legacy_names = {str(col["name"]) for col in legacy_columns}
-
-            def _legacy_expr(name: str, fallback: str = "NULL") -> str:
-                return name if name in legacy_names else fallback
-
-            status_expr = _legacy_expr("outcome", "'error'")
-            error_expr = _legacy_expr("message")
-
-            conn.execute(
-                f"""
-                INSERT INTO monitored_book_attempt_history (
-                    entity_id,
-                    provider,
-                    provider_book_id,
-                    content_type,
-                    attempted_at,
-                    status,
-                    source,
-                    source_id,
-                    release_title,
-                    match_score,
-                    error_message,
-                    created_at
-                )
-                SELECT
-                    {_legacy_expr('entity_id', 'NULL')},
-                    {_legacy_expr('provider', "''")},
-                    {_legacy_expr('provider_book_id', "''")},
-                    {_legacy_expr('content_type', "'ebook'")},
-                    {_legacy_expr('attempted_at', 'CURRENT_TIMESTAMP')},
-                    {status_expr},
-                    {_legacy_expr('source')},
-                    {_legacy_expr('source_id')},
-                    NULL,
-                    {_legacy_expr('match_score')},
-                    {error_expr},
-                    {_legacy_expr('created_at', 'CURRENT_TIMESTAMP')}
-                FROM {legacy_table}
-                """
-            )
-            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-            column_names = {
-                str(col["name"])
-                for col in conn.execute("PRAGMA table_info(monitored_book_attempt_history)").fetchall()
-            }
-
-        if "release_title" not in column_names:
-            conn.execute("ALTER TABLE monitored_book_attempt_history ADD COLUMN release_title TEXT")
-        if "error_message" not in column_names:
-            conn.execute("ALTER TABLE monitored_book_attempt_history ADD COLUMN error_message TEXT")
-
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
-            ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_failed_candidate
-            ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, status, source, source_id)
-            """
-        )
-
-    @staticmethod
-    def _serialize_json(value: Any, field: str) -> Optional[str]:
-        if value is None:
-            return None
-        try:
-            return json.dumps(value)
-        except TypeError as exc:
-            raise ValueError(f"{field} must be JSON-serializable") from exc
