@@ -88,7 +88,14 @@ class BookQueue:
     ) -> None:
         """Register a callback invoked when a task first enters a terminal status."""
         with self._lock:
-            self._terminal_status_hook = hook
+            existing = self._terminal_status_hook
+            if hook is None or existing is None:
+                self._terminal_status_hook = hook
+            else:
+                def _chained(book_id: str, status: QueueStatus, task: DownloadTask) -> None:
+                    existing(book_id, status, task)
+                    hook(book_id, status, task)
+                self._terminal_status_hook = _chained
 
     def update_status(self, book_id: str, status: QueueStatus) -> None:
         """Update status of a book in the queue."""

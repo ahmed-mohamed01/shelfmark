@@ -135,7 +135,7 @@ def _record_download_history(task: DownloadTask) -> None:
     match_score = _parse_float_safe(history_context.get("match_score"))
 
     downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
-    final_path = str(task.download_path or "").strip()
+    final_path = str(history_context.get("final_path") or task.download_path or "").strip()
 
     _user_db.insert_monitored_book_download_history(
         user_id=int(user_id),
