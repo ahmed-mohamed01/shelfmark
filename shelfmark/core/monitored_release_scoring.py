@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 import re
+import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from shelfmark.core.config import config as app_config
@@ -577,7 +579,18 @@ def _score_indexer_priority_tiebreak(release: Release, priority: Dict[str, int])
     return 0
 
 
+_scoring_config_cache: tuple[ReleaseScoringConfig, float] | None = None
+_scoring_config_lock = threading.Lock()
+_SCORING_CONFIG_TTL = 60.0  # seconds
+
+
 def _get_release_scoring_config() -> ReleaseScoringConfig:
+    global _scoring_config_cache
+    now = time.monotonic()
+    with _scoring_config_lock:
+        if _scoring_config_cache is not None and now - _scoring_config_cache[1] < _SCORING_CONFIG_TTL:
+            return _scoring_config_cache[0]
+
     raw_forbidden = app_config.get("RELEASE_MATCH_FORBIDDEN_TERMS", list(_FORBIDDEN_WORDS))
     forbidden_words: set[str] = set()
 
@@ -611,7 +624,7 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
             app_config.get("AUDIOBOOK_INDEXER_PRIORITY", [])
         )
 
-    return ReleaseScoringConfig(
+    config = ReleaseScoringConfig(
         forbidden_words=forbidden_words,
         min_title_score=max(0, min(60, min_title_score)),
         min_author_score=max(0, min(30, min_author_score)),
@@ -621,6 +634,9 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
         ebook_format_priority=ebook_format_priority,
         audiobook_format_priority=audiobook_format_priority,
     )
+    with _scoring_config_lock:
+        _scoring_config_cache = (config, time.monotonic())
+    return config
 
 
 def score_release_match(

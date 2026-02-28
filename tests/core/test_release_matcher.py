@@ -1,13 +1,13 @@
 import pytest
 
-from shelfmark.core.release_matcher import score_release_match
+from shelfmark.core.monitored_release_scoring import score_release_match
 from shelfmark.metadata_providers import BookMetadata
 from shelfmark.release_sources import Release
 
 
 @pytest.fixture(autouse=True)
 def _use_default_scoring_settings(monkeypatch):
-    import shelfmark.core.release_matcher as release_matcher
+    import shelfmark.core.monitored_release_scoring as release_matcher
 
     monkeypatch.setattr(
         release_matcher.app_config,
