@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Book, ContentType } from '../types';
 import { getMetadataBookInfo } from '../services/api';
 import {
@@ -28,6 +28,8 @@ const isEnabledFlag = (value: unknown): boolean => value === true || value === 1
 export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor, onNavigateToSeries }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ left: 0, width: 0 });
 
   const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
   const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
@@ -55,6 +57,16 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [handleClose]);
+
+  useEffect(() => {
+    const activeButton = tabRefs.current[tab];
+    if (!activeButton) return;
+    const containerRect = activeButton.parentElement?.getBoundingClientRect();
+    const buttonRect = activeButton.getBoundingClientRect();
+    if (containerRect) {
+      setTabIndicatorStyle({ left: buttonRect.left - containerRect.left, width: buttonRect.width });
+    }
+  }, [tab]);
 
   useEffect(() => {
     if (book) {
@@ -670,38 +682,23 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
               <div className="relative flex gap-1">
                 <div
                   className="absolute bottom-0 h-0.5 bg-emerald-600 transition-all duration-300 ease-out"
-                  style={{
-                    left: tab === 'files' ? 0 : tab === 'ebooks' ? 84 : 188,
-                    width: tab === 'files' ? 64 : tab === 'ebooks' ? 88 : 120,
-                  }}
+                  style={{ left: tabIndicatorStyle.left, width: tabIndicatorStyle.width }}
                 />
-                <button
-                  type="button"
-                  onClick={() => setTab('files')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
-                    tab === 'files' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-                  }`}
-                >
-                  Files
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTab('ebooks')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
-                    tab === 'ebooks' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-                  }`}
-                >
-                  Search eBooks
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTab('audiobooks')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
-                    tab === 'audiobooks' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-                  }`}
-                >
-                  Search Audiobooks
-                </button>
+                {([['files', 'Files'], ['ebooks', 'Search eBooks'], ['audiobooks', 'Search Audiobooks']] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    ref={(el) => { tabRefs.current[key] = el; }}
+                    type="button"
+                    onClick={() => setTab(key)}
+                    className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
+                      tab === key
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
 
