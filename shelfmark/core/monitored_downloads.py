@@ -27,6 +27,10 @@ _user_db: Any = None
 _pending_releases: Dict[str, "PendingDownload"] = {}
 _pending_lock = threading.Lock()
 
+# Deferred history inserts: task_id → insert kwargs (waiting for final_path)
+_deferred_history: Dict[str, Dict[str, Any]] = {}
+_deferred_lock = threading.Lock()
+
 
 @dataclass
 class PendingDownload:
@@ -81,7 +85,34 @@ def _normalize_content_type(value: Any) -> str:
 
 def register_hooks() -> None:
     """Register monitored download hooks. Call during app startup."""
+    # Patch set_terminal_status_hook to chain: main.py registers its own hook
+    # after us, and the upstream implementation simply replaces. We intercept
+    # subsequent calls so both hooks are invoked.
+    def _chaining_set_hook(hook):
+        with book_queue._lock:
+            existing = book_queue._terminal_status_hook
+            if hook is None or existing is None:
+                book_queue._terminal_status_hook = hook
+            else:
+                def _chained(book_id, status, task):
+                    existing(book_id, status, task)
+                    hook(book_id, status, task)
+                book_queue._terminal_status_hook = _chained
+
+    book_queue.set_terminal_status_hook = _chaining_set_hook
     book_queue.set_terminal_status_hook(_on_download_terminal)
+
+    # Patch update_download_path to flush deferred history inserts.
+    # The terminal hook fires before the final path is available; the path is
+    # set via update_download_path moments later in the orchestrator.
+    _orig_update_path = book_queue.update_download_path
+
+    def _patched_update_path(task_id: str, download_path: str) -> None:
+        _orig_update_path(task_id, download_path)
+        _flush_deferred_history(task_id, download_path)
+
+    book_queue.update_download_path = _patched_update_path
+
     logger.info("Monitored download hooks registered")
 
 
@@ -102,7 +133,12 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
 
 
 def _record_download_history(task: DownloadTask) -> None:
-    """Record successful download to monitored_book_download_history."""
+    """Record successful download to monitored_book_download_history.
+
+    If task.download_path is not yet set (hook fired before orchestrator sets
+    it), stages the insert in _deferred_history keyed by task_id. The patched
+    update_download_path will flush it with the real path shortly after.
+    """
     if _user_db is None:
         return
 
@@ -118,7 +154,6 @@ def _record_download_history(task: DownloadTask) -> None:
     if entity_id is None or not provider or not provider_book_id or user_id is None:
         return
 
-    # Check for existing file to track overwrites
     previous = _user_db.get_monitored_book_file_match(
         user_id=int(user_id),
         entity_id=int(entity_id),
@@ -133,11 +168,9 @@ def _record_download_history(task: DownloadTask) -> None:
             overwrite_path = previous_path.strip()
 
     match_score = _parse_float_safe(history_context.get("match_score"))
-
     downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
-    final_path = str(history_context.get("final_path") or task.download_path or "").strip()
 
-    _user_db.insert_monitored_book_download_history(
+    kwargs: Dict[str, Any] = dict(
         user_id=int(user_id),
         entity_id=int(entity_id),
         provider=provider,
@@ -148,13 +181,37 @@ def _record_download_history(task: DownloadTask) -> None:
         title_after_rename=str(task.title or "").strip() or None,
         match_score=match_score,
         downloaded_filename=downloaded_filename,
-        final_path=final_path,
         overwritten_path=overwrite_path,
     )
 
+    if task.download_path:
+        kwargs["final_path"] = str(task.download_path).strip()
+        _user_db.insert_monitored_book_download_history(**kwargs)
+        logger.debug(
+            "Recorded monitored download history: entity_id=%s provider=%s book_id=%s",
+            entity_id, provider, provider_book_id,
+        )
+    else:
+        # Path not yet available; defer until update_download_path is called
+        with _deferred_lock:
+            _deferred_history[task.task_id] = kwargs
+        logger.debug(
+            "Deferred monitored download history: task_id=%s entity_id=%s",
+            task.task_id, entity_id,
+        )
+
+
+def _flush_deferred_history(task_id: str, final_path: str) -> None:
+    """Complete a deferred history insert with the now-known final_path."""
+    with _deferred_lock:
+        kwargs = _deferred_history.pop(task_id, None)
+    if kwargs is None or _user_db is None:
+        return
+    kwargs["final_path"] = str(final_path or "").strip()
+    _user_db.insert_monitored_book_download_history(**kwargs)
     logger.debug(
-        "Recorded monitored download history: entity_id=%s provider=%s book_id=%s",
-        entity_id, provider, provider_book_id
+        "Flushed deferred monitored download history: task_id=%s path=%s",
+        task_id, final_path,
     )
 
 

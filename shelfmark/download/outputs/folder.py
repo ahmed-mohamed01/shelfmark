@@ -242,10 +242,6 @@ def process_folder_output(
     )
 
     message = "Complete" if len(final_paths) == 1 else f"Complete ({len(final_paths)} files)"
-    if isinstance(task.output_args, dict):
-        hc = task.output_args.get("history_context")
-        if isinstance(hc, dict):
-            hc["final_path"] = str(final_paths[0])
     status_callback("complete", message)
 
     return str(final_paths[0])
