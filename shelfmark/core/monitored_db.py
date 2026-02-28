@@ -256,6 +256,16 @@ class MonitoredDB:
         finally:
             conn.close()
 
+    @staticmethod
+    def _serialize_json(value: Any, field: str) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            import json
+            return json.dumps(value)
+        except Exception as e:
+            raise ValueError(f"Failed to serialize {field} to JSON: {e}") from e
+
     def create_monitored_entity(
         self,
         *,
