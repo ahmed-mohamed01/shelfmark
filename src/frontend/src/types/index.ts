@@ -54,6 +54,7 @@ export interface Book {
   series_name?: string;        // Name of the series
   series_position?: number;    // This book's position (e.g., 3, 1.5 for novellas)
   series_count?: number;       // Total books in the series
+  additional_series?: Array<{ name: string; position?: number; count?: number }>; // Other series this book belongs to
   subtitle?: string;
   search_title?: string;
   search_author?: string;

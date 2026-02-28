@@ -18,13 +18,14 @@ interface BookDetailsModalProps {
   monitorEbook?: boolean;
   monitorAudiobook?: boolean;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
+  onNavigateToSeries?: (seriesName: string) => void;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor, onNavigateToSeries }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
 
@@ -382,16 +383,51 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
                   {enrichedBook.year ? <span>{enrichedBook.year}</span> : null}
                   {enrichedBook.series_name ? (
-                    <span className="truncate">
-                      {enrichedBook.series_position != null ? (
-                        <>
-                          #{enrichedBook.series_position}
-                          {enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}
-                        </>
+                    onNavigateToSeries ? (
+                      <button
+                        type="button"
+                        onClick={() => onNavigateToSeries(enrichedBook.series_name!)}
+                        className="truncate text-emerald-600 dark:text-emerald-400 hover:underline text-left"
+                        title={`Go to ${enrichedBook.series_name} series`}
+                      >
+                        {enrichedBook.series_position != null ? (
+                          <>#{ enrichedBook.series_position}{enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}</>
+                        ) : (
+                          <>Part of {enrichedBook.series_name}</>
+                        )}
+                      </button>
+                    ) : (
+                      <span className="truncate">
+                        {enrichedBook.series_position != null ? (
+                          <>#{ enrichedBook.series_position}{enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}</>
+                        ) : (
+                          <>Part of {enrichedBook.series_name}</>
+                        )}
+                      </span>
+                    )
+                  ) : null}
+                  {enrichedBook.additional_series && enrichedBook.additional_series.length > 0 ? (
+                    enrichedBook.additional_series.map((s) => {
+                      const seriesKey = `${s.name}-${s.position ?? ''}`;
+                      const label = s.position != null ? (
+                        <>#{ s.position}{s.count != null ? `/${s.count}` : ''} in {s.name}</>
                       ) : (
-                        <>Part of {enrichedBook.series_name}</>
-                      )}
-                    </span>
+                        <>Part of {s.name}</>
+                      );
+                      return onNavigateToSeries ? (
+                        <button
+                          key={seriesKey}
+                          type="button"
+                          onClick={() => onNavigateToSeries(s.name)}
+                          className="truncate text-sky-600 dark:text-sky-400 hover:underline text-left"
+                          title={`Go to ${s.name} series`}
+                        >
+                          {label}
+                        </button>
+                      ) : (
+                        <span key={seriesKey} className="truncate">{label}</span>
+                      );
+                    })
                   ) : null}
                   {matchedFileTypes.length > 0 ? (
                     <span className="inline-flex items-center gap-1">

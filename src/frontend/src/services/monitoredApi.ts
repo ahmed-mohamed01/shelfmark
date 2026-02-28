@@ -153,6 +153,7 @@ export interface MonitoredBookRow {
   audiobook_path?: string | null;
   ebook_available_format?: string | null;
   audiobook_available_format?: string | null;
+  additional_series?: Array<{ name: string; position?: number; count?: number }>;
   no_release_date?: boolean;
   state: string;
   first_seen_at: string;

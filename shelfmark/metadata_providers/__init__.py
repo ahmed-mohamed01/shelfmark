@@ -157,6 +157,9 @@ class BookMetadata:
     series_position: Optional[float] = None  # This book's position (e.g., 3, 1.5 for novellas)
     series_count: Optional[int] = None     # Total books in the series
 
+    # Additional series this book belongs to (beyond the primary/featured one)
+    additional_series: List[Dict[str, Any]] = field(default_factory=list)
+
     # Alternative titles by language (for localized searches)
     # Maps language code (e.g., "de", "German") to localized title
     titles_by_language: Dict[str, str] = field(default_factory=dict)

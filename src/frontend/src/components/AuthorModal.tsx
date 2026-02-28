@@ -442,6 +442,9 @@ export const AuthorModal = ({
     const saved = localStorage.getItem('authorBooksShowCompilations');
     return saved !== 'false';
   });
+  const [showMultipleSeries, setShowMultipleSeries] = useState<boolean>(() => {
+    return localStorage.getItem('authorBooksShowMultipleSeries') === 'true';
+  });
   const [booksCompactMinWidth, setBooksCompactMinWidth] = useState<number>(() => {
     const raw = localStorage.getItem('authorBooksCompactMinWidth');
     const parsed = raw ? Number(raw) : Number.NaN;
@@ -904,6 +907,14 @@ export const AuthorModal = ({
 
   useEffect(() => {
     try {
+      localStorage.setItem('authorBooksShowMultipleSeries', showMultipleSeries ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+  }, [showMultipleSeries]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('authorBooksCompactMinWidth', String(booksCompactMinWidth));
     } catch {
       // ignore
@@ -981,6 +992,7 @@ export const AuthorModal = ({
       series_name: (row.series_name || '').trim() || undefined,
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
+      additional_series: row.additional_series || undefined,
       language: (row.language || '').trim() || undefined,
       is_compilation: Boolean(Number(row.is_compilation || 0)),
       display_fields: [
@@ -1428,6 +1440,24 @@ export const AuthorModal = ({
         const list = groupMap.get(key);
         if (list) list.push(b);
         else groupMap.set(key, [b]);
+
+        // When "Show multiple series" is on, also place the book in each additional
+        // series group using a clone with overridden series fields for that group.
+        if (showMultipleSeries && b.additional_series) {
+          for (const altSeries of b.additional_series) {
+            const altKey = (altSeries.name || '').trim();
+            if (!altKey) continue;
+            const altBook: Book = {
+              ...b,
+              series_name: altSeries.name,
+              series_position: altSeries.position ?? undefined,
+              series_count: altSeries.count ?? undefined,
+            };
+            const altList = groupMap.get(altKey);
+            if (altList) altList.push(altBook);
+            else groupMap.set(altKey, [altBook]);
+          }
+        }
       }
 
       const standalone = groupMap.get('__standalone__') ?? [];
@@ -1458,7 +1488,7 @@ export const AuthorModal = ({
     // No grouping for other sort modes (title, popular, rating)
     const sorted = [...books].sort(withinGroupSort);
     return [{ key: '__all__', title: 'All Books', books: sorted }];
-  }, [books, booksSort]);
+  }, [books, booksSort, showMultipleSeries]);
 
   const seriesFilterOptions = useMemo(() => {
     return groupedBooks
@@ -1751,6 +1781,51 @@ export const AuthorModal = ({
       [key]: !(prev[key] ?? false),
     }));
   }, []);
+
+  const pendingScrollToSeriesRef = useRef<string | null>(null);
+
+  // After collapsedGroups or sort changes, scroll to a pending series group
+  useEffect(() => {
+    const targetKey = pendingScrollToSeriesRef.current;
+    if (!targetKey) return;
+    pendingScrollToSeriesRef.current = null;
+    setTimeout(() => {
+      const el = document.querySelector(`[data-series-key="${CSS.escape(targetKey)}"]`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  }, [collapsedGroups, booksSort]);
+
+  const handleNavigateToSeries = useCallback((seriesName: string) => {
+    setActiveBookDetails(null);
+
+    const targetKey = seriesName.trim();
+
+    // Switch to series sort if not already
+    setBooksSort((current) =>
+      current === 'series_asc' || current === 'series_desc' ? current : 'series_asc'
+    );
+
+    // Build the full set of series keys from books (same logic as groupedBooks memo)
+    const allSeriesKeys = new Set<string>();
+    for (const b of books) {
+      allSeriesKeys.add((b.series_name || '').trim() || '__standalone__');
+      if (showMultipleSeries && b.additional_series) {
+        for (const alt of b.additional_series) {
+          const altKey = (alt.name || '').trim();
+          if (altKey) allSeriesKeys.add(altKey);
+        }
+      }
+    }
+
+    // Collapse all groups, expand only the target
+    const next: Record<string, boolean> = {};
+    for (const key of allSeriesKeys) {
+      next[key] = key !== targetKey;
+    }
+    setCollapsedGroups(next);
+
+    pendingScrollToSeriesRef.current = targetKey;
+  }, [books, showMultipleSeries]);
 
   useEffect(() => {
     setSelectedBookIds((prev) => {
@@ -2902,6 +2977,15 @@ export const AuthorModal = ({
                             <span>Show compilations</span>
                             {showCompilationsInView ? <span>✓</span> : null}
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowMultipleSeries((prev) => !prev)}
+                            className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${showMultipleSeries ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                            title="Show all series a book belongs to, not just the primary one"
+                          >
+                            <span>Show multiple series</span>
+                            {showMultipleSeries ? <span>✓</span> : null}
+                          </button>
                           <div className="border-t border-[var(--border-muted)] my-1" />
                           <div className="px-3 py-2">
                             <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Compact tile size</div>
@@ -3056,7 +3140,7 @@ export const AuthorModal = ({
                             return count + (hasAny ? 1 : 0);
                           }, 0);
                           return (
-                            <div key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
+                            <div key={group.key} data-series-key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
                               <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3">
                                 <button
                                   type="button"
@@ -3341,6 +3425,7 @@ export const AuthorModal = ({
         monitorEbook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorEbook : undefined}
         monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
         onToggleMonitor={activeBookDetails ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
+        onNavigateToSeries={handleNavigateToSeries}
       />
 
       <EditAuthorModal

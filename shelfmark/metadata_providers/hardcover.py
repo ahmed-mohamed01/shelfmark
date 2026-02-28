@@ -549,6 +549,13 @@ class HardcoverProvider(MetadataProvider):
                         primary_books_count
                     }
                 }
+                book_series {
+                    position
+                    series {
+                        name
+                        primary_books_count
+                    }
+                }
                 editions(
                     distinct_on: language_id
                     order_by: [{language_id: asc}, {users_count: desc}]
@@ -931,6 +938,21 @@ class HardcoverProvider(MetadataProvider):
                 series_name = series_data.get("name")
                 series_count = series_data.get("primary_books_count")
 
+        # Extract additional series from book_series (all series except the featured one)
+        additional_series: List[Dict[str, Any]] = []
+        for entry in (book.get("book_series") or []):
+            entry_series = entry.get("series")
+            if not entry_series:
+                continue
+            entry_name = entry_series.get("name")
+            if not entry_name or entry_name == series_name:
+                continue
+            additional_series.append({
+                "name": entry_name,
+                "position": entry.get("position"),
+                "count": entry_series.get("primary_books_count"),
+            })
+
         # Extract titles by language from editions
         # This allows searching with localized titles when language filter is active
         titles_by_language: Dict[str, str] = {}
@@ -988,6 +1010,7 @@ class HardcoverProvider(MetadataProvider):
              series_name=series_name,
              series_position=series_position,
              series_count=series_count,
+             additional_series=additional_series,
              titles_by_language=titles_by_language,
          )
 

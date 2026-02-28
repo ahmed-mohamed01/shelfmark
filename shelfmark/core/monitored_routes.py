@@ -721,6 +721,23 @@ def register_monitored_routes(
         )
         transform_cached_cover_urls(rows)
 
+        # Enrich books with additional_series from the metadata file cache
+        try:
+            from shelfmark.core.metadata_cache import get_metadata_file_cache
+            mcache = get_metadata_file_cache()
+            for row in rows:
+                row_provider = row.get("provider")
+                provider_book_id = row.get("provider_book_id")
+                if not row_provider or not provider_book_id:
+                    continue
+                cached_meta = mcache.get("books", row_provider, provider_book_id)
+                if cached_meta and isinstance(cached_meta, dict):
+                    extra = cached_meta.get("additional_series")
+                    if extra:
+                        row["additional_series"] = extra
+        except Exception:
+            pass  # Best-effort enrichment
+
         # Include last_checked_at so the frontend can decide whether to refresh
         entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         last_checked_at = entity.get("last_checked_at") if entity else None
