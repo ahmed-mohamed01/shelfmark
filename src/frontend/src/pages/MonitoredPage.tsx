@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
@@ -168,6 +168,7 @@ interface MonitoredPageProps {
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   metadataSortOptions?: SortOption[];
   status?: StatusData;
+  renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
 }
 
 const normalizeAuthor = (value: string): string => {
@@ -351,6 +352,7 @@ export const MonitoredPage = ({
   defaultReleaseActionAudiobook = 'interactive_search',
   metadataSortOptions,
   status,
+  renderEmbeddedSearch,
 }: MonitoredPageProps) => {
   const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
@@ -2281,6 +2283,7 @@ export const MonitoredPage = ({
               monitoredEntityId={authorDetailsMonitoredEntityId}
               status={status}
               openEditOnMount={authorDetailsOpenEdit}
+              renderEmbeddedSearch={renderEmbeddedSearch}
             />
           ) : (
             <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">

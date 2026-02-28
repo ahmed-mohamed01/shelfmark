@@ -382,6 +382,7 @@ interface ReleaseModalProps {
   onSearchSeries?: (seriesName: string) => void;  // Callback to search for series
   defaultShowManualQuery?: boolean;
   isRequestMode?: boolean;
+  embedded?: boolean;
 }
 
 
@@ -829,6 +830,7 @@ export const ReleaseModal = ({
   onSearchSeries,
   defaultShowManualQuery = false,
   isRequestMode = false,
+  embedded = false,
 }: ReleaseModalProps) => {
   // Use audiobook formats when in audiobook mode
   const effectiveFormats = contentType === 'audiobook' && supportedAudiobookFormats.length > 0
@@ -1571,6 +1573,407 @@ export const ReleaseModal = ({
   const currentTabLoading = loadingBySource[activeTab] ?? false;
   const currentTabError = errorBySource[activeTab] ?? null;
   const isInitialLoading = currentTabLoading || (releasesBySource[activeTab] === undefined && !currentTabError);
+
+  // Embedded mode: render source tabs + release list inline (no portal/backdrop/header)
+  if (embedded) {
+    return (
+      <div className="flex flex-col min-h-0 text-[var(--text)]">
+        {/* Source tabs + filters - sticky */}
+        <div className="sticky top-0 z-10 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+          {sourcesLoading ? (
+            <div className="flex gap-1 px-5 py-2">
+              <div className="h-10 w-32 animate-pulse bg-gray-200 dark:bg-gray-700 rounded" />
+            </div>
+          ) : (
+            <div className="flex items-center justify-between px-5">
+              {/* Tabs - scrollable on narrow screens */}
+              <div className="flex-1 min-w-0 overflow-x-auto scrollbar-hide">
+                <div className="relative flex gap-1">
+                  {/* Sliding indicator */}
+                  <div
+                    className="absolute bottom-0 h-0.5 bg-emerald-600 transition-all duration-300 ease-out"
+                    style={{
+                      left: tabIndicatorStyle.left,
+                      width: tabIndicatorStyle.width,
+                    }}
+                  />
+                  {allTabs.map((tab) => (
+                    <button
+                      key={tab.name}
+                      ref={(el) => { tabRefs.current[tab.name] = el; }}
+                      onClick={() => setActiveTab(tab.name)}
+                      className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${activeTab === tab.name
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                        }`}
+                    >
+                      {tab.displayName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 pl-2 pr-1">
+                {/* Manual query button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowManualQuery((prev) => {
+                      const next = !prev;
+                      if (next && !manualQuery.trim()) {
+                        const baseTitle = book?.search_title || book?.title || '';
+                        const baseAuthor = book?.search_author || book?.author || '';
+                        setManualQuery(`${baseTitle} ${baseAuthor}`.trim());
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`p-2.5 rounded-full transition-colors hover-surface text-gray-500 dark:text-gray-400 ${manualQuery.trim() ? 'text-emerald-600 dark:text-emerald-400' : ''
+                    }`}
+                  aria-label="Manual search query"
+                  title="Manual query"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 0 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                  </svg>
+                </button>
+
+                {/* Sort dropdown - only show if source has sort options */}
+                {allSortOptions.length > 0 && (
+                  <Dropdown
+                    align="right"
+                    widthClassName="w-auto flex-shrink-0"
+                    panelClassName="w-48"
+                    renderTrigger={({ isOpen, toggle }) => (
+                      <button
+                        type="button"
+                        onClick={toggle}
+                        className={`relative p-2.5 rounded-full transition-colors hover-surface text-gray-500 dark:text-gray-400 ${isOpen ? 'bg-[var(--hover-surface)]' : ''
+                          }`}
+                        aria-label="Sort releases"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" />
+                        </svg>
+                        {currentSort && (
+                          <span className="absolute top-1 right-1 w-2 h-2 bg-emerald-500 rounded-full" />
+                        )}
+                      </button>
+                    )}
+                  >
+                    {({ close }) => (
+                      <div className="py-1">
+                        <button
+                          type="button"
+                          onClick={() => { handleSortChange(null, 'asc'); close(); }}
+                          className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover-surface rounded ${!currentSort
+                              ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                              : 'text-gray-700 dark:text-gray-300'
+                            }`}
+                        >
+                          <span>Best Match (Default)</span>
+                          {!currentSort && (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                            </svg>
+                          )}
+                        </button>
+                        {allSortOptions.map((opt) => {
+                          const isSelected = currentSort?.key === opt.sortKey;
+                          const direction = isSelected ? currentSort?.direction : null;
+                          return (
+                            <button
+                              key={opt.sortKey}
+                              type="button"
+                              onClick={() => {
+                                handleSortChange(opt.sortKey, opt.defaultDirection);
+                                if (!isSelected) close();
+                              }}
+                              className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover-surface rounded ${isSelected
+                                  ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                                  : 'text-gray-700 dark:text-gray-300'
+                                }`}
+                            >
+                              <span>{opt.label}</span>
+                              {isSelected && direction && (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                  {direction === 'asc' ? (
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                                  ) : (
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                                  )}
+                                </svg>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Dropdown>
+                )}
+
+                {/* Filter funnel button - only show if source supports at least one filter type */}
+                {((columnConfig.supported_filters?.includes('format') && availableFormats.length > 0) ||
+                  (columnConfig.supported_filters?.includes('language') && bookLanguages.length > 0) ||
+                  (columnConfig.supported_filters?.includes('indexer') && availableIndexers.length > 1)) && (
+                  <Dropdown
+                    align="right"
+                    widthClassName="w-auto flex-shrink-0"
+                    panelClassName="w-56"
+                    noScrollLimit
+                    renderTrigger={({ isOpen, toggle }) => {
+                      const hasLanguageFilter = !(languageFilter.length === 1 && languageFilter[0] === LANGUAGE_OPTION_DEFAULT);
+                      const supportsIndexerFilter = columnConfig.supported_filters?.includes('indexer');
+                      const hasResults = releasesBySource[activeTab]?.releases !== undefined;
+                      const isInitialized = indexerFilterInitializedRef.current.has(activeTab);
+                      const defaultIndexers = columnConfig.default_indexers ?? [];
+                      const indexersMatchDefault = (
+                        indexerFilter.length === defaultIndexers.length &&
+                        indexerFilter.every((idx) => defaultIndexers.includes(idx))
+                      );
+                      const hasIndexerFilter = supportsIndexerFilter && hasResults && isInitialized && !indexersMatchDefault;
+                      const hasActiveFilter = formatFilter !== '' || hasLanguageFilter || hasIndexerFilter;
+                      return (
+                        <button
+                          type="button"
+                          onClick={toggle}
+                          className={`relative p-2.5 rounded-full transition-colors hover-surface text-gray-500 dark:text-gray-400 ${isOpen ? 'bg-[var(--hover-surface)]' : ''}`}
+                          aria-label="Filter releases"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 0 1-.659 1.591l-5.432 5.432a2.25 2.25 0 0 0-.659 1.591v2.927a2.25 2.25 0 0 1-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 0 0-.659-1.591L3.659 7.409A2.25 2.25 0 0 1 3 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0 1 12 3Z" />
+                          </svg>
+                          {hasActiveFilter && (
+                            <span className="absolute top-1 right-1 w-2 h-2 bg-emerald-500 rounded-full" />
+                          )}
+                        </button>
+                      );
+                    }}
+                  >
+                    {({ close }) => (
+                      <div className="p-4 space-y-4">
+                        {columnConfig.supported_filters?.includes('format') && availableFormats.length > 0 && (
+                          <DropdownList
+                            label="Format"
+                            options={formatOptions}
+                            value={formatFilter}
+                            onChange={(val) => setFormatFilter(typeof val === 'string' ? val : val[0] ?? '')}
+                            placeholder="All Formats"
+                          />
+                        )}
+                        {columnConfig.supported_filters?.includes('language') && (
+                          <LanguageMultiSelect
+                            label="Language"
+                            options={bookLanguages}
+                            value={languageFilter}
+                            onChange={setLanguageFilter}
+                            defaultLanguageCodes={defaultLanguages}
+                          />
+                        )}
+                        {columnConfig.supported_filters?.includes('indexer') && availableIndexers.length > 1 && (
+                          <DropdownList
+                            label="Indexers"
+                            options={availableIndexers.map((idx) => ({ value: idx, label: idx }))}
+                            multiple
+                            value={indexerFilter}
+                            onChange={(val) => setIndexerFilter(Array.isArray(val) ? val : val ? [val] : [])}
+                            placeholder="All Indexers"
+                          />
+                        )}
+                        {/* Apply button - re-fetch with server-side filters/expansion */}
+                        {(activeTab === 'direct_download' || activeTab === 'prowlarr') && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              close();
+                              if (!book?.provider || !book?.provider_id) return;
+                              const provider = book.provider;
+                              const bookId = book.provider_id;
+                              const key = getCacheKey(provider, bookId, activeTab, contentType);
+                              releaseCache.delete(key);
+                              cacheTimestamps.delete(key);
+                              setExpandedBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
+                              setErrorBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
+                              setLoadingBySource((prev) => ({ ...prev, [activeTab]: true }));
+                              try {
+                                const languagesParam = getReleaseSearchLanguageParams(languageFilter, bookLanguages, defaultLanguages);
+                                const supportsIndexerFilter = columnConfig.supported_filters?.includes('indexer');
+                                const indexersParam = supportsIndexerFilter && indexerFilter.length > 0 ? indexerFilter : undefined;
+                                const response = await getReleases(provider, bookId, activeTab, book.title, book.author, false, languagesParam, contentType, manualQuery.trim() || undefined, indexersParam);
+                                setCachedReleases(provider, bookId, activeTab, contentType, response);
+                                setReleasesBySource((prev) => ({ ...prev, [activeTab]: response }));
+                              } catch (err) {
+                                const message = err instanceof Error ? err.message : 'Failed to fetch releases';
+                                setErrorBySource((prev) => ({ ...prev, [activeTab]: message }));
+                              } finally {
+                                setLoadingBySource((prev) => ({ ...prev, [activeTab]: false }));
+                              }
+                            }}
+                            className="w-full px-3 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
+                          >
+                            Apply
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </Dropdown>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Manual query panel (below source tabs) */}
+        {showManualQuery && (
+          <div className="px-5 py-3 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+            <form
+              className="flex items-center gap-2"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!book?.provider || !book?.provider_id) return;
+                const q = manualQuery.trim();
+                if (!q) return;
+                const provider = book.provider;
+                const bookId = book.provider_id;
+                const key = getCacheKey(provider, bookId, activeTab, contentType);
+                releaseCache.delete(key);
+                cacheTimestamps.delete(key);
+                setExpandedBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
+                setErrorBySource((prev) => ({ ...prev, [activeTab]: null }));
+                setReleasesBySource((prev) => ({ ...prev, [activeTab]: null }));
+                setLoadingBySource((prev) => ({ ...prev, [activeTab]: true }));
+                try {
+                  const response = await getReleases(provider, bookId, activeTab, book.title, book.author, false, undefined, contentType, q);
+                  setCachedReleases(provider, bookId, activeTab, contentType, response);
+                  setReleasesBySource((prev) => ({ ...prev, [activeTab]: response }));
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : 'Failed to fetch releases';
+                  setErrorBySource((prev) => ({ ...prev, [activeTab]: message }));
+                } finally {
+                  setLoadingBySource((prev) => ({ ...prev, [activeTab]: false }));
+                }
+              }}
+            >
+              <input
+                type="text"
+                value={manualQuery}
+                onChange={(e) => setManualQuery(e.target.value)}
+                placeholder="Type a custom search query (overrides all sources)"
+                className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--border-muted)] bg-[var(--bg)] text-[var(--text)]"
+              />
+              <button
+                type="submit"
+                disabled={currentTabLoading || !manualQuery.trim()}
+                className={`px-3 py-2 text-sm font-medium text-white rounded-lg transition-colors ${currentTabLoading || !manualQuery.trim()
+                    ? 'bg-emerald-600/60 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+              >
+                {currentTabLoading ? 'Searching…' : 'Search'}
+              </button>
+            </form>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              Manual query overrides ISBN/title/author/language expansion.
+            </p>
+          </div>
+        )}
+
+        {/* Release list content */}
+        <div className="min-h-[200px]">
+          {sourcesLoading ? (
+            <ReleaseSkeleton />
+          ) : isInitialLoading && filteredReleases.length === 0 ? (
+            <ReleaseSkeleton />
+          ) : currentTabError ? (
+            <ErrorState message={currentTabError} />
+          ) : filteredReleases.length === 0 && !currentTabLoading ? (
+            <>
+              <EmptyState
+                message={
+                  formatFilter
+                    ? `No ${formatFilter.toUpperCase()} releases found. Try a different format.`
+                    : 'No releases found for this book.'
+                }
+              />
+              {(columnConfig.action_button || (
+                !expandedBySource[activeTab] &&
+                releasesBySource[activeTab]?.search_info?.[activeTab]?.search_type &&
+                !['title_author', 'expanded'].includes(
+                  releasesBySource[activeTab]?.search_info?.[activeTab]?.search_type ?? ''
+                )
+              )) && (
+                  <div className="py-3 text-center">
+                    <button
+                      type="button"
+                      onClick={handleExpandSearch}
+                      className="px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400 rounded-full hover-action transition-all duration-200"
+                    >
+                      {columnConfig.action_button?.label ?? 'Expand search'}
+                    </button>
+                  </div>
+                )}
+            </>
+          ) : (
+            <>
+              <div key={`releases-${formatFilter}-${languageFilter.join(',')}`} className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                {filteredReleases.map((release, index) => (
+                  <ReleaseRow
+                    key={`${release.source}-${release.source_id}`}
+                    release={release}
+                    index={index}
+                    onDownload={() => handleReleaseAction(release)}
+                    buttonState={getButtonState(release)}
+                    columns={columnConfig.columns}
+                    gridTemplate={columnConfig.grid_template}
+                    leadingCell={columnConfig.leading_cell}
+                    onlineServers={columnConfig.online_servers}
+                    showMatchScore={showMatchScore}
+                  />
+                ))}
+              </div>
+              {!currentTabLoading && (columnConfig.action_button || (
+                !expandedBySource[activeTab] &&
+                releasesBySource[activeTab]?.search_info?.[activeTab]?.search_type &&
+                !['title_author', 'expanded'].includes(
+                  releasesBySource[activeTab]?.search_info?.[activeTab]?.search_type ?? ''
+                )
+              )) && (
+                  <div
+                    className="py-3 text-center animate-pop-up will-change-transform"
+                    style={{
+                      animationDelay: `${filteredReleases.length * 30}ms`,
+                      animationFillMode: 'both',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={handleExpandSearch}
+                      className="px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400 rounded-full hover-action transition-all duration-200"
+                    >
+                      {columnConfig.action_button?.label ?? 'Expand search'}
+                    </button>
+                  </div>
+                )}
+              {currentTabLoading && filteredReleases.length > 0 && (
+                <ReleaseSkeleton />
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Sticky search status indicator */}
+        {searchStatus && searchStatus.source === activeTab && currentTabLoading && (
+          <div className="sticky bottom-0 z-10 flex items-center justify-center pointer-events-none pb-4 pt-2">
+            <div className="flex items-center gap-2.5 px-4 py-2 rounded-xl bg-[var(--bg-soft)] border border-[var(--border-muted)] text-gray-500 dark:text-gray-400 text-sm shadow-lg pointer-events-auto">
+              {searchStatus.phase !== 'complete' && searchStatus.phase !== 'error' && (
+                <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              )}
+              {searchStatus.message}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const modal = (
     <div

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 import { getMetadataBookInfo, searchMetadata } from '../services/api';
 import { getMetadataAuthorInfo, listMonitoredBooks, MonitoredBookRow, MonitoredBooksResponse, syncMonitoredEntity, updateMonitoredBooksSeries, MetadataAuthor, MetadataAuthorDetailsResult, listMonitoredBookFiles, MonitoredBookFileRow, scanMonitoredEntityFiles, updateMonitoredBooksMonitorFlags } from '../services/monitoredApi';
@@ -116,6 +116,7 @@ interface AuthorModalProps {
   booksSearchQuery?: string;
   onBooksSearchQueryChange?: (value: string) => void;
   openEditOnMount?: boolean;
+  renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
 }
 
 
@@ -414,6 +415,7 @@ export const AuthorModal = ({
   booksSearchQuery,
   onBooksSearchQueryChange,
   openEditOnMount = false,
+  renderEmbeddedSearch,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -3426,6 +3428,11 @@ export const AuthorModal = ({
         monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
         onToggleMonitor={activeBookDetails ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
+        renderEmbeddedSearch={
+          activeBookDetails && renderEmbeddedSearch
+            ? (contentType) => renderEmbeddedSearch(activeBookDetails, contentType)
+            : undefined
+        }
       />
 
       <EditAuthorModal

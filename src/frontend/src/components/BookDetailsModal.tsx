@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Book, ContentType } from '../types';
 import { getMetadataBookInfo } from '../services/api';
 import {
@@ -19,13 +19,14 @@ interface BookDetailsModalProps {
   monitorAudiobook?: boolean;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
+  renderEmbeddedSearch?: (contentType: ContentType) => ReactNode;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor, onNavigateToSeries }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -816,35 +817,43 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   </div>
                 </div>
               ) : tab === 'ebooks' ? (
-                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
-                  <div className="text-sm text-gray-600 dark:text-gray-300">
-                    Search providers for ebook releases for this book.
+                renderEmbeddedSearch ? (
+                  renderEmbeddedSearch('ebook')
+                ) : (
+                  <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+                    <div className="text-sm text-gray-600 dark:text-gray-300">
+                      Search providers for ebook releases for this book.
+                    </div>
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => onOpenSearch('ebook')}
+                        className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
+                      >
+                        Open eBook search
+                      </button>
+                    </div>
                   </div>
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenSearch('ebook')}
-                      className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
-                    >
-                      Open eBook search
-                    </button>
-                  </div>
-                </div>
+                )
               ) : (
-                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
-                  <div className="text-sm text-gray-600 dark:text-gray-300">
-                    Search providers for audiobook releases for this book.
+                renderEmbeddedSearch ? (
+                  renderEmbeddedSearch('audiobook')
+                ) : (
+                  <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+                    <div className="text-sm text-gray-600 dark:text-gray-300">
+                      Search providers for audiobook releases for this book.
+                    </div>
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => onOpenSearch('audiobook')}
+                        className="px-4 py-2 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium"
+                      >
+                        Open audiobook search
+                      </button>
+                    </div>
                   </div>
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenSearch('audiobook')}
-                      className="px-4 py-2 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium"
-                    >
-                      Open audiobook search
-                    </button>
-                  </div>
-                </div>
+                )
               )}
             </div>
           </div>
