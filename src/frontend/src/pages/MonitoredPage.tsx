@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSocket } from '../contexts/SocketContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { ActivityStatusCounts } from '../utils/activityBadge';
@@ -17,7 +18,6 @@ import {
   MetadataAuthor,
   MonitoredEntity,
   MonitoredBookFileRow,
-  MonitoredBookRow,
   MonitoredAuthorBookSearchRow,
   searchMonitoredAuthorBooks,
   searchMetadataAuthors,
@@ -30,7 +30,7 @@ import { BookDetailsModal } from '../components/BookDetailsModal';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
 import { MonitoredAuthorsView } from '../components/MonitoredAuthorsView';
-import { MonitoredBooksView } from '../components/MonitoredBooksView';
+import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 import {
@@ -52,15 +52,6 @@ interface MonitoredAuthor {
   cached_source_url?: string;
 }
 
-export interface MonitoredBookListRow extends MonitoredBookRow {
-  author_entity_id: number;
-  author_name: string;
-  author_provider?: string;
-  author_provider_id?: string;
-  author_photo_url?: string;
-  author_source_url?: string;
-}
-
 interface MonitoredBooksSourceEntity {
   id: number;
   kind: 'author' | 'book';
@@ -69,12 +60,6 @@ interface MonitoredBooksSourceEntity {
   provider_id?: string;
   cached_source_url?: string;
   settings?: Record<string, unknown>;
-}
-
-export interface MonitoredBooksGroup {
-  key: string;
-  title: string;
-  rows: MonitoredBookListRow[];
 }
 
 const groupMonitoredBooks = (
@@ -165,6 +150,8 @@ interface MonitoredPageProps {
   metadataSortOptions?: SortOption[];
   status?: StatusData;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  onShowToast?: (message: string, type?: 'info' | 'success' | 'error', persistent?: boolean) => string;
+  onRemoveToast?: (id: string) => void;
 }
 
 const normalizeAuthor = (value: string): string => {
@@ -250,45 +237,6 @@ const readMonitoredCountsSnapshot = (): MonitoredCountsSnapshot | null => {
   return null;
 };
 
-const selectFallbackPhotoFromMonitoredBooks = (books: MonitoredBookRow[]): string | undefined => {
-  let bestCover: string | undefined;
-  let bestReaders = -1;
-  let bestRatingsCount = -1;
-  let bestRating = -1;
-  let bestTitle = '';
-
-  for (const book of books) {
-    const cover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
-    if (!cover) continue;
-
-    const readers = typeof book.readers_count === 'number' ? book.readers_count : -1;
-    const ratingsCount = typeof book.ratings_count === 'number' ? book.ratings_count : -1;
-    const rating = typeof book.rating === 'number' ? book.rating : -1;
-    const title = (book.title || '').trim();
-
-    const isBetter = readers > bestReaders
-      || (readers === bestReaders && ratingsCount > bestRatingsCount)
-      || (readers === bestReaders && ratingsCount === bestRatingsCount && rating > bestRating)
-      || (
-        readers === bestReaders
-        && ratingsCount === bestRatingsCount
-        && rating === bestRating
-        && title.localeCompare(bestTitle, undefined, { sensitivity: 'base' }) < 0
-      );
-
-    if (isBetter) {
-      bestCover = cover;
-      bestReaders = readers;
-      bestRatingsCount = ratingsCount;
-      bestRating = rating;
-      bestTitle = title;
-    }
-  }
-
-  return bestCover;
-};
-
-
 export const MonitoredPage = ({
   onActivityClick,
   isActivityOpen = false,
@@ -312,6 +260,8 @@ export const MonitoredPage = ({
   metadataSortOptions,
   status,
   renderEmbeddedSearch,
+  onShowToast,
+  onRemoveToast,
 }: MonitoredPageProps) => {
   const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
@@ -386,6 +336,8 @@ export const MonitoredPage = ({
   const activeBookRequestSeq = useRef(0);
   const navigate = useNavigate();
   const location = useLocation();
+  const { socket } = useSocket();
+  const syncToastIds = useRef<Map<number, string>>(new Map());
   const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState(() => {
     try {
       return sessionStorage.getItem(MONITORED_BOOKS_SEARCH_QUERY_KEY) || '';
@@ -483,6 +435,52 @@ export const MonitoredPage = ({
   const [editingMonitorPathKind, setEditingMonitorPathKind] = useState<'ebook' | 'audiobook' | null>(null);
 
   const [isDesktop, setIsDesktop] = useState(false);
+
+  // Toast notifications for background author sync events
+  useEffect(() => {
+    if (!socket || (!onShowToast && !onRemoveToast)) return;
+    const phaseLabel: Record<string, string> = {
+      fetching_books: 'Fetching books…',
+      scanning_files: 'Scanning filesystem…',
+      fetching_covers: 'Fetching covers…',
+    };
+    const replaceToast = (entityId: number, message: string, type: 'info' | 'success' | 'error', persistent: boolean) => {
+      const old = syncToastIds.current.get(entityId);
+      if (old) onRemoveToast?.(old);
+      if (onShowToast) {
+        const id = onShowToast(message, type, persistent);
+        if (persistent) syncToastIds.current.set(entityId, id);
+        else syncToastIds.current.delete(entityId);
+      }
+    };
+    const onStarted = (data: { entity_id: number; name: string }) => {
+      replaceToast(data.entity_id, `${data.name} added. Fetching book data…`, 'info', true);
+    };
+    const onProgress = (data: { entity_id: number; phase: string }) => {
+      const label = phaseLabel[data.phase] ?? 'Syncing…';
+      replaceToast(data.entity_id, label, 'info', true);
+    };
+    const onComplete = (data: { entity_id: number; name: string; books_count: number }) => {
+      replaceToast(data.entity_id, `${data.name}: ${data.books_count} books synced`, 'success', false);
+    };
+    const onError = (data: { entity_id: number; error: string }) => {
+      const old = syncToastIds.current.get(data.entity_id);
+      if (old) onRemoveToast?.(old);
+      syncToastIds.current.delete(data.entity_id);
+      onShowToast?.(`Sync failed: ${data.error}`, 'error', false);
+    };
+    socket.on('monitored_sync_started', onStarted);
+    socket.on('monitored_sync_progress', onProgress);
+    socket.on('monitored_sync_complete', onComplete);
+    socket.on('monitored_sync_error', onError);
+    return () => {
+      socket.off('monitored_sync_started', onStarted);
+      socket.off('monitored_sync_progress', onProgress);
+      socket.off('monitored_sync_complete', onComplete);
+      socket.off('monitored_sync_error', onError);
+    };
+  }, [socket, onShowToast, onRemoveToast]);
+
   useEffect(() => {
     let timeoutId: number;
 
@@ -502,44 +500,6 @@ export const MonitoredPage = ({
   }, []);
 
   useEffect(() => {
-    const targets = monitored.filter((author) => !author.photo_url && Number.isFinite(author.id));
-    if (targets.length === 0) return;
-
-    let cancelled = false;
-
-    void (async () => {
-      const results = await Promise.allSettled(targets.map(async (author) => {
-        const response = await listMonitoredBooks(author.id);
-        return {
-          id: author.id,
-          photo_url: selectFallbackPhotoFromMonitoredBooks(response.books),
-        };
-      }));
-
-      if (cancelled) return;
-
-      const fallbackById = new Map<number, string>();
-      for (const result of results) {
-        if (result.status === 'fulfilled' && result.value.photo_url) {
-          fallbackById.set(result.value.id, result.value.photo_url);
-        }
-      }
-
-      if (fallbackById.size === 0) return;
-
-      setMonitored((prev) => prev.map((author) => {
-        if (author.photo_url) return author;
-        const fallback = fallbackById.get(author.id);
-        return fallback ? { ...author, photo_url: fallback } : author;
-      }));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [monitored]);
-
-  useEffect(() => {
     let alive = true;
     setMonitoredLoaded(false);
 
@@ -553,9 +513,9 @@ export const MonitoredPage = ({
       }
 
       const settings = entity.settings && typeof entity.settings === 'object' ? entity.settings : {};
-      const photo_url = typeof (settings as Record<string, unknown>).photo_url === 'string'
+      const photo_url = (typeof (settings as Record<string, unknown>).photo_url === 'string'
         ? ((settings as Record<string, unknown>).photo_url as string)
-        : undefined;
+        : undefined) || entity.best_book_cover_url || undefined;
       const books_count = typeof (settings as Record<string, unknown>).books_count === 'number'
         ? ((settings as Record<string, unknown>).books_count as number)
         : undefined;
@@ -917,6 +877,17 @@ export const MonitoredPage = ({
     return keys;
   }, [monitoredBooksSources]);
 
+  // All books that are monitored via any entity (author or book kind)
+  const monitoredBooksKeySet = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of monitoredBooksRows) {
+      const provider = (row.provider || '').trim().toLowerCase();
+      const providerId = (row.provider_book_id || '').trim().toLowerCase();
+      if (provider && providerId) keys.add(`${provider}:${providerId}`);
+    }
+    return keys;
+  }, [monitoredBooksRows]);
+
   useEffect(() => {
     if (monitoredBooksSources.length === 0) {
       setMonitoredBooksRows([]);
@@ -978,7 +949,7 @@ export const MonitoredPage = ({
     return () => {
       alive = false;
     };
-  }, [monitored, monitoredBooksReloadTick]);
+  }, [monitoredBooksSources, monitoredBooksReloadTick]);
 
   const monitoredEntityIdByName = useMemo(() => {
     const map = new Map<string, number>();
@@ -1520,8 +1491,10 @@ export const MonitoredPage = ({
   const isBookSearchResultMonitored = useCallback((book: Book): boolean => {
     const provider = (book.provider || '').trim().toLowerCase();
     const providerId = (book.provider_id || '').trim().toLowerCase();
-    return Boolean(provider && providerId && monitoredSingleBookKeySet.has(`${provider}:${providerId}`));
-  }, [monitoredSingleBookKeySet]);
+    if (!provider || !providerId) return false;
+    const key = `${provider}:${providerId}`;
+    return monitoredSingleBookKeySet.has(key) || monitoredBooksKeySet.has(key);
+  }, [monitoredSingleBookKeySet, monitoredBooksKeySet]);
 
   const findMonitoredBookRow = useCallback((book: Book): MonitoredBookListRow | undefined => {
     const provider = (book.provider || '').trim();
@@ -1767,12 +1740,8 @@ export const MonitoredPage = ({
     }
 
     closeMonitorModal();
-    setAuthorQuery('');
-    setAuthorResults([]);
-    setAuthorCards([]);
-    setBookSearchResults([]);
-    setSearchError(null);
-    setView('landing');
+    // Keep search results visible so user can monitor more authors from the same results.
+    // monitoredNames auto-updates from setMonitored above, flipping the button to "Monitored".
   }, [closeMonitorModal, deriveRootFromAuthorDir, monitorModalState, normalizeAbsolutePath, persistLearnedRoots]);
 
   const navigateToAuthorPage = useCallback((payload: {

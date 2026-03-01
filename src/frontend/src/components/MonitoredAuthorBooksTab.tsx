@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
-import { getMetadataBookInfo, searchMetadata } from '../services/api';
 import {
   listMonitoredBooks,
   MonitoredBookRow,
   MonitoredBooksResponse,
   syncMonitoredEntity,
-  updateMonitoredBooksSeries,
   listMonitoredBookFiles,
   MonitoredBookFileRow,
   scanMonitoredEntityFiles,
   updateMonitoredBooksMonitorFlags,
 } from '../services/monitoredApi';
+import { useSocket } from '../contexts/SocketContext';
 import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
 import { BookDetailsModal } from './BookDetailsModal';
@@ -369,9 +368,6 @@ export const MonitoredAuthorBooksTab = ({
     if (saved === 'compact' || saved === 'card') return 'compact';
     return 'table';
   });
-  const [showCompilationsInView, setShowCompilationsInView] = useState<boolean>(() => {
-    return localStorage.getItem('authorBooksShowCompilations') !== 'false';
-  });
   const [showMultipleSeries, setShowMultipleSeries] = useState<boolean>(() => {
     return localStorage.getItem('authorBooksShowMultipleSeries') === 'true';
   });
@@ -405,6 +401,8 @@ export const MonitoredAuthorBooksTab = ({
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [monitoredBookRows, setMonitoredBookRows] = useState<MonitoredBookRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
+  const [syncPhase, setSyncPhase] = useState<string | null>(null);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
   const [isBooksToolbarPinned, setIsBooksToolbarPinned] = useState(false);
@@ -412,6 +410,8 @@ export const MonitoredAuthorBooksTab = ({
   const booksToolbarRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollToSeriesRef = useRef<string | null>(null);
   const lastAutoRefreshSignatureRef = useRef({ value: '' });
+
+  const { socket } = useSocket();
 
   // --- callbacks ---
   const resolvePrimaryActionForContentType = useCallback((contentType: ContentType): ReleasePrimaryAction => {
@@ -505,6 +505,7 @@ export const MonitoredAuthorBooksTab = ({
   const handleRefreshAndScan = useCallback(async () => {
     if (!monitoredEntityId) { setRefreshKey((k) => k + 1); return; }
     setIsRefreshing(true);
+    setSyncStatus('syncing');
     setFilesError(null);
     try {
       setRefreshKey((k) => k + 1);
@@ -636,7 +637,6 @@ export const MonitoredAuthorBooksTab = ({
   // localStorage persistence
   useEffect(() => { try { localStorage.setItem('authorBooksSort', booksSort); } catch { /* ignore */ } }, [booksSort]);
   useEffect(() => { try { localStorage.setItem('authorBooksViewMode', booksViewMode); } catch { /* ignore */ } }, [booksViewMode]);
-  useEffect(() => { try { localStorage.setItem('authorBooksShowCompilations', showCompilationsInView ? 'true' : 'false'); } catch { /* ignore */ } }, [showCompilationsInView]);
   useEffect(() => { try { localStorage.setItem('authorBooksShowMultipleSeries', showMultipleSeries ? 'true' : 'false'); } catch { /* ignore */ } }, [showMultipleSeries]);
   useEffect(() => { try { localStorage.setItem('authorBooksCompactMinWidth', String(booksCompactMinWidth)); } catch { /* ignore */ } }, [booksCompactMinWidth]);
 
@@ -657,7 +657,7 @@ export const MonitoredAuthorBooksTab = ({
     const monitoredBookToBook = (row: MonitoredBookRow): Book => ({
       id: `${row.provider || 'unknown'}:${row.provider_book_id || row.id}`,
       title: row.title,
-      author: row.authors || '',
+      author: row.authors || author?.name || '',
       year: row.publish_year != null ? String(row.publish_year) : undefined,
       release_date: row.release_date || undefined,
       preview: row.cover_url || undefined,
@@ -667,13 +667,21 @@ export const MonitoredAuthorBooksTab = ({
       series_name: (row.series_name || '').trim() || undefined,
       series_position: row.series_position != null ? row.series_position : undefined,
       series_count: row.series_count != null ? row.series_count : undefined,
-      additional_series: row.additional_series || undefined,
+      additional_series: (() => {
+        const primaryName = (row.series_name || '').trim();
+        const raw = row.additional_series || (() => {
+          if (!row.all_series || typeof row.all_series !== 'string') return undefined;
+          try { const p = JSON.parse(row.all_series); return Array.isArray(p) ? p as Array<{ name: string; position?: number; count?: number }> : undefined; } catch { return undefined; }
+        })();
+        if (!raw) return undefined;
+        // Exclude the primary series — the modal renders it separately via series_name
+        const filtered = raw.filter((s) => (s.name || '').trim() !== primaryName);
+        return filtered.length > 0 ? filtered : undefined;
+      })(),
       language: (row.language || '').trim() || undefined,
-      is_compilation: Boolean(Number(row.is_compilation || 0)),
+      description: (typeof row.description === 'string' && row.description.trim()) ? row.description.trim() : undefined,
       display_fields: [
-        ...(typeof row.release_date === 'string' && row.release_date.trim()
-          ? [{ label: 'Release Date', value: row.release_date.trim() }]
-          : []),
+        { label: 'Release Date', value: (typeof row.release_date === 'string' && row.release_date.trim()) ? row.release_date.trim() : 'TBA' },
         ...(typeof row.rating === 'number'
           ? [{ label: 'Rating', value: `${row.rating.toFixed(1)}${typeof row.ratings_count === 'number' ? ` (${row.ratings_count.toLocaleString()})` : ''}`, icon: 'star' }]
           : []),
@@ -683,176 +691,18 @@ export const MonitoredAuthorBooksTab = ({
       ],
     });
 
-    const enrichSeriesInfo = async (
-      allBooks: Book[],
-      opts?: { maxEnrich?: number },
-    ): Promise<Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>> => {
-      const candidates = allBooks
-        .filter((book) => Boolean(book.provider && book.provider_id))
-        .filter((book) => !(book.series_name && book.series_position != null));
-      const maxEnrich = Math.max(1, opts?.maxEnrich ?? 40);
-      const batchSize = 5;
-      const toEnrich = candidates.slice(0, maxEnrich);
-      if (toEnrich.length === 0) return [];
-      const enriched: Array<Book | null> = [];
-      for (let i = 0; i < toEnrich.length; i += batchSize) {
-        const batch = toEnrich.slice(i, i + batchSize);
-        const batchResults = await Promise.all(
-          batch.map(async (book) => {
-            try {
-              if (!book.provider || !book.provider_id) return null;
-              return await getMetadataBookInfo(book.provider, book.provider_id);
-            } catch { return null; }
-          })
-        );
-        enriched.push(...batchResults);
-        if (isCancelled) return [];
-      }
-      const byId = new Map(enriched.filter((b): b is Book => Boolean(b)).map((b) => [b.id, b]));
-      const seriesUpdates: Array<{ provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }> = [];
-      if (byId.size > 0) {
-        setBooks((current) =>
-          current.map((book) => {
-            const update = byId.get(book.id);
-            if (!update) return book;
-            if (book.series_name && book.series_position != null) return book;
-            if (update.series_name && update.provider && update.provider_id) {
-              seriesUpdates.push({ provider: update.provider, provider_book_id: update.provider_id, series_name: update.series_name, series_position: update.series_position, series_count: update.series_count });
-            }
-            return { ...book, series_name: update.series_name, series_position: update.series_position, series_count: update.series_count };
-          })
-        );
-      }
-      return seriesUpdates;
-    };
-
-    const forceRefresh = refreshKey > 0;
-
-    const fetchFromProvider = async (authorName: string, cachedBooks: Book[]): Promise<void> => {
-      const hasCachedDisplay = cachedBooks.length > 0;
-      if (hasCachedDisplay) setIsRefreshing(true);
-      const limit = 40;
-      const maxPages = 12;
-      const maxBooks = 500;
-      let page = 1;
-      let hasMore = true;
-      const allFreshBooks: Book[] = [];
-      while (hasMore && page <= maxPages && allFreshBooks.length < maxBooks) {
-        const result = await searchMetadata('', limit, 'relevance', { author: authorName }, page, 'ebook');
-        if (isCancelled) return;
-        allFreshBooks.push(...result.books);
-        if (!hasCachedDisplay) setBooks([...allFreshBooks]);
-        hasMore = result.hasMore;
-        page += 1;
-      }
-      setIsLoadingBooks(false);
-      const missingSeriesCount = allFreshBooks.filter((book) => !(book.series_name || '').trim() || book.series_position == null).length;
-      const seriesUpdates = await enrichSeriesInfo(allFreshBooks, { maxEnrich: Math.max(40, Math.min(300, missingSeriesCount || 40)) });
-      if (isCancelled) return;
-      const providerSeriesUpdates = allFreshBooks
-        .filter((book) => Boolean(book.provider && book.provider_id && (book.series_name || '').trim()))
-        .map((book) => ({ provider: String(book.provider), provider_book_id: String(book.provider_id), series_name: String(book.series_name).trim(), series_position: book.series_position, series_count: book.series_count }));
-      const mergedSeriesUpdatesByKey = new Map<string, { provider: string; provider_book_id: string; series_name: string; series_position?: number; series_count?: number }>();
-      for (const update of providerSeriesUpdates) mergedSeriesUpdatesByKey.set(`${update.provider}:${update.provider_book_id}`, update);
-      for (const update of seriesUpdates) mergedSeriesUpdatesByKey.set(`${update.provider}:${update.provider_book_id}`, update);
-      const mergedSeriesUpdates = Array.from(mergedSeriesUpdatesByKey.values());
-      const freshById = new Map(allFreshBooks.map((book) => [book.id, book]));
-      if (!hasCachedDisplay) {
-        setBooks((current) => current.map((book) => {
-          const fresh = freshById.get(book.id);
-          if (!fresh) return book;
-          return { ...book, ...fresh, series_name: book.series_name || fresh.series_name, series_position: book.series_position ?? fresh.series_position, series_count: book.series_count ?? fresh.series_count };
-        }));
-      }
-      if (hasCachedDisplay) {
-        setBooks((current) => {
-          const cachedById = new Map(cachedBooks.map((b) => [b.id, b]));
-          const currentById = new Map(current.map((b) => [b.id, b]));
-          const merged: Book[] = [];
-          const seen = new Set<string>();
-          for (const book of current) {
-            seen.add(book.id);
-            const cached = cachedById.get(book.id);
-            const fresh = freshById.get(book.id);
-            merged.push({ ...book, ...fresh, series_name: book.series_name || fresh?.series_name || cached?.series_name, series_position: book.series_position ?? fresh?.series_position ?? cached?.series_position, series_count: book.series_count ?? fresh?.series_count ?? cached?.series_count });
-          }
-          for (const book of cachedBooks) {
-            if (!seen.has(book.id)) {
-              const cur = currentById.get(book.id);
-              const fresh = freshById.get(book.id);
-              merged.push(cur || fresh || book);
-            }
-          }
-          for (const fresh of allFreshBooks) {
-            if (!seen.has(fresh.id)) { seen.add(fresh.id); merged.push(fresh); }
-          }
-          return merged;
-        });
-        setIsRefreshing(false);
-      }
-      if (monitoredEntityId) {
-        try {
-          await syncMonitoredEntity(monitoredEntityId);
-          if (mergedSeriesUpdates.length > 0) {
-            const result = await updateMonitoredBooksSeries(monitoredEntityId, mergedSeriesUpdates);
-            if ((result.updated || 0) < mergedSeriesUpdates.length) {
-              console.warn('MonitoredAuthorBooksTab: partial series metadata persistence', { monitoredEntityId, attempted: mergedSeriesUpdates.length, updated: result.updated });
-            }
-          }
-        } catch (error) {
-          console.warn('MonitoredAuthorBooksTab: failed to persist monitored sync/series metadata', { monitoredEntityId, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-    };
-
     const loadBooks = async () => {
       setBooks([]);
       setBooksError(null);
       setIsLoadingBooks(true);
       setIsRefreshing(false);
       try {
-        let cachedBooks: Book[] = [];
-        let skipProviderRefresh = false;
-        if (monitoredEntityId) {
-          try {
-            const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
-            if (isCancelled) return;
-            if (resp.books.length > 0) {
-              const visibleRows = resp.books.filter((row) => !Boolean(Number(row.hidden || 0)));
-              setMonitoredBookRows(visibleRows);
-              cachedBooks = visibleRows.map(monitoredBookToBook);
-              setBooks(cachedBooks);
-              setIsLoadingBooks(false);
-              const cachedHasSeriesGrouping = cachedBooks.some((book) => (book.series_name || '').trim().length > 0);
-              const cachedHasMissingSeriesMetadata = cachedBooks.some((book) => !(book.series_name || '').trim() || book.series_position == null);
-              if (!forceRefresh && cachedHasSeriesGrouping && !cachedHasMissingSeriesMetadata) {
-                skipProviderRefresh = true;
-              }
-              if (!forceRefresh && cachedHasSeriesGrouping && cachedHasMissingSeriesMetadata) {
-                setIsRefreshing(true);
-                const cachedSeriesUpdates = await enrichSeriesInfo(cachedBooks, { maxEnrich: 240 });
-                if (isCancelled) return;
-                let refreshedBooksForDecision = cachedBooks;
-                if (monitoredEntityId && cachedSeriesUpdates.length > 0) {
-                  try {
-                    await updateMonitoredBooksSeries(monitoredEntityId, cachedSeriesUpdates);
-                    const refreshed = await listMonitoredBooks(monitoredEntityId);
-                    if (isCancelled) return;
-                    setMonitoredBookRows(refreshed.books || []);
-                    refreshedBooksForDecision = (refreshed.books || []).map(monitoredBookToBook);
-                    setBooks(refreshedBooksForDecision);
-                  } catch (error) {
-                    console.warn('MonitoredAuthorBooksTab: failed to persist cached series enrichment', { monitoredEntityId, error: error instanceof Error ? error.message : String(error) });
-                  }
-                }
-                const stillMissingSeriesMetadata = refreshedBooksForDecision.some((book) => !(book.series_name || '').trim() || book.series_position == null);
-                setIsRefreshing(false);
-                skipProviderRefresh = !stillMissingSeriesMetadata;
-              }
-            }
-          } catch { /* cache miss is fine */ }
-        }
-        if (!skipProviderRefresh) await fetchFromProvider(author.name, cachedBooks);
+        if (!monitoredEntityId) return;
+        const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
+        if (isCancelled) return;
+        setSyncStatus(resp.sync_status ?? 'idle');
+        setMonitoredBookRows(resp.books);
+        setBooks(resp.books.map(monitoredBookToBook));
       } catch (e) {
         if (isCancelled) return;
         const message = e instanceof Error ? e.message : 'Failed to load books';
@@ -865,6 +715,34 @@ export const MonitoredAuthorBooksTab = ({
     void loadBooks();
     return () => { isCancelled = true; };
   }, [author, monitoredEntityId, refreshKey]);
+
+  // WebSocket: listen for background sync events for this entity
+  useEffect(() => {
+    if (!socket || !monitoredEntityId) return;
+    const handleSyncComplete = (data: { entity_id: number; books_count: number }) => {
+      if (data.entity_id !== monitoredEntityId) return;
+      setSyncStatus('idle');
+      setSyncPhase(null);
+      setRefreshKey((k) => k + 1);
+    };
+    const handleSyncError = (data: { entity_id: number; error: string }) => {
+      if (data.entity_id !== monitoredEntityId) return;
+      setSyncStatus('error');
+      setSyncPhase(null);
+    };
+    const handleSyncProgress = (data: { entity_id: number; phase: string }) => {
+      if (data.entity_id !== monitoredEntityId) return;
+      setSyncPhase(data.phase);
+    };
+    socket.on('monitored_sync_complete', handleSyncComplete);
+    socket.on('monitored_sync_error', handleSyncError);
+    socket.on('monitored_sync_progress', handleSyncProgress);
+    return () => {
+      socket.off('monitored_sync_complete', handleSyncComplete);
+      socket.off('monitored_sync_error', handleSyncError);
+      socket.off('monitored_sync_progress', handleSyncProgress);
+    };
+  }, [socket, monitoredEntityId]);
 
   // Prune stale selections when books change
   useEffect(() => {
@@ -887,6 +765,16 @@ export const MonitoredAuthorBooksTab = ({
     const parseYear = (value?: string) => {
       const n = value ? Number.parseInt(value, 10) : Number.NaN;
       return Number.isFinite(n) ? n : null;
+    };
+    // Returns a book's position within a specific series group, falling back to
+    // additional_series when the group key differs from the book's primary series.
+    const getSeriesPos = (book: Book, groupKey: string): number => {
+      const primaryKey = (book.series_name || '').trim();
+      if (!groupKey || groupKey === '__standalone__' || groupKey === primaryKey) {
+        return book.series_position ?? Number.POSITIVE_INFINITY;
+      }
+      const match = book.additional_series?.find((a) => (a.name || '').trim() === groupKey);
+      return match?.position ?? Number.POSITIVE_INFINITY;
     };
     const withinGroupSort = (a: Book, b: Book) => {
       if (booksSort === 'title_asc') return (a.title || '').localeCompare(b.title || '');
@@ -924,6 +812,18 @@ export const MonitoredAuthorBooksTab = ({
       if (by == null) return -1;
       if (booksSort === 'year_asc') return ay - by;
       return by - ay;
+    };
+    // Series-aware sort: uses getSeriesPos so position reflects the current group.
+    const makeSeriesGroupSort = (groupKey: string) => (a: Book, b: Book) => {
+      if (booksSort === 'series_asc' || booksSort === 'series_desc') {
+        const aPos = getSeriesPos(a, groupKey);
+        const bPos = getSeriesPos(b, groupKey);
+        if (aPos !== bPos) return aPos - bPos;
+        const ay = parseYear(a.year); const by = parseYear(b.year);
+        if (ay != null && by != null && ay !== by) return ay - by;
+        return (a.title || '').localeCompare(b.title || '');
+      }
+      return withinGroupSort(a, b);
     };
 
     if (booksSort === 'year_desc' || booksSort === 'year_asc') {
@@ -975,7 +875,7 @@ export const MonitoredAuthorBooksTab = ({
 
     const groups = seriesSorted.map((key) => {
       const gb = [...(seriesMap.get(key) ?? [])];
-      gb.sort(withinGroupSort);
+      gb.sort(makeSeriesGroupSort(key));
       return { key, title: key, books: gb };
     });
 
@@ -1091,7 +991,6 @@ export const MonitoredAuthorBooksTab = ({
           }
           if (!passesUpcomingFilter(book)) return false;
           if (booksFilters.showNoReleaseDate && extractReleaseDateCandidate(book)) return false;
-          if (!showCompilationsInView && Boolean(book.is_compilation)) return false;
           return true;
         });
         if (booksPassingFilters.length === 0) return null;
@@ -1103,7 +1002,7 @@ export const MonitoredAuthorBooksTab = ({
         return { ...g, books: matching };
       })
       .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, activeBooksQuery, booksFilters, getMonitoredAvailabilityForBook, showCompilationsInView]);
+  }, [groupedBooks, activeBooksQuery, booksFilters, getMonitoredAvailabilityForBook]);
 
   const activeFiltersCount = useMemo(() => {
     let count = booksFilters.availability !== 'all' ? 1 : 0;
@@ -1586,9 +1485,6 @@ export const MonitoredAuthorBooksTab = ({
                     <button type="button" onClick={toggleSelectAllVisibleBooks} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${allVisibleBooksSelected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}>
                       <span>{allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}</span>{allVisibleBooksSelected ? <span>✓</span> : null}
                     </button>
-                    <button type="button" onClick={() => setShowCompilationsInView((prev) => !prev)} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${showCompilationsInView ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} title="Show or hide compilation/boxed editions">
-                      <span>Show compilations</span>{showCompilationsInView ? <span>✓</span> : null}
-                    </button>
                     <button type="button" onClick={() => setShowMultipleSeries((prev) => !prev)} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${showMultipleSeries ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} title="Show all series a book belongs to, not just the primary one">
                       <span>Show multiple series</span>{showMultipleSeries ? <span>✓</span> : null}
                     </button>
@@ -1650,9 +1546,17 @@ export const MonitoredAuthorBooksTab = ({
 
           <div className="px-4 py-3">
             {booksError && <div className="text-sm text-red-500">{booksError}</div>}
+            {syncStatus === 'syncing' ? (
+              <div className="flex items-center gap-2 mb-2 text-sm text-gray-500 dark:text-gray-400">
+                <svg className="w-4 h-4 animate-spin flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" /></svg>
+                <span>{syncPhase === 'fetching_books' ? 'Fetching books…' : syncPhase === 'scanning_files' ? 'Scanning filesystem…' : syncPhase === 'fetching_covers' ? 'Fetching covers…' : 'Syncing…'}</span>
+              </div>
+            ) : syncStatus === 'error' ? (
+              <div className="text-sm text-red-500 mb-2">Sync error — try refreshing manually.</div>
+            ) : null}
             {books.length === 0 && isLoadingBooks ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">Loading…</div>
-            ) : books.length === 0 && !isLoadingBooks ? (
+            ) : books.length === 0 && !isLoadingBooks && syncStatus !== 'syncing' ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">No books found.</div>
             ) : filteredGroupedBooks.length === 0 ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
@@ -1694,20 +1598,28 @@ export const MonitoredAuthorBooksTab = ({
                                 const sortedTypes = [availability?.ebookFormat, availability?.audiobookFormat].filter((f): f is string => typeof f === 'string' && f.length > 0);
                                 const availabilityLabels = [...(availability.hasEbook ? ['ebook'] : []), ...(availability.hasAudiobook ? ['audio'] : [])];
                                 const displayTypes = sortedTypes.length > 0 ? sortedTypes : availabilityLabels;
+                                const isPrimaryGroup = group.key === '__standalone__' || group.key === (book.series_name || '').trim();
+                                let groupSeriesPos = book.series_position;
+                                let groupSeriesCount = book.series_count;
+                                if (!isPrimaryGroup && book.additional_series) {
+                                  const match = book.additional_series.find((a) => (a.name || '').trim() === group.key);
+                                  groupSeriesPos = match ? (match.position ?? undefined) : undefined;
+                                  groupSeriesCount = match ? (match.count ?? undefined) : undefined;
+                                }
                                 const seriesName = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
-                                const seriesLabel = seriesName && book.series_position != null ? `${seriesName} #${book.series_position}` : seriesName;
+                                const seriesLabel = seriesName && groupSeriesPos != null ? `${seriesName} #${groupSeriesPos}` : seriesName;
                                 const isSeriesSort = booksSort === 'series_asc' || booksSort === 'series_desc';
                                 const isYearSort = booksSort === 'year_asc' || booksSort === 'year_desc';
                                 const showSeriesName = Boolean(seriesLabel) && !isSeriesSort;
                                 const showExtendedMeta = booksCompactMinWidth >= 178;
                                 const popularity = extractBookPopularity(book);
                                 const showPopularity = booksCompactMinWidth >= 194 && (popularity.rating !== null || popularity.readersCount !== null);
-                                const yearPart = !isYearSort ? (book.year || '—') : '';
+                                const yearPart = !isYearSort ? (book.year || 'TBA') : '';
                                 const metaLine = yearPart ? `${yearPart}${book.author ? ` • ${book.author}` : ''}` : (book.author || '');
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
                                 return (
-                                  <MonitoredBookCompactTile key={book.id} title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={book.series_position} seriesCount={book.series_count} primaryFormat={displayTypes[0]} extraFormatsCount={Math.max(0, displayTypes.length - 1)} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
+                                  <MonitoredBookCompactTile key={book.id} title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} primaryFormat={displayTypes[0]} extraFormatsCount={Math.max(0, displayTypes.length - 1)} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
                                 );
                               })}
                             </div>
@@ -1724,7 +1636,15 @@ export const MonitoredAuthorBooksTab = ({
                                   const hasPopularity = popularity.rating !== null || popularity.readersCount !== null;
                                   const seriesLabel = (book.series_name || (group.key !== '__standalone__' ? group.title : '') || '').trim();
                                   const showSeriesInfo = Boolean(seriesLabel) && group.key !== '__standalone__';
-                                  const hasSeriesPosition = book.series_position != null;
+                                  const isPrimaryGroup = group.key === '__standalone__' || group.key === (book.series_name || '').trim();
+                                  let groupSeriesPos = book.series_position;
+                                  let groupSeriesCount = book.series_count;
+                                  if (!isPrimaryGroup && book.additional_series) {
+                                    const match = book.additional_series.find((a) => (a.name || '').trim() === group.key);
+                                    groupSeriesPos = match ? (match.position ?? undefined) : undefined;
+                                    groupSeriesCount = match ? (match.count ?? undefined) : undefined;
+                                  }
+                                  const hasSeriesPosition = groupSeriesPos != null;
                                   const isDormant = isBookDormant(book);
                                   return (
                                     <MonitoredBookTableRow key={book.id} isDimmed={isDormant}
@@ -1747,8 +1667,8 @@ export const MonitoredAuthorBooksTab = ({
                                           <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
                                           {showSeriesInfo ? <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">• {seriesLabel}</span> : null}
                                           {hasSeriesPosition ? (
-                                            <span className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)', textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)' }} title={seriesLabel ? `${seriesLabel}${book.series_count ? ` (${book.series_position}/${book.series_count})` : ` (#${book.series_position})`}` : undefined}>
-                                              #{book.series_position}{book.series_count != null ? `/${book.series_count}` : ''}
+                                            <span className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)', textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)' }} title={seriesLabel ? `${seriesLabel}${groupSeriesCount ? ` (${groupSeriesPos}/${groupSeriesCount})` : ` (#${groupSeriesPos})`}` : undefined}>
+                                              #{groupSeriesPos}{groupSeriesCount != null ? `/${groupSeriesCount}` : ''}
                                             </span>
                                           ) : null}
                                         </div>

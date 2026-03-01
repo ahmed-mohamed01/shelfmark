@@ -1589,6 +1589,8 @@ function App() {
               defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
               metadataSortOptions={config?.metadata_sort_options}
               status={currentStatus}
+              onShowToast={showToast}
+              onRemoveToast={removeToast}
             />
           )
         }

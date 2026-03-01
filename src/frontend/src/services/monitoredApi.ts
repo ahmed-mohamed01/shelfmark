@@ -119,6 +119,7 @@ export interface MonitoredEntity {
   settings?: Record<string, unknown>;
   cached_bio?: string | null;
   cached_source_url?: string | null;
+  best_book_cover_url?: string | null;
 }
 
 export interface MonitoredBookRow {
@@ -130,14 +131,13 @@ export interface MonitoredBookRow {
   authors?: string | null;
   publish_year?: number | null;
   release_date?: string | null;
+  description?: string | null;
   isbn_13?: string | null;
   cover_url?: string | null;
   series_name?: string | null;
   series_position?: number | null;
   series_count?: number | null;
   language?: string | null;
-  hidden?: number | boolean;
-  is_compilation?: number | boolean;
   rating?: number | null;
   ratings_count?: number | null;
   readers_count?: number | null;
@@ -154,6 +154,7 @@ export interface MonitoredBookRow {
   ebook_available_format?: string | null;
   audiobook_available_format?: string | null;
   additional_series?: Array<{ name: string; position?: number; count?: number }>;
+  all_series?: string | null;
   no_release_date?: boolean;
   state: string;
   first_seen_at: string;
@@ -329,18 +330,7 @@ export const listMonitoredBookDownloadHistory = async (
   );
 };
 
-export interface MonitoredSearchRunResult {
-  ok: boolean;
-  entity_id: number;
-  content_type: 'ebook' | 'audiobook';
-  total_candidates: number;
-  queued: number;
-  no_match: number;
-  below_cutoff: number;
-  failed: number;
-}
-
-export interface RecordMonitoredBookAttemptPayload {
+interface RecordMonitoredBookAttemptPayload {
   provider: string;
   provider_book_id: string;
   content_type: 'ebook' | 'audiobook';
@@ -352,7 +342,7 @@ export interface RecordMonitoredBookAttemptPayload {
   error_message?: string;
 }
 
-export const recordMonitoredBookAttempt = async (
+const recordMonitoredBookAttempt = async (
   entityId: number,
   payload: RecordMonitoredBookAttemptPayload,
 ): Promise<{ ok: boolean }> => {
@@ -401,16 +391,6 @@ export const recordMonitoredAutoSearchAttempt = async (
       err instanceof Error ? err.message : String(err)
     );
   }
-};
-
-export const runMonitoredEntitySearch = async (
-  entityId: number,
-  contentType: 'ebook' | 'audiobook',
-): Promise<MonitoredSearchRunResult> => {
-  return fetchJSON<MonitoredSearchRunResult>(`${API_BASE}/monitored/${entityId}/search`, {
-    method: 'POST',
-    body: JSON.stringify({ content_type: contentType }),
-  });
 };
 
 export interface MonitoredFilesScanResult {
@@ -479,6 +459,7 @@ export const scanMonitoredEntityFiles = async (entityId: number): Promise<Monito
 export interface MonitoredBooksResponse {
   books: MonitoredBookRow[];
   last_checked_at: string | null;
+  sync_status: 'idle' | 'syncing' | 'error';
 }
 
 export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBooksResponse> => {
@@ -495,21 +476,6 @@ export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBoo
   return request;
 };
 
-export const updateMonitoredBooksSeries = async (
-  entityId: number,
-  updates: Array<{
-    provider: string;
-    provider_book_id: string;
-    series_name: string;
-    series_position?: number | null;
-    series_count?: number | null;
-  }>,
-): Promise<{ ok: boolean; updated: number }> => {
-  return fetchJSON<{ ok: boolean; updated: number }>(`${API_BASE}/monitored/${entityId}/books/series`, {
-    method: 'PATCH',
-    body: JSON.stringify(updates),
-  });
-};
 
 export interface MonitoredBookMonitorFlagsPatch {
   provider: string;

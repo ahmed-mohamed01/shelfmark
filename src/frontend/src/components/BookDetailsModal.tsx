@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Book, ContentType } from '../types';
-import { getMetadataBookInfo } from '../services/api';
 import {
   listMonitoredBookDownloadHistory,
   MonitoredBookAttemptHistoryRow,
@@ -140,44 +139,6 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     }
 
     setEnrichedBook(book);
-
-    const provider = book.provider || '';
-    const providerId = book.provider_id || '';
-    if (!provider || !providerId) {
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const full = await getMetadataBookInfo(provider, providerId);
-        if (cancelled) return;
-        setEnrichedBook((current) => {
-          if (!current) return full;
-          return {
-            ...current,
-            publisher: full.publisher ?? current.publisher,
-            release_date: full.release_date ?? current.release_date,
-            language: full.language ?? current.language,
-            genres: full.genres ?? current.genres,
-            description: full.description ?? current.description,
-            display_fields: full.display_fields ?? current.display_fields,
-            source_url: full.source_url ?? current.source_url,
-            isbn_10: full.isbn_10 ?? current.isbn_10,
-            isbn_13: full.isbn_13 ?? current.isbn_13,
-            series_name: full.series_name ?? current.series_name,
-            series_position: full.series_position ?? current.series_position,
-            series_count: full.series_count ?? current.series_count,
-          };
-        });
-      } catch {
-        // best-effort
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [book]);
 
   useEffect(() => {
@@ -459,32 +420,29 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                 </div>
 
                 {enrichedBook.description ? (
-                  <div className="text-sm text-gray-600 dark:text-gray-400 relative">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">
                     <p
                       ref={(el) => setDescriptionEl(el)}
                       className={descriptionExpanded ? '' : 'line-clamp-3'}
                     >
                       {enrichedBook.description}
-                      {descriptionExpanded && descriptionOverflows ? (
-                        <>
-                          {' '}
-                          <button
-                            type="button"
-                            onClick={() => setDescriptionExpanded(false)}
-                            className="text-emerald-600 dark:text-emerald-400 hover:underline font-medium inline"
-                          >
-                            Show less
-                          </button>
-                        </>
-                      ) : null}
                     </p>
-                    {!descriptionExpanded && descriptionOverflows ? (
+                    {descriptionOverflows ? (
                       <button
                         type="button"
-                        onClick={() => setDescriptionExpanded(true)}
-                        className="absolute bottom-0 right-0 text-emerald-600 dark:text-emerald-400 hover:underline font-medium pl-8 bg-gradient-to-r from-transparent via-[var(--bg)] to-[var(--bg)] sm:via-[var(--bg-soft)] sm:to-[var(--bg-soft)]"
+                        onClick={() => setDescriptionExpanded((v) => !v)}
+                        className="mt-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
                       >
-                        more
+                        {descriptionExpanded ? 'Show less' : 'Show more'}
+                        <svg
+                          className={`w-3 h-3 transition-transform duration-200 ${descriptionExpanded ? '-rotate-90' : 'rotate-90'}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          strokeWidth={2}
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
                       </button>
                     ) : null}
                   </div>

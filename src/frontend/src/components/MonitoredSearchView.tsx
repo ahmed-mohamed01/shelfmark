@@ -89,6 +89,16 @@ export function MonitoredSearchView({
   noopDownload,
   isDesktop,
 }: MonitoredSearchViewProps) {
+  // Prefer enriched author cards; fall back to plain name-only stubs from text search
+  const displayedAuthors: MetadataAuthor[] = authorCards.length > 0
+    ? authorCards
+    : authorResults.map((name) => ({
+        provider: 'hardcover',
+        provider_id: name,
+        name,
+        stats: { books_count: null },
+      } as MetadataAuthor));
+
   return (
     <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
       <div className="mb-3 pb-2 border-b border-black/10 dark:border-white/10">
@@ -262,8 +272,8 @@ export function MonitoredSearchView({
             customAction={{
               label: 'Monitor',
               onClick: (book) => onBookMonitorAction(book),
-              isDisabled: () => false,
-              getLabel: (book) => (isBookMonitored(book) ? 'Unmonitor' : 'Monitor'),
+              isDisabled: (book) => isBookMonitored(book),
+              getLabel: (book) => (isBookMonitored(book) ? 'Monitored' : 'Monitor'),
             }}
           />
         )
@@ -272,15 +282,7 @@ export function MonitoredSearchView({
       ) : (
         authorViewMode === 'list' ? (
           <div className="flex flex-col gap-2">
-            {(authorCards.length > 0
-              ? authorCards
-              : authorResults.map((name) => ({
-                  provider: 'hardcover',
-                  provider_id: name,
-                  name,
-                  stats: { books_count: null },
-                } as MetadataAuthor))
-            ).map((author) => {
+            {displayedAuthors.map((author) => {
               const name = author.name;
               const isMonitored = monitoredNames.has(name.toLowerCase());
               const booksCount = author.stats?.books_count;
@@ -314,15 +316,7 @@ export function MonitoredSearchView({
           </div>
         ) : (
           <div className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : GRID_CLASSES.compact}`}>
-            {(authorCards.length > 0
-              ? authorCards
-              : authorResults.map((name) => ({
-                  provider: 'hardcover',
-                  provider_id: name,
-                  name,
-                  stats: { books_count: null },
-                } as MetadataAuthor))
-            ).map((author, index) => {
+            {displayedAuthors.map((author, index) => {
               const name = author.name;
               const isMonitored = monitoredNames.has(name.toLowerCase());
               return (
