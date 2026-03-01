@@ -941,11 +941,34 @@ export const MonitoredAuthorBooksTab = ({
   }, [activeBookDetails, files]);
 
   const filteredGroupedBooks = useMemo(() => {
-    const q = activeBooksQuery.trim().toLowerCase();
+    const query = activeBooksQuery.trim().toLowerCase();
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const currentYear = todayStart.getFullYear();
     const selectedSeries = new Set(booksFilters.seriesKeys);
+
+    const isDormantBookInGroup = (book: Book): boolean => {
+      const provider = (book.provider || '').trim();
+      const providerId = (book.provider_id || '').trim();
+      if (!provider || !providerId) return false;
+
+      const row = monitoredBookRowByKey.get(`${provider}:${providerId}`);
+      if (!row) return false;
+
+      if (monitoredBookTracksEbook(row) || monitoredBookTracksAudiobook(row)) {
+        return false;
+      }
+
+      const availability = getMonitoredAvailabilityForBook(book);
+      return !availability.hasEbook && !availability.hasAudiobook;
+    };
+
+    const hasNoReleaseDate = (book: Book): boolean => {
+      const releaseDateRaw = extractReleaseDateCandidate(book);
+      if (!releaseDateRaw) return true;
+      const parsed = parseReleaseDateValue(releaseDateRaw);
+      return parsed.date === null && parsed.yearOnly === null;
+    };
 
     const passesUpcomingFilter = (book: Book): boolean => {
       if (!booksFilters.showUpcoming) return true;
@@ -956,8 +979,16 @@ export const MonitoredAuthorBooksTab = ({
           const millis = parsed.date.getTime();
           if (millis <= todayStart.getTime()) return false;
           if (booksFilters.upcomingWindow === 'any') return true;
-          if (booksFilters.upcomingWindow === '30d') { const end = new Date(todayStart); end.setDate(end.getDate() + 30); return millis <= end.getTime(); }
-          if (booksFilters.upcomingWindow === '90d') { const end = new Date(todayStart); end.setDate(end.getDate() + 90); return millis <= end.getTime(); }
+          if (booksFilters.upcomingWindow === '30d') {
+            const end = new Date(todayStart);
+            end.setDate(end.getDate() + 30);
+            return millis <= end.getTime();
+          }
+          if (booksFilters.upcomingWindow === '90d') {
+            const end = new Date(todayStart);
+            end.setDate(end.getDate() + 90);
+            return millis <= end.getTime();
+          }
           return parsed.date.getFullYear() === currentYear;
         }
         if (parsed.yearOnly != null) {
@@ -967,45 +998,86 @@ export const MonitoredAuthorBooksTab = ({
           return true;
         }
       }
+
       const fallbackYear = book.year ? Number.parseInt(book.year, 10) : Number.NaN;
       if (!Number.isFinite(fallbackYear)) return false;
+      if (fallbackYear < currentYear) return false;
       if (booksFilters.upcomingWindow === 'this_year') return fallbackYear === currentYear;
       if (booksFilters.upcomingWindow === '30d' || booksFilters.upcomingWindow === '90d') return false;
-      return fallbackYear >= currentYear;
+      return true;
     };
 
-    return groupedBooks
-      .map((g) => {
-        if (selectedSeries.size > 0 && !selectedSeries.has(g.key)) return null;
-        const booksPassingFilters = g.books.filter((book) => {
-          if (booksFilters.availability !== 'all') {
-            const av = getMonitoredAvailabilityForBook(book);
-            const hasEbook = av.hasEbook; const hasAudiobook = av.hasAudiobook; const hasAny = hasEbook || hasAudiobook;
-            if (booksFilters.availability === 'missing_any' && hasAny) return false;
-            if (booksFilters.availability === 'missing_ebook' && hasEbook) return false;
-            if (booksFilters.availability === 'missing_audiobook' && hasAudiobook) return false;
-            if (booksFilters.availability === 'available_any' && !hasAny) return false;
-            if (booksFilters.availability === 'ebook_available' && !hasEbook) return false;
-            if (booksFilters.availability === 'audiobook_available' && !hasAudiobook) return false;
-            if (booksFilters.availability === 'both_available' && !(hasEbook && hasAudiobook)) return false;
-          }
+    const passesAvailabilityFilter = (book: Book): boolean => {
+      if (booksFilters.availability === 'all') return true;
+      const availability = getMonitoredAvailabilityForBook(book);
+      const hasEbook = availability.hasEbook;
+      const hasAudiobook = availability.hasAudiobook;
+      if (booksFilters.availability === 'available_any') return hasEbook || hasAudiobook;
+      if (booksFilters.availability === 'ebook_available') return hasEbook;
+      if (booksFilters.availability === 'audiobook_available') return hasAudiobook;
+      if (booksFilters.availability === 'both_available') return hasEbook && hasAudiobook;
+      if (booksFilters.availability === 'missing_any') return !hasEbook || !hasAudiobook;
+      if (booksFilters.availability === 'missing_ebook') return !hasEbook;
+      if (booksFilters.availability === 'missing_audiobook') return !hasAudiobook;
+      return true;
+    };
+
+    const passesQueryFilter = (book: Book): boolean => {
+      if (!query) return true;
+      const title = (book.title || '').toLowerCase();
+      const author = (book.author || '').toLowerCase();
+      const series = (book.series_name || '').toLowerCase();
+      return title.includes(query) || author.includes(query) || series.includes(query);
+    };
+
+    const groups = groupedBooks
+      .filter((group) => selectedSeries.size === 0 || selectedSeries.has(group.key))
+      .map((group) => {
+        const nextBooks = group.books.filter((book) => {
+          if (!passesQueryFilter(book)) return false;
+          if (!passesAvailabilityFilter(book)) return false;
+          if (booksFilters.showNoReleaseDate && !hasNoReleaseDate(book)) return false;
           if (!passesUpcomingFilter(book)) return false;
-          if (booksFilters.showNoReleaseDate && extractReleaseDateCandidate(book)) return false;
           return true;
         });
-        if (booksPassingFilters.length === 0) return null;
-        if (!q) return { ...g, books: booksPassingFilters };
-        const titleMatch = (g.title || '').toLowerCase().includes(q);
-        if (titleMatch) return { ...g, books: booksPassingFilters };
-        const matching = booksPassingFilters.filter((b) => (b.title || '').toLowerCase().includes(q));
-        if (matching.length === 0) return null;
-        return { ...g, books: matching };
+        const isDormantGroup = nextBooks.length > 0 && nextBooks.every((book) => isDormantBookInGroup(book));
+        return { ...group, books: nextBooks, isDormantGroup };
       })
-      .filter((g): g is { key: string; title: string; books: Book[] } => g != null);
-  }, [groupedBooks, activeBooksQuery, booksFilters, getMonitoredAvailabilityForBook]);
+      .filter((group) => group.books.length > 0);
+
+    return [...groups].sort((a, b) => {
+      const ad = Boolean((a as any).isDormantGroup);
+      const bd = Boolean((b as any).isDormantGroup);
+      if (ad === bd) return 0;
+      return ad ? 1 : -1;
+    });
+  }, [
+    activeBooksQuery,
+    booksFilters,
+    getMonitoredAvailabilityForBook,
+    groupedBooks,
+    monitoredBookRowByKey,
+  ]);
+
+  useEffect(() => {
+    if (filteredGroupedBooks.length === 0) return;
+    setCollapsedGroups((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const group of filteredGroupedBooks as any[]) {
+        if (next[group.key] !== undefined) continue;
+        if (group.isDormantGroup) {
+          next[group.key] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [filteredGroupedBooks]);
 
   const activeFiltersCount = useMemo(() => {
-    let count = booksFilters.availability !== 'all' ? 1 : 0;
+    let count = 0;
+    if (booksFilters.availability !== 'all') count += 1;
     if (booksFilters.showUpcoming) count += 1;
     if (booksFilters.showNoReleaseDate) count += 1;
     if (booksFilters.seriesKeys.length > 0) count += 1;
@@ -1565,6 +1637,7 @@ export const MonitoredAuthorBooksTab = ({
                 <div className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
                   {filteredGroupedBooks.map((group, groupIndex) => {
                     const isCollapsed = collapsedGroups[group.key] ?? false;
+                    const isDormantGroup = Boolean((group as any).isDormantGroup);
                     const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
                     const booksInSeries = group.books.length;
                     const booksOnDisk = group.books.reduce((count, book) => {
@@ -1573,7 +1646,7 @@ export const MonitoredAuthorBooksTab = ({
                     }, 0);
                     return (
                       <div key={group.key} data-series-key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
-                        <div className="w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3">
+                        <div className={`w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3 ${isDormantGroup ? 'opacity-60' : ''}`}>
                           <button type="button" onClick={() => toggleSelectAllInGroup(group.books)} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
                             {allSelectedInGroup ? (
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /><path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" /></svg>
