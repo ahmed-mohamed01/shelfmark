@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useState } from 'react';
 import type { MonitoredBookRow } from '../services/monitoredApi';
 import { RowThumbnail } from './RowThumbnail';
 import {
@@ -68,6 +68,11 @@ export function MonitoredBooksView({
   getSelectionKey,
   renderBookActions,
 }: MonitoredBooksViewProps) {
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
+  }, []);
+
   if (isLoading) {
     return <div className="text-sm text-gray-500 dark:text-gray-400">Loading monitored books…</div>;
   }
@@ -84,17 +89,30 @@ export function MonitoredBooksView({
     <>
       {viewMode === 'table' ? (
         <div className="flex flex-col gap-4">
-          {bookGroups.map((group) => (
+          {bookGroups.map((group) => {
+            const isCollapsed = groupBy !== 'none' && Boolean(collapsedGroups[group.key]);
+            return (
             <div key={group.key} className="flex flex-col gap-2">
               {groupBy !== 'none' ? (
-                <div className="flex items-center gap-2 px-1 pt-1">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  className="flex items-center gap-2 px-1 pt-1 hover-action w-fit"
+                  aria-expanded={!isCollapsed}
+                >
+                  <svg
+                    className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
                   <h3 className="text-xs sm:text-sm font-semibold text-gray-700 dark:text-gray-200">{group.title}</h3>
                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
                     {group.rows.length}
                   </span>
-                </div>
+                </button>
               ) : null}
-              {group.rows.map((book) => {
+              {!isCollapsed && group.rows.map((book) => {
                 const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
                 const tracksEbook = monitoredBookTracksEbook(book);
                 const tracksAudiobook = monitoredBookTracksAudiobook(book);
@@ -196,21 +214,35 @@ export function MonitoredBooksView({
                 );
               })}
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="flex flex-col gap-5">
-          {bookGroups.map((group) => (
+          {bookGroups.map((group) => {
+            const isCollapsed = groupBy !== 'none' && Boolean(collapsedGroups[group.key]);
+            return (
             <div key={group.key} className="flex flex-col gap-3">
               {groupBy !== 'none' ? (
-                <div className="flex items-center gap-2 px-1 pt-1">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  className="flex items-center gap-2 px-1 pt-1 hover-action w-fit"
+                  aria-expanded={!isCollapsed}
+                >
+                  <svg
+                    className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
                   <h3 className="text-xs sm:text-sm font-semibold text-gray-700 dark:text-gray-200">{group.title}</h3>
                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
                     {group.rows.length}
                   </span>
-                </div>
+                </button>
               ) : null}
-              <div
+              {!isCollapsed && <div
                 className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
                 style={booksGridStyle}
               >
@@ -267,9 +299,10 @@ export function MonitoredBooksView({
                     />
                   );
                 })}
-              </div>
+              </div>}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
       {showLoadError && loadError ? (
