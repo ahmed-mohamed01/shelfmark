@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Book, ContentType } from '../types';
 import {
   listMonitoredBookDownloadHistory,
+  listMonitoredBookFiles,
+  listMonitoredBooks,
+  MonitoredBookRow,
   MonitoredBookAttemptHistoryRow,
   MonitoredBookDownloadHistoryRow,
   MonitoredBookFileRow,
@@ -9,29 +12,31 @@ import {
 import { getFormatColor } from '../utils/colorMaps';
 
 interface BookDetailsModalProps {
-  book: Book | null;
-  files: MonitoredBookFileRow[];
-  monitoredEntityId?: number | null;
+  entityId: number | null;
+  provider: string | null;
+  providerBookId: string | null;
   onClose: () => void;
-  onOpenSearch: (contentType: ContentType) => void;
-  monitorEbook?: boolean;
-  monitorAudiobook?: boolean;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
-  renderEmbeddedSearch?: (contentType: ContentType) => ReactNode;
+  renderEmbeddedSearch: (book: Book, contentType: ContentType) => ReactNode;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOpenSearch, monitorEbook, monitorAudiobook, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ left: 0, width: 0 });
 
-  const [enrichedBook, setEnrichedBook] = useState<Book | null>(null);
+  const [bookRow, setBookRow] = useState<MonitoredBookRow | null>(null);
+  const [bookLoading, setBookLoading] = useState(false);
+  const [bookError, setBookError] = useState<string | null>(null);
+
+  const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
+
   const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
   const [attemptHistoryRows, setAttemptHistoryRows] = useState<MonitoredBookAttemptHistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -69,27 +74,91 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
   }, [tab]);
 
   useEffect(() => {
-    if (book) {
+    if (entityId != null && provider && providerBookId) {
       const previousOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
       return () => {
         document.body.style.overflow = previousOverflow;
       };
     }
-  }, [book]);
+  }, [entityId, provider, providerBookId]);
 
   useEffect(() => {
-    if (!book || !monitoredEntityId) {
-      setHistoryRows([]);
-      setAttemptHistoryRows([]);
-      setHistoryError(null);
-      setHistoryLoading(false);
+    if (entityId == null || !provider || !providerBookId) {
+      setBookRow(null);
+      setBookLoading(false);
+      setBookError(null);
       return;
     }
 
-    const provider = (book.provider || '').trim();
-    const providerId = (book.provider_id || '').trim();
-    if (!provider || !providerId) {
+    let cancelled = false;
+    setBookLoading(true);
+    setBookError(null);
+    void (async () => {
+      try {
+        const resp = await listMonitoredBooks(entityId);
+        if (cancelled) return;
+        const normalizedProvider = provider.trim();
+        const normalizedProviderId = providerBookId.trim();
+        const match = (resp.books || []).find((row) => {
+          if ((row.provider || '').trim() !== normalizedProvider) return false;
+          if ((row.provider_book_id || '').trim() !== normalizedProviderId) return false;
+          return true;
+        });
+        setBookRow(match || null);
+        if (!match) {
+          setBookError('Book not found in monitored database.');
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setBookRow(null);
+        setBookError(error instanceof Error ? error.message : 'Failed to load book details');
+      } finally {
+        if (!cancelled) {
+          setBookLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entityId, provider, providerBookId]);
+
+  useEffect(() => {
+    if (entityId == null || !provider || !providerBookId) {
+      setFiles([]);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resp = await listMonitoredBookFiles(entityId);
+        if (cancelled) return;
+        const normalizedProvider = provider.trim();
+        const normalizedProviderId = providerBookId.trim();
+        const matching = (resp.files || []).filter((file) => {
+          if ((file.provider || '').trim() !== normalizedProvider) return false;
+          if ((file.provider_book_id || '').trim() !== normalizedProviderId) return false;
+          return true;
+        });
+        setFiles(matching);
+      } catch (error) {
+        if (cancelled) return;
+        setFiles([]);
+      } finally {
+        // Nothing else to do.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entityId, provider, providerBookId]);
+
+  useEffect(() => {
+    if (entityId == null || !provider || !providerBookId) {
       setHistoryRows([]);
       setAttemptHistoryRows([]);
       setHistoryError(null);
@@ -102,7 +171,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     setHistoryError(null);
     void (async () => {
       try {
-        const resp = await listMonitoredBookDownloadHistory(monitoredEntityId, provider, providerId, 30);
+        const resp = await listMonitoredBookDownloadHistory(entityId, provider.trim(), providerBookId.trim(), 30);
         if (cancelled) return;
         setHistoryRows(resp.history || []);
         setAttemptHistoryRows(resp.attempt_history || []);
@@ -122,34 +191,23 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return () => {
       cancelled = true;
     };
-  }, [book?.id, book?.provider, book?.provider_id, monitoredEntityId]);
+  }, [entityId, provider, providerBookId]);
 
   useEffect(() => {
-    if (book) setTab('files');
-  }, [book?.id]);
-
-  useEffect(() => {
-    if (!book) {
-      setEnrichedBook(null);
-      setHistoryRows([]);
-      setAttemptHistoryRows([]);
-      setHistoryError(null);
-      setHistoryLoading(false);
-      return;
+    if (entityId != null && provider && providerBookId) {
+      setTab('files');
     }
-
-    setEnrichedBook(book);
-  }, [book]);
+  }, [entityId, provider, providerBookId]);
 
   useEffect(() => {
     setDescriptionExpanded(false);
     setDescriptionOverflows(false);
-  }, [enrichedBook?.id]);
+  }, [bookRow?.id]);
 
   useEffect(() => {
     if (!descriptionEl || descriptionExpanded) return;
     setDescriptionOverflows(descriptionEl.scrollHeight > descriptionEl.clientHeight);
-  }, [descriptionEl, descriptionExpanded, enrichedBook?.description]);
+  }, [descriptionEl, descriptionExpanded, bookRow?.description]);
 
   const matchedFileTypes = useMemo(() => {
     const set = new Set<string>();
@@ -160,23 +218,19 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [files]);
 
-  const hasEbookFile = useMemo(() => {
-    return isEnabledFlag(enrichedBook?.has_ebook_available);
-  }, [enrichedBook?.has_ebook_available]);
+  const hasEbookFile = useMemo(() => isEnabledFlag(bookRow?.has_ebook_available), [bookRow?.has_ebook_available]);
 
-  const hasAudiobookFile = useMemo(() => {
-    return isEnabledFlag(enrichedBook?.has_audiobook_available);
-  }, [enrichedBook?.has_audiobook_available]);
+  const hasAudiobookFile = useMemo(() => isEnabledFlag(bookRow?.has_audiobook_available), [bookRow?.has_audiobook_available]);
 
   const foundEbookPath = useMemo(() => {
-    const path = (enrichedBook?.ebook_path || '').trim();
+    const path = (bookRow?.ebook_path || '').trim();
     return path || null;
-  }, [enrichedBook?.ebook_path]);
+  }, [bookRow?.ebook_path]);
 
   const foundAudiobookPath = useMemo(() => {
-    const path = (enrichedBook?.audiobook_path || '').trim();
+    const path = (bookRow?.audiobook_path || '').trim();
     return path || null;
-  }, [enrichedBook?.audiobook_path]);
+  }, [bookRow?.audiobook_path]);
 
   const latestDownloaderFinalPath = useMemo(() => {
     for (const row of historyRows) {
@@ -191,94 +245,123 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
   const ebookMonitorLocked = hasEbookFile;
   const audiobookMonitorLocked = hasAudiobookFile;
 
-  const genresSummary = useMemo(() => {
-    if (!Array.isArray(enrichedBook?.genres) || enrichedBook.genres.length === 0) {
-      return null;
+  const monitorEbook = useMemo(() => isEnabledFlag(bookRow?.monitor_ebook), [bookRow?.monitor_ebook]);
+  const monitorAudiobook = useMemo(() => isEnabledFlag(bookRow?.monitor_audiobook), [bookRow?.monitor_audiobook]);
+
+  const parsedAdditionalSeries = useMemo((): Array<{ name: string; position?: number; count?: number }> | undefined => {
+    const primary = (bookRow?.series_name || '').trim();
+
+    const direct = Array.isArray((bookRow as any)?.additional_series) ? (bookRow as any).additional_series : null;
+    if (direct && direct.length > 0) {
+      const filtered = direct.filter((s: any) => s && typeof s.name === 'string')
+        .filter((s: any) => !primary || String(s.name).trim() !== primary);
+      return filtered.length > 0 ? filtered : undefined;
     }
-    return enrichedBook.genres.slice(0, 5).join(', ');
-  }, [enrichedBook?.genres]);
+
+    const raw = typeof (bookRow as any)?.all_series === 'string' ? (bookRow as any).all_series : null;
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return undefined;
+      const filtered = parsed
+        .filter((s: any) => s && typeof s.name === 'string')
+        .map((s: any) => ({ name: String(s.name), position: s.position, count: s.count }))
+        .filter((s: any) => !primary || String(s.name).trim() !== primary);
+      return filtered.length > 0 ? filtered : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [bookRow]);
+
+  const embeddedSearchBook = useMemo<Book | null>(() => {
+    if (!bookRow) return null;
+    const authors = typeof bookRow.authors === 'string' ? bookRow.authors.trim() : '';
+    const seriesName = typeof bookRow.series_name === 'string' ? bookRow.series_name.trim() : '';
+    return {
+      id: String(bookRow.id),
+      title: bookRow.title || 'Unknown title',
+      author: authors || 'Unknown author',
+      year: typeof bookRow.publish_year === 'number' ? String(bookRow.publish_year) : undefined,
+      preview: bookRow.cover_url || undefined,
+      provider: bookRow.provider || undefined,
+      provider_id: bookRow.provider_book_id || undefined,
+      release_date: bookRow.release_date || undefined,
+      language: typeof bookRow.language === 'string' ? bookRow.language : undefined,
+      description: bookRow.description || undefined,
+      isbn_13: bookRow.isbn_13 || undefined,
+      isbn_10: (bookRow as any).isbn_10 || undefined,
+      series_name: seriesName || undefined,
+      series_position: bookRow.series_position ?? undefined,
+      series_count: bookRow.series_count ?? undefined,
+      additional_series: parsedAdditionalSeries,
+      has_ebook_available: isEnabledFlag(bookRow.has_ebook_available),
+      has_audiobook_available: isEnabledFlag(bookRow.has_audiobook_available),
+      ebook_path: bookRow.ebook_path || undefined,
+      audiobook_path: bookRow.audiobook_path || undefined,
+      ebook_available_format: bookRow.ebook_available_format || undefined,
+      audiobook_available_format: bookRow.audiobook_available_format || undefined,
+    };
+  }, [bookRow, parsedAdditionalSeries]);
+
+  const genresSummary = useMemo(() => null, []);
 
   const releaseDateSummary = useMemo(() => {
-    if (typeof enrichedBook?.release_date === 'string' && enrichedBook.release_date.trim()) {
-      return enrichedBook.release_date.trim();
+    if (typeof bookRow?.release_date === 'string' && bookRow.release_date.trim()) {
+      return bookRow.release_date.trim();
     }
-
-    if (!Array.isArray(enrichedBook?.display_fields)) {
-      return enrichedBook?.year || null;
+    if (typeof bookRow?.publish_year === 'number') {
+      return String(bookRow.publish_year);
     }
-
-    for (const field of enrichedBook.display_fields) {
-      if (!field || typeof field.label !== 'string' || typeof field.value !== 'string') {
-        continue;
-      }
-      const label = field.label.trim().toLowerCase();
-      if (!label) continue;
-      const isReleaseDateLabel =
-        label.includes('released') ||
-        label.includes('release date') ||
-        label.includes('publish date') ||
-        label.includes('publication date') ||
-        label === 'release' ||
-        label === 'published' ||
-        label === 'publication';
-      if (!isReleaseDateLabel) continue;
-
-      const value = field.value.trim();
-      if (value) return value;
-    }
-
-    return enrichedBook?.year || null;
-  }, [enrichedBook?.release_date, enrichedBook?.display_fields, enrichedBook?.year]);
+    return null;
+  }, [bookRow?.release_date, bookRow?.publish_year]);
 
   const displayFields = useMemo(() => {
     const fields: Array<{ label: string; value: string }> = [];
-
-    if (enrichedBook?.publisher) {
-      fields.push({ label: 'Publisher', value: enrichedBook.publisher });
+    if (typeof bookRow?.language === 'string' && bookRow.language.trim()) {
+      fields.push({ label: 'Language', value: bookRow.language.trim() });
     }
-
-    if (enrichedBook?.language) {
-      fields.push({ label: 'Language', value: enrichedBook.language });
+    if (typeof bookRow?.readers_count === 'number' && Number.isFinite(bookRow.readers_count)) {
+      fields.push({ label: 'Readers', value: bookRow.readers_count.toLocaleString() });
     }
-
-    if (Array.isArray(enrichedBook?.display_fields)) {
-      for (const field of enrichedBook.display_fields) {
-        if (!field || typeof field.label !== 'string' || typeof field.value !== 'string') {
-          continue;
-        }
-        const label = field.label.trim();
-        const value = field.value.trim();
-        if (!label || !value) {
-          continue;
-        }
-        const lowerLabel = label.toLowerCase();
-        const isGenresLabel = lowerLabel === 'genres' || lowerLabel === 'genre';
-        const isReleaseDateLabel =
-          (lowerLabel.includes('release') || lowerLabel.includes('publish') || lowerLabel.includes('publication')) &&
-          lowerLabel.includes('date');
-        if (isGenresLabel || isReleaseDateLabel) {
-          continue;
-        }
-        fields.push({ label, value });
+    if (typeof bookRow?.rating === 'number' && Number.isFinite(bookRow.rating)) {
+      if (typeof bookRow?.ratings_count === 'number' && Number.isFinite(bookRow.ratings_count)) {
+        fields.push({ label: 'Rating', value: `${bookRow.rating.toFixed(1)} (${bookRow.ratings_count.toLocaleString()})` });
+      } else {
+        fields.push({ label: 'Rating', value: bookRow.rating.toFixed(1) });
       }
     }
+    return fields;
+  }, [bookRow?.language, bookRow?.readers_count, bookRow?.rating, bookRow?.ratings_count]);
 
-    const seen = new Set<string>();
-    return fields.filter((field) => {
-      const key = `${field.label.toLowerCase()}::${field.value.toLowerCase()}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-  }, [enrichedBook?.publisher, enrichedBook?.language, enrichedBook?.display_fields]);
+  if (entityId == null || !provider || !providerBookId) return null;
+  if (!bookRow || bookLoading || !embeddedSearchBook) {
+    return (
+      <div className="modal-overlay active sm:px-6 sm:py-6">
+        <div className="details-container w-full max-w-4xl h-full sm:h-auto settings-modal-enter" role="dialog" aria-modal="true">
+          <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
+            <header className="flex items-start gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+              <div className="flex-1 space-y-1 min-w-0">
+                <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
+                <h3 className="text-lg font-semibold leading-snug truncate">Loading…</h3>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button type="button" onClick={handleClose} className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100" aria-label="Close">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </header>
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6">
+              {bookError ? <div className="text-sm text-red-500">{bookError}</div> : <div className="text-sm text-gray-600 dark:text-gray-300">Loading details from monitored database…</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-  if (!book && !isClosing) return null;
-  if (!book) return null;
-  if (!enrichedBook) return null;
-
-  const titleId = `book-details-modal-title-${enrichedBook.id}`;
+  const titleId = `book-details-modal-title-${bookRow.id}`;
   const formatHistoryDate = (value?: string | null): string => {
     if (!value) return 'Unknown date';
     const parsed = new Date(value);
@@ -321,9 +404,9 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
             <div className="flex-1 space-y-1 min-w-0">
               <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
               <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
-                {enrichedBook.title || 'Untitled'}
+                {embeddedSearchBook.title || 'Untitled'}
               </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{enrichedBook.author || 'Unknown author'}</p>
+              <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{embeddedSearchBook.author || 'Unknown author'}</p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
@@ -341,9 +424,9 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
 
           <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="flex gap-4 px-5 py-4 border-b border-[var(--border-muted)]">
-              {enrichedBook.preview ? (
+              {embeddedSearchBook.preview ? (
                 <img
-                  src={enrichedBook.preview}
+                  src={embeddedSearchBook.preview}
                   alt="Book cover"
                   className="rounded-lg shadow-md object-cover object-top flex-shrink-0 w-20 h-[120px]"
                 />
@@ -355,33 +438,33 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
 
               <div className="flex-1 min-w-0 space-y-2">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
-                  {enrichedBook.year ? <span>{enrichedBook.year}</span> : null}
-                  {enrichedBook.series_name ? (
+                  {embeddedSearchBook.year ? <span>{embeddedSearchBook.year}</span> : null}
+                  {embeddedSearchBook.series_name ? (
                     onNavigateToSeries ? (
                       <button
                         type="button"
-                        onClick={() => onNavigateToSeries(enrichedBook.series_name!)}
+                        onClick={() => onNavigateToSeries(embeddedSearchBook.series_name!)}
                         className="truncate text-emerald-600 dark:text-emerald-400 hover:underline text-left"
-                        title={`Go to ${enrichedBook.series_name} series`}
+                        title={`Go to ${embeddedSearchBook.series_name} series`}
                       >
-                        {enrichedBook.series_position != null ? (
-                          <>#{ enrichedBook.series_position}{enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}</>
+                        {embeddedSearchBook.series_position != null ? (
+                          <>#{ embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>
                         ) : (
-                          <>Part of {enrichedBook.series_name}</>
+                          <>Part of {embeddedSearchBook.series_name}</>
                         )}
                       </button>
                     ) : (
                       <span className="truncate">
-                        {enrichedBook.series_position != null ? (
-                          <>#{ enrichedBook.series_position}{enrichedBook.series_count != null ? `/${enrichedBook.series_count}` : ''} in {enrichedBook.series_name}</>
+                        {embeddedSearchBook.series_position != null ? (
+                          <>#{ embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>
                         ) : (
-                          <>Part of {enrichedBook.series_name}</>
+                          <>Part of {embeddedSearchBook.series_name}</>
                         )}
                       </span>
                     )
                   ) : null}
-                  {enrichedBook.additional_series && enrichedBook.additional_series.length > 0 ? (
-                    enrichedBook.additional_series.map((s) => {
+                  {embeddedSearchBook.additional_series && embeddedSearchBook.additional_series.length > 0 ? (
+                    embeddedSearchBook.additional_series.map((s: { name: string; position?: number; count?: number }) => {
                       const seriesKey = `${s.name}-${s.position ?? ''}`;
                       const label = s.position != null ? (
                         <>#{ s.position}{s.count != null ? `/${s.count}` : ''} in {s.name}</>
@@ -419,13 +502,13 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   )}
                 </div>
 
-                {enrichedBook.description ? (
+                {embeddedSearchBook.description ? (
                   <div className="text-sm text-gray-600 dark:text-gray-400">
                     <p
                       ref={(el) => setDescriptionEl(el)}
                       className={descriptionExpanded ? '' : 'line-clamp-3'}
                     >
-                      {enrichedBook.description}
+                      {embeddedSearchBook.description}
                     </p>
                     {descriptionOverflows ? (
                       <button
@@ -501,12 +584,12 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                 ) : null}
 
                 <div className="flex flex-wrap items-center gap-3 text-xs">
-                  {(enrichedBook.isbn_13 || enrichedBook.isbn_10) ? (
-                    <span className="text-gray-500 dark:text-gray-400">ISBN: {enrichedBook.isbn_13 || enrichedBook.isbn_10}</span>
+                  {(embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10) ? (
+                    <span className="text-gray-500 dark:text-gray-400">ISBN: {embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10}</span>
                   ) : null}
-                  {enrichedBook.source_url ? (
+                  {embeddedSearchBook.source_url ? (
                     <a
-                      href={enrichedBook.source_url}
+                      href={embeddedSearchBook.source_url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline"
@@ -519,7 +602,7 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   ) : null}
                 </div>
 
-                {monitoredEntityId ? (
+                {entityId != null ? (
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-[var(--border-muted)]">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Available:</span>
@@ -775,43 +858,9 @@ export const BookDetailsModal = ({ book, files, monitoredEntityId, onClose, onOp
                   </div>
                 </div>
               ) : tab === 'ebooks' ? (
-                renderEmbeddedSearch ? (
-                  renderEmbeddedSearch('ebook')
-                ) : (
-                  <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
-                    <div className="text-sm text-gray-600 dark:text-gray-300">
-                      Search providers for ebook releases for this book.
-                    </div>
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() => onOpenSearch('ebook')}
-                        className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
-                      >
-                        Open eBook search
-                      </button>
-                    </div>
-                  </div>
-                )
+                renderEmbeddedSearch(embeddedSearchBook, 'ebook')
               ) : (
-                renderEmbeddedSearch ? (
-                  renderEmbeddedSearch('audiobook')
-                ) : (
-                  <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
-                    <div className="text-sm text-gray-600 dark:text-gray-300">
-                      Search providers for audiobook releases for this book.
-                    </div>
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() => onOpenSearch('audiobook')}
-                        className="px-4 py-2 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium"
-                      >
-                        Open audiobook search
-                      </button>
-                    </div>
-                  </div>
-                )
+                renderEmbeddedSearch(embeddedSearchBook, 'audiobook')
               )}
             </div>
           </div>

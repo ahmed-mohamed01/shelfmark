@@ -5,8 +5,6 @@ import {
   MonitoredBookRow,
   MonitoredBooksResponse,
   syncMonitoredEntity,
-  listMonitoredBookFiles,
-  MonitoredBookFileRow,
   scanMonitoredEntityFiles,
   updateMonitoredBooksMonitorFlags,
 } from '../services/monitoredApi';
@@ -42,19 +40,6 @@ const AudiobookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: st
 // ---------------------------------------------------------------------------
 // Types and constants
 // ---------------------------------------------------------------------------
-
-const CONTENT_TYPE_CONFIG = {
-  ebook: {
-    displayName: 'eBook',
-    monitorFlag: 'monitor_ebook' as const,
-    availabilityField: 'has_ebook_available' as const,
-  },
-  audiobook: {
-    displayName: 'Audiobook',
-    monitorFlag: 'monitor_audiobook' as const,
-    availabilityField: 'has_audiobook_available' as const,
-  },
-} satisfies Record<ContentType, { displayName: string; monitorFlag: string; availabilityField: string }>;
 
 const SEARCH_DROPDOWN_OPTIONS: Array<{
   contentType: ContentType;
@@ -392,13 +377,10 @@ export const MonitoredAuthorBooksTab = ({
   const [bulkDownloadRunningByType, setBulkDownloadRunningByType] = useState<Record<ContentType, boolean>>({
     ebook: false, audiobook: false,
   });
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [filesError, setFilesError] = useState<string | null>(null);
   const [monitorSearchBusyByType, setMonitorSearchBusyByType] = useState<Record<ContentType, boolean>>({
     ebook: false, audiobook: false,
   });
   const [monitorSearchSummary, setMonitorSearchSummary] = useState<string | null>(null);
-  const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [monitoredBookRows, setMonitoredBookRows] = useState<MonitoredBookRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
@@ -448,46 +430,10 @@ export const MonitoredAuthorBooksTab = ({
     };
   }, [isPageMode]);
 
-  // Reset files state when author/entity clears
-  useEffect(() => {
-    if (!author || !monitoredEntityId) {
-      setFilesLoading(false);
-      setFilesError(null);
-      setFiles([]);
-    }
-  }, [author, monitoredEntityId]);
-
   // Reset initial book selection flag on author/initial-provider change
   useEffect(() => {
     setHasAppliedInitialBookSelection(false);
   }, [author?.name, initialBookProvider, initialBookProviderId]);
-
-  // Load files from entity
-  useEffect(() => {
-    if (!author || !monitoredEntityId) return;
-    let alive = true;
-    const load = async () => {
-      setFilesLoading(true);
-      setFilesError(null);
-      try {
-        const resp = await listMonitoredBookFiles(monitoredEntityId);
-        if (!alive) return;
-        setFiles(resp.files || []);
-      } catch (e) {
-        if (!alive) return;
-        const message = e instanceof Error ? e.message : 'Failed to load matched files';
-        console.warn('MonitoredAuthorBooksTab: Failed to load matched files', message);
-        if (!String(message).toLowerCase().includes('directory not found')) {
-          setFilesError(message);
-        }
-        setFiles([]);
-      } finally {
-        if (alive) setFilesLoading(false);
-      }
-    };
-    void load();
-    return () => { alive = false; };
-  }, [author, monitoredEntityId]);
 
   // Apply initial book selection
   useEffect(() => {
@@ -503,10 +449,10 @@ export const MonitoredAuthorBooksTab = ({
 
   // handleRefreshAndScan
   const handleRefreshAndScan = useCallback(async () => {
+    if (!author) return;
     if (!monitoredEntityId) { setRefreshKey((k) => k + 1); return; }
     setIsRefreshing(true);
     setSyncStatus('syncing');
-    setFilesError(null);
     try {
       setRefreshKey((k) => k + 1);
       await syncMonitoredEntity(monitoredEntityId);
@@ -514,18 +460,12 @@ export const MonitoredAuthorBooksTab = ({
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Refresh & scan failed';
       console.warn('MonitoredAuthorBooksTab: Refresh & scan failed', message);
-      if (!String(message).toLowerCase().includes('directory not found')) setFilesError(message);
     } finally {
       try {
-        const [filesResp, booksResp] = await Promise.all([
-          listMonitoredBookFiles(monitoredEntityId),
-          listMonitoredBooks(monitoredEntityId),
-        ]);
-        setFiles(filesResp.files || []);
+        const booksResp = await listMonitoredBooks(monitoredEntityId);
         setMonitoredBookRows(booksResp.books || []);
       } catch (e) {
         console.warn('MonitoredAuthorBooksTab: failed to reload after refresh', e);
-        setFiles([]);
       }
       setIsRefreshing(false);
     }
@@ -536,60 +476,16 @@ export const MonitoredAuthorBooksTab = ({
     if (!monitoredEntityId || !onGetReleases) return;
     setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: true }));
     setMonitorSearchSummary(null);
-    setFilesError(null);
     try {
       await scanMonitoredEntityFiles(monitoredEntityId);
-      const [filesResp, booksResp] = await Promise.all([
-        listMonitoredBookFiles(monitoredEntityId),
-        listMonitoredBooks(monitoredEntityId),
-      ]);
-      setFiles(filesResp.files || []);
-      const refreshedMonitoredRows = booksResp.books || [];
-      setMonitoredBookRows(refreshedMonitoredRows);
-      const { monitorFlag, availabilityField, displayName } = CONTENT_TYPE_CONFIG[contentType];
-      const candidates = refreshedMonitoredRows.filter((row) => {
-        if (!row.provider || !row.provider_book_id) return false;
-        if (!Boolean(row[monitorFlag])) return false;
-        if (isEnabledMonitoredFlag(row[availabilityField])) return false;
-        return true;
-      });
-      if (candidates.length === 0) {
-        setMonitorSearchSummary(`${displayName} search: No candidates to search (all have files or none monitored).`);
-        return;
-      }
-      const candidateBooks: Book[] = candidates.map((row) => ({
-        id: `${row.provider || 'unknown'}:${row.provider_book_id || row.id}`,
-        title: row.title,
-        author: row.authors || '',
-        year: row.publish_year != null ? String(row.publish_year) : undefined,
-        release_date: row.release_date || undefined,
-        preview: row.cover_url || undefined,
-        isbn_13: row.isbn_13 || undefined,
-        provider: row.provider || undefined,
-        provider_id: row.provider_book_id || undefined,
-        series_name: row.series_name || undefined,
-        series_position: row.series_position != null ? row.series_position : undefined,
-        series_count: row.series_count != null ? row.series_count : undefined,
-      }));
-      const batchId = `monitored:${monitoredEntityId}:${contentType}:${Date.now()}`;
-      const batchTotal = candidateBooks.length;
-      for (let idx = 0; idx < candidateBooks.length; idx += 1) {
-        const book = candidateBooks[idx];
-        await triggerReleaseSearch(book, contentType, 'auto_search_download', {
-          suppressPerBookAutoSearchToasts: true,
-          batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
-        });
-      }
-      const updatedFilesResp = await listMonitoredBookFiles(monitoredEntityId);
-      setFiles(updatedFilesResp.files || []);
-      setRefreshKey((k) => k + 1);
+      const booksResp = await listMonitoredBooks(monitoredEntityId);
+      setMonitoredBookRows(booksResp.books || []);
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Monitored search failed';
-      setFilesError(message);
+      console.warn('MonitoredAuthorBooksTab: auto refresh after download complete failed', e);
     } finally {
-      setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: false }));
+      setAutoRefreshBusy(false);
     }
-  }, [monitoredEntityId, onGetReleases, triggerReleaseSearch]);
+  }, [monitoredEntityId, onGetReleases]);
 
   // Auto-refresh after download completion
   useEffect(() => {
@@ -615,11 +511,7 @@ export const MonitoredAuthorBooksTab = ({
     void (async () => {
       try {
         await scanMonitoredEntityFiles(monitoredEntityId);
-        const [filesResp, booksResp] = await Promise.all([
-          listMonitoredBookFiles(monitoredEntityId),
-          listMonitoredBooks(monitoredEntityId),
-        ]);
-        setFiles(filesResp.files || []);
+        const booksResp = await listMonitoredBooks(monitoredEntityId);
         setMonitoredBookRows(booksResp.books || []);
       } catch (e) {
         console.warn('MonitoredAuthorBooksTab: auto refresh after download complete failed', e);
@@ -931,14 +823,6 @@ export const MonitoredAuthorBooksTab = ({
       audiobookFormat: typeof audiobookFormatRaw === 'string' && audiobookFormatRaw.trim() ? audiobookFormatRaw.trim().toLowerCase() : undefined,
     };
   }, [monitoredBookRowByKey]);
-
-  const activeBookFiles = useMemo(() => {
-    if (!activeBookDetails) return [];
-    const prov = activeBookDetails.provider || '';
-    const bid = activeBookDetails.provider_id || '';
-    if (!prov || !bid) return [];
-    return files.filter((f) => f.provider === prov && f.provider_book_id === bid);
-  }, [activeBookDetails, files]);
 
   const filteredGroupedBooks = useMemo(() => {
     const query = activeBooksQuery.trim().toLowerCase();
@@ -1610,9 +1494,7 @@ export const MonitoredAuthorBooksTab = ({
 
           {monitoredEntityId ? (
             <div className="px-4 pb-3">
-              {filesError ? <div className="text-sm text-red-500">{filesError}</div> : null}
               {monitorSearchSummary ? <div className="text-sm text-emerald-600 dark:text-emerald-400">{monitorSearchSummary}</div> : null}
-              {filesLoading ? <div className="text-sm text-gray-600 dark:text-gray-300">Loading files…</div> : null}
             </div>
           ) : null}
 
@@ -1812,19 +1694,24 @@ export const MonitoredAuthorBooksTab = ({
       </div>
 
       <BookDetailsModal
-        book={activeBookDetails}
-        files={activeBookFiles}
-        monitoredEntityId={monitoredEntityId}
+        entityId={monitoredEntityId ?? null}
+        provider={activeBookDetails?.provider ?? null}
+        providerBookId={activeBookDetails?.provider_id ?? null}
         onClose={() => setActiveBookDetails(null)}
-        onOpenSearch={(contentType) => {
-          if (!activeBookDetails || !onGetReleases) return;
-          void triggerReleaseSearch(activeBookDetails, contentType);
-        }}
-        monitorEbook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorEbook : undefined}
-        monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
         onToggleMonitor={activeBookDetails ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
-        renderEmbeddedSearch={activeBookDetails && renderEmbeddedSearch ? (contentType) => renderEmbeddedSearch(activeBookDetails, contentType) : undefined}
+        renderEmbeddedSearch={(book, contentType) => {
+          if (renderEmbeddedSearch) {
+            return renderEmbeddedSearch(book, contentType);
+          }
+          return (
+            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                Embedded search is unavailable.
+              </div>
+            </div>
+          );
+        }}
       />
     </>
   );

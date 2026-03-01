@@ -12,12 +12,10 @@ import {
   createMonitoredEntity,
   listMonitoredEntities,
   listMonitoredBooks,
-  listMonitoredBookFiles,
   updateMonitoredBooksMonitorFlags,
   fsListDirectories,
   MetadataAuthor,
   MonitoredEntity,
-  MonitoredBookFileRow,
   MonitoredAuthorBookSearchRow,
   searchMonitoredAuthorBooks,
   searchMetadataAuthors,
@@ -329,11 +327,8 @@ export const MonitoredPage = ({
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
   const [monitoredBooksLoadError, setMonitoredBooksLoadError] = useState<string | null>(null);
-  const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
-  const [activeBookFiles, setActiveBookFiles] = useState<MonitoredBookFileRow[]>([]);
   const [activeBookEntityId, setActiveBookEntityId] = useState<number | null>(null);
   const [activeBookSourceRow, setActiveBookSourceRow] = useState<MonitoredBookListRow | null>(null);
-  const activeBookRequestSeq = useRef(0);
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocket();
@@ -1829,68 +1824,10 @@ export const MonitoredPage = ({
     setMonitoredBooksSearchOpen(false);
   }, [monitored, navigateToAuthorPage]);
 
-  const buildBookDetailsPayload = useCallback((book: MonitoredBookListRow): Book => {
-    const resolvedAuthor = (book.author_name || '').trim() || 'Unknown author';
-    return {
-      id: `${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}`,
-      title: book.title || 'Unknown title',
-      author: resolvedAuthor,
-      year: typeof book.publish_year === 'number' ? String(book.publish_year) : undefined,
-      preview: book.cover_url || undefined,
-      provider: book.provider || undefined,
-      provider_id: book.provider_book_id || undefined,
-      release_date: book.release_date || undefined,
-      language: (book.language || '').trim() || undefined,
-      isbn_13: book.isbn_13 || undefined,
-      source_url: undefined,
-      series_name: book.series_name || undefined,
-      series_position: book.series_position ?? undefined,
-      series_count: book.series_count ?? undefined,
-      has_ebook_available: isEnabledMonitoredFlag(book.has_ebook_available),
-      has_audiobook_available: isEnabledMonitoredFlag(book.has_audiobook_available),
-      ebook_path: book.ebook_path || undefined,
-      audiobook_path: book.audiobook_path || undefined,
-      ebook_available_format: book.ebook_available_format || undefined,
-      audiobook_available_format: book.audiobook_available_format || undefined,
-    };
-  }, []);
-
   const openMonitoredBookDetails = useCallback((book: MonitoredBookListRow) => {
-    const requestSeq = activeBookRequestSeq.current + 1;
-    activeBookRequestSeq.current = requestSeq;
-
     setActiveBookSourceRow(book);
     setActiveBookEntityId(book.author_entity_id);
-    setActiveBookDetails(buildBookDetailsPayload(book));
-    setActiveBookFiles([]);
-
-    void (async () => {
-      try {
-        const response = await listMonitoredBookFiles(book.author_entity_id);
-        if (activeBookRequestSeq.current !== requestSeq) {
-          return;
-        }
-
-        const provider = (book.provider || '').trim();
-        const providerBookId = (book.provider_book_id || '').trim();
-        const matchingFiles = (response.files || []).filter((file) => {
-          if (provider && (file.provider || '').trim() !== provider) {
-            return false;
-          }
-          if (providerBookId && (file.provider_book_id || '').trim() !== providerBookId) {
-            return false;
-          }
-          return true;
-        });
-        setActiveBookFiles(matchingFiles);
-      } catch {
-        if (activeBookRequestSeq.current !== requestSeq) {
-          return;
-        }
-        setActiveBookFiles([]);
-      }
-    })();
-  }, [buildBookDetailsPayload]);
+  }, []);
 
   const openMonitoredBookInAuthorPage = useCallback((
     book: MonitoredBookListRow,
@@ -3379,24 +3316,25 @@ export const MonitoredPage = ({
       ) : null}
 
       <BookDetailsModal
-        book={activeBookDetails}
-        files={activeBookFiles}
-        monitoredEntityId={activeBookEntityId}
+        entityId={activeBookEntityId}
+        provider={activeBookSourceRow?.provider ?? null}
+        providerBookId={activeBookSourceRow?.provider_book_id ?? null}
         onClose={() => {
-          activeBookRequestSeq.current += 1;
-          setActiveBookDetails(null);
-          setActiveBookFiles([]);
           setActiveBookEntityId(null);
           setActiveBookSourceRow(null);
         }}
-        onOpenSearch={(_contentType: ContentType) => {
-          if (!activeBookSourceRow) {
-            return;
+        renderEmbeddedSearch={(book, contentType) => {
+          if (renderEmbeddedSearch) {
+            return renderEmbeddedSearch(book, contentType);
           }
-          openMonitoredBookInAuthorPage(activeBookSourceRow);
+          return (
+            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                Embedded search is unavailable.
+              </div>
+            </div>
+          );
         }}
-        monitorEbook={activeBookMonitorState.row ? activeBookMonitorState.monitorEbook : undefined}
-        monitorAudiobook={activeBookMonitorState.row ? activeBookMonitorState.monitorAudiobook : undefined}
         onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
       />
 
