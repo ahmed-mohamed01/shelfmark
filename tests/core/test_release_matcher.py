@@ -120,14 +120,15 @@ def test_year_mismatch_penalty_is_minus_fifteen_when_year_is_used():
 
 
 def test_low_information_title_without_distinctive_overlap_is_rejected(monkeypatch):
-    import shelfmark.core.release_matcher as release_matcher
+    import shelfmark.core.monitored_release_scoring as release_scorer
 
     def permissive_config(key, default=None, user_id=None):
         if key in {"RELEASE_MATCH_MIN_TITLE_SCORE", "RELEASE_MATCH_MIN_AUTHOR_SCORE"}:
             return 0
         return default
 
-    monkeypatch.setattr(release_matcher.app_config, "get", permissive_config)
+    monkeypatch.setattr(release_scorer, "_scoring_config_cache", None)
+    monkeypatch.setattr(release_scorer.app_config, "get", permissive_config)
 
     book = BookMetadata(
         provider="hardcover",
@@ -153,7 +154,7 @@ def test_low_information_title_without_distinctive_overlap_is_rejected(monkeypat
 
 
 def test_score_can_exceed_100_and_format_priority_still_applies(monkeypatch):
-    import shelfmark.core.release_matcher as release_matcher
+    import shelfmark.core.monitored_release_scoring as release_scorer
 
     def configured_get(key, default=None, user_id=None):
         if key == "EBOOK_FORMAT_PRIORITY":
@@ -163,7 +164,8 @@ def test_score_can_exceed_100_and_format_priority_still_applies(monkeypatch):
             ]
         return default
 
-    monkeypatch.setattr(release_matcher.app_config, "get", configured_get)
+    monkeypatch.setattr(release_scorer, "_scoring_config_cache", None)
+    monkeypatch.setattr(release_scorer.app_config, "get", configured_get)
 
     book = _book_four()
 

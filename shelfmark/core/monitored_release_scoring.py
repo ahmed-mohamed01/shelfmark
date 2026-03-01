@@ -248,20 +248,16 @@ def _extract_series_number_after_series_name(series_name: str, release_title: st
     return number
 
 
-def _parse_series_num(value: str) -> Optional[float]:
-    """Parse a series number from a string via word-to-number and pattern extraction."""
-    parsed = _word_to_number(value.strip().lower())
-    if parsed is not None and parsed <= 200:
-        return parsed
-    parsed = _extract_series_number(value)
-    if parsed is not None and parsed <= 200:
-        return parsed
-    return None
-
-
 def _extract_release_series_number(release: Release, series_name: Optional[str]) -> Optional[float]:
     """Best-effort series number extraction from source metadata first, then title."""
     extra = release.extra if isinstance(release.extra, dict) else {}
+
+    def _parse(raw: str) -> Optional[float]:
+        n = _word_to_number(raw.strip().lower())
+        if n is not None and n <= 200:
+            return n
+        n = _extract_series_number(raw)
+        return n if n is not None and n <= 200 else None
 
     # Prefer explicit metadata fields when available.
     for key in ("series_position", "series_number", "book_number", "book_num",
@@ -269,7 +265,7 @@ def _extract_release_series_number(release: Release, series_name: Optional[str])
         value = extra.get(key)
         if value is None:
             continue
-        result = _parse_series_num(str(value))
+        result = _parse(str(value))
         if result is not None:
             return result
 
@@ -278,7 +274,7 @@ def _extract_release_series_number(release: Release, series_name: Optional[str])
         value = torznab_attrs.get(key)
         if not isinstance(value, str) or not value.strip():
             continue
-        result = _parse_series_num(value)
+        result = _parse(value)
         if result is not None:
             return result
 
@@ -381,24 +377,6 @@ def _get_title_candidates(book: BookMetadata) -> List[str]:
     return [c for c in candidates if c]
 
 
-def _score_title(book: BookMetadata, release: Release, *, _candidates: Optional[List[str]] = None) -> int:
-    candidates = _candidates if _candidates is not None else _get_title_candidates(book)
-    return max(_score_single_title_candidate(c, release.title) for c in candidates)
-
-
-def _has_distinctive_title_overlap(book: BookMetadata, release: Release, *, _candidates: Optional[List[str]] = None) -> bool:
-    candidates = _candidates if _candidates is not None else _get_title_candidates(book)
-    release_distinct = set(_distinctive_tokens(release.title))
-    if not release_distinct:
-        return False
-
-    for candidate in candidates:
-        candidate_distinct = set(_distinctive_tokens(candidate))
-        if candidate_distinct and (candidate_distinct & release_distinct):
-            return True
-    return False
-
-
 def _score_author(book: BookMetadata, release: Release) -> int:
     release_author = _extract_release_author(release)
     if not release_author:
@@ -425,11 +403,6 @@ def _score_author(book: BookMetadata, release: Release) -> int:
     if ratio >= 0.6:
         return 8
     return 0
-
-
-def _has_release_author_signal(release: Release) -> bool:
-    author = _extract_release_author(release)
-    return bool(author)
 
 
 def _get_target_series_number(book: BookMetadata) -> Optional[float]:
@@ -642,13 +615,26 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
 def score_release_match(
     book: BookMetadata,
     release: Release,
-    *,
-    scoring_config: Optional[ReleaseScoringConfig] = None,
 ) -> ReleaseMatchScore:
-    if scoring_config is None:
-        scoring_config = _get_release_scoring_config()
+    # 1. Read preferences from settings
+    cfg                     = _get_release_scoring_config()
+    forbidden_words         = cfg.forbidden_words
+    min_title_score         = cfg.min_title_score
+    min_author_score        = cfg.min_author_score
+    prefer_freeleech_direct = cfg.prefer_freeleech_or_direct
+    content_type            = (release.content_type or "ebook").strip().lower()
+    release_priority_map    = (
+        cfg.audiobook_release_priority if content_type == "audiobook"
+        else cfg.ebook_release_priority
+    )
+    format_priority_map     = (
+        cfg.audiobook_format_priority if content_type == "audiobook"
+        else cfg.ebook_format_priority
+    )
+
+    # 2. Hard rejects
     title_norm = _normalize_text(release.title)
-    for forbidden in scoring_config.forbidden_words:
+    for forbidden in forbidden_words:
         if forbidden in title_norm:
             return ReleaseMatchScore(
                 score=0,
@@ -659,10 +645,13 @@ def score_release_match(
             )
 
     title_candidates = _get_title_candidates(book)
-    title_score = _score_title(book, release, _candidates=title_candidates)
+    title_score = max(_score_single_title_candidate(c, release.title) for c in title_candidates)
     author_score = _score_author(book, release)
-    has_release_author = _has_release_author_signal(release)
-    has_distinctive_title_overlap = _has_distinctive_title_overlap(book, release, _candidates=title_candidates)
+    has_release_author = bool(_extract_release_author(release))
+    release_distinct = set(_distinctive_tokens(release.title))
+    has_distinctive_title_overlap = bool(release_distinct) and any(
+        set(_distinctive_tokens(c)) & release_distinct for c in title_candidates if _distinctive_tokens(c)
+    )
 
     # Guardrail: if title match is only coming from low-information tokens
     # (e.g. "book six") with no distinctive overlap, reject as unrelated.
@@ -675,7 +664,7 @@ def score_release_match(
             reject_reason="low_information_title_match",
         )
 
-    if title_score < scoring_config.min_title_score:
+    if title_score < min_title_score:
         return ReleaseMatchScore(
             score=title_score + author_score,
             breakdown={"title": title_score, "author": author_score},
@@ -689,7 +678,7 @@ def score_release_match(
     if (
         (book.authors or book.search_author)
         and has_release_author
-        and author_score < scoring_config.min_author_score
+        and author_score < min_author_score
     ):
         return ReleaseMatchScore(
             score=max(0, title_score + author_score - 20),
@@ -699,6 +688,7 @@ def score_release_match(
             reject_reason="low_author_match",
         )
 
+    # 3. Additive scoring
     series_score = _score_series_name(book, release)
     series_num_score = _score_series_number(book, release)
 
@@ -713,20 +703,9 @@ def score_release_match(
     # Tie-break bonuses should not rescue weak metadata matches.
     has_strong_metadata = title_score >= 34 or (series_score >= 10 and series_num_score > 0)
     freeleech_direct_score = (
-        _score_freeleech_direct_tiebreak(release, scoring_config.prefer_freeleech_or_direct)
+        _score_freeleech_direct_tiebreak(release, prefer_freeleech_direct)
         if has_strong_metadata
         else 0
-    )
-    content_type = (release.content_type or "ebook").strip().lower()
-    release_priority_map = (
-        scoring_config.audiobook_release_priority
-        if content_type == "audiobook"
-        else scoring_config.ebook_release_priority
-    )
-    format_priority_map = (
-        scoring_config.audiobook_format_priority
-        if content_type == "audiobook"
-        else scoring_config.ebook_format_priority
     )
     indexer_priority_score = (
         _score_indexer_priority_tiebreak(release, release_priority_map)
@@ -777,10 +756,9 @@ def score_release_match(
 
 
 def rank_releases_for_book(book: BookMetadata, releases: List[Release]) -> List[Tuple[Release, ReleaseMatchScore]]:
-    scoring_config = _get_release_scoring_config()
     scored: List[Tuple[Release, ReleaseMatchScore]] = []
     for release in releases:
-        match = score_release_match(book, release, scoring_config=scoring_config)
+        match = score_release_match(book, release)
         if not isinstance(release.extra, dict):
             release.extra = {}
         release.extra["match_score"] = match.score
