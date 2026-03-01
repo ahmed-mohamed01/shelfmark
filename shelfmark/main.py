@@ -429,6 +429,7 @@ if user_db is not None:
             monitored_db,
             resolve_auth_mode=lambda: get_auth_mode(),
             activity_service=activity_service,
+            ws_manager=ws_manager,
         )
     except Exception as e:
         logger.warning(f"Failed to register request routes: {e}")

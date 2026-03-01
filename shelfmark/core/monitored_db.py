@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS monitored_entities (
     settings_json TEXT NOT NULL DEFAULT '{}',
     last_checked_at TIMESTAMP,
     last_error TEXT,
+    sync_status TEXT NOT NULL DEFAULT 'idle',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, kind, provider, provider_id)
@@ -43,14 +44,19 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     authors TEXT,
     publish_year INTEGER,
     release_date TEXT,
+    description TEXT,
     isbn_13 TEXT,
+    isbn_10 TEXT,
+    isbns TEXT,
+    asins TEXT,
+    pages INTEGER,
+    cached_tags TEXT,
     cover_url TEXT,
     series_name TEXT,
     series_position REAL,
     series_count INTEGER,
+    all_series TEXT,
     language TEXT,
-    hidden INTEGER NOT NULL DEFAULT 0,
-    is_compilation INTEGER NOT NULL DEFAULT 0,
     rating REAL,
     ratings_count INTEGER,
     readers_count INTEGER,
@@ -164,7 +170,6 @@ class MonitoredDB:
     def prune_monitored_book_files(
         self,
         *,
-        user_id: int | None,
         entity_id: int,
         keep_paths: list[str],
     ) -> int:
@@ -261,7 +266,6 @@ class MonitoredDB:
         if value is None:
             return None
         try:
-            import json
             return json.dumps(value)
         except Exception as e:
             raise ValueError(f"Failed to serialize {field} to JSON: {e}") from e
@@ -370,6 +374,19 @@ class MonitoredDB:
             finally:
                 conn.close()
 
+    def update_entity_sync_status(self, entity_id: int, status: str) -> None:
+        """Update sync_status for a monitored entity."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE monitored_entities SET sync_status=? WHERE id=?",
+                    (status, entity_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     # =========================================================================
     # Book CRUD
     # =========================================================================
@@ -397,60 +414,30 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def update_monitored_books_hidden_flags(
-        self,
-        *,
-        user_id: int | None,
-        entity_id: int,
-        preferred_languages: set[str] | None,
-    ) -> int:
-        """Recompute hidden flags for an entity's monitored books."""
+    def get_best_book_cover_url(self, *, user_id: int | None, entity_id: int) -> str | None:
+        """Return the cover_url of the most popular book for a monitored entity.
 
-        normalized_preferred = {
-            str(lang).strip().lower()
-            for lang in (preferred_languages or set())
-            if str(lang).strip()
-        }
-
-        with self._lock:
-            conn = self._connect()
-            try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
-                    return 0
-
-                if not normalized_preferred:
-                    cur = conn.execute(
-                        """
-                        UPDATE monitored_books
-                        SET hidden = 0
-                        WHERE entity_id = ?
-                        """,
-                        (entity_id,),
-                    )
-                    conn.commit()
-                    return int(cur.rowcount or 0)
-
-                placeholders = ",".join(["?"] * len(normalized_preferred))
-                cur = conn.execute(
-                    f"""
-                    UPDATE monitored_books
-                    SET hidden = CASE
-                        WHEN language IS NULL OR TRIM(language) = '' THEN 0
-                        WHEN LOWER(language) IN ({placeholders}) THEN 0
-                        ELSE 1
-                    END
-                    WHERE entity_id = ?
-                    """,
-                    (*sorted(normalized_preferred), entity_id),
-                )
-                conn.commit()
-                return int(cur.rowcount or 0)
-            finally:
-                conn.close()
+        Ranked by readers_count DESC, ratings_count DESC, rating DESC, title ASC.
+        Returns None if the entity has no books with a cover_url.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT cover_url FROM monitored_books
+                WHERE entity_id = ?
+                  AND cover_url IS NOT NULL AND cover_url != ''
+                ORDER BY COALESCE(readers_count, -1) DESC,
+                         COALESCE(ratings_count, -1) DESC,
+                         COALESCE(rating, -1) DESC,
+                         title ASC
+                LIMIT 1
+                """,
+                (entity_id,),
+            ).fetchone()
+            return row["cover_url"] if row else None
+        finally:
+            conn.close()
 
     def set_monitored_book_monitor_flags(
         self,
@@ -754,7 +741,6 @@ class MonitoredDB:
                   ON mb.entity_id = me.id
                 WHERE me.user_id = :user_id
                   AND me.kind = 'author'
-                  AND COALESCE(mb.hidden, 0) = 0
                   AND (
                     LOWER(mb.title) LIKE :like
                     OR LOWER(COALESCE(mb.authors, '')) LIKE :like
@@ -794,14 +780,19 @@ class MonitoredDB:
         authors: str | None,
         publish_year: Any = None,
         release_date: str | None = None,
+        description: str | None = None,
         isbn_13: str | None = None,
+        isbn_10: str | None = None,
+        isbns: list | None = None,
+        asins: list | None = None,
+        pages: int | None = None,
+        cached_tags: Any = None,
         cover_url: str | None = None,
         series_name: str | None = None,
         series_position: float | None = None,
         series_count: int | None = None,
+        all_series: list | None = None,
         language: str | None = None,
-        hidden: bool = False,
-        is_compilation: bool | None = None,
         rating: float | None = None,
         ratings_count: int | None = None,
         readers_count: int | None = None,
@@ -829,14 +820,17 @@ class MonitoredDB:
             if candidate:
                 release_date_value = candidate
 
+        description_value: str | None = None
+        if description is not None:
+            candidate = str(description).strip()
+            if candidate:
+                description_value = candidate
+
         language_value: str | None = None
         if language is not None:
             candidate = str(language).strip().lower()
             if candidate:
                 language_value = candidate
-
-        hidden_value = 1 if hidden else 0
-        compilation_value = 1 if bool(is_compilation) else 0
 
         rating_value: float | None = None
         if rating is not None:
@@ -859,6 +853,44 @@ class MonitoredDB:
             except (TypeError, ValueError):
                 readers_count_value = None
 
+        pages_value: int | None = None
+        if pages is not None:
+            try:
+                pages_value = int(pages)
+            except (TypeError, ValueError):
+                pages_value = None
+
+        isbns_json: str | None = None
+        if isbns is not None:
+            try:
+                isbns_json = json.dumps(isbns)
+            except Exception:
+                isbns_json = None
+
+        asins_json: str | None = None
+        if asins is not None:
+            try:
+                asins_json = json.dumps(asins)
+            except Exception:
+                asins_json = None
+
+        all_series_json: str | None = None
+        if all_series is not None:
+            try:
+                all_series_json = json.dumps(all_series)
+            except Exception:
+                all_series_json = None
+
+        cached_tags_json: str | None = None
+        if cached_tags is not None:
+            if isinstance(cached_tags, str):
+                cached_tags_json = cached_tags
+            else:
+                try:
+                    cached_tags_json = json.dumps(cached_tags)
+                except Exception:
+                    cached_tags_json = None
+
         with self._lock:
             conn = self._connect()
             try:
@@ -880,34 +912,44 @@ class MonitoredDB:
                         authors,
                         publish_year,
                         release_date,
+                        description,
                         isbn_13,
+                        isbn_10,
+                        isbns,
+                        asins,
+                        pages,
+                        cached_tags,
                         cover_url,
                         series_name,
                         series_position,
                         series_count,
+                        all_series,
                         language,
-                        hidden,
-                        is_compilation,
                         rating,
                         ratings_count,
                         readers_count,
                         state
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
                         authors=excluded.authors,
                         publish_year=excluded.publish_year,
                         release_date=excluded.release_date,
-                        isbn_13=excluded.isbn_13,
+                        description=COALESCE(excluded.description, monitored_books.description),
+                        isbn_13=COALESCE(excluded.isbn_13, monitored_books.isbn_13),
+                        isbn_10=COALESCE(excluded.isbn_10, monitored_books.isbn_10),
+                        isbns=COALESCE(excluded.isbns, monitored_books.isbns),
+                        asins=COALESCE(excluded.asins, monitored_books.asins),
+                        pages=COALESCE(excluded.pages, monitored_books.pages),
+                        cached_tags=COALESCE(excluded.cached_tags, monitored_books.cached_tags),
                         cover_url=excluded.cover_url,
                         series_name=COALESCE(NULLIF(excluded.series_name, ''), monitored_books.series_name),
                         series_position=COALESCE(excluded.series_position, monitored_books.series_position),
                         series_count=COALESCE(excluded.series_count, monitored_books.series_count),
+                        all_series=COALESCE(excluded.all_series, monitored_books.all_series),
                         language=COALESCE(NULLIF(excluded.language, ''), monitored_books.language),
-                        hidden=excluded.hidden,
-                        is_compilation=excluded.is_compilation,
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
@@ -921,14 +963,19 @@ class MonitoredDB:
                         authors,
                         year_value,
                         release_date_value,
+                        description_value,
                         isbn_13,
+                        isbn_10,
+                        isbns_json,
+                        asins_json,
+                        pages_value,
+                        cached_tags_json,
                         cover_url,
                         series_name,
                         series_position,
                         series_count,
+                        all_series_json,
                         language_value,
-                        hidden_value,
-                        compilation_value,
                         rating_value,
                         ratings_count_value,
                         readers_count_value,
@@ -939,83 +986,9 @@ class MonitoredDB:
             finally:
                 conn.close()
 
-    def batch_update_monitored_books_series(
-        self,
-        *,
-        user_id: int | None,
-        entity_id: int,
-        updates: list[dict],
-    ) -> int:
-        """Batch-update series info on monitored books.
-
-        Each item in *updates* should have keys:
-        provider, provider_book_id, series_name, series_position, series_count.
-        Returns the number of rows updated.
-        """
-        if not updates:
-            return 0
-
-        normalized_updates: list[tuple[str, Any, Any, int, str, str]] = []
-        for item in updates:
-            if not isinstance(item, dict):
-                continue
-            provider = str(item.get("provider") or "").strip()
-            provider_book_id = str(item.get("provider_book_id") or "").strip()
-            series_name = str(item.get("series_name") or "").strip()
-            if not provider or not provider_book_id or not series_name:
-                continue
-            normalized_updates.append((
-                series_name,
-                item.get("series_position"),
-                item.get("series_count"),
-                entity_id,
-                provider,
-                provider_book_id,
-            ))
-
-        if not normalized_updates:
-            return 0
-
-        with self._lock:
-            conn = self._connect()
-            try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
-                    return 0
-
-                before_changes = conn.total_changes
-                conn.executemany(
-                    """
-                    UPDATE monitored_books
-                    SET
-                      series_name = COALESCE(NULLIF(series_name, ''), ?),
-                      series_position = COALESCE(series_position, ?),
-                      series_count = COALESCE(series_count, ?)
-                    WHERE entity_id = ?
-                      AND provider = ?
-                      AND provider_book_id = ?
-                      AND (
-                        series_name IS NULL
-                        OR series_name = ''
-                        OR series_position IS NULL
-                        OR series_count IS NULL
-                      )
-                    """,
-                    normalized_updates,
-                )
-                conn.commit()
-                updated = conn.total_changes - before_changes
-            finally:
-                conn.close()
-        return updated
-
     def delete_monitored_book(
         self,
         *,
-        user_id: int | None,
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -1027,30 +1000,30 @@ class MonitoredDB:
                 conn.execute(
                     """
                     DELETE FROM monitored_book_files
-                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    WHERE entity_id = ? AND provider = ? AND provider_book_id = ?
                     """,
-                    (entity_id, user_id, provider, provider_book_id),
+                    (entity_id, provider, provider_book_id),
                 )
                 conn.execute(
                     """
                     DELETE FROM monitored_book_download_history
-                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    WHERE entity_id = ? AND provider = ? AND provider_book_id = ?
                     """,
-                    (entity_id, user_id, provider, provider_book_id),
+                    (entity_id, provider, provider_book_id),
                 )
                 conn.execute(
                     """
                     DELETE FROM monitored_book_attempt_history
-                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    WHERE entity_id = ? AND provider = ? AND provider_book_id = ?
                     """,
-                    (entity_id, user_id, provider, provider_book_id),
+                    (entity_id, provider, provider_book_id),
                 )
                 cursor = conn.execute(
                     """
                     DELETE FROM monitored_books
-                    WHERE entity_id = ? AND user_id = ? AND provider = ? AND provider_book_id = ?
+                    WHERE entity_id = ? AND provider = ? AND provider_book_id = ?
                     """,
-                    (entity_id, user_id, provider, provider_book_id),
+                    (entity_id, provider, provider_book_id),
                 )
                 conn.commit()
                 return bool(cursor.rowcount)

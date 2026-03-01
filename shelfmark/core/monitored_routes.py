@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db_ops import fetch_single_book_metadata
+from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
     apply_monitor_modes_for_books,
@@ -22,6 +22,7 @@ from shelfmark.core.monitored_operations import (
     record_scan_error,
     refresh_author,
     search_missing_books,
+    start_author_background_sync,
     update_file_availability,
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
@@ -247,6 +248,7 @@ def register_monitored_routes(
     *,
     resolve_auth_mode: Callable[[], str],
     activity_service: ActivityService | None = None,
+    ws_manager: Any = None,
 ) -> None:
 
     def _parse_schedule_times(raw_value: Any) -> list[str]:
@@ -317,7 +319,6 @@ def register_monitored_routes(
                                             entity_id=int(entity.get("id")),
                                             user_id=uid,
                                             preferred_languages=preferred_languages,
-                                            prefetch_covers=True,
                                         )
                                         total_books += result.books_upserted
                                     except Exception as exc:
@@ -456,6 +457,20 @@ def register_monitored_routes(
         except Exception:
             pass  # Best-effort enrichment
 
+        # For author entities without a profile photo, compute best book cover as fallback
+        for row in rows:
+            if row.get("kind") != "author":
+                continue
+            settings = row.get("settings") or {}
+            if settings.get("photo_url"):
+                continue
+            try:
+                row["best_book_cover_url"] = monitored_db.get_best_book_cover_url(
+                    user_id=db_user_id, entity_id=int(row["id"])
+                )
+            except Exception:
+                pass
+
         return jsonify(rows)
 
     @app.route("/api/monitored/search/books", methods=["GET"])
@@ -583,16 +598,20 @@ def register_monitored_routes(
             return jsonify({"error": str(exc)}), 400
 
         if kind == "book" and provider and provider_id:
-            preferred_languages = _resolve_preferred_languages_for_user(user_db, db_user_id)
-            fetch_single_book_metadata(
+            fetch_entity_metadata(
                 monitored_db,
-                entity_id=int(row.get("id")),
-                provider=provider,
-                provider_id=provider_id,
+                entity=row,
                 user_id=db_user_id,
-                seed_name=name,
-                seed_settings=settings,
-                preferred_languages=preferred_languages,
+                preferred_languages=_resolve_preferred_languages_for_user(user_db, db_user_id),
+            )
+        elif kind == "author":
+            monitored_db.update_entity_sync_status(int(row["id"]), "syncing")
+            start_author_background_sync(
+                int(row["id"]),
+                db_user_id,
+                monitored_db,
+                ws_manager=ws_manager,
+                user_db=user_db,
             )
 
         return jsonify(row), 201
@@ -618,24 +637,9 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        preferred_languages = _resolve_preferred_languages_for_user(user_db, db_user_id)
-        try:
-            monitored_db.update_monitored_books_hidden_flags(
-                user_id=db_user_id,
-                entity_id=entity_id,
-                preferred_languages=preferred_languages,
-            )
-        except Exception as exc:
-            logger.debug("Failed updating monitored hidden flags entity_id=%s: %s", entity_id, exc)
-
         rows = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-
-        include_hidden_raw = str(request.args.get("include_hidden", "")).strip().lower()
-        include_hidden = include_hidden_raw in {"1", "true", "yes"}
-        if not include_hidden:
-            rows = [row for row in rows if not bool(int(row.get("hidden") or 0))]
 
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
@@ -675,11 +679,12 @@ def register_monitored_routes(
         except Exception:
             pass  # Best-effort enrichment
 
-        # Include last_checked_at so the frontend can decide whether to refresh
+        # Include sync_status and last_checked_at for the frontend
         entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
         last_checked_at = entity.get("last_checked_at") if entity else None
+        sync_status = entity.get("sync_status", "idle") if entity else "idle"
 
-        return jsonify({"books": rows, "last_checked_at": last_checked_at})
+        return jsonify({"books": rows, "last_checked_at": last_checked_at, "sync_status": sync_status})
 
     @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])
     def api_list_monitored_book_files(entity_id: int):
@@ -860,40 +865,6 @@ def register_monitored_routes(
             "missing_books": result.missing_books,
         })
 
-    @app.route("/api/monitored/<int:entity_id>/books/series", methods=["PATCH"])
-    def api_update_monitored_books_series(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
-        if gate is not None:
-            return gate
-
-        data = request.get_json(silent=True)
-        if not isinstance(data, list):
-            return jsonify({"error": "Expected a JSON array"}), 400
-
-        updates = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            provider = item.get("provider")
-            provider_book_id = item.get("provider_book_id")
-            series_name = item.get("series_name")
-            if not provider or not provider_book_id or not series_name:
-                continue
-            updates.append({
-                "provider": str(provider),
-                "provider_book_id": str(provider_book_id),
-                "series_name": str(series_name),
-                "series_position": item.get("series_position"),
-                "series_count": item.get("series_count"),
-            })
-
-        count = monitored_db.batch_update_monitored_books_series(
-            user_id=db_user_id,
-            entity_id=entity_id,
-            updates=updates,
-        )
-        return jsonify({"ok": True, "updated": count})
-
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])
     def api_update_monitored_books_monitor_flags(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
@@ -997,22 +968,20 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        try:
-            result = refresh_author(
-                monitored_db,
-                entity_id=entity_id,
-                user_id=db_user_id,
-                preferred_languages=_resolve_preferred_languages_for_user(user_db, db_user_id),
-                prefetch_covers=True,
-            )
-            return jsonify({"ok": True, "discovered": result.books_upserted})
-
-        except MonitoredEntityNotFound:
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
             return jsonify({"error": "Not found"}), 404
-        except Exception as exc:
-            logger.warning("Monitored sync failed entity_id=%s: %s", entity_id, exc)
-            monitored_db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
-            return jsonify({"error": "Sync failed"}), 500
+
+        if entity.get("kind") == "author":
+            if entity.get("sync_status") == "syncing":
+                return jsonify({"ok": True, "syncing": True, "already_syncing": True})
+            monitored_db.update_entity_sync_status(entity_id, "syncing")
+            start_author_background_sync(
+                entity_id, db_user_id, monitored_db, ws_manager=ws_manager, user_db=user_db
+            )
+            return jsonify({"ok": True, "syncing": True})
+
+        return jsonify({"ok": True, "syncing": False})
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)

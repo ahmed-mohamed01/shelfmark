@@ -16,9 +16,8 @@ from typing import Any
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_db_ops import (
-    apply_language_filters,
-    fetch_author_metadata,
     fetch_book_releases,
+    fetch_entity_metadata,
     prune_deleted_books,
 )
 from shelfmark.core.monitored_types import (
@@ -38,52 +37,32 @@ logger = setup_logger(__name__)
 # =============================================================================
 
 
-def refresh_author(
+def _sync_author_core(
     db: MonitoredDB,
     *,
-    entity_id: int,
+    entity: dict,
     user_id: int | None,
     preferred_languages: set[str] | None = None,
-    prefetch_covers: bool = False,
 ) -> RefreshResult:
-    """Refresh author metadata from provider and update DB state.
+    """Fetch books, prune deleted, apply monitor modes, clear last_error.
 
-    1. Fetches all books from provider and upserts to DB.
-    2. Prunes books no longer at the provider.
-    3. Applies language-based hidden flags.
-    4. Re-applies monitor modes based on current file state.
-    5. Clears last_error on the entity.
-
-    Raises:
-        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
-        MonitoredProviderError: If the provider is unavailable.
+    Pure data operation — no WS broadcasts, no sync_status updates.
+    Shared by refresh_author() (scheduler) and _run_author_sync() (background thread).
+    Returns RefreshResult for the scheduler's progress tracking.
     """
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
-    if entity is None or entity.get("kind") != "author":
-        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
+    entity_id = int(entity["id"])
 
-    books = fetch_author_metadata(
-        db,
-        entity=entity,
-        user_id=user_id,
-        preferred_languages=preferred_languages,
-        prefetch_covers=prefetch_covers,
+    # Returns set of 'provider:provider_book_id' strings
+    discovered_ids = fetch_entity_metadata(
+        db, entity=entity, user_id=user_id, preferred_languages=preferred_languages
     )
 
-    # Prune books that disappeared from the provider
-    current_provider_ids = {
-        f"{b.get('provider')}:{b.get('provider_book_id')}"
-        for b in books
-        if b.get("provider") and b.get("provider_book_id")
-    }
     books_pruned = prune_deleted_books(
         db,
         entity_id=entity_id,
         user_id=user_id,
-        current_provider_ids=current_provider_ids,
+        current_provider_ids=discovered_ids,
     )
-
-    apply_language_filters(db, entity_id=entity_id, user_id=user_id, preferred_languages=preferred_languages)
 
     # Re-load books after pruning to pass accurate list to monitor modes
     books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
@@ -102,6 +81,151 @@ def refresh_author(
 
     db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
     return RefreshResult(books_upserted=len(books), books_pruned=books_pruned)
+
+
+def refresh_author(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    preferred_languages: set[str] | None = None,
+) -> RefreshResult:
+    """Refresh author metadata from provider and update DB state.
+
+    Raises:
+        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
+        MonitoredProviderError: If the provider is unavailable.
+    """
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None or entity.get("kind") != "author":
+        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
+    return _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
+
+
+# =============================================================================
+# Background author sync
+# =============================================================================
+
+
+def _resolve_preferred_languages(user_db: Any, user_id: int | None) -> "set[str] | None":
+    """Resolve preferred book languages from user settings or global config."""
+    from shelfmark.core.config import config as _app_config
+    from shelfmark.core.monitored_utils import normalize_preferred_languages
+
+    if user_db is not None and user_id is not None:
+        try:
+            settings = user_db.get_user_settings(int(user_id)) or {}
+            langs = normalize_preferred_languages(settings.get("BOOK_LANGUAGE"))
+            if langs:
+                return langs
+        except Exception:
+            pass
+    return normalize_preferred_languages(_app_config.get("BOOK_LANGUAGE", []))
+
+
+def _broadcast(ws_manager: Any, user_id: int | None, event: str, data: dict) -> None:
+    """Emit a Socket.IO event to the user's room (best-effort, never raises)."""
+    if ws_manager is None:
+        return
+    try:
+        if not ws_manager.is_enabled():
+            return
+        socketio = getattr(ws_manager, "socketio", None)
+        if socketio is None:
+            return
+        if user_id is not None:
+            socketio.emit(event, data, to=f"user_{user_id}")
+        socketio.emit(event, data, to="admins")
+    except Exception:
+        pass
+
+
+def _run_author_sync(
+    entity_id: int,
+    user_id: int | None,
+    db: MonitoredDB,
+    ws_manager: Any,
+    user_db: Any,
+) -> None:
+    """Core sync routine — runs in background thread or called directly."""
+    try:
+        db.update_entity_sync_status(entity_id, "syncing")
+        entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+        if entity is None:
+            db.update_entity_sync_status(entity_id, "error")
+            return
+
+        entity_name = str(entity.get("name") or "Author")
+        _broadcast(ws_manager, user_id, "monitored_sync_started",
+                   {"entity_id": entity_id, "name": entity_name})
+
+        preferred_languages = _resolve_preferred_languages(user_db, user_id)
+
+        # Fetch, prune, apply monitor modes — shared with the scheduler path.
+        _broadcast(ws_manager, user_id, "monitored_sync_progress",
+                   {"entity_id": entity_id, "phase": "fetching_books"})
+        _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
+
+        # Auto file scan (best-effort — skipped if library paths not configured)
+        _broadcast(ws_manager, user_id, "monitored_sync_progress",
+                   {"entity_id": entity_id, "phase": "scanning_files"})
+        try:
+            from shelfmark.core.monitored_files import resolve_allowed_roots
+            roots = resolve_allowed_roots(user_db, db_user_id=int(user_id or 0)) if user_db else []
+            if roots:
+                update_file_availability(db, entity_id=entity_id, user_id=user_id, allowed_roots=roots)
+        except Exception:
+            pass
+
+        # Cover prefetch — broadcast phase, then fetch covers into cache
+        _broadcast(ws_manager, user_id, "monitored_sync_progress",
+                   {"entity_id": entity_id, "phase": "fetching_covers"})
+        try:
+            from shelfmark.config.env import is_covers_cache_enabled
+            if is_covers_cache_enabled():
+                from shelfmark.core.image_cache import get_image_cache
+                img_cache = get_image_cache()
+                all_books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+                for book in all_books:
+                    cover_url = book.get("cover_url")
+                    book_id = book.get("provider_book_id")
+                    book_provider = book.get("provider")
+                    if cover_url and book_id and book_provider:
+                        cache_id = f"{book_provider}_{book_id}"
+                        if img_cache.get(cache_id) is None:
+                            img_cache.fetch_and_cache(cache_id, cover_url)
+        except Exception:
+            pass
+
+        books_count = len(db.list_monitored_books(user_id=user_id, entity_id=entity_id) or [])
+        db.update_entity_sync_status(entity_id, "idle")
+        db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
+        _broadcast(ws_manager, user_id, "monitored_sync_complete",
+                   {"entity_id": entity_id, "books_count": books_count, "name": entity_name})
+
+    except Exception as exc:
+        db.update_entity_sync_status(entity_id, "error")
+        db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
+        _broadcast(ws_manager, user_id, "monitored_sync_error",
+                   {"entity_id": entity_id, "error": str(exc)})
+
+
+def start_author_background_sync(
+    entity_id: int,
+    user_id: int | None,
+    db: MonitoredDB,
+    ws_manager: Any = None,
+    user_db: Any = None,
+) -> None:
+    """Spawn daemon thread running single-phase sync + file scan."""
+    import threading
+    t = threading.Thread(
+        target=_run_author_sync,
+        args=(entity_id, user_id, db, ws_manager, user_db),
+        daemon=True,
+        name=f"MonitoredSync-{entity_id}",
+    )
+    t.start()
 
 
 # =============================================================================
@@ -324,7 +448,7 @@ def search_missing_books(
     """
     from shelfmark.core.activity_service import build_download_item_key
     from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
-    from shelfmark.metadata_providers import get_provider, get_provider_kwargs
+    from shelfmark.metadata_providers import BookMetadata
 
     entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
     if entity is None or entity.get("kind") != "author":
@@ -387,18 +511,22 @@ def search_missing_books(
         book_title = str(row.get("title") or "").strip() or None
 
         try:
-            provider_instance = get_provider(provider, **get_provider_kwargs(provider))
-            book = provider_instance.get_book(provider_book_id)
-            if not book:
-                summary.no_match += 1
-                write_monitored_book_attempt(
-                    db, user_id=user_id, entity_id=entity_id,
-                    provider=provider, provider_book_id=provider_book_id,
-                    content_type=content_type, attempted_at=now_iso,
-                    status="no_match", error_message="book_not_found",
-                )
-                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="no_match", detail="book_not_found")
-                continue
+            # Build BookMetadata from DB row — data is already stored from sync
+            authors_raw = row.get("authors") or ""
+            authors_list = [a.strip() for a in authors_raw.split(",") if a.strip()] if authors_raw else []
+            book = BookMetadata(
+                provider=provider,
+                provider_id=provider_book_id,
+                title=str(row.get("title") or ""),
+                authors=authors_list,
+                isbn_13=row.get("isbn_13"),
+                isbn_10=row.get("isbn_10"),
+                series_name=row.get("series_name"),
+                series_position=row.get("series_position"),
+                series_count=row.get("series_count"),
+                release_date=row.get("release_date"),
+                language=row.get("language"),
+            )
 
             release_dicts = fetch_book_releases(book, content_type=content_type)
 

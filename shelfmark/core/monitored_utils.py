@@ -82,19 +82,6 @@ def normalize_preferred_languages(raw: Any) -> set[str] | None:
     return normalized or None
 
 
-def should_hide_book_for_language(
-    *, book_language: str | None, preferred_languages: set[str] | None
-) -> bool:
-    if not preferred_languages:
-        return False
-    from shelfmark.metadata_providers import normalize_language_code
-
-    normalized_book_language = normalize_language_code(book_language)
-    if not normalized_book_language:
-        return False
-    return normalized_book_language not in preferred_languages
-
-
 # =============================================================================
 # Cover URL transformation
 # =============================================================================
