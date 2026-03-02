@@ -109,13 +109,14 @@ const isUpcomingMonitoredBook = (book: MonitoredBookListRow, todayStartMs: numbe
     if (Number.isFinite(parsed)) {
       const releaseDay = new Date(parsed);
       releaseDay.setHours(0, 0, 0, 0);
-      if (releaseDay.getTime() >= todayStartMs) {
-        return true;
-      }
+      if (releaseDay.getTime() >= todayStartMs) return true;
+      // Has a known past release date — not upcoming
+      return false;
     }
   }
-
-  return typeof book.publish_year === 'number' && book.publish_year > currentYear;
+  // Future or current year with no specific date, or explicitly no release date
+  if (typeof book.publish_year === 'number') return book.publish_year >= currentYear;
+  return book.no_release_date === true;
 };
 
 interface MonitoredPageProps {
@@ -198,10 +199,31 @@ const MONITORED_COUNTS_CACHE_KEY = 'monitoredCountsSnapshot';
 const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
+const MONITORED_UPCOMING_TIME_FILTER_KEY = 'monitoredUpcomingTimeFilter';
 
 // Computed once at module load — stable for the lifetime of the session.
 const _todayStartMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 const _currentYear = new Date(_todayStartMs).getFullYear();
+const _threeMonthsMs = (() => { const d = new Date(_todayStartMs); d.setMonth(d.getMonth() + 3); return d.getTime(); })();
+
+type UpcomingTimeFilter = 'all' | '3months' | 'this_year' | 'tba';
+
+const getUpcomingTimeCategory = (
+  book: MonitoredBookListRow,
+  threeMonthsMs: number,
+  currentYear: number,
+): Exclude<UpcomingTimeFilter, 'all'> => {
+  if (typeof book.release_date === 'string' && book.release_date.trim()) {
+    const parsed = Date.parse(book.release_date);
+    if (Number.isFinite(parsed)) {
+      const releaseMs = new Date(new Date(parsed).setHours(0, 0, 0, 0)).getTime();
+      if (releaseMs <= threeMonthsMs) return '3months';
+      if (new Date(parsed).getFullYear() === currentYear) return 'this_year';
+    }
+  }
+  if (typeof book.publish_year === 'number' && book.publish_year === currentYear) return 'this_year';
+  return 'tba';
+};
 
 
 interface MonitoredCountsSnapshot {
@@ -305,6 +327,10 @@ export const MonitoredPage = ({
   const [monitoredBooksAvailabilityFilter, setMonitoredBooksAvailabilityFilter] = useState<'missing' | 'fulfilled'>(() => {
     const saved = localStorage.getItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY);
     return saved === 'fulfilled' ? 'fulfilled' : 'missing';
+  });
+  const [upcomingTimeFilter, setUpcomingTimeFilter] = useState<UpcomingTimeFilter>(() => {
+    const saved = localStorage.getItem(MONITORED_UPCOMING_TIME_FILTER_KEY);
+    return saved === '3months' || saved === 'this_year' || saved === 'tba' ? saved : 'all';
   });
   const [monitoredSortBy, setMonitoredSortBy] = useState<'alphabetical' | 'date_added' | 'books_count'>(() => {
     const saved = localStorage.getItem('monitoredAuthorSortBy');
@@ -733,6 +759,13 @@ export const MonitoredPage = ({
     return monitoredBooksForTable.filter((book) => isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
   }, [monitoredBooksForTable]);
 
+  const filteredUpcomingByTime = useMemo(() => {
+    if (upcomingTimeFilter === 'all') return upcomingMonitoredBooksForTable;
+    return upcomingMonitoredBooksForTable.filter(
+      (book) => getUpcomingTimeCategory(book, _threeMonthsMs, _currentYear) === upcomingTimeFilter,
+    );
+  }, [upcomingMonitoredBooksForTable, upcomingTimeFilter]);
+
   const regularMonitoredBooksForTable = useMemo(() => {
     return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
   }, [monitoredBooksForTable]);
@@ -776,13 +809,13 @@ export const MonitoredPage = ({
 
   const filteredUpcomingMonitoredBooksForTable = useMemo(() => {
     if (!normalizedMonitoredBooksFilterQuery || landingTab === 'authors') {
-      return upcomingMonitoredBooksForTable;
+      return filteredUpcomingByTime;
     }
-    return upcomingMonitoredBooksForTable.filter(matchesMonitoredBooksFilter);
+    return filteredUpcomingByTime.filter(matchesMonitoredBooksFilter);
   }, [
     normalizedMonitoredBooksFilterQuery,
     landingTab,
-    upcomingMonitoredBooksForTable,
+    filteredUpcomingByTime,
     matchesMonitoredBooksFilter,
   ]);
 
@@ -836,6 +869,7 @@ export const MonitoredPage = ({
       localStorage.setItem('monitoredBooksSortBy', monitoredBooksSortBy);
       localStorage.setItem('monitoredBooksGroupBy', monitoredBooksGroupBy);
       localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
+      localStorage.setItem(MONITORED_UPCOMING_TIME_FILTER_KEY, upcomingTimeFilter);
       localStorage.setItem('monitoredLandingTab', landingTab);
       localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
       localStorage.setItem('monitoredCompactMinWidth', String(monitoredCompactMinWidth));
@@ -849,6 +883,7 @@ export const MonitoredPage = ({
     monitoredBooksSortBy,
     monitoredBooksGroupBy,
     monitoredBooksAvailabilityFilter,
+    upcomingTimeFilter,
     landingTab,
     monitoredSortBy,
     monitoredCompactMinWidth,
@@ -2746,7 +2781,7 @@ export const MonitoredPage = ({
                             <button
                               type="button"
                               onClick={() => setMonitoredBooksAvailabilityFilter('missing')}
-                              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'missing' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                              className={`px-2.5 py-1.5 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'missing' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                               aria-pressed={monitoredBooksAvailabilityFilter === 'missing'}
                               title="Show missing monitored books"
                             >
@@ -2755,12 +2790,26 @@ export const MonitoredPage = ({
                             <button
                               type="button"
                               onClick={() => setMonitoredBooksAvailabilityFilter('fulfilled')}
-                              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'fulfilled' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                              className={`px-2.5 py-1.5 rounded-full text-[11px] font-medium transition-colors ${monitoredBooksAvailabilityFilter === 'fulfilled' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                               aria-pressed={monitoredBooksAvailabilityFilter === 'fulfilled'}
                               title="Show fulfilled monitored books"
                             >
                               Fulfilled
                             </button>
+                          </div>
+                        ) : landingTab === 'upcoming' ? (
+                          <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent p-0.5">
+                            {([ ['all', 'All'], ['3months', 'Soon'], ['this_year', 'This Year'], ['tba', 'TBA'] ] as const).map(([value, label]) => (
+                              <button
+                                key={value}
+                                type="button"
+                                onClick={() => setUpcomingTimeFilter(value)}
+                                className={`px-2.5 py-1.5 rounded-full text-[11px] font-medium transition-colors ${upcomingTimeFilter === value ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                                aria-pressed={upcomingTimeFilter === value}
+                              >
+                                {label}
+                              </button>
+                            ))}
                           </div>
                         ) : null}
                         <ViewModeToggle

@@ -11,6 +11,17 @@ import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
 import { FormatStatusBadge } from './FormatStatusBadge';
 
+const formatUpcomingDate = (book: MonitoredBookListRow): string => {
+  if (typeof book.release_date === 'string' && book.release_date.trim()) {
+    const parsed = Date.parse(book.release_date);
+    if (Number.isFinite(parsed)) {
+      return new Date(parsed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+  }
+  if (typeof book.publish_year === 'number') return String(book.publish_year);
+  return 'TBA';
+};
+
 // Augmented type: MonitoredBookRow joined with its author entity fields.
 // Must stay structurally in sync with the same-named interface in MonitoredPage.tsx.
 export interface MonitoredBookListRow extends MonitoredBookRow {
@@ -161,9 +172,10 @@ export function MonitoredBooksView({
                     ? `${book.ratings_count.toLocaleString()} ratings`
                     : null;
                 const popularityLine = [ratingLabel, popularityLabel].filter(Boolean).join(' • ');
+                const releaseDatePart = isUpcomingTab ? formatUpcomingDate(book) : (book.publish_year ? String(book.publish_year) : null);
                 const subtitleRow = (
                   <div className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                    {[authorName, book.publish_year ? String(book.publish_year) : null].filter(Boolean).join(' • ')}
+                    {[authorName, releaseDatePart].filter(Boolean).join(' • ')}
                   </div>
                 );
                 const titleRow = (
@@ -288,8 +300,10 @@ export function MonitoredBooksView({
                       : null;
                   const popularityLine = [ratingLabel, popularityLabel].filter(Boolean).join(' • ') || undefined;
                   const showPopularity = compactMinWidth >= 194 && Boolean(popularityLine);
-                  // Series as text below author, not as overlay badge
-                  const metaLine = seriesLabel || (book.publish_year ? String(book.publish_year) : undefined);
+                  // In upcoming tab: always show release date; otherwise series or year
+                  const metaLine = isUpcomingTab
+                    ? formatUpcomingDate(book)
+                    : (seriesLabel || (book.publish_year ? String(book.publish_year) : undefined));
 
                   return (
                     <MonitoredBookCompactTile
