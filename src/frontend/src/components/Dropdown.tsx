@@ -153,11 +153,20 @@ export const Dropdown = ({
 
     updatePanelDirection();
     window.addEventListener('resize', throttledUpdate);
-    window.addEventListener('scroll', throttledUpdate, true);
+
+    // Close on page scroll; only update position when scrolling within the panel itself
+    const handleScroll = (event: Event) => {
+      if (panelRef.current?.contains(event.target as Node)) {
+        throttledUpdate();
+        return;
+      }
+      close();
+    };
+    window.addEventListener('scroll', handleScroll, true);
 
     return () => {
       window.removeEventListener('resize', throttledUpdate);
-      window.removeEventListener('scroll', throttledUpdate, true);
+      window.removeEventListener('scroll', handleScroll, true);
     };
   }, [isOpen, updatePanelDirection]);
 
