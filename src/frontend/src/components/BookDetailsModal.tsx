@@ -318,12 +318,23 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
       }
     }
 
-    if (!Array.isArray(parsed)) return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 
-    const genres = parsed
+    const tagItems: Array<{ item: unknown; categoryHint?: string }> = [];
+    for (const [categoryKey, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          tagItems.push({ item, categoryHint: categoryKey });
+        }
+      }
+    }
+
+    if (tagItems.length === 0) return null;
+
+    const genres = tagItems
       .map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        const tag = item as {
+        if (!item.item || typeof item.item !== 'object') return null;
+        const tag = item.item as {
           category?: string;
           tag_category?: string;
           tag?: { name?: string; category?: { name?: string } } | string;
@@ -334,6 +345,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
           typeof tag.tag_category === 'string' ? tag.tag_category : null,
           typeof tag.category === 'string' ? tag.category : null,
           typeof tag.tag === 'object' && tag.tag && typeof tag.tag.category?.name === 'string' ? tag.tag.category.name : null,
+          typeof item.categoryHint === 'string' ? item.categoryHint : null,
         ].find((value) => typeof value === 'string' && value.trim()) || null;
 
         const tagName = [
