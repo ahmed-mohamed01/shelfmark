@@ -50,6 +50,8 @@ export interface Book {
   audiobook_path?: string;
   ebook_available_format?: string;
   audiobook_available_format?: string;
+  ebook_last_search_status?: string | null;
+  audiobook_last_search_status?: string | null;
   // Series info (if book is part of a series)
   series_name?: string;        // Name of the series
   series_position?: number;    // This book's position (e.g., 3, 1.5 for novellas)

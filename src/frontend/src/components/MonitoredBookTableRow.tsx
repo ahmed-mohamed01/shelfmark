@@ -38,11 +38,12 @@ export const MonitoredBookTableRow = ({
 
   return (
     <MonitoredTableRowBase
-      gridClassName="grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]"
+      gridClassName="grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_auto_minmax(0,2fr)_minmax(190px,190px)_minmax(90px,90px)]"
       leftSlot={leadingControl}
       mediaSlot={thumbnail}
       mainSlot={mainSlot}
       middleSlot={availabilitySlot}
+      middleClassName="hidden sm:flex w-full items-center justify-center gap-1"
       rightSlot={trailingSlot}
       isDimmed={isDimmed}
     />

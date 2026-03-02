@@ -2916,6 +2916,7 @@ export const MonitoredPage = ({
                     selectedBookKeys={selectedMonitoredBookKeys}
                     isDesktop={isDesktop}
                     booksGridStyle={monitoredBooksGridStyle}
+                    compactMinWidth={monitoredCompactMinWidth}
                     loadError={monitoredBooksLoadError}
                     showLoadError={landingTab === 'books' || landingTab === 'upcoming'}
                     onOpenDetails={openMonitoredBookDetails}

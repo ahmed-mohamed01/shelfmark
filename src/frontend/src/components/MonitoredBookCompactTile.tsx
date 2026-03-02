@@ -1,5 +1,7 @@
 import { ReactNode } from 'react';
 import { MediaCompactTileBase } from './MediaCompactTileBase';
+import { FormatStatusBadge } from './FormatStatusBadge';
+import type { FormatAvailabilityStatus } from '../utils/monitoredBookState';
 
 interface MonitoredBookCompactTileProps {
   title: string;
@@ -11,10 +13,12 @@ interface MonitoredBookCompactTileProps {
   hasActiveSelection: boolean;
   seriesPosition?: number;
   seriesCount?: number;
-  primaryFormat?: string;
-  extraFormatsCount?: number;
+  ebookStatus?: FormatAvailabilityStatus | null;
+  audiobookStatus?: FormatAvailabilityStatus | null;
   seriesLabel?: string;
   showSeriesName?: boolean;
+  /** Fallback subtitle when seriesLabel/showSeriesName is not used (e.g. author name in global view) */
+  subtitle?: string;
   metaLine?: string;
   showMetaLine?: boolean;
   popularityLine?: string;
@@ -32,10 +36,11 @@ export const MonitoredBookCompactTile = ({
   hasActiveSelection,
   seriesPosition,
   seriesCount,
-  primaryFormat,
-  extraFormatsCount = 0,
+  ebookStatus,
+  audiobookStatus,
   seriesLabel,
   showSeriesName = false,
+  subtitle,
   metaLine,
   showMetaLine = false,
   popularityLine,
@@ -66,25 +71,14 @@ export const MonitoredBookCompactTile = ({
           #{seriesPosition}{seriesCount != null ? `/${seriesCount}` : ''}
         </span>
       ) : null}
-      {primaryFormat ? (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">
-          {primaryFormat}
-        </span>
-      ) : null}
+      {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} compact /> : null}
+      {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} compact /> : null}
     </>
   );
 
-  const footer = (
-    <>
-      {showPopularityLine && popularityLine ? (
-        <div className="mt-1.5 text-[10px] text-gray-500 dark:text-gray-400">{popularityLine}</div>
-      ) : null}
-
-      {extraFormatsCount > 0 ? (
-        <div className="mt-1 text-[10px] text-gray-500 dark:text-gray-400 uppercase">+{extraFormatsCount} more</div>
-      ) : null}
-    </>
-  );
+  const footer = showPopularityLine && popularityLine ? (
+    <div className="mt-1.5 text-[10px] text-gray-500 dark:text-gray-400">{popularityLine}</div>
+  ) : null;
 
   return (
     <MediaCompactTileBase
@@ -94,7 +88,7 @@ export const MonitoredBookCompactTile = ({
       overflowMenu={overflowMenu}
       topLeftOverlay={topLeftOverlay}
       topRightOverlay={topRightOverlay}
-      subtitle={showSeriesName ? seriesLabel : undefined}
+      subtitle={showSeriesName ? seriesLabel : subtitle}
       metaLine={showMetaLine ? metaLine : undefined}
       footer={footer}
       isDimmed={isDimmed}

@@ -9,18 +9,19 @@ import {
   updateMonitoredBooksMonitorFlags,
 } from '../services/monitoredApi';
 import { useSocket } from '../contexts/SocketContext';
-import { getFormatColor } from '../utils/colorMaps';
 import { Dropdown } from './Dropdown';
 import { BookDetailsModal } from './BookDetailsModal';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
 import { ViewModeToggle } from './ViewModeToggle';
+import { FormatStatusBadge } from './FormatStatusBadge';
 import {
   isEnabledMonitoredFlag,
   isMonitoredBookDormantState,
   monitoredBookHasFormatAvailable,
   monitoredBookTracksAudiobook,
   monitoredBookTracksEbook,
+  getFormatStatus,
 } from '../utils/monitoredBookState';
 import type { AuthorModalAuthor } from './AuthorModal';
 import { RowThumbnail } from './RowThumbnail';
@@ -254,6 +255,8 @@ const withMonitoredAvailability = (book: Book, rows: MonitoredBookRow[]): Book =
     audiobook_path: row.audiobook_path || undefined,
     ebook_available_format: row.ebook_available_format || undefined,
     audiobook_available_format: row.audiobook_available_format || undefined,
+    ebook_last_search_status: row.ebook_last_search_status ?? undefined,
+    audiobook_last_search_status: row.audiobook_last_search_status ?? undefined,
   };
 };
 
@@ -1549,10 +1552,11 @@ export const MonitoredAuthorBooksTab = ({
                             <div className="px-3 py-3 grid gap-3 justify-start" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${booksCompactMinWidth}px, ${booksCompactMinWidth}px))` }}>
                               {group.books.map((book) => {
                                 const isSelected = Boolean(selectedBookIds[book.id]);
-                                const availability = getMonitoredAvailabilityForBook(book);
-                                const sortedTypes = [availability?.ebookFormat, availability?.audiobookFormat].filter((f): f is string => typeof f === 'string' && f.length > 0);
-                                const availabilityLabels = [...(availability.hasEbook ? ['ebook'] : []), ...(availability.hasAudiobook ? ['audio'] : [])];
-                                const displayTypes = sortedTypes.length > 0 ? sortedTypes : availabilityLabels;
+                                const _bookProvider = (book.provider || '').trim();
+                                const _bookProviderId = (book.provider_id || '').trim();
+                                const _bookRow = (_bookProvider && _bookProviderId) ? monitoredBookRowByKey.get(`${_bookProvider}:${_bookProviderId}`) : undefined;
+                                const ebookStatus = _bookRow ? getFormatStatus(_bookRow, 'ebook') : null;
+                                const audiobookStatus = _bookRow ? getFormatStatus(_bookRow, 'audiobook') : null;
                                 const isPrimaryGroup = group.key === '__standalone__' || group.key === (book.series_name || '').trim();
                                 let groupSeriesPos = book.series_position;
                                 let groupSeriesCount = book.series_count;
@@ -1574,15 +1578,15 @@ export const MonitoredAuthorBooksTab = ({
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
                                 return (
-                                  <MonitoredBookCompactTile key={book.id} title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} primaryFormat={displayTypes[0]} extraFormatsCount={Math.max(0, displayTypes.length - 1)} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
+                                  <MonitoredBookCompactTile key={book.id} title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
                                 );
                               })}
                             </div>
                           ) : (
                             <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                              <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(164px,164px)_minmax(64px,64px)]">
+                              <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(190px,190px)_minmax(90px,90px)]">
                                 <div /><div /><div />
-                                <div className="flex w-full justify-center"><span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Available</span></div>
+                                <div className="flex w-full justify-center"><span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</span></div>
                                 <div />
                               </div>
                               {group.books.map((book) => (
@@ -1601,6 +1605,11 @@ export const MonitoredAuthorBooksTab = ({
                                   }
                                   const hasSeriesPosition = groupSeriesPos != null;
                                   const isDormant = isBookDormant(book);
+                                  const _tProvider = (book.provider || '').trim();
+                                  const _tProviderId = (book.provider_id || '').trim();
+                                  const _tRow = (_tProvider && _tProviderId) ? monitoredBookRowByKey.get(`${_tProvider}:${_tProviderId}`) : undefined;
+                                  const tEbookStatus = _tRow ? getFormatStatus(_tRow, 'ebook') : null;
+                                  const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
                                     <MonitoredBookTableRow key={book.id} isDimmed={isDormant}
                                       leadingControl={(() => {
@@ -1651,23 +1660,10 @@ export const MonitoredAuthorBooksTab = ({
                                         </div>
                                       ) : undefined}
                                       availabilitySlot={(
-                                        <>
-                                          {(() => {
-                                            const availability = getMonitoredAvailabilityForBook(book);
-                                            const formats = [availability?.ebookFormat, availability?.audiobookFormat].filter((f): f is string => typeof f === 'string' && f.length > 0);
-                                            const fallbackLabels = [...(availability?.hasEbook ? ['ebook'] : []), ...(availability?.hasAudiobook ? ['audio'] : [])];
-                                            const displayFormats = formats.length > 0 ? formats : fallbackLabels;
-                                            if (displayFormats.length === 0) return null;
-                                            const sorted = [...displayFormats].sort((a, b) => a.localeCompare(b));
-                                            return (
-                                              <>
-                                                {sorted.slice(0, 2).map((t) => (
-                                                  <span key={t} className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`} title={`Matched file: ${t.toUpperCase()}`}>{t.toUpperCase()}</span>
-                                                ))}
-                                              </>
-                                            );
-                                          })()}
-                                        </>
+                                        <div className="flex items-center justify-center gap-1">
+                                          {tEbookStatus ? <FormatStatusBadge format="ebook" status={tEbookStatus} /> : null}
+                                          {tAudiobookStatus ? <FormatStatusBadge format="audiobook" status={tAudiobookStatus} /> : null}
+                                        </div>
                                       )}
                                       trailingSlot={renderBookTableActions(book)}
                                     />
