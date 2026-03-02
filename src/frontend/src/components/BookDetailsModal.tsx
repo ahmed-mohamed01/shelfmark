@@ -15,6 +15,8 @@ interface BookDetailsModalProps {
   entityId: number | null;
   provider: string | null;
   providerBookId: string | null;
+  monitorEbook?: boolean;
+  monitorAudiobook?: boolean;
   onClose: () => void;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
@@ -25,7 +27,7 @@ type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -245,8 +247,26 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
   const ebookMonitorLocked = hasEbookFile;
   const audiobookMonitorLocked = hasAudiobookFile;
 
-  const monitorEbook = useMemo(() => isEnabledFlag(bookRow?.monitor_ebook), [bookRow?.monitor_ebook]);
-  const monitorAudiobook = useMemo(() => isEnabledFlag(bookRow?.monitor_audiobook), [bookRow?.monitor_audiobook]);
+  const monitorEbookState = useMemo(() => {
+    if (typeof monitorEbook === 'boolean') return monitorEbook;
+    return isEnabledFlag(bookRow?.monitor_ebook);
+  }, [monitorEbook, bookRow?.monitor_ebook]);
+
+  const monitorAudiobookState = useMemo(() => {
+    if (typeof monitorAudiobook === 'boolean') return monitorAudiobook;
+    return isEnabledFlag(bookRow?.monitor_audiobook);
+  }, [monitorAudiobook, bookRow?.monitor_audiobook]);
+
+  const [monitorEbookUiState, setMonitorEbookUiState] = useState(false);
+  const [monitorAudiobookUiState, setMonitorAudiobookUiState] = useState(false);
+
+  useEffect(() => {
+    setMonitorEbookUiState(monitorEbookState);
+  }, [monitorEbookState]);
+
+  useEffect(() => {
+    setMonitorAudiobookUiState(monitorAudiobookState);
+  }, [monitorAudiobookState]);
 
   const parsedAdditionalSeries = useMemo((): Array<{ name: string; position?: number; count?: number }> | undefined => {
     const primary = (bookRow?.series_name || '').trim();
@@ -710,6 +730,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                           type="button"
                           onClick={() => {
                             if (!ebookMonitorLocked) {
+                              setMonitorEbookUiState((prev) => !prev);
                               onToggleMonitor('ebook');
                             }
                           }}
@@ -717,7 +738,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             ebookMonitorLocked
                               ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
-                              : monitorEbook
+                              : monitorEbookUiState
                                 ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
                                 : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
                           }`}
@@ -728,7 +749,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                               <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
                               <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
                             </svg>
-                          ) : monitorEbook ? (
+                          ) : monitorEbookUiState ? (
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                             </svg>
@@ -743,6 +764,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                           type="button"
                           onClick={() => {
                             if (!audiobookMonitorLocked) {
+                              setMonitorAudiobookUiState((prev) => !prev);
                               onToggleMonitor('audiobook');
                             }
                           }}
@@ -750,7 +772,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             audiobookMonitorLocked
                               ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
-                              : monitorAudiobook
+                              : monitorAudiobookUiState
                                 ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
                               : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
                           }`}
@@ -761,7 +783,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
                               <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
                               <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
                             </svg>
-                          ) : monitorAudiobook ? (
+                          ) : monitorAudiobookUiState ? (
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                             </svg>

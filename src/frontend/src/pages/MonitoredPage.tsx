@@ -3369,6 +3369,8 @@ export const MonitoredPage = ({
         entityId={activeBookEntityId}
         provider={activeBookSourceRow?.provider ?? null}
         providerBookId={activeBookSourceRow?.provider_book_id ?? null}
+        monitorEbook={activeBookMonitorState.monitorEbook}
+        monitorAudiobook={activeBookMonitorState.monitorAudiobook}
         onClose={() => {
           setActiveBookEntityId(null);
           setActiveBookSourceRow(null);
