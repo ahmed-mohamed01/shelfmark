@@ -303,7 +303,55 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, onClose, 
     };
   }, [bookRow, parsedAdditionalSeries]);
 
-  const genresSummary = useMemo(() => null, []);
+  const genresSummary = useMemo(() => {
+    const raw = bookRow?.cached_tags;
+    if (raw == null) return null;
+
+    let parsed: unknown = raw;
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return null;
+      }
+    }
+
+    if (!Array.isArray(parsed)) return null;
+
+    const genres = parsed
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const tag = item as {
+          category?: string;
+          tag_category?: string;
+          tag?: { name?: string; category?: { name?: string } } | string;
+          name?: string;
+        };
+
+        const categoryName = [
+          typeof tag.tag_category === 'string' ? tag.tag_category : null,
+          typeof tag.category === 'string' ? tag.category : null,
+          typeof tag.tag === 'object' && tag.tag && typeof tag.tag.category?.name === 'string' ? tag.tag.category.name : null,
+        ].find((value) => typeof value === 'string' && value.trim()) || null;
+
+        const tagName = [
+          typeof tag.name === 'string' ? tag.name : null,
+          typeof tag.tag === 'string' ? tag.tag : null,
+          typeof tag.tag === 'object' && tag.tag && typeof tag.tag.name === 'string' ? tag.tag.name : null,
+        ].find((value) => typeof value === 'string' && value.trim()) || null;
+
+        if (!tagName) return null;
+        if (categoryName && !categoryName.toLowerCase().includes('genre')) return null;
+        return tagName.trim();
+      })
+      .filter((value): value is string => Boolean(value));
+
+    if (genres.length === 0) return null;
+    const uniqueGenres = Array.from(new Set(genres));
+    return uniqueGenres.slice(0, 8).join(', ');
+  }, [bookRow?.cached_tags]);
 
   const releaseDateSummary = useMemo(() => {
     if (typeof bookRow?.release_date === 'string' && bookRow.release_date.trim()) {

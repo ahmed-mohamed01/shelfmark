@@ -132,6 +132,7 @@ export interface MonitoredBookRow {
   publish_year?: number | null;
   release_date?: string | null;
   description?: string | null;
+  cached_tags?: unknown | null;
   isbn_13?: string | null;
   cover_url?: string | null;
   series_name?: string | null;
