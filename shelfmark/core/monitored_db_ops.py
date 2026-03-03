@@ -171,7 +171,8 @@ def fetch_entity_metadata(
         if not provider.is_available():
             raise MonitoredProviderError(f"Metadata provider '{provider_name}' is not available")
 
-        discovered_ids: set[str] = set()
+        # Collect all pages first so we can filter split editions
+        all_books: list[dict] = []
         offset = 0
         limit = 100
         max_books = 2000
@@ -183,31 +184,42 @@ def fetch_entity_metadata(
             )
             if not page_books:
                 break
-
-            for book in page_books:
-                book_id = str(book["id"])
-                discovered_ids.add(f"{provider_name}:{book_id}")
-
-                fields = _parse_book_fields(book, lang_codes=lang_codes)
-
-                # Skip books in non-preferred languages (filter at upsert time, not post-hoc)
-                if preferred_languages and fields.get("language") and fields["language"] not in preferred_languages:
-                    continue
-
-                db.upsert_monitored_book(
-                    user_id=user_id,
-                    entity_id=entity_id,
-                    provider=provider_name,
-                    provider_book_id=book_id,
-                    authors=str(entity.get("name") or "").strip() or None,
-                    ratings_count=book.get("reviews_count"),
-                    state="discovered",
-                    **fields,
-                )
-
+            all_books.extend(page_books)
             offset += limit
             if len(page_books) < limit:
                 break  # last page
+
+        # Filter non-canonical split editions (e.g. "Part 1", "Part 2")
+        from shelfmark.core.monitored_book_filter import filter_split_books
+
+        canonical_books, filtered_books = filter_split_books(all_books)
+        if filtered_books:
+            logger.debug(
+                "entity_id=%s: filtered %d split books out of %d total",
+                entity_id, len(filtered_books), len(all_books),
+            )
+
+        discovered_ids: set[str] = set()
+        for book in canonical_books:
+            book_id = str(book["id"])
+            discovered_ids.add(f"{provider_name}:{book_id}")
+
+            fields = _parse_book_fields(book, lang_codes=lang_codes)
+
+            # Skip books in non-preferred languages (filter at upsert time, not post-hoc)
+            if preferred_languages and fields.get("language") and fields["language"] not in preferred_languages:
+                continue
+
+            db.upsert_monitored_book(
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider_name,
+                provider_book_id=book_id,
+                authors=str(entity.get("name") or "").strip() or None,
+                ratings_count=book.get("reviews_count"),
+                state="discovered",
+                **fields,
+            )
 
         return discovered_ids
 
