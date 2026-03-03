@@ -199,7 +199,7 @@ def fetch_entity_metadata(
                     entity_id=entity_id,
                     provider=provider_name,
                     provider_book_id=book_id,
-                    authors=None,  # author is implied by entity
+                    authors=str(entity.get("name") or "").strip() or None,
                     ratings_count=book.get("reviews_count"),
                     state="discovered",
                     **fields,

@@ -821,8 +821,11 @@ def register_monitored_routes(
         ebook_dir = str(settings.get("ebook_author_dir") or "").strip().rstrip("/")
         audiobook_dir = str(settings.get("audiobook_author_dir") or "").strip().rstrip("/")
 
+        # Filesystem scan — capture errors so ABS sync can still run afterwards
+        _scan_result = None
+        _scan_error_response: tuple[dict, int] | None = None
         try:
-            result = update_file_availability(
+            _scan_result = update_file_availability(
                 monitored_db,
                 entity_id=entity_id,
                 user_id=db_user_id,
@@ -833,18 +836,37 @@ def register_monitored_routes(
         except MonitoredPathError as exc:
             msg = str(exc)
             if msg == "ebook_author_dir or audiobook_author_dir must be set":
-                return jsonify({"error": msg}), 400
-            if msg in {"ebook_author_dir is not within allowed roots", "audiobook_author_dir is not within allowed roots"}:
-                return jsonify({"error": "Path not allowed"}), 403
-            if msg in {"Invalid ebook_author_dir", "Invalid audiobook_author_dir"}:
-                return jsonify({"error": msg}), 400
-            if msg == "directories_not_found":
-                return jsonify({"error": "Directory not found", "details": {}, "files_cleared": True}), 404
-            return jsonify({"error": msg}), 400
+                _scan_error_response = ({"error": msg}, 400)
+            elif msg in {"ebook_author_dir is not within allowed roots", "audiobook_author_dir is not within allowed roots"}:
+                _scan_error_response = ({"error": "Path not allowed"}, 403)
+            elif msg in {"Invalid ebook_author_dir", "Invalid audiobook_author_dir"}:
+                _scan_error_response = ({"error": msg}, 400)
+            elif msg == "directories_not_found":
+                _scan_error_response = ({"error": "Directory not found", "details": {}, "files_cleared": True}, 404)
+            else:
+                _scan_error_response = ({"error": msg}, 400)
         except Exception as exc:
             logger.warning("Monitored scan failed entity_id=%s: %s", entity_id, exc)
             record_scan_error(monitored_db, entity_id=entity_id, user_id=db_user_id, error=exc, ebook_dir=ebook_dir, audiobook_dir=audiobook_dir)
-            return jsonify({"error": "Scan failed"}), 500
+            _scan_error_response = ({"error": "Scan failed"}, 500)
+
+        # ABS sync — always runs as long as the entity exists, independent of FS scan
+        try:
+            from shelfmark.core.monitored_audiobookshelf_integration import sync_abs_availability_for_entity
+            abs_result = sync_abs_availability_for_entity(
+                monitored_db=monitored_db,
+                entity_id=entity_id,
+                entity_name=entity.get("name") or "",
+                user_id=db_user_id,
+            )
+        except Exception as abs_exc:
+            logger.warning("ABS sync failed entity_id=%s: %s", entity_id, abs_exc)
+            abs_result = {"abs_skipped": True, "reason": "error"}
+
+        if _scan_error_response is not None:
+            return jsonify(_scan_error_response[0]), _scan_error_response[1]
+
+        result = _scan_result  # type: ignore[assignment]
 
         return jsonify({
             "ok": True,
@@ -863,6 +885,7 @@ def register_monitored_routes(
             "matched": result.matched,
             "unmatched": result.unmatched,
             "missing_books": result.missing_books,
+            "abs": abs_result,
         })
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])

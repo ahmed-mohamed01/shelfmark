@@ -214,7 +214,8 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
   const matchedFileTypes = useMemo(() => {
     const set = new Set<string>();
     for (const f of files) {
-      const t = typeof f.file_type === 'string' ? f.file_type.trim().toLowerCase() : '';
+      const label = (f.ext || f.file_type || '');
+      const t = typeof label === 'string' ? label.trim().toLowerCase() : '';
       if (t) set.add(t);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -835,26 +836,32 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                       {files.length === 0 ? (
                         <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
                       ) : (
-                        files.map((f) => (
-                          <div key={f.id} className="px-4 py-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
-                                  {f.path}
+                        files.map((f) => {
+                          const isAbs = f.source === 'audiobookshelf';
+                          const formatLabel = f.ext ? f.ext.toUpperCase() : f.file_type ? f.file_type.toUpperCase() : 'FILE';
+                          const badgeKey = f.ext || f.file_type || '';
+                          return (
+                            <div key={f.id} className="px-4 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
+                                    {f.path}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
+                                    {formatLabel}
+                                    {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
+                                    {isAbs ? ' · from AudioBookShelf' : ''}
+                                  </div>
                                 </div>
-                                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
-                                  {f.file_type ? f.file_type.toUpperCase() : 'FILE'}
-                                  {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                                </div>
+                                {badgeKey ? (
+                                  <span className={`${getFormatColor(badgeKey).bg} ${getFormatColor(badgeKey).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
+                                    {formatLabel}
+                                  </span>
+                                ) : null}
                               </div>
-                              {f.file_type ? (
-                                <span className={`${getFormatColor(f.file_type).bg} ${getFormatColor(f.file_type).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
-                                  {f.file_type.toUpperCase()}
-                                </span>
-                              ) : null}
                             </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>

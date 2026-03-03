@@ -226,6 +226,7 @@ export interface MonitoredBookFileRow {
   path: string;
   ext?: string | null;
   file_type?: string | null;
+  source?: string | null;
   size_bytes?: number | null;
   mtime?: string | null;
   confidence?: number | null;

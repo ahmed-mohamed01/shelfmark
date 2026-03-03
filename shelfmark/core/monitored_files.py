@@ -760,8 +760,8 @@ def clear_entity_matched_files(
     user_id: int | None,
     entity_id: int,
 ) -> int:
-    """Clear all matched file rows for an entity. Returns count deleted."""
-    return monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=[])
+    """Clear all filesystem-sourced matched file rows for an entity. Returns count deleted."""
+    return monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=[], source="filesystem")
 
 
 def prune_stale_matched_files(
@@ -799,7 +799,7 @@ def prune_stale_matched_files(
                 continue
             if path in seen_paths and Path(path).exists():
                 keep.append(path)
-        monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=keep)
+        monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=keep, source="filesystem")
     except Exception as exc:
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 

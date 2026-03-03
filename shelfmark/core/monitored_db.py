@@ -82,14 +82,15 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
     path TEXT NOT NULL,
     ext TEXT,
     file_type TEXT,
+    source TEXT NOT NULL DEFAULT 'filesystem',
     size_bytes INTEGER,
     mtime TIMESTAMP,
     confidence REAL,
     match_reason TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(entity_id, path),
-    UNIQUE(entity_id, provider, provider_book_id, file_type)
+    UNIQUE(entity_id, path, source),
+    UNIQUE(entity_id, provider, provider_book_id, file_type, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
@@ -135,6 +136,102 @@ ON monitored_book_attempt_history (entity_id, provider, provider_book_id, conten
 """
 
 
+def _migrate_monitored_book_files_v2(conn: sqlite3.Connection) -> None:
+    """Add source column and update UNIQUE constraint to include source.
+
+    The original UNIQUE(entity_id, provider, provider_book_id, file_type) constraint
+    does not allow one filesystem record AND one ABS record per book.  We recreate the
+    table with the updated constraint UNIQUE(…, file_type, source) so both can coexist.
+    Idempotent — safe to call multiple times.
+    """
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()
+    }
+    if not existing_cols:
+        return  # table doesn't exist yet; CREATE TABLE will handle it
+    if "source" in existing_cols:
+        return  # already migrated
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE monitored_book_files RENAME TO monitored_book_files_old;
+        CREATE TABLE monitored_book_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+            provider TEXT,
+            provider_book_id TEXT,
+            path TEXT NOT NULL,
+            ext TEXT,
+            file_type TEXT,
+            source TEXT NOT NULL DEFAULT 'filesystem',
+            size_bytes INTEGER,
+            mtime TIMESTAMP,
+            confidence REAL,
+            match_reason TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(entity_id, path),
+            UNIQUE(entity_id, provider, provider_book_id, file_type, source)
+        );
+        INSERT INTO monitored_book_files
+            (id, entity_id, provider, provider_book_id, path, ext, file_type, source,
+             size_bytes, mtime, confidence, match_reason, created_at, updated_at)
+        SELECT id, entity_id, provider, provider_book_id, path, ext, file_type,
+               'filesystem', size_bytes, mtime, confidence, match_reason, created_at, updated_at
+        FROM monitored_book_files_old;
+        DROP TABLE monitored_book_files_old;
+        PRAGMA foreign_keys = ON;
+    """)
+    conn.commit()
+
+
+def _migrate_monitored_book_files_v3(conn: sqlite3.Connection) -> None:
+    """Widen UNIQUE(entity_id, path) to UNIQUE(entity_id, path, source).
+
+    Allows a filesystem record and an ABS record for the exact same file path to
+    coexist (relevant when ABS and shelfmark share the same mounted filesystem).
+    Idempotent — safe to call multiple times.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='monitored_book_files'"
+    ).fetchone()
+    if not row:
+        return  # table doesn't exist yet; CREATE TABLE will handle it
+    schema: str = row[0] if isinstance(row, tuple) else row["sql"]
+    if "entity_id, path, source" in schema:
+        return  # already migrated
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE monitored_book_files RENAME TO monitored_book_files_v3_old;
+        CREATE TABLE monitored_book_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+            provider TEXT,
+            provider_book_id TEXT,
+            path TEXT NOT NULL,
+            ext TEXT,
+            file_type TEXT,
+            source TEXT NOT NULL DEFAULT 'filesystem',
+            size_bytes INTEGER,
+            mtime TIMESTAMP,
+            confidence REAL,
+            match_reason TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(entity_id, path, source),
+            UNIQUE(entity_id, provider, provider_book_id, file_type, source)
+        );
+        INSERT INTO monitored_book_files
+            (id, entity_id, provider, provider_book_id, path, ext, file_type, source,
+             size_bytes, mtime, confidence, match_reason, created_at, updated_at)
+        SELECT id, entity_id, provider, provider_book_id, path, ext, file_type, source,
+               size_bytes, mtime, confidence, match_reason, created_at, updated_at
+        FROM monitored_book_files_v3_old;
+        DROP TABLE monitored_book_files_v3_old;
+        PRAGMA foreign_keys = ON;
+    """)
+    conn.commit()
+
+
 class MonitoredDB:
     """Thread-safe SQLite interface for monitored_* tables.
 
@@ -158,6 +255,8 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
+                _migrate_monitored_book_files_v2(conn)
+                _migrate_monitored_book_files_v3(conn)
                 conn.executescript(_CREATE_MONITORED_TABLES_SQL)
                 conn.commit()
             finally:
@@ -172,8 +271,12 @@ class MonitoredDB:
         *,
         entity_id: int,
         keep_paths: list[str],
+        source: str = "filesystem",
     ) -> int:
         """Delete monitored_book_files for an entity that are not in keep_paths.
+
+        Only rows matching *source* are considered, so filesystem scans never
+        prune audiobookshelf records and vice versa.
 
         Returns the number of deleted rows.
         """
@@ -187,21 +290,45 @@ class MonitoredDB:
                         """
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
+                          AND source = ?
                         """,
-                        (entity_id,),
+                        (entity_id, source),
                     )
                     conn.commit()
                     return int(cur.rowcount or 0)
 
-                placeholders = ",".join(["?"] * len(keep_paths))
-                cur = conn.execute(
-                    f"""
-                    DELETE FROM monitored_book_files
-                    WHERE entity_id = ?
-                      AND path NOT IN ({placeholders})
-                    """,
-                    (entity_id, *keep_paths),
-                )
+                # SQLite bind variable limit is 999; use a temp table for large sets.
+                _SQLITE_BIND_LIMIT = 900
+                if len(keep_paths) > _SQLITE_BIND_LIMIT:
+                    conn.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS _prune_keep_paths (path TEXT PRIMARY KEY)"
+                    )
+                    conn.execute("DELETE FROM _prune_keep_paths")
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO _prune_keep_paths VALUES (?)",
+                        [(p,) for p in keep_paths],
+                    )
+                    cur = conn.execute(
+                        """
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND source = ?
+                          AND path NOT IN (SELECT path FROM _prune_keep_paths)
+                        """,
+                        (entity_id, source),
+                    )
+                    conn.execute("DROP TABLE IF EXISTS _prune_keep_paths")
+                else:
+                    placeholders = ",".join(["?"] * len(keep_paths))
+                    cur = conn.execute(
+                        f"""
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND source = ?
+                          AND path NOT IN ({placeholders})
+                        """,
+                        (entity_id, source, *keep_paths),
+                    )
                 conn.commit()
                 return int(cur.rowcount or 0)
             finally:
@@ -1048,12 +1175,13 @@ class MonitoredDB:
         mtime: str | None,
         confidence: float | None,
         match_reason: str | None,
+        source: str = "filesystem",
     ) -> None:
         """Upsert a matched file for a monitored book.
 
         Constraints:
         - one row per (entity_id, path)
-        - one row per (entity_id, provider, provider_book_id, file_type)
+        - one row per (entity_id, provider, provider_book_id, file_type, source)
         """
 
         normalized_path = (path or "").strip()
@@ -1072,19 +1200,20 @@ class MonitoredDB:
 
                 if provider and provider_book_id and file_type:
                     # Prevent path-key collisions when re-pointing an existing
-                    # (provider, provider_book_id, file_type) match to a new file path.
+                    # (provider, provider_book_id, file_type, source) match to a new file path.
                     conn.execute(
                         """
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
                           AND path = ?
+                          AND source = ?
                           AND NOT (
                             provider = ?
                             AND provider_book_id = ?
                             AND file_type = ?
                           )
                         """,
-                        (entity_id, normalized_path, provider, provider_book_id, file_type),
+                        (entity_id, normalized_path, source, provider, provider_book_id, file_type),
                     )
 
                     conn.execute(
@@ -1096,14 +1225,15 @@ class MonitoredDB:
                             path,
                             ext,
                             file_type,
+                            source,
                             size_bytes,
                             mtime,
                             confidence,
                             match_reason,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(entity_id, provider, provider_book_id, file_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(entity_id, provider, provider_book_id, file_type, source)
                         DO UPDATE SET
                             path=excluded.path,
                             ext=excluded.ext,
@@ -1120,6 +1250,7 @@ class MonitoredDB:
                             normalized_path,
                             ext,
                             file_type,
+                            source,
                             size_bytes,
                             mtime,
                             confidence,
@@ -1136,14 +1267,15 @@ class MonitoredDB:
                             path,
                             ext,
                             file_type,
+                            source,
                             size_bytes,
                             mtime,
                             confidence,
                             match_reason,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(entity_id, path)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(entity_id, path, source)
                         DO UPDATE SET
                             provider=excluded.provider,
                             provider_book_id=excluded.provider_book_id,
@@ -1162,6 +1294,7 @@ class MonitoredDB:
                             normalized_path,
                             ext,
                             file_type,
+                            source,
                             size_bytes,
                             mtime,
                             confidence,
@@ -1207,6 +1340,13 @@ class MonitoredDB:
                 row_dict = dict(row)
                 path = row_dict.get("path")
                 file_id = row_dict.get("id")
+                row_source = row_dict.get("source") or "filesystem"
+
+                # Non-filesystem records (e.g. audiobookshelf) have remote paths
+                # that won't exist locally — always treat them as present.
+                if row_source != "filesystem":
+                    existing_rows.append(row_dict)
+                    continue
 
                 path_exists = False
                 if isinstance(path, str) and path.strip():
