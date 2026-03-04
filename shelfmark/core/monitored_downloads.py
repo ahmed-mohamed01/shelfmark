@@ -54,6 +54,33 @@ def _pending_key(entity_id: int, provider: str, provider_book_id: str, content_t
     return f"{entity_id}:{provider}:{provider_book_id}:{content_type}"
 
 
+def _infer_monitored_match_content_type(*, row: dict[str, Any], user_id: int | None) -> str | None:
+    """Infer monitored file row content type (ebook/audiobook) from row fields."""
+    file_type = str(row.get("file_type") or "").strip().lower()
+    ext = str(row.get("ext") or "").strip().lower()
+    if file_type in {"ebook", "audiobook"}:
+        return file_type
+
+    token_candidates = [file_type.lstrip("."), ext.lstrip(".")]
+    token_candidates = [token for token in token_candidates if token]
+    if not token_candidates:
+        return None
+
+    try:
+        from shelfmark.core.monitored_files import resolve_monitored_format_preferences
+
+        ebook_formats, audiobook_formats = resolve_monitored_format_preferences(user_id=user_id)
+    except Exception:
+        return None
+
+    for token in token_candidates:
+        if token in audiobook_formats:
+            return "audiobook"
+        if token in ebook_formats:
+            return "ebook"
+    return None
+
+
 def set_monitored_db(monitored_db: Any) -> None:
     """Inject MonitoredDB dependency for monitored download history recording."""
     global _user_db
@@ -144,6 +171,15 @@ def _record_download_history(task: DownloadTask) -> None:
     )
 
     overwrite_path = None
+    if isinstance(previous, dict):
+        previous_content_type = _infer_monitored_match_content_type(
+            row=previous,
+            user_id=int(user_id),
+        )
+        current_content_type = _normalize_content_type(task.content_type)
+        if previous_content_type != current_content_type:
+            previous = None
+
     if isinstance(previous, dict):
         previous_path = previous.get("path")
         if isinstance(previous_path, str) and previous_path.strip():

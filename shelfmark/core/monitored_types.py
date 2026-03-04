@@ -62,6 +62,8 @@ class SearchSummary:
     entity_id: int = 0
     content_type: str = "ebook"
     total_candidates: int = 0
+    skipped_history_final_path_exists: int = 0
+    skipped_existing_file: int = 0
     queued: int = 0
     unreleased: int = 0
     no_match: int = 0

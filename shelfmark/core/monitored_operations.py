@@ -9,7 +9,7 @@ Import graph: monitored_operations → monitored_db_ops, monitored_files,
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -276,6 +276,47 @@ def compute_book_availability(
     )
 
 
+def _resolve_search_skip_reason(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    provider: str,
+    provider_book_id: str,
+    content_type: str,
+    availability_payload: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Return skip reason for monitored auto-search when files already exist.
+
+    Priority:
+    1) Shelfmark-managed history final_path exists on disk.
+    2) Canonical monitored availability says requested content already exists.
+    """
+
+    history_rows = db.list_monitored_book_download_history(
+        user_id=user_id,
+        entity_id=entity_id,
+        provider=provider,
+        provider_book_id=provider_book_id,
+        limit=20,
+    ) or []
+    for history_row in history_rows:
+        final_path = str(history_row.get("final_path") or "").strip()
+        if not final_path:
+            continue
+        try:
+            if Path(final_path).exists():
+                return "history_final_path_exists", final_path
+        except Exception:
+            continue
+
+    has_file_key = "has_ebook_available" if content_type == "ebook" else "has_audiobook_available"
+    if bool(availability_payload.get(has_file_key)):
+        return "existing_file", None
+
+    return None, None
+
+
 # =============================================================================
 # File scanning
 # =============================================================================
@@ -439,6 +480,49 @@ def record_scan_error(
 # =============================================================================
 
 
+def resolve_book_auto_search_precheck(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    user_id: int | None,
+    provider: str,
+    provider_book_id: str,
+    content_type: str,
+) -> tuple[bool, str | None, str | None]:
+    """Return whether monitored auto-search should skip this book.
+
+    Returns tuple: (skip, reason, detail)
+    - skip=True when a previously downloaded final_path exists or availability says
+      requested content is already present.
+    - reason in {"history_final_path_exists", "existing_file"}
+    """
+    normalized_provider = str(provider or "").strip()
+    normalized_provider_book_id = str(provider_book_id or "").strip()
+    normalized_content_type = str(content_type or "").strip().lower()
+    if normalized_content_type not in {"ebook", "audiobook"}:
+        normalized_content_type = "ebook"
+
+    if not normalized_provider or not normalized_provider_book_id:
+        return False, None, None
+
+    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    if entity is None:
+        raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
+
+    availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
+    availability_payload = availability.availability_by_book.get((normalized_provider, normalized_provider_book_id), {})
+    reason, detail = _resolve_search_skip_reason(
+        db,
+        entity_id=entity_id,
+        user_id=user_id,
+        provider=normalized_provider,
+        provider_book_id=normalized_provider_book_id,
+        content_type=normalized_content_type,
+        availability_payload=availability_payload,
+    )
+    return bool(reason), reason, detail
+
+
 def search_missing_books(
     db: MonitoredDB,
     *,
@@ -460,6 +544,7 @@ def search_missing_books(
     """
     from shelfmark.core.activity_service import build_download_item_key
     from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
+    from shelfmark.core.monitored_release_scoring import is_book_released
     from shelfmark.metadata_providers import BookMetadata
 
     entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
@@ -475,9 +560,6 @@ def search_missing_books(
         if bool(int(row.get(monitor_col) or 0))
         and str(row.get("provider") or "").strip()
         and str(row.get("provider_book_id") or "").strip()
-        and not bool(availability.availability_by_book.get(
-            (str(row.get("provider") or "").strip(), str(row.get("provider_book_id") or "").strip()), {}
-        ).get(has_file_key))
     ]
 
     summary = SearchSummary(
@@ -521,6 +603,94 @@ def search_missing_books(
         provider = str(row.get("provider") or "").strip()
         provider_book_id = str(row.get("provider_book_id") or "").strip()
         book_title = str(row.get("title") or "").strip() or None
+        availability_payload = availability.availability_by_book.get((provider, provider_book_id), {})
+
+        skip_reason, skip_detail = _resolve_search_skip_reason(
+            db,
+            entity_id=entity_id,
+            user_id=user_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            content_type=content_type,
+            availability_payload=availability_payload,
+        )
+        if skip_reason == "history_final_path_exists":
+            summary.skipped_history_final_path_exists += 1
+            write_monitored_book_attempt(
+                db,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                attempted_at=now_iso,
+                status="no_match",
+                error_message="skip_existing_file_history_final_path_exists",
+            )
+            if activity_service is not None and user_id is not None:
+                _emit_error(
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    title=book_title,
+                    reason="skipped_existing_file",
+                    detail=f"Final path exists on disk: {skip_detail}",
+                )
+            continue
+        if skip_reason == "existing_file":
+            summary.skipped_existing_file += 1
+            write_monitored_book_attempt(
+                db,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                attempted_at=now_iso,
+                status="no_match",
+                error_message="skip_existing_file",
+            )
+            if activity_service is not None and user_id is not None:
+                _emit_error(
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    title=book_title,
+                    reason="skipped_existing_file",
+                    detail=f"{has_file_key}=true",
+                )
+            continue
+
+        release_date_raw = str(row.get("release_date") or "").strip()
+        is_released, parsed_release_date = is_book_released(release_date_raw)
+        if parsed_release_date is None and len(release_date_raw) == 4 and release_date_raw.isdigit():
+            try:
+                parsed_release_date = date(int(release_date_raw), 1, 1)
+                is_released = parsed_release_date <= datetime.now(timezone.utc).date()
+            except ValueError:
+                pass
+        if not is_released:
+            summary.unreleased += 1
+            unreleased_message = "Book is unreleased"
+            if parsed_release_date is not None:
+                unreleased_message = f"Book is unreleased until {parsed_release_date.isoformat()}"
+            write_monitored_book_attempt(
+                db,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                attempted_at=now_iso,
+                status="not_released",
+                error_message=unreleased_message,
+            )
+            _emit_error(
+                provider=provider,
+                provider_book_id=provider_book_id,
+                title=book_title,
+                reason="not_released",
+                detail=unreleased_message,
+            )
+            continue
 
         try:
             # Build BookMetadata from DB row — data is already stored from sync

@@ -21,6 +21,7 @@ from shelfmark.core.monitored_files import (
 from shelfmark.core.monitored_operations import (
     record_scan_error,
     refresh_author,
+    resolve_book_auto_search_precheck,
     search_missing_books,
     start_author_background_sync,
     update_file_availability,
@@ -742,6 +743,47 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
         return jsonify({"history": rows, "attempt_history": attempt_rows})
 
+    @app.route("/api/monitored/<int:entity_id>/books/auto-search-precheck", methods=["POST"])
+    def api_monitored_auto_search_precheck(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        provider = str(payload.get("provider") or "").strip()
+        provider_book_id = str(payload.get("provider_book_id") or "").strip()
+        content_type = str(payload.get("content_type") or "ebook").strip().lower()
+        if content_type not in {"ebook", "audiobook"}:
+            return jsonify({"error": "content_type must be ebook or audiobook"}), 400
+        if not provider or not provider_book_id:
+            return jsonify({"error": "provider and provider_book_id are required"}), 400
+
+        try:
+            skip, reason, detail = resolve_book_auto_search_precheck(
+                monitored_db,
+                entity_id=entity_id,
+                user_id=db_user_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+            )
+        except MonitoredEntityNotFound:
+            return jsonify({"error": "Not found"}), 404
+
+        return jsonify({
+            "ok": True,
+            "entity_id": entity_id,
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "content_type": content_type,
+            "skip": bool(skip),
+            "reason": reason,
+            "detail": detail,
+        })
+
     @app.route("/api/monitored/<int:entity_id>/books/attempt", methods=["POST"])
     def api_record_monitored_book_attempt(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
@@ -974,6 +1016,8 @@ def register_monitored_routes(
             "entity_id": result.entity_id,
             "content_type": result.content_type,
             "total_candidates": result.total_candidates,
+            "skipped_history_final_path_exists": result.skipped_history_final_path_exists,
+            "skipped_existing_file": result.skipped_existing_file,
             "queued": result.queued,
             "unreleased": result.unreleased,
             "no_match": result.no_match,

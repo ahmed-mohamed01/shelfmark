@@ -11,6 +11,7 @@ export interface BatchAutoStats {
   total: number;
   queued: number;
   skipped: number;
+  skippedExistingFile: number;
   failed: number;
   started: boolean;
   contentType: ContentType;

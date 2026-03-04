@@ -332,6 +332,31 @@ export const listMonitoredBookDownloadHistory = async (
   );
 };
 
+export interface MonitoredAutoSearchPrecheckResponse {
+  ok: boolean;
+  entity_id: number;
+  provider: string;
+  provider_book_id: string;
+  content_type: 'ebook' | 'audiobook';
+  skip: boolean;
+  reason: 'history_final_path_exists' | 'existing_file' | null;
+  detail?: string | null;
+}
+
+export const precheckMonitoredAutoSearch = async (
+  entityId: number,
+  payload: {
+    provider: string;
+    provider_book_id: string;
+    content_type: 'ebook' | 'audiobook';
+  },
+): Promise<MonitoredAutoSearchPrecheckResponse> => {
+  return fetchJSON<MonitoredAutoSearchPrecheckResponse>(`${API_BASE}/monitored/${entityId}/books/auto-search-precheck`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
 interface RecordMonitoredBookAttemptPayload {
   provider: string;
   provider_book_id: string;

@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import { AppConfig, Book, ContentType, OpenReleasesOptions, Release, ReleasePrimaryAction } from '../types';
 import { getReleases } from '../services/api';
-import { recordMonitoredAutoSearchAttempt } from '../services/monitoredApi';
+import { precheckMonitoredAutoSearch, recordMonitoredAutoSearchAttempt } from '../services/monitoredApi';
 import { ActivityItem } from '../components/activity/activityTypes';
 import { policyTrace } from '../utils/policyTrace';
 import { getUnreleasedUntilDateForAutoSearch } from '../utils/monitoredAutoSearchUtils';
@@ -102,12 +102,39 @@ export function useMonitoredAutoSearch({
       ? config.auto_download_min_match_score
       : 75;
 
+    const finalizeBatchIfComplete = () => {
+      if (!isBatchAutoSearch || !batchAuto || !batchStatsKey || batchAuto.index < batchAuto.total) {
+        return;
+      }
+      const batchStats = batchAutoStatsRef.current[batchStatsKey];
+      if (!batchStats) {
+        return;
+      }
+      const total = Math.max(1, batchStats.total || 0);
+      const processed = batchStats.queued + batchStats.skipped + batchStats.failed;
+      const completedLabel = batchStats.failed > 0 ? 'Error' : 'Complete';
+      const completedVisualStatus: ActivityItem['visualStatus'] = batchStats.failed > 0 ? 'error' : 'complete';
+      updateBatchMasterActivity({
+        statusDetail: `${batchStats.queued}/${total} queued · ${batchStats.skipped} skipped · ${batchStats.failed} failed`,
+        progress: Math.max(95, Math.min(100, Math.round((processed / total) * 100))),
+        visualStatus: completedVisualStatus,
+        statusLabel: completedLabel,
+        progressAnimated: false,
+      });
+      showToast(
+        `Batch pre-processing finished: ${batchStats.queued} queued, ${batchStats.skipped} skipped (${batchStats.skippedExistingFile} existing on disk), ${batchStats.failed} failed.`,
+        batchStats.failed > 0 ? 'error' : 'success'
+      );
+      delete batchAutoStatsRef.current[batchStatsKey];
+    };
+
     if (isBatchAutoSearch && batchAuto && batchStatsKey) {
       if (!batchAutoStatsRef.current[batchStatsKey]) {
         batchAutoStatsRef.current[batchStatsKey] = {
           total: batchAuto.total,
           queued: 0,
           skipped: 0,
+          skippedExistingFile: 0,
           failed: 0,
           started: false,
           contentType: batchAuto.contentType,
@@ -138,7 +165,54 @@ export function useMonitoredAutoSearch({
       if (isBatchAutoSearch && batchStatsKey) {
         batchAutoStatsRef.current[batchStatsKey].skipped += 1;
       }
+      finalizeBatchIfComplete();
       return isForcedAutoAction ? 'skip' : 'fallback';
+    }
+
+    if (isForcedAutoAction && monitoredEntityId) {
+      try {
+        const precheck = await precheckMonitoredAutoSearch(monitoredEntityId, {
+          provider: book.provider,
+          provider_book_id: book.provider_id,
+          content_type: normalizedContentType,
+        });
+        if (precheck.skip) {
+          const skipMessage = precheck.reason === 'history_final_path_exists'
+            ? 'Skipped auto-search: Shelfmark downloaded file already exists on disk.'
+            : 'Skipped auto-search: matching monitored file already exists on disk.';
+          if (!suppressPerBookAutoSearchToasts) {
+            showToast(skipMessage, 'info');
+          }
+          if (isBatchAutoSearch && batchAuto && batchStatsKey) {
+            const batchStats = batchAutoStatsRef.current[batchStatsKey];
+            if (batchStats) {
+              batchStats.skipped += 1;
+              batchStats.skippedExistingFile += 1;
+            }
+            updateBatchMasterActivity({
+              statusDetail: `Skipped ${batchAuto.index}/${batchAuto.total} (file already exists)`,
+              progress: Math.max(10, Math.min(95, Math.round((batchAuto.index / Math.max(1, batchAuto.total)) * 100))),
+              visualStatus: 'resolving',
+              statusLabel: 'Warning',
+              progressAnimated: true,
+            });
+          }
+          void recordMonitoredAutoSearchAttempt({
+            monitoredEntityId,
+            provider: book.provider,
+            providerBookId: book.provider_id,
+            contentType: normalizedContentType,
+            status: 'no_match',
+            errorMessage: precheck.reason === 'history_final_path_exists'
+              ? 'skip_existing_file_history_final_path_exists'
+              : 'skip_existing_file',
+          });
+          finalizeBatchIfComplete();
+          return 'skip';
+        }
+      } catch (precheckError) {
+        console.warn('Monitored auto-search precheck failed, continuing search:', precheckError);
+      }
     }
 
     const unreleasedUntil = getUnreleasedUntilDateForAutoSearch(book);
@@ -170,6 +244,7 @@ export function useMonitoredAutoSearch({
           progressAnimated: true,
         });
       }
+      finalizeBatchIfComplete();
       return 'skip';
     }
 
@@ -323,27 +398,7 @@ export function useMonitoredAutoSearch({
       if (processingToastId) {
         removeToast(processingToastId);
       }
-      if (isBatchAutoSearch && batchAuto && batchStatsKey && batchAuto.index >= batchAuto.total) {
-        const batchStats = batchAutoStatsRef.current[batchStatsKey];
-        if (batchStats) {
-          const total = Math.max(1, batchStats.total || 0);
-          const processed = batchStats.queued + batchStats.skipped + batchStats.failed;
-          const completedLabel = batchStats.failed > 0 ? 'Error' : 'Complete';
-          const completedVisualStatus: ActivityItem['visualStatus'] = batchStats.failed > 0 ? 'error' : 'complete';
-          updateBatchMasterActivity({
-            statusDetail: `${batchStats.queued}/${total} queued · ${batchStats.skipped} skipped · ${batchStats.failed} failed`,
-            progress: Math.max(95, Math.min(100, Math.round((processed / total) * 100))),
-            visualStatus: completedVisualStatus,
-            statusLabel: completedLabel,
-            progressAnimated: false,
-          });
-          showToast(
-            `Batch pre-processing finished: ${batchStats.queued} queued, ${batchStats.skipped} skipped, ${batchStats.failed} failed.`,
-            batchStats.failed > 0 ? 'error' : 'success'
-          );
-          delete batchAutoStatsRef.current[batchStatsKey];
-        }
-      }
+      finalizeBatchIfComplete();
     }
   }, [
     config,
