@@ -1,11 +1,12 @@
 import { KeyboardEvent } from 'react';
 import { MetadataSearchField } from '../../types';
 import { DropdownList } from '../DropdownList';
+import { DynamicDropdown } from './DynamicDropdown';
 
 interface SearchFieldRendererProps {
   field: MetadataSearchField;
   value: string | number | boolean;
-  onChange: (value: string | number | boolean) => void;
+  onChange: (value: string | number | boolean, label?: string) => void;
   onSubmit?: () => void;
 }
 
@@ -96,6 +97,16 @@ export const SearchFieldRenderer = ({ field, value, onChange, onSubmit }: Search
           />
           <span className="text-sm">{field.label}</span>
         </label>
+      );
+
+    case 'DynamicSelectSearchField':
+      return (
+        <DynamicDropdown
+          endpoint={field.options_endpoint}
+          value={(value as string) ?? ''}
+          onChange={(v, label) => onChange(v, label)}
+          placeholder={field.placeholder || 'Select...'}
+        />
       );
 
     default:

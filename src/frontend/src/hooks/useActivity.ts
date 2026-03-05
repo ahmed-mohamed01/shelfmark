@@ -16,6 +16,7 @@ import {
   downloadToActivityItem,
   requestToActivityItem,
 } from '../components/activity';
+import { dedupeHistoryItems } from '../components/activity/activityHistory.js';
 
 const HISTORY_PAGE_SIZE = 50;
 
@@ -120,10 +121,12 @@ interface UseActivityResult {
   requestItems: ActivityItem[];
   dismissedActivityKeys: string[];
   historyItems: ActivityItem[];
+  activityHistoryLoaded: boolean;
   pendingRequestCount: number;
   isActivitySnapshotLoading: boolean;
   activityHistoryLoading: boolean;
   activityHistoryHasMore: boolean;
+  prefetchActivityHistory: () => void;
   refreshActivitySnapshot: () => Promise<void>;
   handleActivityTabChange: (tab: 'all' | 'downloads' | 'requests' | 'history') => void;
   resetActivity: () => void;
@@ -217,6 +220,13 @@ export const useActivity = ({
     void refreshActivityHistory();
   }, [activityHistoryLoaded, activityHistoryLoading, refreshActivityHistory]);
 
+  const prefetchActivityHistory = useCallback(() => {
+    if (activityHistoryLoaded || activityHistoryLoading) {
+      return;
+    }
+    void refreshActivityHistory();
+  }, [activityHistoryLoaded, activityHistoryLoading, refreshActivityHistory]);
+
   const handleActivityHistoryLoadMore = useCallback(() => {
     if (!isAuthenticated || activityHistoryLoading || !activityHistoryHasMore) {
       return;
@@ -282,29 +292,7 @@ export const useActivity = ({
         .map((row) => mapHistoryRowToActivityItem(row, isAdmin ? 'admin' : 'user'))
         .sort((left, right) => right.timestamp - left.timestamp);
 
-      // Download dismissals already carry linked request context; hide redundant
-      // fulfilled-request history rows that would otherwise appear as "Approved".
-      const requestIdsWithDownloadRows = new Set<number>();
-      mappedItems.forEach((item) => {
-        if (item.kind === 'download' && typeof item.requestId === 'number') {
-          requestIdsWithDownloadRows.add(item.requestId);
-        }
-      });
-
-      if (!requestIdsWithDownloadRows.size) {
-        return mappedItems;
-      }
-
-      return mappedItems.filter((item) => {
-        if (item.kind !== 'request' || typeof item.requestId !== 'number') {
-          return true;
-        }
-        if (!requestIdsWithDownloadRows.has(item.requestId)) {
-          return true;
-        }
-        const requestStatus = item.requestRecord?.status;
-        return requestStatus !== 'fulfilled' && item.visualStatus !== 'fulfilled';
-      });
+      return dedupeHistoryItems(mappedItems);
     },
     [activityHistoryRows, isAdmin]
   );
@@ -389,22 +377,29 @@ export const useActivity = ({
 
   const handleClearHistory = useCallback(() => {
     resetActivityHistory();
-    void clearActivityHistory().catch((error) => {
-      console.error('Clear history failed:', error);
-      void refreshActivityHistory();
-      showToast('Failed to clear history', 'error');
-    });
-  }, [refreshActivityHistory, resetActivityHistory, showToast]);
+    void clearActivityHistory()
+      .then(() => {
+        void refreshActivitySnapshot();
+        void refreshActivityHistory();
+      })
+      .catch((error) => {
+        console.error('Clear history failed:', error);
+        void refreshActivityHistory();
+        showToast('Failed to clear history', 'error');
+      });
+  }, [refreshActivityHistory, refreshActivitySnapshot, resetActivityHistory, showToast]);
 
   return {
     activityStatus,
     requestItems,
     dismissedActivityKeys,
     historyItems,
+    activityHistoryLoaded,
     pendingRequestCount,
     isActivitySnapshotLoading,
     activityHistoryLoading,
     activityHistoryHasMore,
+    prefetchActivityHistory,
     refreshActivitySnapshot,
     handleActivityTabChange,
     resetActivity,

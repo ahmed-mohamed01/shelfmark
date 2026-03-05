@@ -17,6 +17,7 @@ from shelfmark.core.request_policy import (
     parse_policy_mode,
     resolve_policy_mode,
 )
+from shelfmark.core.request_validation import RequestStatus
 from shelfmark.core.requests_service import (
     RequestServiceError,
     cancel_request,
@@ -24,44 +25,24 @@ from shelfmark.core.requests_service import (
     fulfil_request,
     reject_request,
 )
-from shelfmark.core.activity_service import ActivityService, build_request_item_key
 from shelfmark.core.notifications import (
     NotificationContext,
     NotificationEvent,
     notify_admin,
     notify_user,
 )
-from shelfmark.core.settings_registry import load_config_file
+from shelfmark.core.request_helpers import (
+    coerce_bool,
+    coerce_int,
+    emit_ws_event,
+    load_users_request_policy_settings,
+    normalize_optional_text,
+    normalize_positive_int,
+    populate_request_usernames,
+)
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
-
-
-def _load_users_request_policy_settings() -> dict[str, Any]:
-    """Load global request-policy settings from users config."""
-    return load_config_file("users")
-
-
-def _as_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed
 
 
 def _error_response(
@@ -110,103 +91,107 @@ def _require_db_user_id() -> tuple[int | None, Any | None]:
         )
 
 
+def _require_admin_user_id() -> tuple[int | None, Any | None]:
+    if not session.get("is_admin", False):
+        return None, (jsonify({"error": "Admin access required"}), 403)
+    raw_admin_id = session.get("db_user_id")
+    if raw_admin_id is None:
+        return None, (jsonify({"error": "Admin user identity unavailable"}), 403)
+    try:
+        return int(raw_admin_id), None
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "Admin user identity unavailable"}), 403)
+
+
 def _resolve_effective_policy(
     user_db: UserDB,
     *,
     db_user_id: int | None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bool]:
-    global_settings = _load_users_request_policy_settings()
+    global_settings = load_users_request_policy_settings()
     user_settings = user_db.get_user_settings(db_user_id) if db_user_id is not None else {}
     effective = merge_request_policy_settings(global_settings, user_settings)
-    requests_enabled = _as_bool(effective.get("REQUESTS_ENABLED"), False)
+    requests_enabled = coerce_bool(effective.get("REQUESTS_ENABLED"), False)
     return global_settings, user_settings, effective, requests_enabled
-
-
-def _emit_request_event(
-    ws_manager: Any,
-    *,
-    event_name: str,
-    payload: dict[str, Any],
-    room: str,
-) -> None:
-    if ws_manager is None:
-        return
-    try:
-        socketio = getattr(ws_manager, "socketio", None)
-        is_enabled = getattr(ws_manager, "is_enabled", None)
-        if socketio is None or not callable(is_enabled) or not is_enabled():
-            return
-        socketio.emit(event_name, payload, to=room)
-    except Exception as exc:
-        logger.warning(f"Failed to emit WebSocket event '{event_name}' to room '{room}': {exc}")
-
-
-def _extract_release_source_id(release_data: Any) -> str | None:
-    if not isinstance(release_data, dict):
-        return None
-    source_id = release_data.get("source_id")
-    if not isinstance(source_id, str):
-        return None
-    normalized = source_id.strip()
-    return normalized or None
-
-
-def _record_terminal_request_snapshot(
-    activity_service: ActivityService | None,
-    *,
-    request_row: dict[str, Any],
-) -> None:
-    if activity_service is None:
-        return
-
-    request_status = request_row.get("status")
-    if request_status not in {"rejected", "cancelled"}:
-        return
-
-    raw_request_id = request_row.get("id")
-    try:
-        request_id = int(raw_request_id)
-    except (TypeError, ValueError):
-        return
-    if request_id < 1:
-        return
-
-    raw_user_id = request_row.get("user_id")
-    try:
-        user_id = int(raw_user_id)
-    except (TypeError, ValueError):
-        user_id = None
-
-    source_id = _extract_release_source_id(request_row.get("release_data"))
-
-    try:
-        activity_service.record_terminal_snapshot(
-            user_id=user_id,
-            item_type="request",
-            item_key=build_request_item_key(request_id),
-            origin="request",
-            final_status=request_status,
-            snapshot={"kind": "request", "request": request_row},
-            request_id=request_id,
-            source_id=source_id,
-        )
-    except Exception as exc:
-        logger.warning("Failed to record terminal request snapshot for request %s: %s", request_id, exc)
-
-
-def _normalize_optional_text(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
 
 
 def _resolve_title_from_book_data(book_data: Any) -> str:
     if isinstance(book_data, dict):
-        title = _normalize_optional_text(book_data.get("title"))
+        title = normalize_optional_text(book_data.get("title"))
         if title is not None:
             return title
     return "Unknown title"
+
+
+def _normalize_optional_source_id(value: Any) -> str | None:
+    """Normalize source identifiers while allowing integer provider ids."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        value = str(value)
+    return normalize_optional_text(value)
+
+
+def _build_direct_release_data_from_book_data(
+    *,
+    book_data: dict[str, Any],
+    content_type: str,
+) -> dict[str, Any]:
+    """Build release-level payload fields for direct-download requests."""
+    source_id = _normalize_optional_source_id(book_data.get("provider_id")) or _normalize_optional_source_id(
+        book_data.get("id")
+    )
+    payload: dict[str, Any] = {
+        "source": "direct_download",
+        "source_id": source_id,
+        "title": book_data.get("title"),
+        "author": book_data.get("author"),
+        "year": book_data.get("year"),
+        "format": book_data.get("format"),
+        "size": book_data.get("size"),
+        "preview": book_data.get("preview"),
+        "content_type": content_type,
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _normalize_direct_request_payload(
+    *,
+    source: str,
+    request_level: Any,
+    book_data: Any,
+    release_data: Any,
+    content_type: str,
+) -> tuple[Any, Any]:
+    """Direct-search requests are always release-level with direct source metadata."""
+    if source != "direct_download":
+        return request_level, release_data
+
+    normalized_release_data = release_data
+    if normalized_release_data is None and isinstance(book_data, dict):
+        normalized_release_data = _build_direct_release_data_from_book_data(
+            book_data=book_data,
+            content_type=content_type,
+        )
+    elif isinstance(normalized_release_data, dict):
+        normalized_release_data = dict(normalized_release_data)
+
+    if isinstance(normalized_release_data, dict):
+        normalized_release_data["source"] = "direct_download"
+        if normalized_release_data.get("content_type") is None:
+            normalized_release_data["content_type"] = content_type
+
+        normalized_source_id = _normalize_optional_source_id(normalized_release_data.get("source_id"))
+        if normalized_source_id is not None:
+            normalized_release_data["source_id"] = normalized_source_id
+        elif isinstance(book_data, dict):
+            fallback_source_id = _normalize_optional_source_id(book_data.get("provider_id")) or _normalize_optional_source_id(
+                book_data.get("id")
+            )
+            if fallback_source_id is not None:
+                normalized_release_data["source_id"] = fallback_source_id
+
+    return "release", normalized_release_data
 
 
 def _resolve_request_title(request_row: dict[str, Any]) -> str:
@@ -214,7 +199,7 @@ def _resolve_request_title(request_row: dict[str, Any]) -> str:
 
 
 def _format_user_label(username: str | None, user_id: int | None = None) -> str:
-    normalized_username = _normalize_optional_text(username)
+    normalized_username = normalize_optional_text(username)
     if normalized_username is not None:
         return normalized_username
     if user_id is not None and user_id > 0:
@@ -222,30 +207,23 @@ def _format_user_label(username: str | None, user_id: int | None = None) -> str:
     return "unknown user"
 
 
-def _resolve_request_username(
-    user_db: UserDB,
-    *,
-    request_row: dict[str, Any],
-    fallback_username: str | None = None,
-) -> str | None:
-    normalized_fallback = _normalize_optional_text(fallback_username)
-    raw_user_id = request_row.get("user_id")
-    try:
-        request_user_id = int(raw_user_id)
-    except (TypeError, ValueError):
-        return normalized_fallback
-
-    requester = user_db.get_user(user_id=request_user_id)
-    if not isinstance(requester, dict):
-        return normalized_fallback
-    return _normalize_optional_text(requester.get("username")) or normalized_fallback
+def _format_requester_label(user_db: UserDB, request_row: dict[str, Any]) -> str:
+    """Resolve a display label for the user who created a request."""
+    user_id = normalize_positive_int(request_row.get("user_id"))
+    if user_id is not None:
+        requester = user_db.get_user(user_id=user_id)
+        if isinstance(requester, dict):
+            username = normalize_optional_text(requester.get("username"))
+            if username is not None:
+                return username
+    return _format_user_label(None, user_id)
 
 
 def _resolve_request_source_and_format(request_row: dict[str, Any]) -> tuple[str, str | None]:
     release_data = request_row.get("release_data")
     if isinstance(release_data, dict):
         source = normalize_source(release_data.get("source") or request_row.get("source_hint"))
-        release_format = _normalize_optional_text(
+        release_format = normalize_optional_text(
             release_data.get("format")
             or release_data.get("filetype")
             or release_data.get("extension")
@@ -254,13 +232,6 @@ def _resolve_request_source_and_format(request_row: dict[str, Any]) -> tuple[str
     return normalize_source(request_row.get("source_hint")), None
 
 
-def _resolve_request_user_id(request_row: dict[str, Any]) -> int | None:
-    raw_user_id = request_row.get("user_id")
-    try:
-        user_id = int(raw_user_id)
-    except (TypeError, ValueError):
-        return None
-    return user_id if user_id > 0 else None
 
 
 def _notify_admin_for_request_event(
@@ -268,7 +239,6 @@ def _notify_admin_for_request_event(
     *,
     event: NotificationEvent,
     request_row: dict[str, Any],
-    fallback_username: str | None = None,
 ) -> None:
     book_data = request_row.get("book_data")
     if not isinstance(book_data, dict):
@@ -279,21 +249,17 @@ def _notify_admin_for_request_event(
         event=event,
         title=str(book_data.get("title") or "Unknown title"),
         author=str(book_data.get("author") or "Unknown author"),
-        username=_resolve_request_username(
-            user_db,
-            request_row=request_row,
-            fallback_username=fallback_username,
-        ),
+        username=_format_requester_label(user_db, request_row),
         content_type=normalize_content_type(
             request_row.get("content_type") or book_data.get("content_type")
         ),
         format=release_format,
         source=source,
-        admin_note=_normalize_optional_text(request_row.get("admin_note")),
+        admin_note=normalize_optional_text(request_row.get("admin_note")),
         error_message=None,
     )
 
-    owner_user_id = _resolve_request_user_id(request_row)
+    owner_user_id = normalize_positive_int(request_row.get("user_id"))
     try:
         notify_admin(event, context)
     except Exception as exc:
@@ -321,7 +287,6 @@ def register_request_routes(
     *,
     resolve_auth_mode: Callable[[], str],
     queue_release: Callable[..., tuple[bool, str | None]],
-    activity_service: ActivityService | None = None,
     ws_manager: Any | None = None,
 ) -> None:
     """Register request policy and request lifecycle routes."""
@@ -382,7 +347,7 @@ def register_request_routes(
             {
                 "requests_enabled": requests_enabled,
                 "is_admin": is_admin,
-                "allow_notes": _as_bool(effective.get("REQUESTS_ALLOW_NOTES"), default=True),
+                "allow_notes": coerce_bool(effective.get("REQUESTS_ALLOW_NOTES"), default=True),
                 "defaults": {
                     "ebook": (
                         default_ebook_mode.value
@@ -409,7 +374,7 @@ def register_request_routes(
         db_user_id, db_gate = _require_db_user_id()
         if db_gate is not None or db_user_id is None:
             return db_gate
-        actor_username = _normalize_optional_text(session.get("user_id"))
+        actor_username = normalize_optional_text(session.get("user_id"))
         actor_label = _format_user_label(actor_username, db_user_id)
 
         data = request.get_json(silent=True)
@@ -436,6 +401,13 @@ def register_request_routes(
             or data.get("content_type")
             or book_data.get("content_type")
         )
+        request_level, release_data = _normalize_direct_request_payload(
+            source=source,
+            request_level=request_level,
+            book_data=book_data,
+            release_data=release_data,
+            content_type=content_type,
+        )
 
         global_settings, user_settings, effective, requests_enabled = _resolve_effective_policy(
             user_db,
@@ -453,7 +425,7 @@ def register_request_routes(
                 code="requests_unavailable",
             )
 
-        max_pending = _as_int(
+        max_pending = coerce_int(
             effective.get("MAX_PENDING_REQUESTS_PER_USER"),
             default=20,
         )
@@ -461,7 +433,7 @@ def register_request_routes(
             max_pending = 1
         if max_pending > 1000:
             max_pending = 1000
-        allow_notes = _as_bool(effective.get("REQUESTS_ALLOW_NOTES"), default=True)
+        allow_notes = coerce_bool(effective.get("REQUESTS_ALLOW_NOTES"), default=True)
         note_value = data.get("note") if allow_notes else None
 
         resolved_mode = resolve_policy_mode(
@@ -495,10 +467,7 @@ def register_request_routes(
 
         if resolved_mode == PolicyMode.REQUEST_BOOK:
             requested_level = str(request_level).strip().lower() if isinstance(request_level, str) else ""
-            # Direct search results are already concrete releases, so allow release-level
-            # request payloads even when the policy default is request_book.
-            allow_direct_release_payload = source == "direct_download" and requested_level == "release"
-            if requested_level != "book" and not allow_direct_release_payload:
+            if requested_level != "book":
                 logger.debug(
                     "Request not created for '%s' by %s: policy requires book-level requests",
                     request_title,
@@ -538,13 +507,13 @@ def register_request_routes(
             event_payload["title"],
             actor_label,
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="new_request",
             payload=event_payload,
             room="admins",
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
@@ -555,7 +524,6 @@ def register_request_routes(
             user_db,
             event=NotificationEvent.REQUEST_CREATED,
             request_row=created,
-            fallback_username=actor_username,
         )
 
         return jsonify(created), 201
@@ -604,27 +572,25 @@ def register_request_routes(
         except RequestServiceError as exc:
             return _error_response(str(exc), exc.status_code, code=exc.code)
 
-        _record_terminal_request_snapshot(activity_service, request_row=updated)
-
         event_payload = {
             "request_id": updated["id"],
             "status": updated["status"],
             "title": _resolve_request_title(updated),
         }
-        actor_label = _format_user_label(_normalize_optional_text(session.get("user_id")), db_user_id)
+        actor_label = _format_user_label(normalize_optional_text(session.get("user_id")), db_user_id)
         logger.info(
             "Request cancelled #%s for '%s' by %s",
             updated["id"],
             event_payload["title"],
             actor_label,
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
             room=f"user_{db_user_id}",
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
@@ -650,13 +616,7 @@ def register_request_routes(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        user_cache: dict[int, str] = {}
-        for row in rows:
-            requester_id = row["user_id"]
-            if requester_id not in user_cache:
-                requester = user_db.get_user(user_id=requester_id)
-                user_cache[requester_id] = requester.get("username", "") if requester else ""
-            row["username"] = user_cache[requester_id]
+        populate_request_usernames(rows, user_db)
 
         return jsonify(rows)
 
@@ -670,11 +630,11 @@ def register_request_routes(
 
         by_status = {
             status: len(user_db.list_requests(status=status))
-            for status in ("pending", "fulfilled", "rejected", "cancelled")
+            for status in RequestStatus
         }
         return jsonify(
             {
-                "pending": by_status["pending"],
+                "pending": by_status[RequestStatus.PENDING],
                 "total": sum(by_status.values()),
                 "by_status": by_status,
             }
@@ -685,16 +645,10 @@ def register_request_routes(
         auth_gate = _require_request_endpoints_available(resolve_auth_mode)
         if auth_gate is not None:
             return auth_gate
-        if not session.get("is_admin", False):
-            return jsonify({"error": "Admin access required"}), 403
 
-        raw_admin_id = session.get("db_user_id")
-        if raw_admin_id is None:
-            return jsonify({"error": "Admin user identity unavailable"}), 403
-        try:
-            admin_user_id = int(raw_admin_id)
-        except (TypeError, ValueError):
-            return jsonify({"error": "Admin user identity unavailable"}), 403
+        admin_user_id, admin_gate = _require_admin_user_id()
+        if admin_gate is not None:
+            return admin_gate
 
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -718,11 +672,8 @@ def register_request_routes(
             "status": updated["status"],
             "title": _resolve_request_title(updated),
         }
-        admin_label = _format_user_label(_normalize_optional_text(session.get("user_id")), admin_user_id)
-        requester_label = _format_user_label(
-            _resolve_request_username(user_db, request_row=updated),
-            _resolve_request_user_id(updated),
-        )
+        admin_label = _format_user_label(normalize_optional_text(session.get("user_id")), admin_user_id)
+        requester_label = _format_requester_label(user_db, updated)
         logger.info(
             "Request fulfilled #%s for '%s' by %s (requested by %s)",
             updated["id"],
@@ -730,13 +681,13 @@ def register_request_routes(
             admin_label,
             requester_label,
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
             room=f"user_{updated['user_id']}",
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
@@ -756,16 +707,10 @@ def register_request_routes(
         auth_gate = _require_request_endpoints_available(resolve_auth_mode)
         if auth_gate is not None:
             return auth_gate
-        if not session.get("is_admin", False):
-            return jsonify({"error": "Admin access required"}), 403
 
-        raw_admin_id = session.get("db_user_id")
-        if raw_admin_id is None:
-            return jsonify({"error": "Admin user identity unavailable"}), 403
-        try:
-            admin_user_id = int(raw_admin_id)
-        except (TypeError, ValueError):
-            return jsonify({"error": "Admin user identity unavailable"}), 403
+        admin_user_id, admin_gate = _require_admin_user_id()
+        if admin_gate is not None:
+            return admin_gate
 
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -781,18 +726,13 @@ def register_request_routes(
         except RequestServiceError as exc:
             return _error_response(str(exc), exc.status_code, code=exc.code)
 
-        _record_terminal_request_snapshot(activity_service, request_row=updated)
-
         event_payload = {
             "request_id": updated["id"],
             "status": updated["status"],
             "title": _resolve_request_title(updated),
         }
-        admin_label = _format_user_label(_normalize_optional_text(session.get("user_id")), admin_user_id)
-        requester_label = _format_user_label(
-            _resolve_request_username(user_db, request_row=updated),
-            _resolve_request_user_id(updated),
-        )
+        admin_label = _format_user_label(normalize_optional_text(session.get("user_id")), admin_user_id)
+        requester_label = _format_requester_label(user_db, updated)
         logger.info(
             "Request rejected #%s for '%s' by %s (requested by %s)",
             updated["id"],
@@ -800,13 +740,13 @@ def register_request_routes(
             admin_label,
             requester_label,
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,
             room=f"user_{updated['user_id']}",
         )
-        _emit_request_event(
+        emit_ws_event(
             ws_manager,
             event_name="request_update",
             payload=event_payload,

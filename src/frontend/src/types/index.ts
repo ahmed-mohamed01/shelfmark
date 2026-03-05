@@ -131,7 +131,8 @@ export type SearchFieldType =
   | 'TextSearchField'
   | 'NumberSearchField'
   | 'SelectSearchField'
-  | 'CheckboxSearchField';
+  | 'CheckboxSearchField'
+  | 'DynamicSelectSearchField';
 
 interface SearchFieldBase {
   key: string;
@@ -162,11 +163,17 @@ export interface CheckboxSearchField extends SearchFieldBase {
   default?: boolean;
 }
 
+export interface DynamicSelectSearchField extends SearchFieldBase {
+  type: 'DynamicSelectSearchField';
+  options_endpoint: string;
+}
+
 export type MetadataSearchField =
   | TextSearchField
   | NumberSearchField
   | SelectSearchField
-  | CheckboxSearchField;
+  | CheckboxSearchField
+  | DynamicSelectSearchField;
 
 // App configuration
 // Content type for search (ebook vs audiobook)
@@ -227,7 +234,7 @@ export interface RequestRecord {
   id: number;
   user_id: number;
   status: 'pending' | 'fulfilled' | 'rejected' | 'cancelled';
-  delivery_state?: 'none' | 'unknown' | 'queued' | 'resolving' | 'locating' | 'downloading' | 'complete' | 'error' | 'cancelled';
+  delivery_state?: 'none' | 'queued' | 'resolving' | 'locating' | 'downloading' | 'complete' | 'error' | 'cancelled';
   delivery_updated_at?: string | null;
   last_failure_reason?: string | null;
   source_hint: string | null;
@@ -297,6 +304,12 @@ export interface AuthResponse {
   oidc_button_label?: string;
   hide_local_auth?: boolean;
   oidc_auto_redirect?: boolean;
+}
+
+export interface ActingAsUserSelection {
+  id: number;
+  username: string;
+  displayName: string | null;
 }
 
 // Type guard to check if a book is from a metadata provider

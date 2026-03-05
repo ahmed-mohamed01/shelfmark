@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
+from urllib.parse import urlsplit
 
 try:
     import apprise
@@ -25,6 +29,7 @@ _APPRISE_APP_DESC = "Shelfmark notifications"
 _APPRISE_LOGO_URL = (
     "https://raw.githubusercontent.com/calibrain/shelfmark/main/src/frontend/public/logo.png"
 )
+_APPRISE_LOGGER_NAME = "apprise"
 
 
 class NotificationEvent(str, Enum):
@@ -71,11 +76,125 @@ def _normalize_urls(value: Any) -> list[str]:
         url = str(raw_url or "").strip()
         if not url:
             continue
+        # Strip invisible/non-ASCII characters that can sneak in via copy-paste
+        # (zero-width spaces, smart quotes, non-breaking spaces, etc.).
+        # These pass Apprise URL validation but cause UnicodeEncodeError when
+        # requests tries to latin-1 encode credentials for Basic Auth headers.
+        url = url.encode("ascii", errors="ignore").decode("ascii").strip()
+        if not url:
+            continue
         if url in seen:
             continue
         seen.add(url)
         normalized.append(url)
     return normalized
+
+
+def _extract_url_schemes(urls: Iterable[str]) -> list[str]:
+    schemes: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        scheme = urlsplit(str(raw_url or "")).scheme.lower()
+        if not scheme or scheme in seen:
+            continue
+        seen.add(scheme)
+        schemes.append(scheme)
+    return schemes
+
+
+class _AppriseLogCapture(logging.Handler):
+    def __init__(self, *, thread_id: int):
+        super().__init__(level=logging.INFO)
+        self.records: list[tuple[int, str, str, str]] = []
+        self._thread_id = thread_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id:
+            return
+
+        message = record.getMessage()
+        if message:
+            exception_summary = ""
+            if record.exc_info and record.exc_info[0]:
+                exc_type = getattr(record.exc_info[0], "__name__", "Exception")
+                exc = record.exc_info[1]
+                exception_summary = f"{exc_type}: {exc}"
+            elif record.exc_text:
+                exception_summary = str(record.exc_text).strip()
+
+            self.records.append((record.levelno, record.name, str(message), exception_summary))
+
+
+@contextmanager
+def _capture_apprise_logs(*, min_level: int = logging.INFO) -> Iterator[list[tuple[int, str, str, str]]]:
+    apprise_logger = logging.getLogger(_APPRISE_LOGGER_NAME)
+    previous_level = apprise_logger.level
+    handler = _AppriseLogCapture(thread_id=threading.get_ident())
+    apprise_logger.addHandler(handler)
+
+    if previous_level == logging.NOTSET or previous_level > min_level:
+        apprise_logger.setLevel(min_level)
+
+    try:
+        yield handler.records
+    finally:
+        apprise_logger.removeHandler(handler)
+        apprise_logger.setLevel(previous_level)
+
+
+def _log_apprise_records(records: Iterable[tuple[int, str, str, str]]) -> None:
+    seen: set[tuple[int, str, str, str]] = set()
+    for level, source, raw_message, raw_exception_summary in records:
+        message = str(raw_message or "").strip()
+        source_name = str(source or "").strip() or _APPRISE_LOGGER_NAME
+        exception_summary = str(raw_exception_summary or "").strip()
+        key = (int(level), source_name, message, exception_summary)
+        if not message or key in seen:
+            continue
+        seen.add(key)
+
+        full_message = message if not exception_summary else f"{message} ({exception_summary})"
+
+        if level >= logging.ERROR:
+            logger.error("Apprise source [%s]: %s", source_name, full_message)
+        elif level >= logging.WARNING:
+            logger.warning("Apprise source [%s]: %s", source_name, full_message)
+        else:
+            logger.info("Apprise source [%s]: %s", source_name, full_message)
+
+
+def _log_apprise_exception_debug(*, action: str, scheme: str, exc: Exception) -> None:
+    logger.debug(
+        "Apprise %s raised %s for scheme '%s': %s",
+        action,
+        type(exc).__name__,
+        scheme,
+        exc,
+        exc_info=True,
+    )
+
+
+def _build_apprise_warning_detail(
+    records: Iterable[tuple[int, str, str, str]],
+    *,
+    scheme: str,
+) -> str | None:
+    for level, source, raw_message, raw_exception_summary in records:
+        if level < logging.WARNING:
+            continue
+
+        message = str(raw_message or "").strip()
+        if not message:
+            continue
+
+        source_name = str(source or "").strip()
+        exception_summary = str(raw_exception_summary or "").strip()
+        full_message = message if not exception_summary else f"{message} ({exception_summary})"
+
+        if source_name and source_name != _APPRISE_LOGGER_NAME:
+            return f"{scheme}: {source_name}: {full_message}"
+        return f"{scheme}: {full_message}"
+    return None
 
 
 def _normalize_routes(value: Any) -> list[dict[str, str]]:
@@ -220,6 +339,31 @@ def _render_message(context: NotificationContext) -> tuple[str, str]:
     return "Download Failed", f'Failed to download "{title}" by {author}.{error_line}'
 
 
+def _plugin_label(plugin: Any, fallback_scheme: str) -> str:
+    """Build a human-readable label from a validated Apprise plugin.
+
+    Combines the URL scheme with the plugin's service name (app_id) and
+    privacy-safe URL for richer diagnostics, e.g.
+    ``"slack (Slack - slack://TokenA/To...n/To...n/)"``
+    """
+    parts: list[str] = [fallback_scheme]
+
+    app_id = getattr(plugin, "app_id", None)
+    if app_id and str(app_id) != fallback_scheme:
+        privacy_url: str | None = None
+        try:
+            privacy_url = plugin.url(privacy=True)
+        except Exception:
+            pass
+
+        suffix = str(app_id)
+        if privacy_url:
+            suffix = f"{suffix} - {privacy_url}"
+        parts.append(f"({suffix})")
+
+    return " ".join(parts)
+
+
 def _dispatch_to_apprise(
     urls: Iterable[str],
     *,
@@ -228,45 +372,134 @@ def _dispatch_to_apprise(
     notify_type: Any,
 ) -> dict[str, Any]:
     normalized_urls = _normalize_urls(list(urls))
+    url_schemes = _extract_url_schemes(normalized_urls)
     if not normalized_urls:
         return {"success": False, "message": "No notification URLs configured"}
 
     if apprise is None:
         return {"success": False, "message": "Apprise is not installed"}
 
-    apobj = _create_apprise_client()
-    if apobj is None:
-        return {"success": False, "message": "Apprise is not installed"}
     valid_urls = 0
     invalid_urls = 0
-    for url in normalized_urls:
-        try:
-            added = bool(apobj.add(url))
-        except Exception:
-            added = False
-        if added:
-            valid_urls += 1
-        else:
-            invalid_urls += 1
+    delivered_urls = 0
+    failed_delivery_urls = 0
+    failure_details: list[str] = []
 
+    for url in normalized_urls:
+        scheme = urlsplit(url).scheme or "unknown"
+        apobj = _create_apprise_client()
+        if apobj is None:
+            return {"success": False, "message": "Apprise is not installed"}
+
+        registration_failure_detail: str | None = None
+        with _capture_apprise_logs(min_level=logging.INFO) as apprise_records:
+            try:
+                plugin = apprise.Apprise.instantiate(url, asset=getattr(apobj, "asset", None))
+            except Exception as exc:
+                logger.warning(
+                    "Failed to register notification route URL for scheme '%s': %s",
+                    scheme,
+                    exc,
+                )
+                _log_apprise_exception_debug(
+                    action="route registration",
+                    scheme=scheme,
+                    exc=exc,
+                )
+                registration_failure_detail = (
+                    f"{scheme}: route registration failed ({type(exc).__name__}: {exc})"
+                )
+                failure_details.append(registration_failure_detail)
+                plugin = None
+
+            if plugin is None:
+                invalid_urls += 1
+                logger.warning("Apprise rejected notification route URL for scheme '%s'", scheme)
+                _log_apprise_records(apprise_records)
+                warning_detail = _build_apprise_warning_detail(apprise_records, scheme=scheme)
+                if warning_detail:
+                    failure_details.append(warning_detail)
+                elif registration_failure_detail is None:
+                    failure_details.append(f"{scheme}: route URL rejected by Apprise")
+                continue
+
+            plugin_label = _plugin_label(plugin, scheme)
+            apobj.add(plugin)
+            valid_urls += 1
+
+            try:
+                delivered = bool(apobj.notify(title=title, body=body, notify_type=notify_type))
+            except Exception as exc:
+                _log_apprise_records(apprise_records)
+                failed_delivery_urls += 1
+                logger.warning(
+                    "Apprise notify raised %s for %s: %s",
+                    type(exc).__name__,
+                    plugin_label,
+                    exc,
+                )
+                _log_apprise_exception_debug(action="notify", scheme=scheme, exc=exc)
+                warning_detail = _build_apprise_warning_detail(apprise_records, scheme=scheme)
+                if warning_detail:
+                    failure_details.append(warning_detail)
+                else:
+                    failure_details.append(
+                        f"{scheme}: notify raised {type(exc).__name__}: {exc}"
+                    )
+                continue
+
+        _log_apprise_records(apprise_records)
+        if delivered:
+            delivered_urls += 1
+            logger.debug("Notification delivered via %s", plugin_label)
+            continue
+
+        failed_delivery_urls += 1
+        logger.warning("Apprise notify returned False for %s", plugin_label)
+        warning_detail = _build_apprise_warning_detail(apprise_records, scheme=scheme)
+        if warning_detail:
+            failure_details.append(warning_detail)
+        else:
+            failure_details.append(f"{scheme}: delivery failed")
+
+    scheme_summary = ", ".join(url_schemes) if url_schemes else "unknown"
     if valid_urls == 0:
-        return {
+        logger.warning(
+            "No valid Apprise notification routes after registration for scheme(s): %s",
+            scheme_summary,
+        )
+        result: dict[str, Any] = {
             "success": False,
             "message": "No valid notification URLs configured",
         }
+        if failure_details:
+            result["details"] = failure_details
+        return result
 
-    try:
-        delivered = bool(apobj.notify(title=title, body=body, notify_type=notify_type))
-    except Exception as exc:
-        return {"success": False, "message": f"Notification send failed: {type(exc).__name__}: {exc}"}
+    if delivered_urls == 0:
+        logger.warning(
+            (
+                "Apprise notify returned False for scheme(s): %s "
+                "(valid_urls=%s invalid_urls=%s failed_deliveries=%s)"
+            ),
+            scheme_summary,
+            valid_urls,
+            invalid_urls,
+            failed_delivery_urls,
+        )
+        result = {"success": False, "message": "Notification delivery failed"}
+        if failure_details:
+            result["details"] = failure_details
+        return result
 
-    if not delivered:
-        return {"success": False, "message": "Notification delivery failed"}
-
-    message = f"Notification sent to {valid_urls} URL(s)"
-    if invalid_urls:
-        message += f" ({invalid_urls} invalid URL(s) skipped)"
-    return {"success": True, "message": message}
+    message = f"Notification sent to {delivered_urls} URL(s)"
+    failed_urls = invalid_urls + failed_delivery_urls
+    if failed_urls:
+        message += f" ({failed_urls} URL(s) failed)"
+    result = {"success": True, "message": message}
+    if failure_details:
+        result["details"] = failure_details
+    return result
 
 
 def _create_apprise_client() -> Any:

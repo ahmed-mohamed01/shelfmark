@@ -103,8 +103,8 @@ class TestQueueFilterByUser:
             all_tasks.update(tasks_by_status)
         assert len(all_tasks) == 2
 
-    def test_get_status_user_filter_includes_legacy_tasks(self):
-        """Tasks without user_id are visible to any user (backward compat)."""
+    def test_get_status_user_filter_excludes_legacy_tasks(self):
+        """Tasks without user_id are admin-only and hidden from user-scoped views."""
         q = BookQueue()
         q.add(self._make_task("book-1", user_id=None))
         q.add(self._make_task("book-2", user_id=1))
@@ -113,41 +113,22 @@ class TestQueueFilterByUser:
         all_tasks = {}
         for tasks_by_status in status.values():
             all_tasks.update(tasks_by_status)
-        # User 1 sees their own + legacy (no user_id)
-        assert len(all_tasks) == 2
-
-    def test_clear_completed_for_user_only_removes_user_terminal_tasks(self):
-        q = BookQueue()
-        q.add(self._make_task("book-1", user_id=1))
-        q.add(self._make_task("book-2", user_id=2))
-        q.add(self._make_task("book-3", user_id=1))
-
-        q.update_status("book-1", QueueStatus.COMPLETE)
-        q.update_status("book-2", QueueStatus.ERROR)
-        q.update_status("book-3", QueueStatus.QUEUED)
-
-        removed = q.clear_completed(user_id=1)
-        assert removed == 1
-
-        status = q.get_status()
-        all_tasks = {}
-        for tasks_by_status in status.values():
-            all_tasks.update(tasks_by_status)
-
+        assert len(all_tasks) == 1
         assert "book-1" not in all_tasks
         assert "book-2" in all_tasks
-        assert "book-3" in all_tasks
 
-    def test_clear_completed_for_user_includes_legacy_tasks(self):
+    def test_enqueue_existing_deduplicates_queue_entries(self):
         q = BookQueue()
-        q.add(self._make_task("legacy-book", user_id=None))
-        q.add(self._make_task("user-book", user_id=1))
+        q.add(self._make_task("book-1", user_id=1))
 
-        q.update_status("legacy-book", QueueStatus.COMPLETE)
-        q.update_status("user-book", QueueStatus.COMPLETE)
+        assert q.enqueue_existing("book-1")
+        assert q.enqueue_existing("book-1", priority=-10)
 
-        removed = q.clear_completed(user_id=1)
-        assert removed == 2
+        queue_order = q.get_queue_order()
+        assert len(queue_order) == 1
+        assert queue_order[0]["id"] == "book-1"
+        assert q.get_task("book-1").priority == -10
+        assert q.get_task_status("book-1") == QueueStatus.QUEUED
 
 
 # ---------------------------------------------------------------------------

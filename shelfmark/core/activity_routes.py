@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from flask import Flask, jsonify, request, session
 
-from shelfmark.core.activity_service import ActivityService
+from shelfmark.core.activity_view_state_service import (
+    ADMIN_VIEWER_SCOPE,
+    NOAUTH_VIEWER_SCOPE,
+    ActivityViewStateService,
+    user_viewer_scope,
+)
+from shelfmark.core.download_history_service import ACTIVE_DOWNLOAD_STATUS, DownloadHistoryService, VALID_TERMINAL_STATUSES
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.models import ACTIVE_QUEUE_STATUSES, QueueStatus, TERMINAL_QUEUE_STATUSES
+from shelfmark.core.request_validation import RequestStatus
+from shelfmark.core.request_helpers import (
+    emit_ws_event,
+    extract_release_source_id,
+    normalize_positive_int,
+    populate_request_usernames,
+)
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -22,7 +36,11 @@ def _require_authenticated(resolve_auth_mode: Callable[[], str]):
     return None
 
 
-def _resolve_db_user_id(require_in_auth_mode: bool = True):
+def _resolve_db_user_id(
+    require_in_auth_mode: bool = True,
+    *,
+    user_db: UserDB | None = None,
+):
     raw_db_user_id = session.get("db_user_id")
     if raw_db_user_id is None:
         if not require_in_auth_mode:
@@ -37,8 +55,10 @@ def _resolve_db_user_id(require_in_auth_mode: bool = True):
             403,
         )
     try:
-        return int(raw_db_user_id), None
+        parsed_db_user_id = int(raw_db_user_id)
     except (TypeError, ValueError):
+        if not require_in_auth_mode:
+            return None, None
         return None, (
             jsonify(
                 {
@@ -49,54 +69,118 @@ def _resolve_db_user_id(require_in_auth_mode: bool = True):
             403,
         )
 
+    if parsed_db_user_id < 1:
+        if not require_in_auth_mode:
+            return None, None
+        return None, (
+            jsonify(
+                {
+                    "error": "User identity unavailable for activity workflow",
+                    "code": "user_identity_unavailable",
+                }
+            ),
+            403,
+        )
 
-def _emit_activity_event(ws_manager: Any | None, *, room: str, payload: dict[str, Any]) -> None:
-    if ws_manager is None:
-        return
-    try:
-        socketio = getattr(ws_manager, "socketio", None)
-        is_enabled = getattr(ws_manager, "is_enabled", None)
-        if socketio is None or not callable(is_enabled) or not is_enabled():
-            return
-        socketio.emit("activity_update", payload, to=room)
-    except Exception as exc:
-        logger.warning("Failed to emit activity_update event: %s", exc)
-
-
-def _list_admin_user_ids(user_db: UserDB) -> list[int]:
-    admin_ids: set[int] = set()
-    try:
-        users = user_db.list_users()
-    except Exception as exc:
-        logger.warning("Failed to list users while resolving admin dismissal scope: %s", exc)
-        return []
-
-    for user in users:
-        if not isinstance(user, dict):
-            continue
-        role = str(user.get("role") or "").strip().lower()
-        if role != "admin":
-            continue
+    if user_db is not None:
         try:
-            user_id = int(user.get("id"))
-        except (TypeError, ValueError):
-            continue
-        if user_id > 0:
-            admin_ids.add(user_id)
+            db_user = user_db.get_user(user_id=parsed_db_user_id)
+        except Exception as exc:
+            logger.warning("Failed to validate activity db identity %s: %s", parsed_db_user_id, exc)
+            db_user = None
+        if db_user is None:
+            if not require_in_auth_mode:
+                return None, None
+            return None, (
+                jsonify(
+                    {
+                        "error": "User identity unavailable for activity workflow",
+                        "code": "user_identity_unavailable",
+                    }
+                ),
+                403,
+            )
 
-    return sorted(admin_ids)
+    return parsed_db_user_id, None
+
+
+class _ActorContext(NamedTuple):
+    db_user_id: int | None
+    is_no_auth: bool
+    is_admin: bool
+    owner_scope: int | None
+    viewer_scope: str
+
+
+def _resolve_activity_actor(
+    *,
+    user_db: UserDB,
+    resolve_auth_mode: Callable[[], str],
+) -> tuple[_ActorContext | None, Any | None]:
+    """Resolve acting user identity for activity mutations.
+
+    Returns (actor, error_response). On success actor is non-None.
+    """
+    if resolve_auth_mode() == "none":
+        return _ActorContext(
+            db_user_id=None,
+            is_no_auth=True,
+            is_admin=True,
+            owner_scope=None,
+            viewer_scope=NOAUTH_VIEWER_SCOPE,
+        ), None
+
+    db_user_id, db_gate = _resolve_db_user_id(user_db=user_db)
+    if db_user_id is None:
+        return None, db_gate
+
+    is_admin = bool(session.get("is_admin"))
+    viewer_scope = ADMIN_VIEWER_SCOPE if is_admin else user_viewer_scope(db_user_id)
+    return _ActorContext(
+        db_user_id=db_user_id,
+        is_no_auth=False,
+        is_admin=is_admin,
+        owner_scope=None if is_admin else db_user_id,
+        viewer_scope=viewer_scope,
+    ), None
+
+
+def _activity_ws_room(actor: _ActorContext) -> str:
+    """Resolve the WebSocket room for activity events."""
+    if actor.is_no_auth or actor.is_admin:
+        return "admins"
+    if actor.db_user_id is not None:
+        return f"user_{actor.db_user_id}"
+    return "admins"
+
+
+def _check_item_ownership(actor: _ActorContext, row: dict[str, Any]) -> Any | None:
+    """Return a 403 response if the actor doesn't own the item, else None."""
+    if actor.is_admin:
+        return None
+    owner_user_id = normalize_positive_int(row.get("user_id"))
+    if owner_user_id != actor.db_user_id:
+        return jsonify({"error": "Forbidden"}), 403
+    return None
+
+
+def _check_terminal_download(row: dict[str, Any]) -> Any | None:
+    final_status = str(row.get("final_status") or "").strip().lower()
+    if final_status not in VALID_TERMINAL_STATUSES:
+        return jsonify({"error": "Only terminal downloads can be dismissed"}), 409
+    return None
+
+
+def _check_terminal_request(row: dict[str, Any]) -> Any | None:
+    if _request_terminal_status(row) is None:
+        return jsonify({"error": "Only terminal requests can be dismissed"}), 409
+    return None
 
 
 def _list_visible_requests(user_db: UserDB, *, is_admin: bool, db_user_id: int | None) -> list[dict[str, Any]]:
     if is_admin:
         request_rows = user_db.list_requests()
-        user_cache: dict[int, str] = {}
-        for row in request_rows:
-            requester_id = row["user_id"]
-            if requester_id not in user_cache:
-                requester = user_db.get_user(user_id=requester_id)
-                user_cache[requester_id] = requester.get("username", "") if requester else ""
-            row["username"] = user_cache[requester_id]
+        populate_request_usernames(request_rows, user_db)
         return request_rows
 
     if db_user_id is None:
@@ -104,112 +188,84 @@ def _list_visible_requests(user_db: UserDB, *, is_admin: bool, db_user_id: int |
     return user_db.list_requests(user_id=db_user_id)
 
 
-def _parse_download_item_key(item_key: str) -> str | None:
-    if not isinstance(item_key, str) or not item_key.startswith("download:"):
+def _parse_item_key(item_key: Any, prefix: str) -> str | None:
+    """Extract the value after 'prefix:' from an item_key string."""
+    if not isinstance(item_key, str) or not item_key.startswith(f"{prefix}:"):
         return None
-    task_id = item_key.split(":", 1)[1].strip()
-    return task_id or None
+    value = item_key.split(":", 1)[1].strip()
+    return value or None
 
 
-def _parse_request_item_key(item_key: str) -> int | None:
-    if not isinstance(item_key, str) or not item_key.startswith("request:"):
-        return None
-    raw_id = item_key.split(":", 1)[1].strip()
-    try:
-        parsed = int(raw_id)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
+_ALL_BUCKET_KEYS = (*ACTIVE_QUEUE_STATUSES, *TERMINAL_QUEUE_STATUSES)
 
 
-def _task_id_from_download_item_key(item_key: str) -> str | None:
-    task_id = _parse_download_item_key(item_key)
-    if task_id is None:
-        return None
-    return task_id
-
-
-def _merge_terminal_snapshot_backfill(
+def _build_download_status_from_db(
     *,
-    status: dict[str, dict[str, Any]],
-    terminal_rows: list[dict[str, Any]],
-) -> None:
-    existing_task_ids: set[str] = set()
-    for bucket_key in ("queued", "resolving", "locating", "downloading", "complete", "error", "cancelled"):
-        bucket = status.get(bucket_key)
+    db_rows: list[dict[str, Any]],
+    queue_status: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build the download status dict from DB rows, overlaying live queue data.
+
+    Active DB rows are matched against the queue for live progress.
+    Terminal DB rows go directly into their final bucket.
+    Stale active rows (no queue entry) are treated as interrupted errors.
+    """
+    status: dict[str, dict[str, Any]] = {key: {} for key in _ALL_BUCKET_KEYS}
+
+    # Index queue items by task_id for fast lookup: task_id -> (bucket_key, payload)
+    queue_index: dict[str, tuple[str, dict[str, Any]]] = {}
+    for bucket_key in _ALL_BUCKET_KEYS:
+        bucket = queue_status.get(bucket_key)
         if not isinstance(bucket, dict):
             continue
-        existing_task_ids.update(str(task_id) for task_id in bucket.keys())
+        for task_id, payload in bucket.items():
+            queue_index[str(task_id)] = (bucket_key, payload)
 
-    for row in terminal_rows:
-        item_key = row.get("item_key")
-        if not isinstance(item_key, str):
-            continue
-        task_id = _task_id_from_download_item_key(item_key)
-        if not task_id or task_id in existing_task_ids:
+    for row in db_rows:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id:
             continue
 
         final_status = row.get("final_status")
-        if final_status not in {"complete", "error", "cancelled"}:
-            continue
 
-        snapshot = row.get("snapshot")
-        if not isinstance(snapshot, dict):
-            continue
-        raw_download = snapshot.get("download")
-        if not isinstance(raw_download, dict):
-            continue
+        if final_status == ACTIVE_DOWNLOAD_STATUS:
+            queue_entry = queue_index.pop(task_id, None)
+            if queue_entry is not None:
+                bucket_key, queue_payload = queue_entry
+                status[bucket_key][task_id] = queue_payload
+            else:
+                # Stale active row — no queue entry means it was interrupted
+                download_payload = DownloadHistoryService.to_download_payload(row)
+                download_payload["status_message"] = "Interrupted"
+                status[QueueStatus.ERROR][task_id] = download_payload
+        elif final_status in VALID_TERMINAL_STATUSES:
+            download_payload = DownloadHistoryService.to_download_payload(row)
+            # For complete/cancelled the saved status_message is a stale
+            # progress string (e.g. "Fetching download sources") — clear it
+            # so the frontend only shows its own status label.  Error rows
+            # keep theirs since the message describes the failure.
+            if final_status in ("complete", "cancelled"):
+                download_payload["status_message"] = None
+            status[final_status][task_id] = download_payload
 
-        download_payload = dict(raw_download)
-        if not isinstance(download_payload.get("id"), str):
-            download_payload["id"] = task_id
-
-        if final_status not in status or not isinstance(status.get(final_status), dict):
-            status[final_status] = {}
-        status[final_status][task_id] = download_payload
-        existing_task_ids.add(task_id)
-
-
-def _collect_active_download_item_keys(status: dict[str, dict[str, Any]]) -> set[str]:
-    active_keys: set[str] = set()
-    for bucket_key in ("queued", "resolving", "locating", "downloading"):
-        bucket = status.get(bucket_key)
-        if not isinstance(bucket, dict):
-            continue
-        for task_id in bucket.keys():
-            normalized_task_id = str(task_id).strip()
-            if not normalized_task_id:
-                continue
-            active_keys.add(f"download:{normalized_task_id}")
-    return active_keys
-
-
-def _extract_request_source_id(row: dict[str, Any]) -> str | None:
-    release_data = row.get("release_data")
-    if not isinstance(release_data, dict):
-        return None
-    source_id = release_data.get("source_id")
-    if not isinstance(source_id, str):
-        return None
-    normalized = source_id.strip()
-    return normalized or None
+    return status
 
 
 def _request_terminal_status(row: dict[str, Any]) -> str | None:
     request_status = row.get("status")
-    if request_status == "pending":
+    if request_status == RequestStatus.PENDING:
         return None
-    if request_status == "rejected":
-        return "rejected"
-    if request_status == "cancelled":
-        return "cancelled"
-    if request_status != "fulfilled":
+    if request_status == RequestStatus.REJECTED:
+        return RequestStatus.REJECTED
+    if request_status == RequestStatus.CANCELLED:
+        return RequestStatus.CANCELLED
+    if request_status != RequestStatus.FULFILLED:
         return None
 
     delivery_state = str(row.get("delivery_state") or "").strip().lower()
-    if delivery_state in {"error", "cancelled"}:
+    if delivery_state in {QueueStatus.ERROR, QueueStatus.CANCELLED}:
         return delivery_state
-    return "complete"
+    return QueueStatus.COMPLETE
 
 
 def _minimal_request_snapshot(request_row: dict[str, Any], request_id: int) -> dict[str, Any]:
@@ -231,7 +287,7 @@ def _minimal_request_snapshot(request_row: dict[str, Any], request_id: int) -> d
         "note": request_row.get("note"),
         "admin_note": request_row.get("admin_note"),
         "created_at": request_row.get("created_at"),
-        "updated_at": request_row.get("updated_at"),
+        "updated_at": request_row.get("reviewed_at") or request_row.get("created_at"),
     }
     username = request_row.get("username")
     if isinstance(username, str):
@@ -239,57 +295,38 @@ def _minimal_request_snapshot(request_row: dict[str, Any], request_id: int) -> d
     return {"kind": "request", "request": minimal_request}
 
 
-def _get_existing_activity_log_id_for_item(
+def _request_history_entry(
+    request_row: dict[str, Any],
     *,
-    activity_service: ActivityService,
-    user_db: UserDB,
-    item_type: str,
-    item_key: str,
-) -> int | None:
-    if item_type not in {"request", "download"}:
-        return None
-    if not isinstance(item_key, str) or not item_key.strip():
-        return None
-
-    existing_log_id = activity_service.get_latest_activity_log_id(
-        item_type=item_type,
-        item_key=item_key,
-    )
-    if existing_log_id is not None or item_type != "request":
-        return existing_log_id
-
-    request_id = _parse_request_item_key(item_key)
+    dismissed_at: str | None,
+) -> dict[str, Any] | None:
+    request_id = normalize_positive_int(request_row.get("id"))
     if request_id is None:
         return None
-    row = user_db.get_request(request_id)
-    if row is None:
-        return None
-
-    final_status = _request_terminal_status(row)
-    if final_status is None:
-        return None
-
-    source_id = _extract_request_source_id(row)
-    payload = activity_service.record_terminal_snapshot(
-        user_id=row.get("user_id"),
-        item_type="request",
-        item_key=item_key,
-        origin="request",
-        final_status=final_status,
-        snapshot=_minimal_request_snapshot(row, request_id),
-        request_id=request_id,
-        source_id=source_id,
-    )
-    return int(payload["id"])
+    final_status = _request_terminal_status(request_row)
+    item_key = f"request:{request_id}"
+    return {
+        "id": item_key,
+        "user_id": request_row.get("user_id"),
+        "item_type": "request",
+        "item_key": item_key,
+        "dismissed_at": dismissed_at,
+        "snapshot": _minimal_request_snapshot(request_row, request_id),
+        "origin": "request",
+        "final_status": final_status,
+        "terminal_at": request_row.get("reviewed_at") or request_row.get("created_at"),
+        "request_id": request_id,
+        "source_id": extract_release_source_id(request_row.get("release_data")),
+    }
 
 
 def register_activity_routes(
     app: Flask,
     user_db: UserDB,
     *,
-    activity_service: ActivityService,
+    activity_view_state_service: ActivityViewStateService,
+    download_history_service: DownloadHistoryService,
     resolve_auth_mode: Callable[[], str],
-    resolve_status_scope: Callable[[], tuple[bool, int | None, bool]],
     queue_status: Callable[..., dict[str, dict[str, Any]]],
     sync_request_delivery_states: Callable[..., list[dict[str, Any]]],
     emit_request_updates: Callable[[list[dict[str, Any]]], None],
@@ -303,65 +340,65 @@ def register_activity_routes(
         if auth_gate is not None:
             return auth_gate
 
-        is_admin, db_user_id, can_access_status = resolve_status_scope()
-        if not can_access_status:
-            return (
-                jsonify(
-                    {
-                        "error": "User identity unavailable for activity workflow",
-                        "code": "user_identity_unavailable",
-                    }
-                ),
-                403,
-            )
+        actor, actor_error = _resolve_activity_actor(
+            user_db=user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if actor_error is not None:
+            return actor_error
 
-        viewer_db_user_id, _ = _resolve_db_user_id(require_in_auth_mode=False)
-        scoped_user_id = None if is_admin else db_user_id
-        status = queue_status(user_id=scoped_user_id)
+        hidden_rows = activity_view_state_service.list_hidden(viewer_scope=actor.viewer_scope)
+        hidden_item_keys = {str(row.get("item_key") or "").strip() for row in hidden_rows}
+        dismissed_entries = [
+            {
+                "item_type": str(row.get("item_type") or "").strip().lower(),
+                "item_key": str(row.get("item_key") or "").strip(),
+            }
+            for row in hidden_rows
+            if str(row.get("item_type") or "").strip().lower() in {"download", "request"}
+            and str(row.get("item_key") or "").strip()
+        ]
+        live_queue = queue_status(user_id=actor.owner_scope)
+        db_rows = download_history_service.list_recent(
+            user_id=actor.owner_scope,
+            limit=200,
+        )
+        visible_db_rows = [
+            row
+            for row in db_rows
+            if f"download:{str(row.get('task_id') or '').strip()}" not in hidden_item_keys
+        ]
+
+        status = _build_download_status_from_db(
+            db_rows=visible_db_rows,
+            queue_status=live_queue,
+        )
+
         updated_requests = sync_request_delivery_states(
             user_db,
             queue_status=status,
-            user_id=scoped_user_id,
+            user_id=actor.owner_scope,
         )
         emit_request_updates(updated_requests)
-        request_rows = _list_visible_requests(user_db, is_admin=is_admin, db_user_id=db_user_id)
-
-        if viewer_db_user_id is not None:
-            owner_user_scope = None if is_admin else db_user_id
-            if not is_admin and owner_user_scope is None:
-                owner_user_scope = viewer_db_user_id
-            try:
-                terminal_rows = activity_service.get_undismissed_terminal_downloads(
-                    viewer_db_user_id,
-                    owner_user_id=owner_user_scope,
-                    limit=200,
-                )
-                _merge_terminal_snapshot_backfill(status=status, terminal_rows=terminal_rows)
-            except Exception as exc:
-                logger.warning("Failed to merge terminal snapshot backfill rows: %s", exc)
-
-        if viewer_db_user_id is not None:
-            active_download_keys = _collect_active_download_item_keys(status)
-            if active_download_keys:
-                try:
-                    activity_service.clear_dismissals_for_item_keys(
-                        user_id=viewer_db_user_id,
-                        item_type="download",
-                        item_keys=active_download_keys,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to clear stale download dismissals for active tasks: %s", exc)
-
-        dismissed: list[dict[str, str]] = []
-        # Admins can view unscoped queue status, but dismissals remain per-viewer.
-        if viewer_db_user_id is not None:
-            dismissed = activity_service.get_dismissal_set(viewer_db_user_id)
+        request_rows = _list_visible_requests(
+            user_db,
+            is_admin=actor.is_admin,
+            db_user_id=actor.db_user_id,
+        )
+        visible_request_rows: list[dict[str, Any]] = []
+        for row in request_rows:
+            request_id = normalize_positive_int(row.get("id"))
+            if request_id is None:
+                continue
+            if f"request:{request_id}" in hidden_item_keys:
+                continue
+            visible_request_rows.append(row)
 
         return jsonify(
             {
                 "status": status,
-                "requests": request_rows,
-                "dismissed": dismissed,
+                "requests": visible_request_rows,
+                "dismissed": dismissed_entries,
             }
         )
 
@@ -371,65 +408,83 @@ def register_activity_routes(
         if auth_gate is not None:
             return auth_gate
 
-        db_user_id, db_gate = _resolve_db_user_id()
-        if db_gate is not None or db_user_id is None:
-            return db_gate
+        actor, actor_error = _resolve_activity_actor(
+            user_db=user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if actor_error is not None:
+            return actor_error
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "Invalid payload"}), 400
 
-        activity_log_id = data.get("activity_log_id")
-        if activity_log_id is None:
-            try:
-                activity_log_id = _get_existing_activity_log_id_for_item(
-                    activity_service=activity_service,
-                    user_db=user_db,
-                    item_type=data.get("item_type"),
-                    item_key=data.get("item_key"),
-                )
-            except Exception as exc:
-                logger.warning("Failed to resolve activity snapshot id for dismiss payload: %s", exc)
-                activity_log_id = None
-
         item_type = str(data.get("item_type") or "").strip().lower()
-        target_user_ids = [db_user_id]
-        if bool(session.get("is_admin")) and item_type == "request":
-            admin_ids = _list_admin_user_ids(user_db)
-            if db_user_id not in admin_ids:
-                admin_ids.append(db_user_id)
-            target_user_ids = sorted(set(admin_ids))
+        item_key = data.get("item_key")
 
-        dismissal = None
-        try:
-            for target_user_id in target_user_ids:
-                target_dismissal = activity_service.dismiss_item(
-                    user_id=target_user_id,
-                    item_type=data.get("item_type"),
-                    item_key=data.get("item_key"),
-                    activity_log_id=activity_log_id,
-                )
-                if target_user_id == db_user_id:
-                    dismissal = target_dismissal
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+        dismissal_item: dict[str, str] | None = None
 
-        if dismissal is None:
-            return jsonify({"error": "Failed to persist dismissal"}), 500
+        if item_type == "download":
+            task_id = _parse_item_key(item_key, "download")
+            if task_id is None:
+                return jsonify({"error": "item_key must be in the format download:<task_id>"}), 400
 
-        for target_user_id in target_user_ids:
-            _emit_activity_event(
-                ws_manager,
-                room=f"user_{target_user_id}",
-                payload={
-                    "kind": "dismiss",
-                    "user_id": target_user_id,
-                    "item_type": dismissal["item_type"],
-                    "item_key": dismissal["item_key"],
-                },
+            existing = download_history_service.get_by_task_id(task_id)
+            if existing is None:
+                return jsonify({"error": "Download not found"}), 404
+
+            ownership_gate = _check_item_ownership(actor, existing)
+            if ownership_gate is not None:
+                return ownership_gate
+            terminal_gate = _check_terminal_download(existing)
+            if terminal_gate is not None:
+                return terminal_gate
+
+            activity_view_state_service.dismiss(
+                viewer_scope=actor.viewer_scope,
+                item_type="download",
+                item_key=f"download:{task_id}",
             )
+            dismissal_item = {"item_type": "download", "item_key": f"download:{task_id}"}
 
-        return jsonify({"status": "dismissed", "item": dismissal})
+        elif item_type == "request":
+            request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
+            if request_id is None:
+                return jsonify({"error": "item_key must be in the format request:<id>"}), 400
+
+            request_row = user_db.get_request(request_id)
+            if request_row is None:
+                return jsonify({"error": "Request not found"}), 404
+
+            ownership_gate = _check_item_ownership(actor, request_row)
+            if ownership_gate is not None:
+                return ownership_gate
+            terminal_gate = _check_terminal_request(request_row)
+            if terminal_gate is not None:
+                return terminal_gate
+
+            activity_view_state_service.dismiss(
+                viewer_scope=actor.viewer_scope,
+                item_type="request",
+                item_key=f"request:{request_id}",
+            )
+            dismissal_item = {"item_type": "request", "item_key": f"request:{request_id}"}
+        else:
+            return jsonify({"error": "item_type must be one of: download, request"}), 400
+
+        room = _activity_ws_room(actor)
+        emit_ws_event(
+            ws_manager,
+            event_name="activity_update",
+            room=room,
+            payload={
+                "kind": "dismiss",
+                "item_type": dismissal_item["item_type"],
+                "item_key": dismissal_item["item_key"],
+            },
+        )
+
+        return jsonify({"status": "dismissed", "item": dismissal_item})
 
     @app.route("/api/activity/dismiss-many", methods=["POST"])
     def api_activity_dismiss_many():
@@ -437,9 +492,12 @@ def register_activity_routes(
         if auth_gate is not None:
             return auth_gate
 
-        db_user_id, db_gate = _resolve_db_user_id()
-        if db_gate is not None or db_user_id is None:
-            return db_gate
+        actor, actor_error = _resolve_activity_actor(
+            user_db=user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if actor_error is not None:
+            return actor_error
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -448,66 +506,78 @@ def register_activity_routes(
         if not isinstance(items, list):
             return jsonify({"error": "items must be an array"}), 400
 
-        normalized_items: list[dict[str, Any]] = []
+        dismissal_items: list[dict[str, str]] = []
+        missing_item_keys: list[str] = []
+
         for item in items:
             if not isinstance(item, dict):
                 return jsonify({"error": "items must contain objects"}), 400
 
-            activity_log_id = item.get("activity_log_id")
-            if activity_log_id is None:
-                try:
-                    activity_log_id = _get_existing_activity_log_id_for_item(
-                        activity_service=activity_service,
-                        user_db=user_db,
-                        item_type=item.get("item_type"),
-                        item_key=item.get("item_key"),
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to resolve activity snapshot id for dismiss-many item: %s", exc)
-                    activity_log_id = None
+            item_type = str(item.get("item_type") or "").strip().lower()
+            item_key = item.get("item_key")
 
-            normalized_payload = {
-                "item_type": item.get("item_type"),
-                "item_key": item.get("item_key"),
-            }
-            if activity_log_id is not None:
-                normalized_payload["activity_log_id"] = activity_log_id
-            normalized_items.append(normalized_payload)
+            if item_type == "download":
+                task_id = _parse_item_key(item_key, "download")
+                if task_id is None:
+                    return jsonify({"error": "download item_key must be in the format download:<task_id>"}), 400
+                existing = download_history_service.get_by_task_id(task_id)
+                if existing is None:
+                    missing_item_keys.append(f"download:{task_id}")
+                    continue
+                ownership_gate = _check_item_ownership(actor, existing)
+                if ownership_gate is not None:
+                    return ownership_gate
+                terminal_gate = _check_terminal_download(existing)
+                if terminal_gate is not None:
+                    return terminal_gate
+                dismissal_items.append({"item_type": "download", "item_key": f"download:{task_id}"})
+                continue
 
-        request_items = [
-            item
-            for item in normalized_items
-            if str(item.get("item_type") or "").strip().lower() == "request"
-        ]
-        actor_is_admin = bool(session.get("is_admin"))
-        target_user_ids = [db_user_id]
-        if actor_is_admin and request_items:
-            admin_ids = _list_admin_user_ids(user_db)
-            if db_user_id not in admin_ids:
-                admin_ids.append(db_user_id)
-            target_user_ids = sorted(set(admin_ids))
+            if item_type == "request":
+                request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
+                if request_id is None:
+                    return jsonify({"error": "request item_key must be in the format request:<id>"}), 400
+                request_row = user_db.get_request(request_id)
+                if request_row is None:
+                    missing_item_keys.append(f"request:{request_id}")
+                    continue
+                ownership_gate = _check_item_ownership(actor, request_row)
+                if ownership_gate is not None:
+                    return ownership_gate
+                terminal_gate = _check_terminal_request(request_row)
+                if terminal_gate is not None:
+                    return terminal_gate
+                dismissal_items.append({"item_type": "request", "item_key": f"request:{request_id}"})
+                continue
 
-        try:
-            dismissed_count = activity_service.dismiss_many(user_id=db_user_id, items=normalized_items)
-            if actor_is_admin and request_items:
-                for target_user_id in target_user_ids:
-                    if target_user_id == db_user_id:
-                        continue
-                    activity_service.dismiss_many(user_id=target_user_id, items=request_items)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": "item_type must be one of: download, request"}), 400
 
-        for target_user_id in target_user_ids:
-            target_count = dismissed_count if target_user_id == db_user_id else len(request_items)
-            _emit_activity_event(
-                ws_manager,
-                room=f"user_{target_user_id}",
-                payload={
-                    "kind": "dismiss_many",
-                    "user_id": target_user_id,
-                    "count": target_count,
-                },
+        if missing_item_keys:
+            return (
+                jsonify(
+                    {
+                        "error": "One or more activity items were not found",
+                        "missing_item_keys": missing_item_keys,
+                    }
+                ),
+                404,
             )
+
+        dismissed_count = activity_view_state_service.dismiss_many(
+            viewer_scope=actor.viewer_scope,
+            items=dismissal_items,
+        )
+
+        room = _activity_ws_room(actor)
+        emit_ws_event(
+            ws_manager,
+            event_name="activity_update",
+            room=room,
+            payload={
+                "kind": "dismiss_many",
+                "count": dismissed_count,
+            },
+        )
 
         return jsonify({"status": "dismissed", "count": dismissed_count})
 
@@ -517,18 +587,88 @@ def register_activity_routes(
         if auth_gate is not None:
             return auth_gate
 
-        db_user_id, db_gate = _resolve_db_user_id()
-        if db_gate is not None or db_user_id is None:
-            return db_gate
+        actor, actor_error = _resolve_activity_actor(
+            user_db=user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if actor_error is not None:
+            return actor_error
 
-        limit = request.args.get("limit", type=int, default=50) or 50
-        offset = request.args.get("offset", type=int, default=0) or 0
+        limit = request.args.get("limit", type=int, default=50)
+        offset = request.args.get("offset", type=int, default=0)
+        if limit is None:
+            limit = 50
+        if offset is None:
+            offset = 0
+        if limit < 1:
+            return jsonify({"error": "limit must be a positive integer"}), 400
+        if offset < 0:
+            return jsonify({"error": "offset must be a non-negative integer"}), 400
 
-        try:
-            history = activity_service.get_history(db_user_id, limit=limit, offset=offset)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        return jsonify(history)
+        history_rows = activity_view_state_service.list_history(
+            viewer_scope=actor.viewer_scope,
+            limit=limit,
+            offset=offset,
+        )
+        payload: list[dict[str, Any]] = []
+
+        for history_row in history_rows:
+            item_type = str(history_row.get("item_type") or "").strip().lower()
+            item_key = str(history_row.get("item_key") or "").strip()
+            dismissed_at = history_row.get("dismissed_at")
+
+            if not isinstance(dismissed_at, str) or not dismissed_at.strip():
+                raise RuntimeError(f"Activity history state missing dismissed_at for {item_key}")
+
+            if item_type == "download":
+                task_id = _parse_item_key(item_key, "download")
+                if task_id is None:
+                    raise RuntimeError(f"Invalid activity history item_key: {item_key}")
+
+                download_row = download_history_service.get_by_task_id(task_id)
+                if download_row is None:
+                    raise RuntimeError(f"Download history row not found for {item_key}")
+
+                if not actor.is_admin:
+                    owner_user_id = normalize_positive_int(download_row.get("user_id"))
+                    if owner_user_id != actor.db_user_id:
+                        raise RuntimeError(f"Viewer state out of scope for {item_key}")
+
+                payload.append(
+                    DownloadHistoryService.to_history_row(
+                        download_row,
+                        dismissed_at=dismissed_at,
+                    )
+                )
+                continue
+
+            if item_type == "request":
+                request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
+                if request_id is None:
+                    raise RuntimeError(f"Invalid activity history item_key: {item_key}")
+
+                request_row = user_db.get_request(request_id)
+                if request_row is None:
+                    raise RuntimeError(f"Request row not found for {item_key}")
+
+                if not actor.is_admin:
+                    owner_user_id = normalize_positive_int(request_row.get("user_id"))
+                    if owner_user_id != actor.db_user_id:
+                        raise RuntimeError(f"Viewer state out of scope for {item_key}")
+
+                populate_request_usernames([request_row], user_db)
+                entry = _request_history_entry(
+                    request_row,
+                    dismissed_at=dismissed_at,
+                )
+                if entry is None:
+                    raise RuntimeError(f"Failed to build request history entry for {item_key}")
+                payload.append(entry)
+                continue
+
+            raise RuntimeError(f"Unknown activity history item_type: {item_type}")
+
+        return jsonify(payload)
 
     @app.route("/api/activity/history", methods=["DELETE"])
     def api_activity_history_clear():
@@ -536,18 +676,25 @@ def register_activity_routes(
         if auth_gate is not None:
             return auth_gate
 
-        db_user_id, db_gate = _resolve_db_user_id()
-        if db_gate is not None or db_user_id is None:
-            return db_gate
+        actor, actor_error = _resolve_activity_actor(
+            user_db=user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if actor_error is not None:
+            return actor_error
 
-        deleted_count = activity_service.clear_history(db_user_id)
-        _emit_activity_event(
+        cleared_count = activity_view_state_service.clear_history(
+            viewer_scope=actor.viewer_scope,
+        )
+
+        room = _activity_ws_room(actor)
+        emit_ws_event(
             ws_manager,
-            room=f"user_{db_user_id}",
+            event_name="activity_update",
+            room=room,
             payload={
                 "kind": "history_cleared",
-                "user_id": db_user_id,
-                "count": deleted_count,
+                "count": cleared_count,
             },
         )
-        return jsonify({"status": "cleared", "deleted_count": deleted_count})
+        return jsonify({"status": "cleared", "cleared_count": cleared_count})

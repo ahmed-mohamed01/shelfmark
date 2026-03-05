@@ -27,6 +27,11 @@ interface SearchBarProps {
   searchScopeOptions?: Array<{ value: string; label: string }>;
   searchScopeValue?: string;
   onSearchScopeChange?: (value: string) => void;
+  allowedContentTypes?: ContentType[];
+  // Manual search mode
+  isManualSearch?: boolean;
+  disabled?: boolean;
+  activeListLabel?: string;
 }
 
 export interface SearchBarHandle {
@@ -57,6 +62,10 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   searchScopeOptions,
   searchScopeValue,
   onSearchScopeChange,
+  allowedContentTypes,
+  isManualSearch = false,
+  disabled = false,
+  activeListLabel,
 }, ref) => {
   const { searchMode, isUniversalMode } = useSearchMode();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -71,17 +80,23 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
     && searchScopeOptions.length > 1
     && typeof searchScopeValue === 'string'
     && typeof onSearchScopeChange === 'function';
-  const showContentTypeSelector = !showSearchScopeSelector && isUniversalMode && !!onContentTypeChange;
+  const hasMultipleContentTypes = !allowedContentTypes || allowedContentTypes.length !== 1;
+  const showContentTypeSelector = !showSearchScopeSelector && isUniversalMode && !!onContentTypeChange && hasMultipleContentTypes;
 
-  // Dynamic placeholder based on content type
+  // Dynamic placeholder based on content type, manual search, and list browsing
   const activeSearchScope = showSearchScopeSelector
     ? searchScopeOptions?.find((option) => option.value === searchScopeValue) ?? searchScopeOptions?.[0]
     : null;
-  const effectivePlaceholder = showContentTypeSelector
-    ? (contentType === 'ebook' ? 'Search Books' : 'Search Audiobooks')
-    : showSearchScopeSelector
-      ? `Search ${activeSearchScope?.label || 'items'}`
-    : placeholder;
+  const isContentTypeAware = isUniversalMode && !!onContentTypeChange;
+  const effectivePlaceholder = activeListLabel
+    ? `${activeListLabel} selected`
+    : isManualSearch
+      ? 'Search releases directly...'
+      : showSearchScopeSelector
+        ? `Search ${activeSearchScope?.label || 'items'}`
+        : isContentTypeAware
+          ? (contentType === 'ebook' ? 'Search Books' : 'Search Audiobooks')
+          : placeholder;
 
   // Close dropdown on click outside or escape
   useEffect(() => {
@@ -121,6 +136,10 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
+      if (disabled) {
+        e.preventDefault();
+        return;
+      }
       onSubmit();
       (e.target as HTMLInputElement).blur();
     }
@@ -135,6 +154,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   const inputClasses = [
     'w-full pr-40 py-3 border outline-none search-input',
     (showContentTypeSelector || showSearchScopeSelector) ? 'pl-3 rounded-r-full' : 'pl-4 rounded-full',
+    disabled ? 'opacity-60 cursor-not-allowed' : '',
     inputClassName,
   ]
     .filter(Boolean)
@@ -180,7 +200,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
       <div
         className="flex items-stretch rounded-full border"
         style={{
-          background: 'var(--bg-soft)',
+          background: disabled ? 'var(--bg)' : 'var(--bg-soft)',
           borderColor: 'var(--border-muted)',
         }}
       >
@@ -319,6 +339,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
           type="search"
           placeholder={effectivePlaceholder}
           aria-label={inputAriaLabel}
+          disabled={disabled}
           autoComplete={autoComplete}
           enterKeyHint={enterKeyHint}
           className={inputClasses}

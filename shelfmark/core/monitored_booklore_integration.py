@@ -65,6 +65,17 @@ def _parse_json(raw: bytes, endpoint: str) -> Any:
         raise ValueError(f"Booklore returned non-JSON from {endpoint!r}: {preview!r}")
 
 
+def _build_ssl_ctx(url: str):
+    """Return an ssl.SSLContext that respects the CERTIFICATE_VALIDATION setting."""
+    import ssl
+    from shelfmark.download.network import get_ssl_verify
+    ctx = ssl.create_default_context()
+    if not get_ssl_verify(url):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _booklore_post(base_url: str, path: str, body: dict[str, Any], timeout: int = 10) -> Any:
     data = json.dumps(body).encode()
     req = Request(
@@ -73,7 +84,7 @@ def _booklore_post(base_url: str, path: str, body: dict[str, Any], timeout: int 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urlopen(req, timeout=timeout, context=_build_ssl_ctx(base_url)) as resp:  # noqa: S310
         return _parse_json(resp.read(), path)
 
 
@@ -89,7 +100,7 @@ def _booklore_get(
     if params:
         url = f"{url}?{urlencode(params)}"
     req = Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urlopen(req, timeout=timeout, context=_build_ssl_ctx(base_url)) as resp:  # noqa: S310
         return _parse_json(resp.read(), path)
 
 

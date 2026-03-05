@@ -12,7 +12,7 @@ import {
 } from '../types';
 import { SettingsResponse, ActionResult, UpdateResult, SettingsTab } from '../types/settings';
 import { MetadataBookData, transformMetadataToBook } from '../utils/bookTransformers';
-import { getApiBase } from '../utils/basePath';
+import { getApiBase, withBasePath } from '../utils/basePath';
 import {
   buildAdminRequestActionUrl,
   buildFulfilAdminRequestBody,
@@ -33,8 +33,8 @@ const API = {
   download: `${API_BASE}/download`,
   status: `${API_BASE}/status`,
   cancelDownload: `${API_BASE}/download`,
+  retryDownload: `${API_BASE}/download`,
   setPriority: `${API_BASE}/queue`,
-  clearCompleted: `${API_BASE}/queue/clear`,
   config: `${API_BASE}/config`,
   login: `${API_BASE}/auth/login`,
   logout: `${API_BASE}/auth/logout`,
@@ -92,6 +92,31 @@ export class ApiResponseError extends Error {
 
 export const isApiResponseError = (error: unknown): error is ApiResponseError => {
   return error instanceof ApiResponseError;
+};
+
+const mapApiErrorToActionResult = (error: unknown): ActionResult | null => {
+  if (!isApiResponseError(error) || !error.payload) {
+    return null;
+  }
+
+  const payload = error.payload;
+  const message =
+    typeof payload.message === 'string'
+      ? payload.message
+      : (typeof payload.error === 'string' ? payload.error : null);
+  if (!message) {
+    return null;
+  }
+
+  const details = Array.isArray(payload.details)
+    ? payload.details.filter((detail): detail is string => typeof detail === 'string' && detail.trim().length > 0)
+    : undefined;
+
+  return {
+    success: false,
+    message,
+    ...(details && details.length > 0 ? { details } : {}),
+  };
 };
 
 // Default request timeout in milliseconds (30 seconds)
@@ -201,6 +226,13 @@ export interface MetadataSearchResult {
   hasMore: boolean;
 }
 
+export interface DynamicFieldOption {
+  value: string;
+  label: string;
+  group?: string;
+  description?: string;
+}
+
 // Search metadata providers and normalize to Book format
 export const searchMetadata = async (
   query: string,
@@ -242,6 +274,29 @@ export const searchMetadata = async (
   };
 };
 
+export const fetchFieldOptions = async (endpoint: string): Promise<DynamicFieldOption[]> => {
+  const normalizedEndpoint =
+    endpoint.startsWith('http://') || endpoint.startsWith('https://')
+      ? endpoint
+      : withBasePath(endpoint);
+
+  const response = await fetchJSON<{ options?: unknown }>(normalizedEndpoint);
+  if (!Array.isArray(response.options)) {
+    return [];
+  }
+
+  return response.options
+    .filter((option): option is Record<string, unknown> => typeof option === 'object' && option !== null)
+    .map((option) => {
+      const value = typeof option.value === 'string' ? option.value : String(option.value ?? '');
+      const label = typeof option.label === 'string' ? option.label : value;
+      const group = typeof option.group === 'string' ? option.group : undefined;
+      const description = typeof option.description === 'string' ? option.description : undefined;
+      return { value, label, group, description };
+    })
+    .filter((option) => option.value !== '');
+};
+
 export const getBookInfo = async (id: string): Promise<Book> => {
   return fetchJSON<Book>(`${API.info}?id=${encodeURIComponent(id)}`);
 };
@@ -255,14 +310,17 @@ export const getMetadataBookInfo = async (provider: string, bookId: string): Pro
   return transformMetadataToBook(response);
 };
 
-export const downloadBook = async (id: string): Promise<void> => {
+export const downloadBook = async (id: string, onBehalfOfUserId?: number): Promise<void> => {
   const params = new URLSearchParams();
   params.set('id', id);
+  if (typeof onBehalfOfUserId === 'number') {
+    params.set('on_behalf_of_user_id', String(onBehalfOfUserId));
+  }
   await fetchJSON(`${API.download}?${params.toString()}`);
 };
 
 // Download a specific release (from ReleaseModal)
-export const downloadRelease = async (release: {
+export type DownloadReleasePayload = {
   source: string;
   source_id: string;
   title: string;
@@ -287,10 +345,21 @@ export const downloadRelease = async (release: {
   monitored_book_provider_id?: string;
   release_title?: string;
   match_score?: number;
-}): Promise<void> => {
+};
+
+export const downloadRelease = async (
+  release: DownloadReleasePayload,
+  onBehalfOfUserId?: number
+): Promise<void> => {
+  const payload =
+    typeof onBehalfOfUserId === 'number'
+      ? { ...release, on_behalf_of_user_id: onBehalfOfUserId }
+      : release;
+
+
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',
-    body: JSON.stringify(release),
+    body: JSON.stringify(payload),
   });
 };
 
@@ -334,8 +403,8 @@ export const cancelDownload = async (id: string): Promise<void> => {
   await fetchJSON(`${API.cancelDownload}/${encodeURIComponent(id)}/cancel`, { method: 'DELETE' });
 };
 
-export const clearCompleted = async (): Promise<void> => {
-  await fetchJSON(`${API_BASE}/queue/clear`, { method: 'DELETE' });
+export const retryDownload = async (id: string): Promise<void> => {
+  await fetchJSON(`${API.retryDownload}/${encodeURIComponent(id)}/retry`, { method: 'POST' });
 };
 
 export const getConfig = async (): Promise<AppConfig> => {
@@ -364,15 +433,13 @@ export interface ActivitySnapshotResponse {
 export interface ActivityDismissPayload {
   item_type: 'download' | 'request';
   item_key: string;
-  activity_log_id?: number;
 }
 
 export interface ActivityHistoryItem {
-  id: number;
+  id: string;
   user_id: number;
   item_type: 'download' | 'request';
   item_key: string;
-  activity_log_id: number | null;
   dismissed_at: string;
   snapshot: Record<string, unknown> | null;
   origin: 'direct' | 'request' | 'requested' | null;
@@ -475,10 +542,18 @@ export const executeSettingsAction = async (
   actionKey: string,
   currentValues?: Record<string, unknown>
 ): Promise<ActionResult> => {
-  return fetchJSON<ActionResult>(`${API.settings}/${tabName}/action/${actionKey}`, {
-    method: 'POST',
-    body: currentValues ? JSON.stringify(currentValues) : undefined,
-  });
+  try {
+    return await fetchJSON<ActionResult>(`${API.settings}/${tabName}/action/${actionKey}`, {
+      method: 'POST',
+      body: currentValues ? JSON.stringify(currentValues) : undefined,
+    });
+  } catch (error) {
+    const mapped = mapApiErrorToActionResult(error);
+    if (mapped) {
+      return mapped;
+    }
+    throw error;
+  }
 };
 
 // Onboarding API functions
@@ -603,6 +678,7 @@ export interface AdminUser {
 export interface SelfUserEditContext {
   user: AdminUser;
   deliveryPreferences: DeliveryPreferencesResponse | null;
+  searchPreferences: DeliveryPreferencesResponse | null;
   notificationPreferences: DeliveryPreferencesResponse | null;
   userOverridableKeys: string[];
   visibleUserSettingsSections?: string[];
@@ -704,6 +780,12 @@ export const getAdminDeliveryPreferences = async (
   return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/delivery-preferences`);
 };
 
+export const getAdminSearchPreferences = async (
+  userId: number
+): Promise<DeliveryPreferencesResponse> => {
+  return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/search-preferences`);
+};
+
 export const getAdminNotificationPreferences = async (
   userId: number
 ): Promise<DeliveryPreferencesResponse> => {
@@ -714,25 +796,41 @@ export const testAdminUserNotificationPreferences = async (
   userId: number,
   routes: Array<Record<string, unknown>>
 ): Promise<import('../types/settings').ActionResult> => {
-  return fetchJSON<import('../types/settings').ActionResult>(
-    `${API_BASE}/admin/users/${userId}/notification-preferences/test`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+  try {
+    return await fetchJSON<import('../types/settings').ActionResult>(
+      `${API_BASE}/admin/users/${userId}/notification-preferences/test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+      }
+    );
+  } catch (error) {
+    const mapped = mapApiErrorToActionResult(error);
+    if (mapped) {
+      return mapped;
     }
-  );
+    throw error;
+  }
 };
 
 export const testSelfNotificationPreferences = async (
   routes: Array<Record<string, unknown>>
 ): Promise<import('../types/settings').ActionResult> => {
-  return fetchJSON<import('../types/settings').ActionResult>(
-    `${API_BASE}/users/me/notification-preferences/test`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+  try {
+    return await fetchJSON<import('../types/settings').ActionResult>(
+      `${API_BASE}/users/me/notification-preferences/test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+      }
+    );
+  } catch (error) {
+    const mapped = mapApiErrorToActionResult(error);
+    if (mapped) {
+      return mapped;
     }
-  );
+    throw error;
+  }
 };
 
 export interface SettingsOverrideUserDetail {

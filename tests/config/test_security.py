@@ -199,6 +199,39 @@ class TestSecurityMigration:
         assert migrated["AUTH_METHOD"] == "proxy"
         assert "USE_CWA_AUTH" not in migrated
 
+    def test_migrate_backfills_auth_method_from_legacy_builtin_credentials(
+        self, temp_config_dir, mock_logger, monkeypatch
+    ):
+        """Configs with BUILTIN creds but no AUTH_METHOD should be backfilled to builtin."""
+        config_root = temp_config_dir.parent
+        monkeypatch.setenv("CONFIG_DIR", str(config_root))
+
+        config_file = temp_config_dir / "config.json"
+        legacy_config = {
+            "BUILTIN_USERNAME": "admin",
+            "BUILTIN_PASSWORD_HASH": "hashed_password",
+        }
+        config_file.write_text(json.dumps(legacy_config, indent=2))
+
+        with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
+            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+                with patch("shelfmark.core.settings_registry._ensure_config_dir"):
+                    with patch("shelfmark.config.security.logger", mock_logger):
+                        from shelfmark.config.security import _migrate_security_settings
+
+                        _migrate_security_settings()
+
+        migrated = json.loads(config_file.read_text())
+        assert migrated["AUTH_METHOD"] == "builtin"
+        assert migrated["BUILTIN_USERNAME"] == "admin"
+        assert migrated["BUILTIN_PASSWORD_HASH"] == "hashed_password"
+
+        user_db = UserDB(str(config_root / "users.db"))
+        user_db.initialize()
+        user = user_db.get_user(username="admin")
+        assert user is not None
+        assert user["role"] == "admin"
+
     def test_migrate_handles_missing_config_file(self, mock_logger):
         """Missing config file should be handled gracefully."""
         with patch("shelfmark.config.security.load_config_file", side_effect=FileNotFoundError()):
@@ -290,6 +323,18 @@ class TestSecuritySettings:
         fields = security_settings()
         notice = next((f for f in fields if f.key == "builtin_auth_notice"), None)
         assert notice is None
+
+    def test_builtin_admin_requirement_hint_present(self):
+        """Builtin mode should show local-admin requirement warning."""
+        from shelfmark.config.security import security_settings
+
+        fields = security_settings()
+        hint = next((f for f in fields if f.key == "builtin_admin_requirement"), None)
+        assert hint is not None
+        assert hint.component == "oidc_admin_hint"
+        assert hint.show_when == {"field": "AUTH_METHOD", "value": "builtin"}
+        assert "inactive" in hint.label.lower()
+        assert "local admin" in hint.label.lower()
 
     def test_builtin_option_label_is_local(self):
         """Builtin auth option should be labeled Local."""

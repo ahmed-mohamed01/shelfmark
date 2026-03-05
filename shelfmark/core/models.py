@@ -38,10 +38,17 @@ class QueueStatus(str, Enum):
     LOCATING = "locating"
     DOWNLOADING = "downloading"
     COMPLETE = "complete"
-    AVAILABLE = "available"
     ERROR = "error"
-    DONE = "done"
     CANCELLED = "cancelled"
+
+
+TERMINAL_QUEUE_STATUSES: frozenset[QueueStatus] = frozenset({
+    QueueStatus.COMPLETE, QueueStatus.ERROR, QueueStatus.CANCELLED,
+})
+
+ACTIVE_QUEUE_STATUSES: frozenset[QueueStatus] = frozenset({
+    QueueStatus.QUEUED, QueueStatus.RESOLVING, QueueStatus.LOCATING, QueueStatus.DOWNLOADING,
+})
 
 
 class SearchMode(str, Enum):
@@ -113,6 +120,9 @@ class DownloadTask:
     status: QueueStatus = QueueStatus.QUEUED
     status_message: Optional[str] = None
     download_path: Optional[str] = None
+    last_error_message: Optional[str] = None
+    last_error_type: Optional[str] = None
+    staged_path: Optional[str] = None
 
     def __lt__(self, other):
         """Compare tasks for priority queue (lower priority number = higher precedence)."""

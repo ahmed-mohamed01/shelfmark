@@ -6,25 +6,20 @@ from datetime import datetime, timezone
 import json
 from typing import Any, Callable, TYPE_CHECKING
 
-from shelfmark.core.request_policy import normalize_content_type, parse_policy_mode
-
-
-VALID_REQUEST_STATUSES = frozenset({"pending", "fulfilled", "rejected", "cancelled"})
-TERMINAL_REQUEST_STATUSES = frozenset({"fulfilled", "rejected", "cancelled"})
-VALID_REQUEST_LEVELS = frozenset({"book", "release"})
-VALID_DELIVERY_STATES = frozenset(
-    {
-        "none",
-        "unknown",
-        "queued",
-        "resolving",
-        "locating",
-        "downloading",
-        "complete",
-        "error",
-        "cancelled",
-    }
+from shelfmark.core.request_policy import normalize_content_type
+from shelfmark.core.models import QueueStatus
+from shelfmark.core.request_validation import (
+    DELIVERY_STATE_NONE,
+    RequestStatus,
+    normalize_policy_mode,
+    normalize_request_level,
+    normalize_request_status,
+    validate_request_level_payload,
+    validate_status_transition,
 )
+from shelfmark.core.request_helpers import extract_release_source_id
+
+
 MAX_REQUEST_NOTE_LENGTH = 1000
 MAX_REQUEST_JSON_BLOB_BYTES = 10 * 1024
 
@@ -46,63 +41,6 @@ class RequestServiceError(ValueError):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
-
-
-def normalize_request_status(status: Any) -> str:
-    """Validate and normalize request status values."""
-    if not isinstance(status, str):
-        raise ValueError(f"Invalid request status: {status}")
-    normalized = status.strip().lower()
-    if normalized not in VALID_REQUEST_STATUSES:
-        raise ValueError(f"Invalid request status: {status}")
-    return normalized
-
-
-def normalize_policy_mode(mode: Any) -> str:
-    """Validate and normalize policy mode values."""
-    parsed = parse_policy_mode(mode)
-    if parsed is None:
-        raise ValueError(f"Invalid policy_mode: {mode}")
-    return parsed.value
-
-
-def normalize_request_level(request_level: Any) -> str:
-    """Validate and normalize request level values."""
-    if not isinstance(request_level, str):
-        raise ValueError(f"Invalid request_level: {request_level}")
-    normalized = request_level.strip().lower()
-    if normalized not in VALID_REQUEST_LEVELS:
-        raise ValueError(f"Invalid request_level: {request_level}")
-    return normalized
-
-
-def normalize_delivery_state(state: Any) -> str:
-    """Validate and normalize delivery-state values."""
-    if not isinstance(state, str):
-        raise ValueError(f"Invalid delivery_state: {state}")
-    normalized = state.strip().lower()
-    if normalized not in VALID_DELIVERY_STATES:
-        raise ValueError(f"Invalid delivery_state: {state}")
-    return normalized
-
-
-def validate_request_level_payload(request_level: Any, release_data: Any) -> str:
-    """Validate request_level and release_data shape coupling."""
-    normalized_level = normalize_request_level(request_level)
-    if normalized_level == "release" and release_data is None:
-        raise ValueError("request_level=release requires non-null release_data")
-    if normalized_level == "book" and release_data is not None:
-        raise ValueError("request_level=book requires null release_data")
-    return normalized_level
-
-
-def validate_status_transition(current_status: Any, new_status: Any) -> tuple[str, str]:
-    """Validate request status transitions and terminal immutability."""
-    current = normalize_request_status(current_status)
-    new = normalize_request_status(new_status)
-    if current in TERMINAL_REQUEST_STATUSES and new != current:
-        raise ValueError("Terminal request statuses are immutable")
-    return current, new
 
 
 def _normalize_match_text(value: Any) -> str:
@@ -166,7 +104,7 @@ def _find_duplicate_pending_request(
     author: str,
     content_type: str,
 ) -> dict[str, Any] | None:
-    pending_rows = user_db.list_requests(user_id=user_id, status="pending")
+    pending_rows = user_db.list_requests(user_id=user_id, status=RequestStatus.PENDING)
     for row in pending_rows:
         row_book_data = row.get("book_data") or {}
         if not isinstance(row_book_data, dict):
@@ -186,22 +124,12 @@ def _now_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _extract_release_source_id(release_data: Any) -> str | None:
-    if not isinstance(release_data, dict):
+def _normalize_admin_note(admin_note: Any) -> str | None:
+    if admin_note is None:
         return None
-    source_id = release_data.get("source_id")
-    if not isinstance(source_id, str):
-        return None
-    normalized = source_id.strip()
-    return normalized or None
-
-
-def _existing_delivery_state(request_row: dict[str, Any]) -> str:
-    raw_state = request_row.get("delivery_state")
-    if not isinstance(raw_state, str):
-        return "none"
-    normalized = raw_state.strip().lower()
-    return normalized if normalized in VALID_DELIVERY_STATES else "none"
+    if not isinstance(admin_note, str):
+        raise RequestServiceError("admin_note must be a string", status_code=400)
+    return admin_note.strip() or None
 
 
 def sync_delivery_states_from_queue_status(
@@ -212,7 +140,7 @@ def sync_delivery_states_from_queue_status(
 ) -> list[dict[str, Any]]:
     """Persist delivery-state transitions for fulfilled requests based on queue status."""
     source_delivery_states: dict[str, str] = {}
-    for status_key in ("queued", "resolving", "locating", "downloading", "complete", "error", "cancelled"):
+    for status_key in QueueStatus:
         status_bucket = queue_status.get(status_key)
         if not isinstance(status_bucket, dict):
             continue
@@ -222,11 +150,11 @@ def sync_delivery_states_from_queue_status(
     if not source_delivery_states:
         return []
 
-    fulfilled_rows = user_db.list_requests(user_id=user_id, status="fulfilled")
+    fulfilled_rows = user_db.list_requests(user_id=user_id, status=RequestStatus.FULFILLED)
     updated: list[dict[str, Any]] = []
 
     for row in fulfilled_rows:
-        source_id = _extract_release_source_id(row.get("release_data"))
+        source_id = extract_release_source_id(row.get("release_data"))
         if source_id is None:
             continue
 
@@ -234,7 +162,7 @@ def sync_delivery_states_from_queue_status(
         if delivery_state is None:
             continue
 
-        if _existing_delivery_state(row) == delivery_state:
+        if row.get("delivery_state", DELIVERY_STATE_NONE) == delivery_state:
             continue
 
         updated.append(
@@ -335,6 +263,15 @@ def ensure_request_access(
     return request_row
 
 
+def _require_pending(request_row: dict[str, Any]) -> None:
+    if request_row["status"] != RequestStatus.PENDING:
+        raise RequestServiceError(
+            "Request is already in a terminal state",
+            status_code=409,
+            code="stale_transition",
+        )
+
+
 def cancel_request(
     user_db: "UserDB",
     *,
@@ -348,18 +285,13 @@ def cancel_request(
         actor_user_id=actor_user_id,
         is_admin=False,
     )
-    if request_row["status"] != "pending":
-        raise RequestServiceError(
-            "Request is already in a terminal state",
-            status_code=409,
-            code="stale_transition",
-        )
+    _require_pending(request_row)
 
     try:
         return user_db.update_request(
             request_id,
-            expected_current_status="pending",
-            status="cancelled",
+            expected_current_status=RequestStatus.PENDING,
+            status=RequestStatus.CANCELLED,
         )
     except ValueError as exc:
         raise RequestServiceError(str(exc), status_code=409, code="stale_transition") from exc
@@ -379,24 +311,15 @@ def reject_request(
         actor_user_id=admin_user_id,
         is_admin=True,
     )
-    if request_row["status"] != "pending":
-        raise RequestServiceError(
-            "Request is already in a terminal state",
-            status_code=409,
-            code="stale_transition",
-        )
+    _require_pending(request_row)
 
-    normalized_admin_note = None
-    if admin_note is not None:
-        if not isinstance(admin_note, str):
-            raise RequestServiceError("admin_note must be a string", status_code=400)
-        normalized_admin_note = admin_note.strip() or None
+    normalized_admin_note = _normalize_admin_note(admin_note)
 
     try:
         return user_db.update_request(
             request_id,
-            expected_current_status="pending",
-            status="rejected",
+            expected_current_status=RequestStatus.PENDING,
+            status=RequestStatus.REJECTED,
             admin_note=normalized_admin_note,
             reviewed_by=admin_user_id,
             reviewed_at=_now_timestamp(),
@@ -422,18 +345,9 @@ def fulfil_request(
         actor_user_id=admin_user_id,
         is_admin=True,
     )
-    if request_row["status"] != "pending":
-        raise RequestServiceError(
-            "Request is already in a terminal state",
-            status_code=409,
-            code="stale_transition",
-        )
+    _require_pending(request_row)
 
-    normalized_admin_note = None
-    if admin_note is not None:
-        if not isinstance(admin_note, str):
-            raise RequestServiceError("admin_note must be a string", status_code=400)
-        normalized_admin_note = admin_note.strip() or None
+    normalized_admin_note = _normalize_admin_note(admin_note)
 
     if not isinstance(manual_approval, bool):
         raise RequestServiceError("manual_approval must be a boolean", status_code=400)
@@ -446,10 +360,10 @@ def fulfil_request(
         try:
             return user_db.update_request(
                 request_id,
-                expected_current_status="pending",
-                status="fulfilled",
+                expected_current_status=RequestStatus.PENDING,
+                status=RequestStatus.FULFILLED,
                 release_data=None,
-                delivery_state="complete",
+                delivery_state=QueueStatus.COMPLETE,
                 delivery_updated_at=_now_timestamp(),
                 last_failure_reason=None,
                 admin_note=normalized_admin_note,
@@ -459,14 +373,9 @@ def fulfil_request(
         except ValueError as exc:
             raise RequestServiceError(str(exc), status_code=409, code="stale_transition") from exc
 
-    if request_row["request_level"] == "book" and selected_release_data is None:
+    if selected_release_data is None:
         raise RequestServiceError(
-            "release_data is required to fulfil book-level requests",
-            status_code=400,
-        )
-    if request_row["request_level"] == "release" and selected_release_data is None:
-        raise RequestServiceError(
-            "release_data is required to fulfil release-level requests",
+            "release_data is required to fulfil requests",
             status_code=400,
         )
 
@@ -495,10 +404,10 @@ def fulfil_request(
     try:
         return user_db.update_request(
             request_id,
-            expected_current_status="pending",
-            status="fulfilled",
+            expected_current_status=RequestStatus.PENDING,
+            status=RequestStatus.FULFILLED,
             release_data=selected_release_data,
-            delivery_state="queued",
+            delivery_state=QueueStatus.QUEUED,
             delivery_updated_at=_now_timestamp(),
             last_failure_reason=None,
             admin_note=normalized_admin_note,
@@ -516,50 +425,7 @@ def reopen_failed_request(
     failure_reason: str | None = None,
 ) -> dict[str, Any] | None:
     """Reopen a failed fulfilled request so admins can re-approve with a new release."""
-    normalized_failure_reason = None
-    if isinstance(failure_reason, str):
-        normalized_failure_reason = failure_reason.strip() or None
-
-    with user_db._lock:
-        conn = user_db._connect()
-        try:
-            current_row = conn.execute(
-                "SELECT * FROM download_requests WHERE id = ?",
-                (request_id,),
-            ).fetchone()
-            current_request = user_db._parse_request_row(current_row)
-            if current_request is None:
-                return None
-
-            if current_request.get("status") != "fulfilled":
-                return None
-            current_delivery_state = _existing_delivery_state(current_request)
-            # Terminal hook callbacks can run before delivery-state sync persists "error".
-            # Allow reopening fulfilled requests unless they are already complete.
-            if current_delivery_state == "complete":
-                return None
-            if current_delivery_state not in {"error", "cancelled"} and normalized_failure_reason is None:
-                return None
-
-            conn.execute(
-                """
-                UPDATE download_requests
-                SET status = 'pending',
-                    delivery_state = 'none',
-                    delivery_updated_at = NULL,
-                    release_data = NULL,
-                    last_failure_reason = ?,
-                    reviewed_by = NULL,
-                    reviewed_at = NULL
-                WHERE id = ?
-                """,
-                (normalized_failure_reason, request_id),
-            )
-            updated_row = conn.execute(
-                "SELECT * FROM download_requests WHERE id = ?",
-                (request_id,),
-            ).fetchone()
-            conn.commit()
-            return user_db._parse_request_row(updated_row)
-        finally:
-            conn.close()
+    return user_db.reopen_failed_request(
+        request_id,
+        failure_reason=failure_reason,
+    )

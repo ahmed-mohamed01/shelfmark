@@ -32,286 +32,10 @@ import {
   buildLanguageNormalizer,
 } from '../utils/languageFilters';
 import { getReleaseFormats } from '../utils/releaseFormats';
+import { getBookTitleCandidates, getBookAuthorCandidates, sortReleasesByBookMatch } from '../utils/releaseScoring';
+import { getCachedReleases, setCachedReleases, invalidateCachedReleases } from '../utils/releaseCache';
+import { SortState, getSavedSort, saveSort, clearSort, inferDefaultDirection, sortReleases, FORMAT_SORT_KEY, sortReleasesByFormat } from '../utils/releaseSort';
 
-// Module-level cache for release search results
-// Key format: `${provider}:${provider_id}:${source}:${contentType}`
-// This persists across modal open/close cycles
-const releaseCache = new Map<string, ReleasesResponse>();
-
-function getCacheKey(provider: string, providerId: string, source: string, contentType: string): string {
-  return `${provider}:${providerId}:${source}:${contentType}`;
-}
-
-// Default cache TTL (5 minutes) - sources can override via column_config.cache_ttl_seconds
-const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
-const cacheTimestamps = new Map<string, number>();
-
-function getCachedReleases(provider: string, providerId: string, source: string, contentType: string): ReleasesResponse | null {
-  const key = getCacheKey(provider, providerId, source, contentType);
-  const timestamp = cacheTimestamps.get(key);
-  const cached = releaseCache.get(key);
-
-  if (!timestamp || !cached) {
-    return null;
-  }
-
-  // Use source-specific TTL if available, otherwise default
-  const ttlSeconds = cached.column_config?.cache_ttl_seconds;
-  const ttlMs = ttlSeconds ? ttlSeconds * 1000 : DEFAULT_CACHE_TTL_MS;
-
-  // Check if cache entry is not expired
-  if (Date.now() - timestamp < ttlMs) {
-    return cached;
-  }
-
-  // Clear expired entry
-  releaseCache.delete(key);
-  cacheTimestamps.delete(key);
-
-  return null;
-}
-
-function setCachedReleases(provider: string, providerId: string, source: string, contentType: string, data: ReleasesResponse): void {
-  const key = getCacheKey(provider, providerId, source, contentType);
-  releaseCache.set(key, data);
-  cacheTimestamps.set(key, Date.now());
-}
-
-// LocalStorage helpers for persisting sort preferences per source
-const SORT_STORAGE_PREFIX = 'cwa-bd-release-sort-';
-
-interface SortState {
-  key: string;
-  direction: 'asc' | 'desc';
-}
-
-function getSavedSort(sourceName: string): SortState | null {
-  try {
-    const saved = localStorage.getItem(`${SORT_STORAGE_PREFIX}${sourceName}`);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.key && parsed.direction) {
-        return parsed as SortState;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSort(sourceName: string, sortState: SortState): void {
-  try {
-    localStorage.setItem(`${SORT_STORAGE_PREFIX}${sourceName}`, JSON.stringify(sortState));
-  } catch {
-    // localStorage may be unavailable in private browsing
-  }
-}
-
-// Get nested value from an object using dot notation path
-function getNestedSortValue(obj: Record<string, unknown>, path: string): unknown {
-  return path.split('.').reduce<unknown>((current, key) => {
-    if (current && typeof current === 'object' && key in (current as Record<string, unknown>)) {
-      return (current as Record<string, unknown>)[key];
-    }
-    return undefined;
-  }, obj);
-}
-
-// Infer default sort direction from column render type
-function inferDefaultDirection(renderType: string): 'asc' | 'desc' {
-  // Numeric types sort descending by default (bigger is usually better)
-  if (renderType === 'size' || renderType === 'number' || renderType === 'peers') {
-    return 'desc';
-  }
-  // Text/badge types sort ascending (alphabetical)
-  return 'asc';
-}
-
-// Sort releases by a column
-function sortReleases(
-  releases: Release[],
-  sortKey: string,
-  direction: 'asc' | 'desc'
-): Release[] {
-  return [...releases].sort((a, b) => {
-    const aVal = getNestedSortValue(a as unknown as Record<string, unknown>, sortKey);
-    const bVal = getNestedSortValue(b as unknown as Record<string, unknown>, sortKey);
-
-    // Handle null/undefined - sort them to the end
-    if (aVal == null && bVal == null) return 0;
-    if (aVal == null) return 1;
-    if (bVal == null) return -1;
-
-    // Numeric comparison
-    if (typeof aVal === 'number' && typeof bVal === 'number') {
-      return direction === 'asc' ? aVal - bVal : bVal - aVal;
-    }
-
-    // String comparison (case-insensitive)
-    const aStr = String(aVal).toLowerCase();
-    const bStr = String(bVal).toLowerCase();
-    const cmp = aStr.localeCompare(bStr);
-    return direction === 'asc' ? cmp : -cmp;
-  });
-}
-
-function normalizeMatchText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function collectNormalizedStrings(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const normalizedValues: string[] = [];
-
-  for (const value of values) {
-    if (!value) continue;
-    const normalized = normalizeMatchText(value);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    normalizedValues.push(normalized);
-  }
-
-  return normalizedValues;
-}
-
-function getLocalizedTitleValues(raw: unknown): string[] {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return [];
-  }
-
-  const values: string[] = [];
-  for (const value of Object.values(raw as Record<string, unknown>)) {
-    if (typeof value === 'string' && value.trim()) {
-      values.push(value);
-    }
-  }
-  return values;
-}
-
-function splitAuthorString(author: string): string[] {
-  return author
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function getBookTitleCandidates(
-  uiBook: Book | null,
-  responseBook: ReleasesResponse['book'] | undefined
-): string[] {
-  return collectNormalizedStrings([
-    responseBook?.search_title,
-    responseBook?.title,
-    ...getLocalizedTitleValues(responseBook?.titles_by_language),
-    uiBook?.search_title,
-    uiBook?.title,
-    ...getLocalizedTitleValues(uiBook?.titles_by_language),
-  ]);
-}
-
-function getBookAuthorCandidates(
-  uiBook: Book | null,
-  responseBook: ReleasesResponse['book'] | undefined
-): string[] {
-  const responseAuthors = responseBook?.authors ?? [];
-  const uiAuthors = uiBook?.authors ?? [];
-  const uiAuthorParts = uiBook?.author ? splitAuthorString(uiBook.author) : [];
-  return collectNormalizedStrings([
-    responseBook?.search_author,
-    ...responseAuthors,
-    uiBook?.search_author,
-    ...uiAuthors,
-    ...uiAuthorParts,
-  ]);
-}
-
-function getReleaseAuthorForMatch(release: Release): string | null {
-  const rawAuthor = release.extra?.author;
-  if (typeof rawAuthor !== 'string') {
-    return null;
-  }
-
-  const normalized = normalizeMatchText(rawAuthor);
-  return normalized || null;
-}
-
-function hasExactAuthorMatch(release: Release, authorCandidates: string[]): boolean {
-  if (authorCandidates.length === 0) {
-    return false;
-  }
-
-  const releaseAuthor = getReleaseAuthorForMatch(release);
-  if (!releaseAuthor) {
-    return false;
-  }
-
-  return authorCandidates.includes(releaseAuthor);
-}
-
-function getTitleMatchScore(title: string, titleCandidate: string): number {
-  const normalizedTitle = normalizeMatchText(title);
-  if (!normalizedTitle || !titleCandidate) {
-    return 0;
-  }
-
-  if (normalizedTitle === titleCandidate) {
-    return 10000;
-  }
-
-  let score = 0;
-
-  if (normalizedTitle.startsWith(titleCandidate)) {
-    score += 6000;
-  } else if (normalizedTitle.includes(titleCandidate)) {
-    score += 3000;
-  }
-
-  const candidateTokens = titleCandidate.split(' ').filter((token) => token.length > 1);
-  if (candidateTokens.length > 0) {
-    const titleTokens = new Set(normalizedTitle.split(' '));
-    const matchedTokens = candidateTokens.filter((token) => (
-      titleTokens.has(token) || normalizedTitle.includes(token)
-    )).length;
-    score += Math.round((matchedTokens / candidateTokens.length) * 2500);
-  }
-
-  // Prefer closer-length titles when match quality is otherwise similar.
-  score -= Math.abs(normalizedTitle.length - titleCandidate.length);
-
-  return score;
-}
-
-function sortReleasesByBookMatch(
-  releases: Release[],
-  titleCandidates: string[],
-  authorCandidates: string[]
-): Release[] {
-  if (titleCandidates.length === 0) {
-    return releases;
-  }
-
-  return releases
-    .map((release, index) => ({
-      release,
-      index,
-      score: titleCandidates.reduce((best, candidate) => (
-        Math.max(best, getTitleMatchScore(release.title, candidate))
-      ), 0) + (hasExactAuthorMatch(release, authorCandidates) ? 1500 : 0),
-    }))
-    .sort((a, b) => {
-      const scoreDiff = b.score - a.score;
-      if (scoreDiff !== 0) {
-        return scoreDiff;
-      }
-      return a.index - b.index;
-    })
-    .map(({ release }) => release);
-}
 
 function getReleaseMatchScore(release: Release): number | null {
   const rawScore = release.extra?.match_score;
@@ -705,17 +429,20 @@ function ShimmerBlock({ className }: { className: string }) {
 }
 
 // Loading skeleton for releases - matches ReleaseRow layout
+// Renders enough rows to fill the container, fading out at the bottom via a gradient mask
 function ReleaseSkeleton() {
+  // Render enough rows to cover tall viewports; overflow is hidden by the mask
+  const rows = 8;
   return (
-    <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <div
-          key={i}
-          className="px-5 py-2"
-          style={{
-            opacity: 1 - (i - 1) * 0.15, // Fade out lower rows
-          }}
-        >
+    <div
+      className="divide-y divide-gray-200/60 dark:divide-gray-800/60 overflow-hidden"
+      style={{
+        maskImage: 'linear-gradient(to bottom, black 40%, transparent 100%)',
+        WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent 100%)',
+      }}
+    >
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="px-5 py-2">
           <div className="grid grid-cols-[auto_1fr_auto] sm:grid-cols-[auto_minmax(0,2fr)_60px_80px_80px_auto] items-center gap-2 sm:gap-3">
             {/* Thumbnail skeleton */}
             <ShimmerBlock className="w-7 h-10 sm:w-10 sm:h-14" />
@@ -880,6 +607,7 @@ export const ReleaseModal = ({
   // Sort state - keyed by source name, persisted to localStorage
   // null means "Default" (best title match), undefined means "not set yet"
   const [sortBySource, setSortBySource] = useState<Record<string, SortState | null>>({});
+  const [formatSortExpanded, setFormatSortExpanded] = useState(false);
 
   // Description expansion
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
@@ -1357,27 +1085,34 @@ export const ReleaseModal = ({
     return [...fromColumns, ...fromExtra];
   }, [sortableColumns, columnConfig.extra_sort_options]);
 
+  const isValidSortForCurrentResults = useCallback((sort: SortState | null): boolean => {
+    if (!sort) return false;
+
+    if (sort.key === FORMAT_SORT_KEY) {
+      return !!sort.value && availableFormats.includes(sort.value);
+    }
+
+    return allSortOptions.some(opt => opt.sortKey === sort.key);
+  }, [availableFormats, allSortOptions]);
+
   // Get current sort state for active tab (from state, localStorage, or default to null = best match)
   const currentSort = useMemo((): SortState | null => {
     // Check state first - explicit null means "Default" was selected
     if (activeTab in sortBySource) {
-      return sortBySource[activeTab];
+      const inMemory = sortBySource[activeTab];
+      return inMemory === null || isValidSortForCurrentResults(inMemory) ? inMemory : null;
     }
     // Check localStorage
     const saved = getSavedSort(activeTab);
-    if (saved) {
-      // Verify the saved sort is still valid for this source
-      const isValid = allSortOptions.some(opt => opt.sortKey === saved.key);
-      if (isValid) {
-        return saved;
-      }
+    if (isValidSortForCurrentResults(saved)) {
+      return saved;
     }
     // Default to null (best-match sorting)
     return null;
-  }, [activeTab, sortBySource, allSortOptions]);
+  }, [activeTab, sortBySource, isValidSortForCurrentResults]);
 
   // Handle sort change - null means "Default" (best title match), otherwise toggle direction or set new column
-  const handleSortChange = useCallback((sortKey: string | null, defaultDirection: 'asc' | 'desc') => {
+  const handleSortChange = useCallback((sortKey: string | null, defaultDirection: 'asc' | 'desc', value?: string) => {
     if (sortKey === null) {
       // "Default" selected - use best-match sorting
       setSortBySource(prev => {
@@ -1385,29 +1120,27 @@ export const ReleaseModal = ({
         delete next[activeTab];
         return next;
       });
-      // Clear from localStorage
-      try {
-        localStorage.removeItem(`${SORT_STORAGE_PREFIX}${activeTab}`);
-      } catch {
-        // Ignore localStorage errors
-      }
+      clearSort(activeTab);
       return;
     }
 
     const currentState = sortBySource[activeTab] ?? currentSort;
     let newState: SortState;
 
-    if (currentState && currentState.key === sortKey) {
-      // Same key - toggle direction
+    const isSameSort = currentState && currentState.key === sortKey && currentState.value === value;
+    if (isSameSort) {
+      // Same key+value - toggle direction
       newState = {
         key: sortKey,
         direction: currentState.direction === 'asc' ? 'desc' : 'asc',
+        ...(value !== undefined && { value }),
       };
     } else {
-      // New key - use provided default direction
+      // New key or different value - use provided default direction
       newState = {
         key: sortKey,
         direction: defaultDirection,
+        ...(value !== undefined && { value }),
       };
     }
 
@@ -1453,8 +1186,10 @@ export const ReleaseModal = ({
       return true;
     });
 
-    // Then, sort by explicit column, backend-provided match_score, or local title/author fallback
-    if (currentSort && allSortOptions.length > 0) {
+    // Then, sort by explicit column/format, or default to book-title relevance with exact author boost
+    if (currentSort?.key === FORMAT_SORT_KEY && currentSort.value) {
+      filtered = sortReleasesByFormat(filtered, currentSort.value, currentSort.direction);
+    } else if (currentSort && allSortOptions.length > 0) {
       filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
     } else {
       const hasBackendScores = filtered.some((release) => getReleaseMatchScore(release) !== null);
@@ -1992,46 +1727,50 @@ export const ReleaseModal = ({
           {/* Header */}
           <header className="flex items-start gap-3 border-b border-[var(--border-muted)] px-5 py-4">
             {/* Animated thumbnail that appears when scrolling */}
-            <div
-              className="flex-shrink-0 overflow-hidden transition-[width,margin] duration-300 ease-out"
-              style={{
-                width: showHeaderThumb ? 46 : 0,
-                marginRight: showHeaderThumb ? 0 : -12,
-              }}
-            >
+            {!isRequestMode && (
               <div
-                className="transition-opacity duration-300 ease-out"
-                style={{ opacity: showHeaderThumb ? 1 : 0 }}
+                className="flex-shrink-0 overflow-hidden transition-[width,margin] duration-300 ease-out"
+                style={{
+                  width: showHeaderThumb ? 46 : 0,
+                  marginRight: showHeaderThumb ? 0 : -12,
+                }}
               >
-                {book.preview ? (
-                  <img
-                    src={book.preview}
-                    alt=""
-                    width={46}
-                    height={68}
-                    className="rounded shadow-md object-cover object-top"
-                    style={{ width: 46, height: 68, minWidth: 46 }}
-                  />
-                ) : (
-                  <div
-                    className="rounded border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[7px] text-gray-500"
-                    style={{ width: 46, height: 68, minWidth: 46 }}
-                  >
-                    No cover
-                  </div>
-                )}
+                <div
+                  className="transition-opacity duration-300 ease-out"
+                  style={{ opacity: showHeaderThumb ? 1 : 0 }}
+                >
+                  {book.preview ? (
+                    <img
+                      src={book.preview}
+                      alt=""
+                      width={46}
+                      height={68}
+                      className="rounded shadow-md object-cover object-top"
+                      style={{ width: 46, height: 68, minWidth: 46 }}
+                    />
+                  ) : (
+                    <div
+                      className="rounded border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[7px] text-gray-500"
+                      style={{ width: 46, height: 68, minWidth: 46 }}
+                    >
+                      No cover
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
             <div className="flex-1 space-y-1 min-w-0">
               <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 Find Releases
               </p>
               <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
-                {book.title || 'Untitled'}
+                {book.provider === 'manual' ? 'Manual Query' : (book.title || 'Untitled')}
               </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300 truncate">
-                {book.author || 'Unknown author'}
-              </p>
+              {!isRequestMode && (
+                <p className="text-sm text-gray-600 dark:text-gray-300 truncate">
+                  {book.author || 'Unknown author'}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
@@ -2248,8 +1987,8 @@ export const ReleaseModal = ({
                       </svg>
                     </button>
 
-                    {/* Sort dropdown - only show if source has sort options */}
-                    {allSortOptions.length > 0 && (
+                    {/* Sort dropdown - show if source has sort options or multiple formats */}
+                    {(allSortOptions.length > 0 || availableFormats.length > 1) && (
                       <Dropdown
                         align="right"
                         widthClassName="w-auto flex-shrink-0"
@@ -2278,6 +2017,7 @@ export const ReleaseModal = ({
                               type="button"
                               onClick={() => {
                                 handleSortChange(null, 'asc');
+                                setFormatSortExpanded(false);
                                 close();
                               }}
                               className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover-surface rounded ${!currentSort
@@ -2301,6 +2041,7 @@ export const ReleaseModal = ({
                                   type="button"
                                   onClick={() => {
                                     handleSortChange(opt.sortKey, opt.defaultDirection);
+                                    setFormatSortExpanded(false);
                                     // Don't close - allow toggling direction
                                     if (!isSelected) close();
                                   }}
@@ -2322,6 +2063,67 @@ export const ReleaseModal = ({
                                 </button>
                               );
                             })}
+
+                            {/* Format priority sort sub-menu */}
+                            {availableFormats.length > 1 && (
+                              <>
+                                {allSortOptions.length > 0 && (
+                                  <div className="mx-2 my-1 border-t border-gray-200 dark:border-gray-700" />
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setFormatSortExpanded(prev => !prev)}
+                                  className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover-surface rounded ${
+                                    currentSort?.key === FORMAT_SORT_KEY
+                                      ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                                      : 'text-gray-700 dark:text-gray-300'
+                                  }`}
+                                >
+                                  <span>
+                                    Format{currentSort?.key === FORMAT_SORT_KEY && currentSort.value ? ` (${currentSort.value.toUpperCase()})` : ''}
+                                  </span>
+                                  <svg
+                                    className={`w-4 h-4 transition-transform ${formatSortExpanded ? 'rotate-90' : ''}`}
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={2}
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                                  </svg>
+                                </button>
+                                {formatSortExpanded && availableFormats.map((fmt) => {
+                                  const isSelected = currentSort?.key === FORMAT_SORT_KEY && currentSort.value === fmt;
+                                  const direction = isSelected ? currentSort?.direction : null;
+                                  return (
+                                    <button
+                                      key={fmt}
+                                      type="button"
+                                      onClick={() => {
+                                        handleSortChange(FORMAT_SORT_KEY, 'asc', fmt);
+                                        if (!isSelected) close();
+                                      }}
+                                      className={`w-full pl-6 pr-3 py-1.5 text-left text-sm flex items-center justify-between hover-surface rounded ${
+                                        isSelected
+                                          ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                                          : 'text-gray-700 dark:text-gray-300'
+                                      }`}
+                                    >
+                                      <span>{fmt.toUpperCase()}</span>
+                                      {isSelected && direction && (
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                          {direction === 'asc' ? (
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                                          ) : (
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                                          )}
+                                        </svg>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </>
+                            )}
                           </div>
                         )}
                       </Dropdown>
@@ -2413,9 +2215,7 @@ export const ReleaseModal = ({
                                   const bookId = book.provider_id;
 
                                   // Clear cache and state
-                                  const key = getCacheKey(provider, bookId, activeTab, contentType);
-                                  releaseCache.delete(key);
-                                  cacheTimestamps.delete(key);
+                                  invalidateCachedReleases(provider, bookId, activeTab, contentType);
                                   setExpandedBySource((prev) => {
                                     const next = { ...prev };
                                     delete next[activeTab];
@@ -2478,17 +2278,19 @@ export const ReleaseModal = ({
                     const provider = book.provider;
                     const bookId = book.provider_id;
 
-                    // Clear cache + clear visible results so user gets feedback.
-                    const key = getCacheKey(provider, bookId, activeTab, contentType);
-                    releaseCache.delete(key);
-                    cacheTimestamps.delete(key);
-                    setExpandedBySource((prev) => {
-                      const next = { ...prev };
-                      delete next[activeTab];
-                      return next;
+                    // Clear cache + results for ALL tabs so tab switches re-fetch with the new query
+                    for (const tab of allTabs) {
+                      invalidateCachedReleases(provider, bookId, tab.name, contentType);
+                    }
+                    setExpandedBySource({});
+                    setErrorBySource({});
+                    // null for active tab triggers immediate re-fetch; omitting others
+                    // means they'll re-fetch when switched to
+                    setReleasesBySource((prev) => {
+                      const cleared: typeof prev = {};
+                      cleared[activeTab] = null;
+                      return cleared;
                     });
-                    setErrorBySource((prev) => ({ ...prev, [activeTab]: null }));
-                    setReleasesBySource((prev) => ({ ...prev, [activeTab]: null }));
 
                     setLoadingBySource((prev) => ({ ...prev, [activeTab]: true }));
                     try {

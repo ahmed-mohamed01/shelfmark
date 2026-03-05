@@ -6,6 +6,14 @@ import tempfile
 import pytest
 
 from shelfmark.core.request_policy import PolicyMode
+from shelfmark.core.request_validation import (
+    normalize_delivery_state,
+    normalize_policy_mode,
+    normalize_request_level,
+    normalize_request_status,
+    validate_request_level_payload,
+    validate_status_transition,
+)
 from shelfmark.core.requests_service import (
     MAX_REQUEST_JSON_BLOB_BYTES,
     MAX_REQUEST_NOTE_LENGTH,
@@ -13,15 +21,9 @@ from shelfmark.core.requests_service import (
     cancel_request,
     create_request,
     fulfil_request,
-    normalize_policy_mode,
-    normalize_delivery_state,
-    normalize_request_level,
-    normalize_request_status,
     reopen_failed_request,
     reject_request,
     sync_delivery_states_from_queue_status,
-    validate_request_level_payload,
-    validate_status_transition,
 )
 from shelfmark.core.user_db import UserDB
 
@@ -305,7 +307,7 @@ def test_fulfil_request_requires_release_data_for_book_level(user_db):
         book_data=_book_data(),
     )
 
-    with pytest.raises(RequestServiceError, match="release_data is required to fulfil book-level requests"):
+    with pytest.raises(RequestServiceError, match="release_data is required to fulfil requests"):
         fulfil_request(
             user_db,
             request_id=created["id"],
@@ -563,6 +565,33 @@ def test_reopen_failed_request_reverts_to_pending_from_queued_and_clears_on_refu
     assert refulfilled["status"] == "fulfilled"
     assert refulfilled["release_data"]["source_id"] == "release-456"
     assert refulfilled["last_failure_reason"] is None
+
+
+def test_reopen_failed_request_delegates_to_user_db_public_api():
+    class StubUserDB:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, str | None]] = []
+
+        def reopen_failed_request(
+            self,
+            request_id: int,
+            *,
+            failure_reason: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append((request_id, failure_reason))
+            return {"id": request_id, "status": "pending"}
+
+    user_db = StubUserDB()
+
+    reopened = reopen_failed_request(
+        user_db,  # type: ignore[arg-type]
+        request_id=7,
+        failure_reason="  Download failed: Timeout  ",
+    )
+
+    assert reopened == {"id": 7, "status": "pending"}
+    # Service layer passes failure_reason through; normalization happens in UserDB.
+    assert user_db.calls == [(7, "  Download failed: Timeout  ")]
 
 
 def test_reopen_failed_request_does_not_reopen_completed_delivery(user_db):

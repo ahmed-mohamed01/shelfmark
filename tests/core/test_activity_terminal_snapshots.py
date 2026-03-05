@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import importlib
-import json
 import uuid
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -28,19 +28,19 @@ def _create_user(main_module, *, prefix: str) -> dict:
     return main_module.user_db.create_user(username=username, role="user")
 
 
-def _read_activity_log_row(main_module, snapshot_id: int):
+def _read_download_history_row(main_module, task_id: str):
     conn = main_module.user_db._connect()
     try:
         return conn.execute(
-            "SELECT * FROM activity_log WHERE id = ?",
-            (snapshot_id,),
+            "SELECT * FROM download_history WHERE task_id = ?",
+            (task_id,),
         ).fetchone()
     finally:
         conn.close()
 
 
 class TestTerminalSnapshotCapture:
-    def test_complete_transition_records_direct_snapshot_and_survives_queue_clear(self, main_module):
+    def test_complete_transition_records_direct_snapshot(self, main_module):
         user = _create_user(main_module, prefix="snap-direct")
         task_id = f"direct-{uuid.uuid4().hex[:8]}"
         task = DownloadTask(
@@ -54,25 +54,15 @@ class TestTerminalSnapshotCapture:
 
         try:
             main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
-            item_key = f"download:{task_id}"
-            snapshot_id = main_module.activity_service.get_latest_activity_log_id(
-                item_type="download",
-                item_key=item_key,
-            )
-            assert snapshot_id is not None
+            row = _read_download_history_row(main_module, task_id)
+            assert row is not None
 
-            removed = main_module.backend.book_queue.clear_completed(user_id=user["id"])
-            assert removed >= 1
-
-            row = _read_activity_log_row(main_module, snapshot_id)
+            row = _read_download_history_row(main_module, task_id)
             assert row is not None
             assert row["user_id"] == user["id"]
-            assert row["item_key"] == item_key
+            assert row["task_id"] == task_id
             assert row["origin"] == "direct"
             assert row["final_status"] == "complete"
-            snapshot = json.loads(row["snapshot_json"])
-            assert snapshot["kind"] == "download"
-            assert snapshot["download"]["id"] == task_id
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
 
@@ -104,25 +94,17 @@ class TestTerminalSnapshotCapture:
             title="Requested Snapshot",
             user_id=user["id"],
             username=user["username"],
+            request_id=request_row["id"],
         )
         assert main_module.backend.book_queue.add(task) is True
 
         try:
             main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
-            snapshot_id = main_module.activity_service.get_latest_activity_log_id(
-                item_type="download",
-                item_key=f"download:{task_id}",
-            )
-            assert snapshot_id is not None
-
-            row = _read_activity_log_row(main_module, snapshot_id)
+            row = _read_download_history_row(main_module, task_id)
             assert row is not None
             assert row["origin"] == "requested"
             assert row["request_id"] == request_row["id"]
-            assert row["source_id"] == task_id
-            snapshot = json.loads(row["snapshot_json"])
-            assert snapshot["download"]["id"] == task_id
-            assert snapshot["request"]["id"] == request_row["id"]
+            assert row["task_id"] == task_id
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
 
@@ -143,16 +125,9 @@ class TestTerminalSnapshotCapture:
             main_module.backend.book_queue.update_status_message(task_id, "Moving file")
             main_module.backend.update_download_status(task_id, "complete", "Complete")
 
-            snapshot_id = main_module.activity_service.get_latest_activity_log_id(
-                item_type="download",
-                item_key=f"download:{task_id}",
-            )
-            assert snapshot_id is not None
-
-            row = _read_activity_log_row(main_module, snapshot_id)
+            row = _read_download_history_row(main_module, task_id)
             assert row is not None
-            snapshot = json.loads(row["snapshot_json"])
-            assert snapshot["download"]["status_message"] == "Complete"
+            assert row["status_message"] == "Complete"
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
 
@@ -188,6 +163,36 @@ class TestTerminalSnapshotCapture:
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
 
+    def test_complete_transition_emits_activity_update_to_owner_and_admin_rooms(self, main_module):
+        user = _create_user(main_module, prefix="snap-activity-update")
+        task_id = f"activity-update-{uuid.uuid4().hex[:8]}"
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Activity Update Snapshot",
+            user_id=user["id"],
+            username=user["username"],
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            with patch.object(main_module.ws_manager, "is_enabled", return_value=True):
+                with patch.object(main_module.ws_manager.socketio, "emit") as mock_emit:
+                    main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+
+            mock_emit.assert_any_call(
+                "activity_update",
+                ANY,
+                to="admins",
+            )
+            mock_emit.assert_any_call(
+                "activity_update",
+                ANY,
+                to=f"user_{user['id']}",
+            )
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
     def test_error_transition_triggers_download_failed_notification(self, main_module):
         user = _create_user(main_module, prefix="snap-notify-error")
         task_id = f"notify-error-{uuid.uuid4().hex[:8]}"
@@ -219,6 +224,140 @@ class TestTerminalSnapshotCapture:
             assert user_context.error_message == "Resolver timed out"
         finally:
             main_module.backend.book_queue.cancel_download(task_id)
+
+    def test_queue_hook_records_active_row_at_queue_time(self, main_module):
+        user = _create_user(main_module, prefix="snap-queue")
+        task_id = f"queue-{uuid.uuid4().hex[:8]}"
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Queue Time Snapshot",
+            author="Queue Author",
+            user_id=user["id"],
+            username=user["username"],
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            row = _read_download_history_row(main_module, task_id)
+            assert row is not None
+            assert row["final_status"] == "active"
+            assert row["user_id"] == user["id"]
+            assert row["task_id"] == task_id
+            assert row["origin"] == "direct"
+            assert row["title"] == "Queue Time Snapshot"
+            assert row["author"] == "Queue Author"
+            assert row["queued_at"] is not None
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+    def test_queue_hook_records_requested_origin_for_request_linked_task(self, main_module):
+        user = _create_user(main_module, prefix="snap-queue-req")
+        task_id = f"queue-req-{uuid.uuid4().hex[:8]}"
+        request_row = main_module.user_db.create_request(
+            user_id=user["id"],
+            content_type="ebook",
+            request_level="release",
+            policy_mode="request_release",
+            book_data={
+                "title": "Requested Queue",
+                "author": "Request Author",
+                "provider": "openlibrary",
+                "provider_id": "queue-req-1",
+            },
+            release_data={
+                "source": "prowlarr",
+                "source_id": task_id,
+                "title": "Requested Queue.epub",
+            },
+            status="fulfilled",
+            delivery_state="queued",
+        )
+        task = DownloadTask(
+            task_id=task_id,
+            source="prowlarr",
+            title="Requested Queue",
+            user_id=user["id"],
+            username=user["username"],
+            request_id=request_row["id"],
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            row = _read_download_history_row(main_module, task_id)
+            assert row is not None
+            assert row["final_status"] == "active"
+            assert row["origin"] == "requested"
+            assert row["request_id"] == request_row["id"]
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+    def test_finalize_updates_active_row_to_terminal(self, main_module):
+        user = _create_user(main_module, prefix="snap-finalize")
+        task_id = f"finalize-{uuid.uuid4().hex[:8]}"
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Finalize Snapshot",
+            user_id=user["id"],
+            username=user["username"],
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            # Verify active row exists
+            row = _read_download_history_row(main_module, task_id)
+            assert row is not None
+            assert row["final_status"] == "active"
+
+            # Transition to complete
+            main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+
+            row = _read_download_history_row(main_module, task_id)
+            assert row is not None
+            assert row["final_status"] == "complete"
+            # Metadata from queue-time should be preserved
+            assert row["title"] == "Finalize Snapshot"
+            assert row["user_id"] == user["id"]
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+    def test_queue_hook_emits_activity_update_when_requeue_clears_view_state(self, main_module):
+        user = _create_user(main_module, prefix="snap-reset")
+        task_id = f"reset-{uuid.uuid4().hex[:8]}"
+        main_module.activity_view_state_service.dismiss(
+            viewer_scope=f"user:{user['id']}",
+            item_type="download",
+            item_key=f"download:{task_id}",
+        )
+
+        task = SimpleNamespace(
+            user_id=user["id"],
+            username=user["username"],
+            request_id=None,
+            source="direct_download",
+            title="Reset Snapshot",
+            author="Reset Author",
+            format="epub",
+            size="1 MB",
+            preview=None,
+            content_type="ebook",
+        )
+
+        with patch.object(main_module.ws_manager, "is_enabled", return_value=True):
+            with patch.object(main_module.ws_manager.socketio, "emit") as mock_emit:
+                main_module._record_download_queued(task_id, task)
+
+        mock_emit.assert_any_call(
+            "activity_update",
+            ANY,
+            to="admins",
+        )
+        mock_emit.assert_any_call(
+            "activity_update",
+            ANY,
+            to=f"user_{user['id']}",
+        )
 
     def test_cancelled_transition_does_not_trigger_notification(self, main_module):
         user = _create_user(main_module, prefix="snap-notify-cancel")

@@ -57,7 +57,7 @@ def regular_client(app):
     with client.session_transaction() as sess:
         sess["user_id"] = "user"
         sess["is_admin"] = False
-    with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+    with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
         yield client
 
 
@@ -71,7 +71,7 @@ def no_session_client(app):
 def no_session_auth_client(app):
     """Client with no session but auth mode enabled (should be rejected)."""
     client = app.test_client()
-    with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+    with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
         yield client
 
 
@@ -115,7 +115,7 @@ class TestAdminUsersListEndpoint:
         )
         user_db.create_user(username="proxy_user", auth_source="proxy")
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
             resp = admin_client.get("/api/admin/users")
 
         assert resp.status_code == 200
@@ -326,7 +326,7 @@ class TestAdminUserCreateEndpoint:
         assert resp.json["role"] == "user"
 
     def test_create_user_rejected_in_proxy_mode(self, admin_client):
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="proxy"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="proxy"):
             resp = admin_client.post(
                 "/api/admin/users",
                 json={"username": "alice", "password": "pass1234"},
@@ -336,7 +336,7 @@ class TestAdminUserCreateEndpoint:
         assert "Local user creation is disabled" in resp.json["error"]
 
     def test_create_user_rejected_in_cwa_mode(self, admin_client):
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="cwa"):
             resp = admin_client.post(
                 "/api/admin/users",
                 json={"username": "alice", "password": "pass1234"},
@@ -346,7 +346,7 @@ class TestAdminUserCreateEndpoint:
         assert "Local user creation is disabled" in resp.json["error"]
 
     def test_create_user_allowed_in_oidc_mode(self, admin_client):
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="oidc"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="oidc"):
             resp = admin_client.post(
                 "/api/admin/users",
                 json={"username": "alice", "password": "pass1234"},
@@ -918,7 +918,7 @@ class TestAdminSyncCwaUsersEndpoint:
             auth_source="cwa",
         )
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="cwa"):
             with patch("shelfmark.core.admin_routes.CWA_DB_PATH", cwa_db_path):
                 resp = admin_client.post("/api/admin/users/sync-cwa")
 
@@ -952,7 +952,7 @@ class TestAdminSyncCwaUsersEndpoint:
         assert user_db.get_user(user_id=stale_cwa["id"]) is None
 
     def test_sync_cwa_users_rejected_when_not_in_cwa_mode(self, admin_client):
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
             resp = admin_client.post("/api/admin/users/sync-cwa")
 
         assert resp.status_code == 400
@@ -960,7 +960,7 @@ class TestAdminSyncCwaUsersEndpoint:
 
     def test_sync_cwa_users_returns_503_when_db_unavailable(self, admin_client, tmp_path):
         missing_db_path = tmp_path / "missing.db"
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="cwa"):
             with patch("shelfmark.core.admin_routes.CWA_DB_PATH", missing_db_path):
                 resp = admin_client.post("/api/admin/users/sync-cwa")
 
@@ -1148,6 +1148,83 @@ class TestAdminDeliveryPreferences:
     def test_requires_admin(self, regular_client, user_db):
         user = user_db.create_user(username="alice")
         resp = regular_client.get(f"/api/admin/users/{user['id']}/delivery-preferences")
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/users/<id>/search-preferences
+# ---------------------------------------------------------------------------
+
+
+class TestAdminSearchPreferences:
+    """Tests for GET /api/admin/users/<id>/search-preferences."""
+
+    @pytest.fixture(autouse=True)
+    def setup_config(self, tmp_path, monkeypatch):
+        import json
+        from pathlib import Path
+
+        config_dir = str(tmp_path)
+        monkeypatch.setenv("CONFIG_DIR", config_dir)
+        monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", Path(config_dir))
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        search_mode_config = {
+            "SEARCH_MODE": "direct",
+            "METADATA_PROVIDER": "openlibrary",
+            "METADATA_PROVIDER_AUDIOBOOK": "",
+            "DEFAULT_RELEASE_SOURCE": "direct_download",
+        }
+        (plugins_dir / "search_mode.json").write_text(json.dumps(search_mode_config))
+
+        from shelfmark.core.config import config as app_config
+        app_config.refresh()
+
+    def test_returns_curated_fields_and_effective_values(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+        user_db.set_user_settings(
+            user["id"],
+            {
+                "SEARCH_MODE": "universal",
+                "METADATA_PROVIDER": "openlibrary",
+                "DEFAULT_RELEASE_SOURCE": "prowlarr",
+            },
+        )
+
+        resp = admin_client.get(f"/api/admin/users/{user['id']}/search-preferences")
+        assert resp.status_code == 200
+
+        data = resp.json
+        assert data["tab"] == "search_mode"
+        assert data["keys"] == [
+            "SEARCH_MODE",
+            "METADATA_PROVIDER",
+            "METADATA_PROVIDER_AUDIOBOOK",
+            "DEFAULT_RELEASE_SOURCE",
+        ]
+
+        field_keys = [field["key"] for field in data["fields"]]
+        assert set(field_keys) == set(data["keys"])
+
+        assert data["userOverrides"]["SEARCH_MODE"] == "universal"
+        assert data["userOverrides"]["METADATA_PROVIDER"] == "openlibrary"
+        assert data["userOverrides"]["DEFAULT_RELEASE_SOURCE"] == "prowlarr"
+
+        assert data["effective"]["SEARCH_MODE"]["source"] == "user_override"
+        assert data["effective"]["SEARCH_MODE"]["value"] == "universal"
+        assert data["effective"]["METADATA_PROVIDER"]["source"] == "user_override"
+        assert data["effective"]["METADATA_PROVIDER_AUDIOBOOK"]["source"] in {"global_config", "default"}
+        assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["source"] == "user_override"
+        assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["value"] == "prowlarr"
+
+    def test_returns_404_for_unknown_user(self, admin_client):
+        resp = admin_client.get("/api/admin/users/9999/search-preferences")
+        assert resp.status_code == 404
+
+    def test_requires_admin(self, regular_client, user_db):
+        user = user_db.create_user(username="alice")
+        resp = regular_client.get(f"/api/admin/users/{user['id']}/search-preferences")
         assert resp.status_code == 403
 
 
@@ -1487,7 +1564,7 @@ class TestAdminUserDeleteEndpoint:
     def test_delete_active_proxy_user_allowed(self, admin_client, user_db):
         user = user_db.create_user(username="proxyuser", auth_source="proxy")
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="proxy"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="proxy"):
             resp = admin_client.delete(f"/api/admin/users/{user['id']}")
 
         assert resp.status_code == 200
@@ -1496,7 +1573,7 @@ class TestAdminUserDeleteEndpoint:
     def test_delete_active_cwa_user_rejected(self, admin_client, user_db):
         user = user_db.create_user(username="cwauser", auth_source="cwa")
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="cwa"):
             resp = admin_client.delete(f"/api/admin/users/{user['id']}")
 
         assert resp.status_code == 400
@@ -1505,7 +1582,7 @@ class TestAdminUserDeleteEndpoint:
     def test_delete_inactive_proxy_user_allowed(self, admin_client, user_db):
         user = user_db.create_user(username="proxyuser", auth_source="proxy")
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
             resp = admin_client.delete(f"/api/admin/users/{user['id']}")
 
         assert resp.status_code == 200
@@ -1518,7 +1595,7 @@ class TestAdminUserDeleteEndpoint:
             auth_source="oidc",
         )
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="oidc"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="oidc"):
             resp = admin_client.delete(f"/api/admin/users/{user['id']}")
 
         assert resp.status_code == 200
@@ -1531,7 +1608,7 @@ class TestAdminUserDeleteEndpoint:
             role="admin",
         )
 
-        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+        with patch("shelfmark.core.admin_routes.load_active_auth_mode", return_value="builtin"):
             resp = admin_client.delete(f"/api/admin/users/{user['id']}")
 
         assert resp.status_code == 200

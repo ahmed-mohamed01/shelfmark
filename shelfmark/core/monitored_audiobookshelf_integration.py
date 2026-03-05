@@ -65,12 +65,23 @@ def get_abs_config() -> dict[str, str] | None:
 # ---------------------------------------------------------------------------
 
 
+def _build_ssl_ctx(url: str):
+    """Return an ssl.SSLContext that respects the CERTIFICATE_VALIDATION setting."""
+    import ssl
+    from shelfmark.download.network import get_ssl_verify
+    ctx = ssl.create_default_context()
+    if not get_ssl_verify(url):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _abs_get(base_url: str, token: str, path: str, timeout: int = 10) -> Any:
     req = Request(
         f"{base_url}{path}",
         headers={"Authorization": f"Bearer {token}"},
     )
-    with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urlopen(req, timeout=timeout, context=_build_ssl_ctx(base_url)) as resp:  # noqa: S310
         return json.loads(resp.read())
 
 

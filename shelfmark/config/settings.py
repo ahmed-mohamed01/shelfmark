@@ -424,6 +424,7 @@ def search_mode_settings():
                 },
             ],
             default="direct",
+            user_overridable=True,
         ),
         SelectField(
             key="AA_DEFAULT_SORT",
@@ -446,6 +447,7 @@ def search_mode_settings():
             options=_get_metadata_provider_options,  # Callable - evaluated lazily to avoid circular imports
             default="openlibrary",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
         ),
         SelectField(
             key="METADATA_PROVIDER_AUDIOBOOK",
@@ -454,6 +456,7 @@ def search_mode_settings():
             options=_get_metadata_provider_options_with_none,  # Callable - includes "Use main provider" option
             default="",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
         ),
         SelectField(
             key="DEFAULT_RELEASE_SOURCE",
@@ -462,6 +465,7 @@ def search_mode_settings():
             options=_get_release_source_options,  # Callable - evaluated lazily to avoid circular imports
             default="direct_download",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
         ),
         CheckboxField(
             key="SHOW_DUAL_GET_BUTTONS",
@@ -815,7 +819,7 @@ def download_settings():
                 {
                     "value": "rename",
                     "label": "Rename Only",
-                    "description": "Rename files using a template"
+                    "description": "Rename single-file downloads; multi-file keeps original names."
                 },
                 {
                     "value": "organize",
@@ -833,7 +837,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {User}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
+            description="Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders. Applies to single-file downloads.",
             default="{Author} - {Title} ({Year})",
             placeholder="{Author} - {Title} ({Year})",
             show_when=[
@@ -845,7 +849,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
+            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
             default="{Author}/{Title} ({Year})",
             placeholder="{Author}/{Series/}{Title} ({Year})",
             show_when=[
@@ -1091,7 +1095,7 @@ def download_settings():
             description="Choose how downloaded audiobook files are named and organized.",
             options=[
                 {"value": "none", "label": "None", "description": "Keep original filename from source"},
-                {"value": "rename", "label": "Rename Only", "description": "Rename files using a template"},
+                {"value": "rename", "label": "Rename Only", "description": "Rename single-file downloads; multi-file keeps original names."},
                 {"value": "organize", "label": "Rename and Organize", "description": "Create folders and rename files using a template. Recommended for Audiobookshelf. Do not use with ingest folders."},
             ],
             default="rename",
@@ -1101,7 +1105,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {User}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
+            description="Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders. Applies to single-file downloads.",
             default="{Author} - {Title}",
             placeholder="{Author} - {Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "rename"},
@@ -1111,7 +1115,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_AUDIOBOOK_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
+            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
             default="{Author}/{Title}",
             placeholder="{Author}/{Series/}{Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "organize"},

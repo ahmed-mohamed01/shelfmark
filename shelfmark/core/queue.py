@@ -8,7 +8,10 @@ from threading import Lock, Event
 from typing import Dict, List, Optional, Tuple, Any, Callable
 
 from shelfmark.core.config import config as app_config
-from shelfmark.core.models import QueueStatus, QueueItem, DownloadTask
+from shelfmark.core.logger import setup_logger
+from shelfmark.core.models import QueueStatus, QueueItem, DownloadTask, TERMINAL_QUEUE_STATUSES
+
+logger = setup_logger(__name__)
 
 
 class BookQueue:
@@ -25,6 +28,7 @@ class BookQueue:
         self._terminal_status_hook: Optional[
             Callable[[str, QueueStatus, DownloadTask], None]
         ] = None
+        self._queue_hook: Optional[Callable[[str, DownloadTask], None]] = None
 
     @property
     def _status_timeout(self) -> timedelta:
@@ -33,11 +37,12 @@ class BookQueue:
 
     def add(self, task: DownloadTask) -> bool:
         """Add a download task to the queue. Returns False if already exists."""
+        hook: Optional[Callable[[str, DownloadTask], None]] = None
         with self._lock:
             task_id = task.task_id
 
-            # Don't add if already exists and not in error/done state
-            if task_id in self._status and self._status[task_id] not in [QueueStatus.ERROR, QueueStatus.DONE, QueueStatus.CANCELLED]:
+            # Don't add if already exists and not in error/cancelled state
+            if task_id in self._status and self._status[task_id] not in [QueueStatus.ERROR, QueueStatus.CANCELLED]:
                 return False
 
             # Ensure added_time is set
@@ -48,7 +53,14 @@ class BookQueue:
             self._queue.put(queue_item)
             self._task_data[task_id] = task
             self._update_status(task_id, QueueStatus.QUEUED)
-            return True
+            hook = self._queue_hook
+
+        if hook is not None:
+            try:
+                hook(task_id, task)
+            except Exception as exc:
+                logger.warning("Queue hook failed while adding task %s: %s", task_id, exc)
+        return True
 
     def get_next(self) -> Optional[Tuple[str, Event]]:
         """Get next task ID from queue with cancellation flag."""
@@ -77,6 +89,11 @@ class BookQueue:
         with self._lock:
             return self._task_data.get(task_id)
 
+    def get_task_status(self, task_id: str) -> Optional[QueueStatus]:
+        """Get queue status for a task id."""
+        with self._lock:
+            return self._status.get(task_id)
+
     def _update_status(self, book_id: str, status: QueueStatus) -> None:
         """Internal method to update status and timestamp."""
         self._status[book_id] = status
@@ -90,6 +107,14 @@ class BookQueue:
         with self._lock:
             self._terminal_status_hook = hook
 
+    def set_queue_hook(
+        self,
+        hook: Optional[Callable[[str, DownloadTask], None]],
+    ) -> None:
+        """Register a callback invoked when a task is added to the queue."""
+        with self._lock:
+            self._queue_hook = hook
+
     def update_status(self, book_id: str, status: QueueStatus) -> None:
         """Update status of a book in the queue."""
         hook: Optional[Callable[[str, QueueStatus, DownloadTask], None]] = None
@@ -98,15 +123,8 @@ class BookQueue:
             previous_status = self._status.get(book_id)
             self._update_status(book_id, status)
 
-            terminal_statuses = {
-                QueueStatus.COMPLETE,
-                QueueStatus.AVAILABLE,
-                QueueStatus.ERROR,
-                QueueStatus.DONE,
-                QueueStatus.CANCELLED,
-            }
             if (
-                status in terminal_statuses
+                status in TERMINAL_QUEUE_STATUSES
                 and previous_status != status
                 and self._terminal_status_hook is not None
             ):
@@ -116,7 +134,7 @@ class BookQueue:
                     hook_task = current_task
 
             # Clean up active download tracking when finished
-            if status in [QueueStatus.COMPLETE, QueueStatus.AVAILABLE, QueueStatus.ERROR, QueueStatus.DONE, QueueStatus.CANCELLED]:
+            if status in TERMINAL_QUEUE_STATUSES:
                 self._active_downloads.pop(book_id, None)
                 self._cancel_flags.pop(book_id, None)
 
@@ -145,8 +163,8 @@ class BookQueue:
         """Get current queue status grouped by status.
 
         Args:
-            user_id: If provided, only return tasks belonging to this user
-                     (plus legacy tasks with no user_id). If None, return all.
+            user_id: If provided, only return tasks belonging to this user.
+                     If None, return all.
         """
         self.refresh()
         with self._lock:
@@ -154,7 +172,7 @@ class BookQueue:
             for task_id, status in self._status.items():
                 if task_id in self._task_data:
                     task = self._task_data[task_id]
-                    if user_id is not None and task.user_id is not None and task.user_id != user_id:
+                    if user_id is not None and task.user_id != user_id:
                         continue
                     result[status][task_id] = task
             return result
@@ -191,29 +209,20 @@ class BookQueue:
             return sorted(queue_items, key=lambda x: (x['priority'], x['added_time']))
 
     def cancel_download(self, task_id: str) -> bool:
-        """Cancel a download or clear a completed/errored item."""
+        """Cancel an active or queued download."""
         with self._lock:
             current_status = self._status.get(task_id)
 
-            # Allow cancellation during any active state
             if current_status in [QueueStatus.RESOLVING, QueueStatus.LOCATING, QueueStatus.DOWNLOADING]:
                 # Signal active download to stop
                 if task_id in self._cancel_flags:
                     self._cancel_flags[task_id].set()
-            if current_status in [QueueStatus.COMPLETE, QueueStatus.DONE, QueueStatus.AVAILABLE, QueueStatus.ERROR, QueueStatus.CANCELLED]:
-                # Clear completed/errored/cancelled items from tracking
-                self._status.pop(task_id, None)
-                self._status_timestamps.pop(task_id, None)
-                self._task_data.pop(task_id, None)
-                self._cancel_flags.pop(task_id, None)
-                self._active_downloads.pop(task_id, None)
-                return True
+            elif current_status not in [QueueStatus.QUEUED]:
+                # Not in a cancellable state
+                return False
 
-        if current_status in [QueueStatus.RESOLVING, QueueStatus.LOCATING, QueueStatus.DOWNLOADING, QueueStatus.QUEUED]:
-            self.update_status(task_id, QueueStatus.CANCELLED)
-            return True
-
-        return False
+        self.update_status(task_id, QueueStatus.CANCELLED)
+        return True
 
     def set_priority(self, task_id: str, new_priority: int) -> bool:
         """Change the priority of a queued task (lower = higher priority)."""
@@ -246,6 +255,51 @@ class BookQueue:
                 self._queue.put(item)
 
             return found
+
+    def enqueue_existing(self, task_id: str, *, priority: Optional[int] = None) -> bool:
+        """Requeue an existing task regardless of current status.
+
+        This is used for retries where task metadata should be preserved.
+        """
+        hook: Optional[Callable[[str, DownloadTask], None]] = None
+        hook_task: Optional[DownloadTask] = None
+        with self._lock:
+            task = self._task_data.get(task_id)
+            if task is None:
+                return False
+
+            if priority is not None:
+                task.priority = priority
+
+            # Ensure task doesn't appear active while waiting for retry.
+            self._active_downloads.pop(task_id, None)
+            self._cancel_flags.pop(task_id, None)
+
+            # De-duplicate queue entries for this task id.
+            temp_items: list[QueueItem] = []
+            while not self._queue.empty():
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item.book_id != task_id:
+                    temp_items.append(item)
+
+            for item in temp_items:
+                self._queue.put(item)
+
+            queue_item = QueueItem(task_id, task.priority, time.time())
+            self._queue.put(queue_item)
+            self._update_status(task_id, QueueStatus.QUEUED)
+            hook = self._queue_hook
+            hook_task = task
+
+        if hook is not None and hook_task is not None:
+            try:
+                hook(task_id, hook_task)
+            except Exception as exc:
+                logger.warning("Queue hook failed while requeueing task %s: %s", task_id, exc)
+        return True
 
     def reorder_queue(self, task_priorities: Dict[str, int]) -> bool:
         """Bulk reorder queue by mapping task_id to new priority."""
@@ -285,43 +339,9 @@ class BookQueue:
                 return True
             return any(status == QueueStatus.QUEUED for status in self._status.values())
 
-    def clear_completed(self, user_id: Optional[int] = None) -> int:
-        """Remove terminal tasks from tracking, optionally scoped to one user.
-
-        Args:
-            user_id: If provided, only clear tasks belonging to this user,
-                     plus legacy tasks with no user_id. If None, clear all.
-        """
-        terminal_statuses = {QueueStatus.COMPLETE, QueueStatus.DONE, QueueStatus.AVAILABLE, QueueStatus.ERROR, QueueStatus.CANCELLED}
-        with self._lock:
-            to_remove: list[str] = []
-            for task_id, status in self._status.items():
-                if status not in terminal_statuses:
-                    continue
-
-                if user_id is None:
-                    to_remove.append(task_id)
-                    continue
-
-                task = self._task_data.get(task_id)
-                if task is None:
-                    # Without task ownership metadata we cannot safely scope removal.
-                    continue
-                if task.user_id is None or task.user_id == user_id:
-                    to_remove.append(task_id)
-
-            for task_id in to_remove:
-                self._status.pop(task_id, None)
-                self._status_timestamps.pop(task_id, None)
-                self._task_data.pop(task_id, None)
-                self._cancel_flags.pop(task_id, None)
-                self._active_downloads.pop(task_id, None)
-
-            return len(to_remove)
-
     def refresh(self) -> None:
         """Remove any tasks that are done downloading or have stale status."""
-        terminal_statuses = {QueueStatus.COMPLETE, QueueStatus.DONE, QueueStatus.ERROR, QueueStatus.AVAILABLE, QueueStatus.CANCELLED}
+        terminal_statuses = TERMINAL_QUEUE_STATUSES
         with self._lock:
             current_time = datetime.now()
             to_remove = []
@@ -334,10 +354,6 @@ class BookQueue:
                 # Clear stale download paths
                 if task.download_path and not Path(task.download_path).exists():
                     task.download_path = None
-
-                # Mark available downloads as done if file is gone
-                if status == QueueStatus.AVAILABLE and not task.download_path:
-                    self._update_status(task_id, QueueStatus.DONE)
 
                 # Check for stale status entries
                 last_update = self._status_timestamps.get(task_id)

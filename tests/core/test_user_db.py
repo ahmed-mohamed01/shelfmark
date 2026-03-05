@@ -62,7 +62,23 @@ class TestUserDBInitialization:
         assert cursor.fetchone() is not None
         conn.close()
 
-    def test_initialize_creates_activity_tables(self, user_db, db_path):
+    def test_initialize_creates_download_history_table(self, user_db, db_path):
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='download_history'"
+        )
+        assert cursor.fetchone() is not None
+        conn.close()
+
+    def test_initialize_creates_activity_view_state_table(self, user_db, db_path):
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_view_state'"
+        )
+        assert cursor.fetchone() is not None
+        conn.close()
+
+    def test_initialize_does_not_create_legacy_activity_tables(self, user_db, db_path):
         conn = sqlite3.connect(db_path)
         activity_log = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_log'"
@@ -70,8 +86,8 @@ class TestUserDBInitialization:
         dismissals = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_dismissals'"
         ).fetchone()
-        assert activity_log is not None
-        assert dismissals is not None
+        assert activity_log is None
+        assert dismissals is None
         conn.close()
 
     def test_initialize_creates_download_requests_indexes(self, user_db, db_path):
@@ -84,20 +100,40 @@ class TestUserDBInitialization:
         assert "idx_download_requests_status_created_at" in index_names
         conn.close()
 
-    def test_initialize_creates_activity_indexes(self, user_db, db_path):
+    def test_initialize_does_not_create_legacy_activity_indexes(self, user_db, db_path):
         conn = sqlite3.connect(db_path)
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='activity_log'"
         ).fetchall()
         log_index_names = {row[0] for row in rows}
-        assert "idx_activity_log_user_terminal" in log_index_names
-        assert "idx_activity_log_lookup" in log_index_names
+        assert "idx_activity_log_user_terminal" not in log_index_names
+        assert "idx_activity_log_lookup" not in log_index_names
 
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='activity_dismissals'"
         ).fetchall()
         dismissal_index_names = {row[0] for row in rows}
-        assert "idx_activity_dismissals_user_dismissed_at" in dismissal_index_names
+        assert "idx_activity_dismissals_user_dismissed_at" not in dismissal_index_names
+        conn.close()
+
+    def test_initialize_creates_download_history_indexes(self, user_db, db_path):
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='download_history'"
+        ).fetchall()
+        index_names = {row[0] for row in rows}
+        assert "idx_download_history_user_status" in index_names
+        assert "idx_download_history_recent" in index_names
+        conn.close()
+
+    def test_initialize_creates_activity_view_state_indexes(self, user_db, db_path):
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='activity_view_state'"
+        ).fetchall()
+        index_names = {row[0] for row in rows}
+        assert "idx_activity_view_state_history" in index_names
+        assert "idx_activity_view_state_hidden" in index_names
         conn.close()
 
     def test_initialize_enables_wal_mode(self, user_db, db_path):
@@ -224,6 +260,231 @@ class TestUserDBInitialization:
         assert "REQUEST_POLICY_RULES" not in column_names
         assert "MAX_PENDING_REQUESTS_PER_USER" not in column_names
         assert "REQUESTS_ALLOW_NOTES" not in column_names
+        conn.close()
+
+    def test_initialize_does_not_add_dismissed_at_to_download_requests(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT UNIQUE NOT NULL,
+                email         TEXT,
+                display_name  TEXT,
+                password_hash TEXT,
+                oidc_subject  TEXT UNIQUE,
+                auth_source   TEXT NOT NULL DEFAULT 'builtin',
+                role          TEXT NOT NULL DEFAULT 'user',
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE user_settings (
+                user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                settings_json TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE download_requests (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                delivery_state TEXT NOT NULL DEFAULT 'none',
+                source_hint    TEXT,
+                content_type   TEXT NOT NULL,
+                request_level  TEXT NOT NULL,
+                policy_mode    TEXT NOT NULL,
+                book_data      TEXT NOT NULL,
+                release_data   TEXT,
+                note           TEXT,
+                admin_note     TEXT,
+                reviewed_by    INTEGER REFERENCES users(id),
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at    TIMESTAMP,
+                delivery_updated_at TIMESTAMP
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        from shelfmark.core.user_db import UserDB
+
+        db = UserDB(db_path)
+        db.initialize()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        columns = conn.execute("PRAGMA table_info(download_requests)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+        assert "dismissed_at" not in column_names
+        conn.close()
+
+    def test_initialize_migrates_existing_install_without_backfill(self, db_path):
+        """Upgrade path: preserve existing rows and add new schema without retroactive history backfill."""
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT UNIQUE NOT NULL,
+                email         TEXT,
+                display_name  TEXT,
+                password_hash TEXT,
+                oidc_subject  TEXT UNIQUE,
+                auth_source   TEXT NOT NULL DEFAULT 'builtin',
+                role          TEXT NOT NULL DEFAULT 'user',
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE user_settings (
+                user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                settings_json TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE download_requests (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                delivery_state TEXT NOT NULL DEFAULT 'none',
+                source_hint    TEXT,
+                content_type   TEXT NOT NULL,
+                request_level  TEXT NOT NULL,
+                policy_mode    TEXT NOT NULL,
+                book_data      TEXT NOT NULL,
+                release_data   TEXT,
+                note           TEXT,
+                admin_note     TEXT,
+                reviewed_by    INTEGER REFERENCES users(id),
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at    TIMESTAMP,
+                delivery_updated_at TIMESTAMP
+            );
+
+            CREATE TABLE activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                item_type TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                request_id INTEGER,
+                source_id TEXT,
+                origin TEXT NOT NULL,
+                final_status TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                terminal_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE activity_dismissals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                item_type TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                activity_log_id INTEGER REFERENCES activity_log(id) ON DELETE SET NULL,
+                dismissed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, item_type, item_key)
+            );
+            """
+        )
+        conn.execute("INSERT INTO users (id, username, role) VALUES (?, ?, ?)", (1, "legacy-user", "user"))
+        conn.execute(
+            """
+            INSERT INTO download_requests (
+                id,
+                user_id,
+                status,
+                delivery_state,
+                content_type,
+                request_level,
+                policy_mode,
+                book_data
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (11, 1, "fulfilled", "complete", "ebook", "book", "request_book", '{"title":"Legacy Book"}'),
+        )
+        conn.execute(
+            """
+            INSERT INTO activity_log (
+                id,
+                user_id,
+                item_type,
+                item_key,
+                request_id,
+                source_id,
+                origin,
+                final_status,
+                snapshot_json,
+                terminal_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                21,
+                1,
+                "download",
+                "download:legacy-task",
+                11,
+                "legacy-task",
+                "request",
+                "complete",
+                '{"kind":"download","download":{"id":"legacy-task","title":"Legacy Book"}}',
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO activity_dismissals (
+                user_id,
+                item_type,
+                item_key,
+                activity_log_id,
+                dismissed_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (1, "download", "download:legacy-task", 21, "2026-01-02T00:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        from shelfmark.core.user_db import UserDB
+
+        db = UserDB(db_path)
+        db.initialize()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        request_row = conn.execute(
+            "SELECT id, user_id, status FROM download_requests WHERE id = 11"
+        ).fetchone()
+        assert request_row is not None
+        assert request_row["user_id"] == 1
+        assert request_row["status"] == "fulfilled"
+
+        request_columns = conn.execute("PRAGMA table_info(download_requests)").fetchall()
+        request_column_names = {str(col["name"]) for col in request_columns}
+        assert "dismissed_at" not in request_column_names
+
+        history_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='download_history'"
+        ).fetchone()
+        assert history_table is not None
+
+        view_state_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_view_state'"
+        ).fetchone()
+        assert view_state_table is not None
+
+        # No retroactive copy from legacy activity tables in the no-backfill plan.
+        history_count = conn.execute("SELECT COUNT(*) AS count FROM download_history").fetchone()["count"]
+        assert history_count == 0
+
+        legacy_activity_rows = conn.execute("SELECT COUNT(*) AS count FROM activity_log").fetchone()["count"]
+        legacy_dismissal_rows = conn.execute(
+            "SELECT COUNT(*) AS count FROM activity_dismissals"
+        ).fetchone()["count"]
+        assert legacy_activity_rows == 1
+        assert legacy_dismissal_rows == 1
         conn.close()
 
 
@@ -580,9 +841,6 @@ class TestDownloadRequests:
             book_data=self._book_data(),
         )
 
-        with pytest.raises(ValueError, match="request_level=release requires non-null release_data"):
-            user_db.update_request(created["id"], request_level="release")
-
         updated = user_db.update_request(
             created["id"],
             request_level="release",
@@ -627,6 +885,70 @@ class TestDownloadRequests:
 
         with pytest.raises(ValueError, match="release_data must be an object when provided"):
             user_db.update_request(created["id"], release_data="not-an-object")
+
+    def test_reopen_failed_request_resets_fulfilled_request_for_reapproval(self, user_db):
+        user = user_db.create_user(username="alice")
+        created = user_db.create_request(
+            user_id=user["id"],
+            content_type="ebook",
+            request_level="release",
+            policy_mode="request_release",
+            book_data=self._book_data(),
+            release_data=self._release_data(),
+            status="fulfilled",
+            delivery_state="queued",
+            reviewed_by=user["id"],
+            reviewed_at="2026-01-01T00:00:00+00:00",
+            delivery_updated_at="2026-01-01T00:00:01+00:00",
+        )
+
+        reopened = user_db.reopen_failed_request(
+            created["id"],
+            failure_reason=" Download timed out ",
+        )
+
+        assert reopened is not None
+        assert reopened["status"] == "pending"
+        assert reopened["delivery_state"] == "none"
+        assert reopened["delivery_updated_at"] is None
+        assert reopened["release_data"] is None
+        assert reopened["last_failure_reason"] == "Download timed out"
+        assert reopened["reviewed_by"] is None
+        assert reopened["reviewed_at"] is None
+
+    def test_reopen_failed_request_requires_reason_for_non_failure_states(self, user_db):
+        user = user_db.create_user(username="alice")
+        created = user_db.create_request(
+            user_id=user["id"],
+            content_type="ebook",
+            request_level="release",
+            policy_mode="request_release",
+            book_data=self._book_data(),
+            release_data=self._release_data(),
+            status="fulfilled",
+            delivery_state="queued",
+        )
+
+        reopened = user_db.reopen_failed_request(created["id"])
+        assert reopened is None
+
+    def test_reopen_failed_request_allows_failure_states_without_reason(self, user_db):
+        user = user_db.create_user(username="alice")
+        created = user_db.create_request(
+            user_id=user["id"],
+            content_type="ebook",
+            request_level="release",
+            policy_mode="request_release",
+            book_data=self._book_data(),
+            release_data=self._release_data(),
+            status="fulfilled",
+            delivery_state="error",
+        )
+
+        reopened = user_db.reopen_failed_request(created["id"])
+        assert reopened is not None
+        assert reopened["status"] == "pending"
+        assert reopened["last_failure_reason"] is None
 
     def test_count_pending_requests(self, user_db):
         alice = user_db.create_user(username="alice")
@@ -674,3 +996,53 @@ class TestDownloadRequests:
         user_db.delete_user(user["id"])
 
         assert user_db.get_request(created["id"]) is None
+
+    def test_delete_user_cleans_up_activity_view_state(self, user_db, db_path):
+        from shelfmark.core.activity_view_state_service import ActivityViewStateService
+
+        activity_view_state_service = ActivityViewStateService(db_path)
+
+        alice = user_db.create_user(username="alice")
+        bob = user_db.create_user(username="bob")
+        alice_request = user_db.create_request(
+            user_id=alice["id"],
+            content_type="ebook",
+            request_level="book",
+            policy_mode="request_book",
+            book_data=self._book_data(),
+            status="rejected",
+        )
+        bob_request = user_db.create_request(
+            user_id=bob["id"],
+            content_type="ebook",
+            request_level="book",
+            policy_mode="request_book",
+            book_data=self._book_data(),
+            status="rejected",
+        )
+
+        activity_view_state_service.dismiss(
+            viewer_scope=f"user:{alice['id']}",
+            item_type="request",
+            item_key=f"request:{alice_request['id']}",
+        )
+        activity_view_state_service.dismiss(
+            viewer_scope="admin:shared",
+            item_type="request",
+            item_key=f"request:{alice_request['id']}",
+        )
+        activity_view_state_service.dismiss(
+            viewer_scope="admin:shared",
+            item_type="request",
+            item_key=f"request:{bob_request['id']}",
+        )
+
+        user_db.delete_user(alice["id"])
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT viewer_scope, item_key FROM activity_view_state ORDER BY viewer_scope, item_key"
+        ).fetchall()
+        conn.close()
+
+        assert rows == [("admin:shared", f"request:{bob_request['id']}")]

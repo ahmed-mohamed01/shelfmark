@@ -9,7 +9,7 @@ import os
 import sqlite3
 from typing import Any
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, g, jsonify, request, session
 from werkzeug.security import generate_password_hash
 
 from shelfmark.config.booklore_settings import (
@@ -26,8 +26,8 @@ from shelfmark.core.auth_modes import (
     AUTH_SOURCE_CWA,
     AUTH_SOURCE_OIDC,
     AUTH_SOURCE_PROXY,
-    determine_auth_mode,
-    has_local_password_admin,
+    is_user_active_for_auth_mode,
+    load_active_auth_mode,
     normalize_auth_source,
 )
 from shelfmark.core.cwa_user_sync import sync_cwa_users_from_rows
@@ -65,37 +65,6 @@ def _get_user_edit_capabilities(
     }
 
 
-def _get_auth_mode():
-    """Get current auth mode from config."""
-    try:
-        config = load_config_file("security")
-        return determine_auth_mode(
-            config,
-            CWA_DB_PATH,
-            has_local_admin=has_local_password_admin(),
-        )
-    except Exception:
-        return "none"
-
-
-def _require_admin(f):
-    """Decorator to require admin session for admin routes.
-
-    In no-auth mode, everyone has access (is_admin defaults True).
-    In auth-required modes, requires an authenticated session with admin role.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_mode = _get_auth_mode()
-        if auth_mode != "none":
-            if "user_id" not in session:
-                return jsonify({"error": "Authentication required"}), 401
-            if not session.get("is_admin", False):
-                return jsonify({"error": "Admin access required"}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-
 def _sanitize_user(user: dict) -> dict:
     """Remove sensitive fields from user dict before returning to client."""
     sanitized = dict(user)
@@ -116,14 +85,6 @@ def _oidc_role_management_message(security_config: dict[str, Any]) -> str:
     )
 
 
-def _is_user_active(user: dict[str, Any], auth_method: str) -> bool:
-    """Determine whether a user can authenticate in the current auth mode."""
-    source = normalize_auth_source(user.get("auth_source"), user.get("oidc_subject"))
-    if source == AUTH_SOURCE_BUILTIN:
-        return auth_method in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC)
-    return source == auth_method
-
-
 def _serialize_user(
     user: dict[str, Any],
     auth_method: str,
@@ -135,12 +96,14 @@ def _serialize_user(
         payload.get("auth_source"),
         payload.get("oidc_subject"),
     )
-    payload["is_active"] = _is_user_active(payload, auth_method)
+    payload["is_active"] = is_user_active_for_auth_mode(payload, auth_method)
     payload["edit_capabilities"] = _get_user_edit_capabilities(
         payload,
         security_config=security_config,
     )
     return payload
+
+
 
 
 def _sync_all_cwa_users(user_db: UserDB) -> dict[str, int]:
@@ -164,12 +127,31 @@ def _sync_all_cwa_users(user_db: UserDB) -> dict[str, int]:
 def register_admin_routes(app: Flask, user_db: UserDB) -> None:
     """Register admin user management routes on the Flask app."""
 
+    def _require_admin(f):
+        """Decorator to require admin session for admin routes.
+
+        In no-auth mode, everyone has access (is_admin defaults True).
+        In auth-required modes, requires an authenticated session with admin role.
+        Caches the resolved auth_mode in ``g.auth_mode`` for the request.
+        """
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            auth_mode = load_active_auth_mode(CWA_DB_PATH, user_db=user_db)
+            g.auth_mode = auth_mode
+            if auth_mode != "none":
+                if "user_id" not in session:
+                    return jsonify({"error": "Authentication required"}), 401
+                if not session.get("is_admin", False):
+                    return jsonify({"error": "Admin access required"}), 403
+            return f(*args, **kwargs)
+        return decorated
+
     @app.route("/api/admin/users", methods=["GET"])
     @_require_admin
     def admin_list_users():
         """List all users."""
         users = user_db.list_users()
-        auth_mode = _get_auth_mode()
+        auth_mode = g.auth_mode
         security_config = load_config_file("security")
         return jsonify([
             _serialize_user(u, auth_mode, security_config=security_config)
@@ -181,7 +163,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
     def admin_create_user():
         """Create a new user with password authentication."""
         data = request.get_json() or {}
-        auth_mode = _get_auth_mode()
+        auth_mode = g.auth_mode
 
         username = (data.get("username") or "").strip()
         password = data.get("password", "")
@@ -206,7 +188,8 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
             return jsonify({"error": "Role must be 'admin' or 'user'"}), 400
 
         # First user is always admin
-        if not user_db.list_users():
+        existing_users = user_db.list_users()
+        if not existing_users:
             role = "admin"
 
         # Check if username already exists
@@ -233,7 +216,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
         return jsonify(
             _serialize_user(
                 user,
-                _get_auth_mode(),
+                g.auth_mode,
                 security_config=load_config_file("security"),
             )
         ), 201
@@ -248,7 +231,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
 
         result = _serialize_user(
             user,
-            _get_auth_mode(),
+            g.auth_mode,
             security_config=load_config_file("security"),
         )
         result["settings"] = user_db.get_user_settings(user_id)
@@ -363,7 +346,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
         updated = user_db.get_user(user_id=user_id)
         result = _serialize_user(
             updated,
-            _get_auth_mode(),
+            g.auth_mode,
             security_config=security_config,
         )
         result["settings"] = user_db.get_user_settings(user_id)
@@ -374,8 +357,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
     @_require_admin
     def admin_sync_cwa_users():
         """Manually sync users from Calibre-Web into users.db."""
-        auth_mode = _get_auth_mode()
-        if auth_mode != AUTH_SOURCE_CWA:
+        if g.auth_mode != AUTH_SOURCE_CWA:
             return jsonify({
                 "error": "CWA sync is only available when CWA authentication is enabled",
             }), 400
@@ -419,12 +401,11 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        auth_mode = _get_auth_mode()
         auth_source = normalize_auth_source(
             user.get("auth_source"),
             user.get("oidc_subject"),
         )
-        if auth_source == AUTH_SOURCE_CWA and auth_source == auth_mode:
+        if auth_source == AUTH_SOURCE_CWA and auth_source == g.auth_mode:
             return jsonify({
                 "error": f"Cannot delete active {auth_source.upper()} users",
                 "message": f"{auth_source.upper()} users are automatically re-provisioned on login.",

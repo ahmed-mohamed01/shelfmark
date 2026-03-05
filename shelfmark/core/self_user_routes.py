@@ -3,7 +3,7 @@
 from functools import wraps
 from typing import Any, Callable, Mapping
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, g, jsonify, request, session
 from werkzeug.security import generate_password_hash
 
 from shelfmark.config.env import CWA_DB_PATH
@@ -16,8 +16,8 @@ from shelfmark.core.auth_modes import (
     AUTH_SOURCE_CWA,
     AUTH_SOURCE_OIDC,
     AUTH_SOURCE_PROXY,
-    determine_auth_mode,
-    has_local_password_admin,
+    is_user_active_for_auth_mode,
+    load_active_auth_mode,
     normalize_auth_source,
 )
 from shelfmark.core.logger import setup_logger
@@ -33,40 +33,14 @@ logger = setup_logger(__name__)
 MIN_PASSWORD_LENGTH = 4
 _VISIBLE_SELF_SETTINGS_SECTIONS_KEY = "VISIBLE_SELF_SETTINGS_SECTIONS"
 _SELF_SETTINGS_SECTION_DELIVERY = "delivery"
+_SELF_SETTINGS_SECTION_SEARCH = "search"
 _SELF_SETTINGS_SECTION_NOTIFICATIONS = "notifications"
 _VALID_SELF_SETTINGS_SECTIONS = (
     _SELF_SETTINGS_SECTION_DELIVERY,
+    _SELF_SETTINGS_SECTION_SEARCH,
     _SELF_SETTINGS_SECTION_NOTIFICATIONS,
 )
 _DEFAULT_VISIBLE_SELF_SETTINGS_SECTIONS = list(_VALID_SELF_SETTINGS_SECTIONS)
-
-
-def _get_auth_mode() -> str:
-    """Get current auth mode from config."""
-    try:
-        config = load_config_file("security")
-        return determine_auth_mode(
-            config,
-            CWA_DB_PATH,
-            has_local_admin=has_local_password_admin(),
-        )
-    except Exception:
-        return "none"
-
-
-def _require_authenticated_user(f: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator requiring an authenticated session linked to a local user row."""
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_mode = _get_auth_mode()
-        if auth_mode != "none" and "user_id" not in session:
-            return jsonify({"error": "Authentication required"}), 401
-        if "db_user_id" not in session:
-            return jsonify({"error": "Authenticated session is missing local user context"}), 403
-        return f(*args, **kwargs)
-
-    return decorated
 
 
 def _get_current_user(user_db: UserDB) -> tuple[int | None, dict[str, Any] | None, tuple[Any, int] | None]:
@@ -80,13 +54,6 @@ def _get_current_user(user_db: UserDB) -> tuple[int | None, dict[str, Any] | Non
     if not user:
         return None, None, (jsonify({"error": "User not found"}), 404)
     return user_id, user, None
-
-
-def _is_user_active(user: Mapping[str, Any], auth_method: str) -> bool:
-    source = normalize_auth_source(user.get("auth_source"), user.get("oidc_subject"))
-    if source == AUTH_SOURCE_BUILTIN:
-        return auth_method in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC)
-    return source == auth_method
 
 
 def _get_self_edit_capabilities(user: Mapping[str, Any]) -> dict[str, Any]:
@@ -111,7 +78,7 @@ def _serialize_self_user(user: Mapping[str, Any], auth_mode: str) -> dict[str, A
         payload.get("auth_source"),
         payload.get("oidc_subject"),
     )
-    payload["is_active"] = _is_user_active(payload, auth_mode)
+    payload["is_active"] = is_user_active_for_auth_mode(payload, auth_mode)
     payload["edit_capabilities"] = _get_self_edit_capabilities(payload)
     return payload
 
@@ -155,6 +122,11 @@ def _get_allowed_self_settings_keys(visible_sections: list[str]) -> set[str]:
             key for key, _field in _get_ordered_user_overridable_fields("downloads")
         }
 
+    if _SELF_SETTINGS_SECTION_SEARCH in visible_sections_set:
+        allowed_keys |= {
+            key for key, _field in _get_ordered_user_overridable_fields("search_mode")
+        }
+
     if _SELF_SETTINGS_SECTION_NOTIFICATIONS in visible_sections_set:
         allowed_keys |= {
             key for key, _field in _get_ordered_user_overridable_fields("notifications")
@@ -166,6 +138,22 @@ def _get_allowed_self_settings_keys(visible_sections: list[str]) -> set[str]:
 def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
     """Register self-service user endpoints."""
 
+    def _require_authenticated_user(f: Callable[..., Any]) -> Callable[..., Any]:
+        """Decorator requiring an authenticated session linked to a local user row.
+
+        Caches the resolved auth_mode in ``g.auth_mode`` for the request.
+        """
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            auth_mode = load_active_auth_mode(CWA_DB_PATH, user_db=user_db)
+            g.auth_mode = auth_mode
+            if auth_mode != "none" and "user_id" not in session:
+                return jsonify({"error": "Authentication required"}), 401
+            if "db_user_id" not in session:
+                return jsonify({"error": "Authenticated session is missing local user context"}), 403
+            return f(*args, **kwargs)
+        return decorated
+
     @app.route("/api/users/me/edit-context", methods=["GET"])
     @_require_authenticated_user
     def users_me_edit_context():
@@ -173,8 +161,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
         if user_error:
             return user_error
 
-        auth_mode = _get_auth_mode()
-        serialized_user = _serialize_self_user(user, auth_mode)
+        serialized_user = _serialize_self_user(user, g.auth_mode)
         serialized_user["settings"] = user_db.get_user_settings(user_id)
         visible_self_settings_sections = _get_visible_self_settings_sections()
 
@@ -188,6 +175,16 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
                 logger.warning(f"Failed to build user delivery preferences for user_id={user_id}: {exc}")
                 delivery_preferences = None
 
+        search_preferences = None
+        if _SELF_SETTINGS_SECTION_SEARCH in visible_self_settings_sections:
+            try:
+                search_preferences = _build_user_preferences_payload(user_db, user_id, "search_mode")
+            except ValueError:
+                return jsonify({"error": "Search mode settings tab not found"}), 500
+            except Exception as exc:
+                logger.warning(f"Failed to build user search preferences for user_id={user_id}: {exc}")
+                search_preferences = None
+
         notification_preferences = None
         if _SELF_SETTINGS_SECTION_NOTIFICATIONS in visible_self_settings_sections:
             try:
@@ -200,6 +197,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
 
         user_overridable_keys = sorted(
             set(delivery_preferences.get("keys", []) if delivery_preferences else [])
+            | set(search_preferences.get("keys", []) if search_preferences else [])
             | set(notification_preferences.get("keys", []) if notification_preferences else [])
         )
 
@@ -207,6 +205,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
             {
                 "user": serialized_user,
                 "deliveryPreferences": delivery_preferences,
+                "searchPreferences": search_preferences,
                 "notificationPreferences": notification_preferences,
                 "userOverridableKeys": user_overridable_keys,
                 "visibleUserSettingsSections": visible_self_settings_sections,
@@ -348,7 +347,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
         if not updated:
             return jsonify({"error": "User not found"}), 404
 
-        result = _serialize_self_user(updated, _get_auth_mode())
+        result = _serialize_self_user(updated, g.auth_mode)
         result["settings"] = user_db.get_user_settings(user_id)
         logger.info(f"User {user_id} updated their own account")
         return jsonify(result)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
 import { RequestRecord, StatusData } from '../../types';
 import { downloadToActivityItem, DownloadStatusKey } from './activityMappers';
 import { ActivityItem } from './activityTypes';
@@ -13,10 +13,12 @@ interface ActivitySidebarProps {
   isAdmin: boolean;
   onClearCompleted: (items: ActivityDismissTarget[]) => void;
   onCancel: (id: string) => void;
+  onRetry?: (id: string) => void;
   onDownloadDismiss?: (bookId: string, linkedRequestId?: number) => void;
   requestItems: ActivityItem[];
   dismissedItemKeys?: string[];
   historyItems?: ActivityItem[];
+  historyLoaded?: boolean;
   historyHasMore?: boolean;
   historyLoading?: boolean;
   onHistoryLoadMore?: () => void;
@@ -243,10 +245,12 @@ export const ActivitySidebar = ({
   isAdmin,
   onClearCompleted,
   onCancel,
+  onRetry,
   onDownloadDismiss,
   requestItems,
   dismissedItemKeys = [],
   historyItems = [],
+  historyLoaded = false,
   historyHasMore = false,
   historyLoading = false,
   onHistoryLoadMore,
@@ -274,6 +278,10 @@ export const ActivitySidebar = ({
     () => new Set(dismissedItemKeys),
     [dismissedItemKeys]
   );
+  const handleTabChange = useCallback((nextTab: ActivityTabKey) => {
+    setActiveTab(nextTab);
+    onActiveTabChange?.(nextTab);
+  }, [onActiveTabChange]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 1024px)');
@@ -292,13 +300,9 @@ export const ActivitySidebar = ({
 
   useEffect(() => {
     if (!showRequestsTab && activeTab === 'requests') {
-      setActiveTab('all');
+      handleTabChange('all');
     }
-  }, [showRequestsTab, activeTab]);
-
-  useEffect(() => {
-    onActiveTabChange?.(activeTab);
-  }, [activeTab, onActiveTabChange]);
+  }, [showRequestsTab, activeTab, handleTabChange]);
 
   useEffect(() => {
     if (activeTab === 'downloads') {
@@ -452,9 +456,10 @@ export const ActivitySidebar = ({
           }
           return requestStatus === 'fulfilled' && item.kind === 'request';
         })
-      : activeTab === 'history'
-        ? historyItems
-        : mergedDownloadItems;
+        : activeTab === 'history'
+          ? historyItems
+          : mergedDownloadItems;
+  const isHistoryInitialLoad = activeTab === 'history' && !historyLoaded;
 
   const availableUsers = useMemo(() => {
     const userMap = new Map<string, string>();
@@ -702,12 +707,12 @@ export const ActivitySidebar = ({
                 )}
               </Dropdown>
             )}
-            <button
-              type="button"
-              onClick={() => setActiveTab((current) => (current === 'history' ? 'all' : 'history'))}
-              className={`relative h-9 w-9 inline-flex items-center justify-center rounded-full hover-action transition-colors ${
-                activeTab === 'history' ? 'text-sky-600 dark:text-sky-400' : ''
-              }`}
+              <button
+                type="button"
+                onClick={() => handleTabChange(activeTab === 'history' ? 'all' : 'history')}
+                className={`relative h-9 w-9 inline-flex items-center justify-center rounded-full hover-action transition-colors ${
+                  activeTab === 'history' ? 'text-sky-600 dark:text-sky-400' : ''
+                }`}
               title={activeTab === 'history' ? 'Back to activity' : 'Open history'}
               aria-label={activeTab === 'history' ? 'Back to activity' : 'Open history'}
               aria-pressed={activeTab === 'history'}
@@ -745,7 +750,7 @@ export const ActivitySidebar = ({
               <button
                 type="button"
                 ref={(el) => { tabRefs.current.all = el; }}
-                onClick={() => setActiveTab('all')}
+                onClick={() => handleTabChange('all')}
                 className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
                   activeTab === 'all'
                     ? 'text-sky-600 dark:text-sky-400'
@@ -758,7 +763,7 @@ export const ActivitySidebar = ({
               <button
                 type="button"
                 ref={(el) => { tabRefs.current.downloads = el; }}
-                onClick={() => setActiveTab('downloads')}
+                onClick={() => handleTabChange('downloads')}
                 className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
                   activeTab === 'downloads'
                     ? 'text-sky-600 dark:text-sky-400'
@@ -777,7 +782,7 @@ export const ActivitySidebar = ({
                 <button
                   type="button"
                   ref={(el) => { tabRefs.current.requests = el; }}
-                  onClick={() => setActiveTab('requests')}
+                  onClick={() => handleTabChange('requests')}
                   className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
                     activeTab === 'requests'
                       ? 'text-sky-600 dark:text-sky-400'
@@ -808,7 +813,7 @@ export const ActivitySidebar = ({
             {activeTab === 'requests'
               ? isRequestsLoading ? 'Loading requests...' : 'No requests'
               : activeTab === 'history'
-                ? historyLoading ? 'Loading history...' : 'No history'
+                ? (historyLoading || isHistoryInitialLoad) ? 'Loading history...' : 'No history'
               : activeTab === 'downloads'
                 ? 'No downloads'
                 : 'No activity'}
@@ -888,6 +893,7 @@ export const ActivitySidebar = ({
                         item={item}
                         isAdmin={isAdmin}
                         onDownloadCancel={onCancel}
+                        onDownloadRetry={onRetry}
                         onDownloadDismiss={onDownloadDismiss}
                         onRequestCancel={onRequestCancel}
                         onRequestApprove={onRequestApprove}

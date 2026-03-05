@@ -5,7 +5,7 @@ import { useSearchMode } from '../contexts/SearchModeContext';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { DropdownList } from './DropdownList';
 import { CONTENT_OPTIONS } from '../data/filterOptions';
-import { SearchFieldRenderer } from './shared';
+import { SearchFieldRenderer, ToggleSwitch } from './shared';
 
 const FORMAT_TYPES = ['pdf', 'epub', 'mobi', 'azw3', 'fb2', 'djvu', 'cbz', 'cbr', 'zip', 'rar'] as const;
 
@@ -21,11 +21,14 @@ interface AdvancedFiltersProps {
   // Universal mode props
   metadataSearchFields?: MetadataSearchField[];
   searchFieldValues?: Record<string, string | number | boolean>;
-  onSearchFieldChange?: (key: string, value: string | number | boolean) => void;
+  onSearchFieldChange?: (key: string, value: string | number | boolean, label?: string) => void;
   showDualGetButtonsToggle?: boolean;
   onShowDualGetButtonsToggleChange?: (value: boolean) => void;
   // Submit handler for Enter key
   onSubmit?: () => void;
+  // Manual search mode (universal only)
+  isManualSearch?: boolean;
+  onManualSearchToggle?: () => void;
 }
 
 export const AdvancedFilters = ({
@@ -43,6 +46,8 @@ export const AdvancedFilters = ({
   showDualGetButtonsToggle = false,
   onShowDualGetButtonsToggleChange,
   onSubmit,
+  isManualSearch = false,
+  onManualSearchToggle,
 }: AdvancedFiltersProps) => {
   const { searchMode } = useSearchMode();
   const { isbn, author, title, lang, content, formats } = filters;
@@ -89,41 +94,82 @@ export const AdvancedFilters = ({
 
   if (!visible) return null;
 
-  // Universal search mode: render dynamic provider fields
+  // Universal search mode: render dynamic provider fields + manual search toggle
   if (searchMode === 'universal') {
-    // If no fields defined for this provider, don't show the section
-    if (metadataSearchFields.length === 0) return null;
+    const hasProviderFields = metadataSearchFields.length > 0;
+
+    // If no fields and no toggle available, don't show the section
+    if (!hasProviderFields && !onManualSearchToggle) return null;
+
+    // When formClassName is provided (initial state), the form carries its own padding;
+    // otherwise use the default positioning classes for the header-bar state.
+    const wrapperClassName = formClassName
+      ? 'px-2'
+      : 'px-2 lg:ml-[calc(3rem+1rem)] lg:w-[calc(50vw+4rem)]';
 
     const universalForm = (
-      <form
-        id="search-filters"
-        className={
-          formClassName ??
-          'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-2 lg:ml-[calc(3rem+1rem)] lg:w-[50vw]'
-        }
-      >
-        {metadataSearchFields.map((field) => (
-          <div key={field.key}>
-            {field.type !== 'CheckboxSearchField' && (
-              <label htmlFor={`${field.key}-input`} className="block text-sm mb-1 opacity-80">
-                {field.label}
-              </label>
-            )}
-            <SearchFieldRenderer
-              field={field}
-              value={searchFieldValues[field.key] ?? (field.type === 'CheckboxSearchField' ? false : '')}
-              onChange={(value) => onSearchFieldChange?.(field.key, value)}
-              onSubmit={onSubmit}
-            />
-            {field.description && (
-              <p className="text-xs mt-1 opacity-60">{field.description}</p>
-            )}
+      <div className={wrapperClassName}>
+        {onManualSearchToggle && (
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-sm font-medium opacity-70">Search Options</span>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-xs opacity-60">Manual search</span>
+              <ToggleSwitch
+                checked={isManualSearch}
+                onChange={() => onManualSearchToggle()}
+                color="emerald"
+              />
+            </label>
           </div>
-        ))}
-        {dualGetButtonsToggle ? (
-          <div className="md:col-span-2 lg:col-span-3">{dualGetButtonsToggle}</div>
-        ) : null}
-      </form>
+        )}
+        {isManualSearch && (
+          <p className="text-xs opacity-50 mb-3">
+            Manual search queries release sources directly. Some sources may return limited metadata, which can affect file naming templates.
+          </p>
+        )}
+        {!isManualSearch && metadataSearchFields.length > 0 && (
+          <form
+            id="search-filters"
+            className={
+              formClassName ??
+              'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'
+            }
+          >
+            {metadataSearchFields.map((field) => (
+              <div key={field.key}>
+                {field.type !== 'CheckboxSearchField' && (
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor={`${field.key}-input`} className="text-sm opacity-80">
+                      {field.label}
+                    </label>
+                    {field.type === 'DynamicSelectSearchField' && searchFieldValues[field.key] && (
+                      <button
+                        type="button"
+                        onClick={() => onSearchFieldChange?.(field.key, '')}
+                        className="text-xs font-medium text-sky-500 hover:text-sky-400 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                )}
+                <SearchFieldRenderer
+                  field={field}
+                  value={searchFieldValues[field.key] ?? (field.type === 'CheckboxSearchField' ? false : '')}
+                  onChange={(value, label) => onSearchFieldChange?.(field.key, value, label)}
+                  onSubmit={onSubmit}
+                />
+                {field.description && (
+                  <p className="text-xs mt-1 opacity-60">{field.description}</p>
+                )}
+              </div>
+            ))}
+          </form>
+        )}
+        {dualGetButtonsToggle && (
+          <div className="mt-4">{dualGetButtonsToggle}</div>
+        )}
+      </div>
     );
 
     const wrappedUniversalForm = renderWrapper ? (
@@ -143,7 +189,7 @@ export const AdvancedFilters = ({
       id="search-filters"
       className={
         formClassName ??
-        'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-2 lg:ml-[calc(3rem+1rem)] lg:w-[50vw]'
+        'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-2 lg:ml-[calc(3rem+1rem)] lg:w-[calc(50vw+4rem)]'
       }
     >
           <div>
