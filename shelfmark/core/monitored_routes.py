@@ -905,6 +905,20 @@ def register_monitored_routes(
             logger.warning("ABS sync failed entity_id=%s: %s", entity_id, abs_exc)
             abs_result = {"abs_skipped": True, "reason": "error"}
 
+        # Booklore sync — always runs as long as the entity exists, independent of FS scan
+        bl_result: dict[str, Any] = {"bl_skipped": True, "reason": "not_run"}
+        try:
+            from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
+            bl_result = sync_booklore_availability_for_entity(
+                monitored_db=monitored_db,
+                entity_id=entity_id,
+                entity_name=entity.get("name") or "",
+                user_id=db_user_id,
+            )
+        except Exception as bl_exc:
+            logger.warning("Booklore sync failed entity_id=%s: %s", entity_id, bl_exc)
+            bl_result = {"bl_skipped": True, "reason": "error"}
+
         if _scan_error_response is not None:
             return jsonify(_scan_error_response[0]), _scan_error_response[1]
 
@@ -928,6 +942,7 @@ def register_monitored_routes(
             "unmatched": result.unmatched,
             "missing_books": result.missing_books,
             "abs": abs_result,
+            "booklore": bl_result,
         })
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])

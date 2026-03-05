@@ -838,6 +838,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                       ) : (
                         files.map((f) => {
                           const isAbs = f.source === 'audiobookshelf';
+                          const isBooklore = f.source === 'booklore';
                           const formatLabel = f.ext ? f.ext.toUpperCase() : f.file_type ? f.file_type.toUpperCase() : 'FILE';
                           const badgeKey = f.ext || f.file_type || '';
                           return (
@@ -850,7 +851,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
                                     {formatLabel}
                                     {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                                    {isAbs ? ' · from AudioBookShelf' : ''}
+                                    {isAbs ? ' · from AudioBookShelf' : isBooklore ? ' · from Booklore' : ''}
                                   </div>
                                 </div>
                                 {badgeKey ? (

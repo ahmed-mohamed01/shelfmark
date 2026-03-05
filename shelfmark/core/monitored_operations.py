@@ -189,6 +189,18 @@ def _run_author_sync(
         except Exception:
             pass
 
+        # Booklore sync (best-effort — skipped if Booklore not configured)
+        try:
+            from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
+            sync_booklore_availability_for_entity(
+                monitored_db=db,
+                entity_id=entity_id,
+                entity_name=str(entity.get("name") or ""),
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+
         # Cover prefetch — broadcast phase, then fetch covers into cache
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
                    {"entity_id": entity_id, "phase": "fetching_covers"})

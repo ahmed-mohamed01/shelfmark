@@ -18,39 +18,28 @@ from urllib.request import Request, urlopen
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_integration_matching import (
+    AUTHOR_SPLIT_RE as _AUTHOR_SPLIT_RE,
+    COLON_SUBTITLE_RE as _COLON_SUBTITLE_RE,
+    PAREN_SUFFIX_RE as _PAREN_SUFFIX_RE,
+    SERIES_NAME_MIN_RATIO as _SERIES_NAME_MIN_RATIO,
+    SERIES_POS_RE as _SERIES_POS_RE,
+    SERIES_TITLE_MIN_RATIO as _SERIES_TITLE_MIN_RATIO,
+    TITLE_FUZZY_MIN as _TITLE_FUZZY_MIN,
+    author_matches as _author_matches,
+    norm as _norm,
+    normalize_shelfmark_title as _normalize_shelfmark_title,
+    parse_series_position as _parse_series_position,
+)
 
 logger = setup_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Matching thresholds
+# ABS-specific regex
 # ---------------------------------------------------------------------------
-
-_SERIES_NAME_MIN_RATIO = 0.75   # series name fuzzy threshold (phase 2)
-_SERIES_TITLE_MIN_RATIO = 0.60  # title confirmation in phase 2
-_TITLE_FUZZY_MIN = 0.70         # title ratio threshold for phase 3
-_AUTHOR_FUZZY_MIN = 0.70        # author ratio threshold for phase 3
 
 # Regex for "(Unabridged)" suffix in ABS titles
 _UNABRIDGED_RE = re.compile(r"\s*\(unabridged\)\s*$", re.IGNORECASE)
-
-# Regex to strip any trailing parenthetical — used as an additional title
-# candidate when one source has "(We Are Bob)" or "(Graphic Audio)" and the
-# other doesn't.  Safer than lowering the threshold alone.
-_PAREN_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
-
-# Regex to strip ": subtitle" from shelfmark titles
-# e.g. "Mitosis: A Reckoners Story" → "Mitosis"
-_COLON_SUBTITLE_RE = re.compile(r"\s*:.*$")
-
-# Regex to extract series position from "Book N", "#N", "Part N", "Volume N"
-_SERIES_POS_RE = re.compile(
-    r"(?:book|part|vol(?:ume)?|#)\s*(\d+(?:\.\d+)?)",
-    re.IGNORECASE,
-)
-
-# Pre-compiled helpers for _norm() — avoids repeated pattern compilation
-_NORM_STRIP_RE = re.compile(r"[^a-z0-9]+")
-_NORM_SPACE_RE = re.compile(r"\s+")
 
 # Pre-compiled helpers for _parse_abs_series_pairs()
 _SERIES_SEGMENT_SPLIT_RE = re.compile(r",\s*(?=[A-Za-z])")
@@ -181,11 +170,6 @@ def _find_abs_author_items(
 # ---------------------------------------------------------------------------
 
 
-def _norm(value: str) -> str:
-    """Lowercase, collapse whitespace, strip punctuation for comparison."""
-    return _NORM_SPACE_RE.sub(" ", _NORM_STRIP_RE.sub(" ", (value or "").lower())).strip()
-
-
 def _normalize_abs_title(title: str, series_names: list[str]) -> str:
     """Strip '(Unabridged)', strip 'SeriesName: ' prefix, and strip ': subtitle' suffix.
 
@@ -206,39 +190,9 @@ def _normalize_abs_title(title: str, series_names: list[str]) -> str:
     return t
 
 
-def _normalize_shelfmark_title(title: str) -> str:
-    """Strip ': subtitle' suffix (e.g. 'Mitosis: A Reckoners Story' → 'Mitosis')."""
-    return _COLON_SUBTITLE_RE.sub("", title).strip()
-
-
 # ---------------------------------------------------------------------------
 # Series parsing
 # ---------------------------------------------------------------------------
-
-
-def _parse_series_position(raw: str) -> float | None:
-    """Extract a numeric position from strings like '#3', 'Book 3', '3.1', '1/2'."""
-    raw = raw.strip()
-    # Try direct float first (handles "3", "3.1", "0.5")
-    try:
-        return float(raw)
-    except ValueError:
-        pass
-    # "N/M" means "book N of M total" — the position is the numerator only.
-    # e.g. "1/2" → 1.0 (first book in a two-book series), "2/3" → 2.0
-    if "/" in raw:
-        parts = raw.split("/", 1)
-        try:
-            return float(parts[0])
-        except ValueError:
-            pass
-    m = _SERIES_POS_RE.search(raw)
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            pass
-    return None
 
 
 def _parse_abs_series_pairs(
@@ -312,36 +266,6 @@ def _parse_asins(raw: Any) -> set[str]:
     if isinstance(raw, list):
         return {str(a).strip() for a in raw if a}
     return set()
-
-
-# ---------------------------------------------------------------------------
-# Author matching helper
-# ---------------------------------------------------------------------------
-
-# Regex to split multi-value author/narrator strings like "A, B; C"
-_AUTHOR_SPLIT_RE = re.compile(r"[,;]")
-
-
-def _author_matches(abs_author: str, book_authors: str) -> bool:
-    """Return True if any ABS author token fuzzy-matches any book author token.
-
-    ABS often stores narrators alongside authors in the ``authorName`` field
-    (e.g. ``"Brandon Sanderson, Michael Kramer, Kate Reading"``).  A whole-
-    string comparison would produce a low ratio and reject valid matches.  By
-    splitting on ``,`` / ``;`` first we compare individual names.
-    """
-    abs_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(abs_author) if p.strip()]
-    book_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(book_authors) if p.strip()]
-    # Fall back to whole strings if either side is empty after splitting
-    if not abs_parts:
-        abs_parts = [abs_author]
-    if not book_parts:
-        book_parts = [book_authors]
-    for a in abs_parts:
-        for b in book_parts:
-            if SequenceMatcher(None, _norm(a), _norm(b)).ratio() >= _AUTHOR_FUZZY_MIN:
-                return True
-    return False
 
 
 # ---------------------------------------------------------------------------

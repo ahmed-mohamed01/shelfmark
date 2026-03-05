@@ -12,6 +12,14 @@ from shelfmark.core.settings_registry import (
 )
 
 
+def _cfg_val(key: str, cv: dict[str, Any], cfg: Any) -> str:
+    """Return current_values[key] if non-empty, else the saved config value."""
+    v = cv.get(key)
+    if v not in (None, ""):
+        return str(v).strip()
+    return str(cfg.get(key) or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # ABS connection test
 # ---------------------------------------------------------------------------
@@ -20,25 +28,18 @@ from shelfmark.core.settings_registry import (
 def test_abs_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test AudioBookShelf connectivity using current form values (or saved config)."""
     from shelfmark.core.config import config as app_config
-    from shelfmark.core.monitored_audiobookshelf_integration import _abs_get, _get_abs_library_id
+    from shelfmark.core.monitored_audiobookshelf_integration import _abs_get
 
     cv = current_values or {}
-
-    def _val(key: str) -> str:
-        v = cv.get(key)
-        if v not in (None, ""):
-            return str(v).strip()
-        return str(app_config.get(key) or "").strip()
-
-    url = _val("AUDIOBOOKSHELF_URL").rstrip("/")
-    token = _val("AUDIOBOOKSHELF_TOKEN")
+    url = _cfg_val("AUDIOBOOKSHELF_URL", cv, app_config).rstrip("/")
+    token = _cfg_val("AUDIOBOOKSHELF_TOKEN", cv, app_config)
 
     if not url:
         return {"success": False, "message": "AudioBookShelf URL is required"}
     if not token:
         return {"success": False, "message": "API Token is required"}
 
-    configured_lib_id = _val("AUDIOBOOKSHELF_LIBRARY_ID")
+    configured_lib_id = _cfg_val("AUDIOBOOKSHELF_LIBRARY_ID", cv, app_config)
 
     try:
         data = _abs_get(url, token, "/api/libraries")
@@ -57,6 +58,40 @@ def test_abs_connection(current_values: dict[str, Any] | None = None) -> dict[st
         return {"success": True, "message": msg}
     except Exception as exc:
         return {"success": False, "message": f"Connection failed: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Booklore connection test
+# ---------------------------------------------------------------------------
+
+
+def test_booklore_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Test Booklore connectivity using current form values (or saved config)."""
+    from shelfmark.core.config import config as app_config
+    from shelfmark.core.monitored_booklore_integration import _booklore_get, _booklore_login
+
+    cv = current_values or {}
+    url = _cfg_val("BOOKLORE_URL", cv, app_config).rstrip("/")
+    username = _cfg_val("BOOKLORE_USERNAME", cv, app_config)
+    password = _cfg_val("BOOKLORE_PASSWORD", cv, app_config)
+
+    if not url:
+        return {"success": False, "message": "Booklore URL is required"}
+    if not username:
+        return {"success": False, "message": "Username is required"}
+    if not password:
+        return {"success": False, "message": "Password is required"}
+
+    try:
+        token = _booklore_login(url, username, password)
+    except Exception as exc:
+        return {"success": False, "message": f"Login failed: {exc}"}
+
+    try:
+        _booklore_get(url, token, "/api/v1/healthcheck")
+        return {"success": True, "message": "Connected — Booklore is reachable"}
+    except Exception as exc:
+        return {"success": False, "message": f"Connected but health check failed: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -97,5 +132,35 @@ def integrations_settings():
             description="Verify that shelfmark can reach your AudioBookShelf instance.",
             style="primary",
             callback=test_abs_connection,
+        ),
+        HeadingField(
+            key="booklore_integration_heading",
+            title="Booklore",
+            description="Match ebooks from a Booklore instance during file scans.",
+        ),
+        TextField(
+            key="BOOKLORE_URL",
+            label="Booklore URL",
+            description="Base URL of your Booklore instance (e.g. http://booklore:6060).",
+            default="",
+        ),
+        TextField(
+            key="BOOKLORE_USERNAME",
+            label="Username",
+            description="Booklore account username.",
+            default="",
+        ),
+        PasswordField(
+            key="BOOKLORE_PASSWORD",
+            label="Password",
+            description="Booklore account password.",
+            default="",
+        ),
+        ActionButton(
+            key="test_booklore_connection",
+            label="Check Connection",
+            description="Verify that shelfmark can reach your Booklore instance.",
+            style="primary",
+            callback=test_booklore_connection,
         ),
     ]
