@@ -35,8 +35,10 @@ def test_update_download_status_dedupes_identical_events(monkeypatch):
     assert orchestrator._last_activity[book_id] == 2.0
 
 
-def test_download_task_records_monitored_attempt_when_postprocess_returns_none(monkeypatch, tmp_path):
-    import shelfmark.download.orchestrator as orchestrator
+def test_download_task_records_monitored_attempt_when_postprocess_returns_none(monkeypatch):
+    """When post-processing fails, the terminal hook records a monitored attempt."""
+    import shelfmark.core.monitored_downloads as monitored_downloads
+    from shelfmark.core.models import QueueStatus
 
     class FakeHistoryDb:
         def __init__(self):
@@ -44,9 +46,6 @@ def test_download_task_records_monitored_attempt_when_postprocess_returns_none(m
 
         def insert_monitored_book_attempt_history(self, **kwargs):
             self.rows.append(kwargs)
-
-    temp_file = tmp_path / "failed.epub"
-    temp_file.write_text("dummy", encoding="utf-8")
 
     task = DownloadTask(
         task_id="rel-123",
@@ -68,19 +67,12 @@ def test_download_task_records_monitored_attempt_when_postprocess_returns_none(m
         status_message="Path '/plex/downloads/...' is not accessible from Shelfmark's container",
     )
 
-    fake_handler = MagicMock()
-    fake_handler.download.return_value = str(temp_file)
-
     fake_history_db = FakeHistoryDb()
-    monkeypatch.setattr(orchestrator, "_history_user_db", fake_history_db)
-    monkeypatch.setattr(orchestrator.book_queue, "get_task", lambda _task_id: task)
-    monkeypatch.setattr(orchestrator, "get_handler", lambda _source: fake_handler)
-    monkeypatch.setattr(orchestrator, "run_blocking_io", lambda func, *args, **kwargs: func(*args, **kwargs))
-    monkeypatch.setattr(orchestrator, "post_process_download", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(monitored_downloads, "_user_db", fake_history_db)
 
-    result = orchestrator._download_task("rel-123", Event())
+    # Simulate the terminal hook being fired with ERROR status (as happens in _download_worker)
+    monitored_downloads._on_download_terminal("rel-123", QueueStatus.ERROR, task)
 
-    assert result is None
     assert len(fake_history_db.rows) == 1
     row = fake_history_db.rows[0]
     assert row["status"] == "download_failed"
@@ -92,7 +84,9 @@ def test_download_task_records_monitored_attempt_when_postprocess_returns_none(m
 
 
 def test_download_task_records_monitored_attempt_when_handler_returns_none(monkeypatch):
-    import shelfmark.download.orchestrator as orchestrator
+    """When the download handler returns None, the terminal hook records a monitored attempt."""
+    import shelfmark.core.monitored_downloads as monitored_downloads
+    from shelfmark.core.models import QueueStatus
 
     class FakeHistoryDb:
         def __init__(self):
@@ -121,17 +115,12 @@ def test_download_task_records_monitored_attempt_when_handler_returns_none(monke
         status_message="Path '/plex/downloads/torrents/complete/readarr/...' is not accessible from Shelfmark's container",
     )
 
-    fake_handler = MagicMock()
-    fake_handler.download.return_value = None
-
     fake_history_db = FakeHistoryDb()
-    monkeypatch.setattr(orchestrator, "_history_user_db", fake_history_db)
-    monkeypatch.setattr(orchestrator.book_queue, "get_task", lambda _task_id: task)
-    monkeypatch.setattr(orchestrator, "get_handler", lambda _source: fake_handler)
+    monkeypatch.setattr(monitored_downloads, "_user_db", fake_history_db)
 
-    result = orchestrator._download_task("rel-456", Event())
+    # Simulate the terminal hook being fired with ERROR status (as happens in _download_worker)
+    monitored_downloads._on_download_terminal("rel-456", QueueStatus.ERROR, task)
 
-    assert result is None
     assert len(fake_history_db.rows) == 1
     row = fake_history_db.rows[0]
     assert row["status"] == "download_failed"

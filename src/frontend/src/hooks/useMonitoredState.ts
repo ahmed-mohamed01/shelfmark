@@ -20,10 +20,11 @@ export interface BatchAutoStats {
 interface UseMonitoredStateParams {
   dismissedActivityKeys: string[];
   currentStatus: StatusData;
+  activityStatus: StatusData;
   config: AppConfig | null;
 }
 
-export function useMonitoredState({ dismissedActivityKeys, currentStatus, config }: UseMonitoredStateParams) {
+export function useMonitoredState({ dismissedActivityKeys, currentStatus, activityStatus, config }: UseMonitoredStateParams) {
   const [transientDownloadActivityItems, setTransientDownloadActivityItems] = useState<ActivityItem[]>([]);
   const [showDualGetButtons, setShowDualGetButtons] = useState<boolean>(false);
   const [releaseMonitoredEntityId, setReleaseMonitoredEntityId] = useState<number | null>(null);
@@ -56,23 +57,14 @@ export function useMonitoredState({ dismissedActivityKeys, currentStatus, config
   }, [dismissedDownloadTaskIds]);
 
   const statusForButtonState = useMemo(() => {
-    if (!currentStatus.complete || dismissedDownloadTaskIds.size === 0) {
-      return currentStatus;
-    }
-
+    // Merge persisted terminal states (activityStatus.complete) with live states (currentStatus)
+    // so "already downloaded" button state works even after the task moves to history.
+    const mergedComplete = { ...activityStatus.complete, ...currentStatus.complete };
     const filteredComplete = Object.fromEntries(
-      Object.entries(currentStatus.complete).filter(([taskId]) => !dismissedDownloadTaskIds.has(taskId))
+      Object.entries(mergedComplete).filter(([taskId]) => !dismissedDownloadTaskIds.has(taskId))
     ) as Record<string, Book>;
-
-    if (Object.keys(filteredComplete).length === Object.keys(currentStatus.complete).length) {
-      return currentStatus;
-    }
-
-    return {
-      ...currentStatus,
-      complete: filteredComplete,
-    };
-  }, [currentStatus, dismissedDownloadTaskIds]);
+    return { ...currentStatus, ...activityStatus, complete: filteredComplete };
+  }, [currentStatus, activityStatus, dismissedDownloadTaskIds]);
 
   const transientOngoingCount = useMemo(() => {
     return transientDownloadActivityItems.filter((item) => (

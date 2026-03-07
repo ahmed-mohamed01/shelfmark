@@ -24,6 +24,9 @@ logger = setup_logger(__name__)
 # MonitoredDB handle injected at startup
 _user_db: Any = None
 
+# Guard to prevent double-registration when main.py is reloaded in tests
+_hooks_registered: bool = False
+
 # Pending releases for retry logic: key = "entity_id:provider:provider_book_id:content_type"
 _pending_releases: Dict[str, "PendingDownload"] = {}
 _pending_lock = threading.Lock()
@@ -94,22 +97,29 @@ def set_monitored_db(monitored_db: Any) -> None:
 
 def register_hooks() -> None:
     """Register monitored download hooks. Call during app startup."""
-    # Patch set_terminal_status_hook to chain: main.py registers its own hook
-    # after us, and the upstream implementation simply replaces. We intercept
-    # subsequent calls so both hooks are invoked.
-    def _chaining_set_hook(hook):
-        with book_queue._lock:
-            existing = book_queue._terminal_status_hook
-            if hook is None or existing is None:
-                book_queue._terminal_status_hook = hook
-            else:
-                def _chained(book_id, status, task):
-                    existing(book_id, status, task)
-                    hook(book_id, status, task)
-                book_queue._terminal_status_hook = _chained
+    global _hooks_registered
+    if _hooks_registered:
+        logger.debug("Monitored download hooks already registered, skipping")
+        return
+    _hooks_registered = True
 
-    book_queue.set_terminal_status_hook = _chaining_set_hook
-    book_queue.set_terminal_status_hook(_on_download_terminal)
+    # Use late-binding: capture the upstream hook in a mutable cell so that
+    # if main.py is reloaded and re-registers its hook, we always call the
+    # latest version exactly once — no chain duplication.
+    upstream_hook_cell: list = [None]
+
+    def _meta_hook(book_id, status, task):
+        _on_download_terminal(book_id, status, task)
+        upstream = upstream_hook_cell[0]
+        if upstream is not None:
+            upstream(book_id, status, task)
+
+    def _capturing_set_hook(hook):
+        # Replace (not chain) the upstream hook — prevents double-calling on reload
+        upstream_hook_cell[0] = hook
+
+    book_queue.set_terminal_status_hook = _capturing_set_hook
+    book_queue._terminal_status_hook = _meta_hook
 
     # Patch update_download_path to flush deferred history inserts.
     # The terminal hook fires before the final path is available; the path is

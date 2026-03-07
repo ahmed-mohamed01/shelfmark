@@ -1523,9 +1523,7 @@ export const ReleaseModal = ({
                               if (!book?.provider || !book?.provider_id) return;
                               const provider = book.provider;
                               const bookId = book.provider_id;
-                              const key = getCacheKey(provider, bookId, activeTab, contentType);
-                              releaseCache.delete(key);
-                              cacheTimestamps.delete(key);
+                              invalidateCachedReleases(provider, bookId, activeTab, contentType);
                               setExpandedBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
                               setErrorBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
                               setLoadingBySource((prev) => ({ ...prev, [activeTab]: true }));
@@ -1569,9 +1567,7 @@ export const ReleaseModal = ({
                 if (!q) return;
                 const provider = book.provider;
                 const bookId = book.provider_id;
-                const key = getCacheKey(provider, bookId, activeTab, contentType);
-                releaseCache.delete(key);
-                cacheTimestamps.delete(key);
+                invalidateCachedReleases(provider, bookId, activeTab, contentType);
                 setExpandedBySource((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
                 setErrorBySource((prev) => ({ ...prev, [activeTab]: null }));
                 setReleasesBySource((prev) => ({ ...prev, [activeTab]: null }));

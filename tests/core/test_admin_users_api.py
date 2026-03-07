@@ -1118,10 +1118,13 @@ class TestAdminDeliveryPreferences:
         assert data["keys"] == [
             "BOOKS_OUTPUT_MODE",
             "DESTINATION",
+            "MONITORED_EBOOK_ROOTS",
+            "MONITORED_AUDIOBOOK_ROOTS",
             "BOOKLORE_LIBRARY_ID",
             "BOOKLORE_PATH_ID",
             "EMAIL_RECIPIENT",
             "DESTINATION_AUDIOBOOK",
+            "DUPLICATE_FILE_BEHAVIOR",
         ]
 
         field_keys = [field["key"] for field in data["fields"]]
@@ -1202,6 +1205,7 @@ class TestAdminSearchPreferences:
             "METADATA_PROVIDER",
             "METADATA_PROVIDER_AUDIOBOOK",
             "DEFAULT_RELEASE_SOURCE",
+            "SHOW_DUAL_GET_BUTTONS",
         ]
 
         field_keys = [field["key"] for field in data["fields"]]

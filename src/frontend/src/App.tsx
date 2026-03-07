@@ -290,10 +290,11 @@ function App() {
     releaseMonitoredEntityId,
     setReleaseMonitoredEntityId,
     batchAutoStatsRef,
+    dismissedDownloadTaskIds,
     isDownloadTaskDismissed,
     statusForButtonState,
     transientOngoingCount,
-  } = useMonitoredState({ dismissedActivityKeys, currentStatus, config });
+  } = useMonitoredState({ dismissedActivityKeys, currentStatus, activityStatus, config });
 
   // Use real-time buckets for active work and persisted activity snapshot
   // buckets for terminal history. Filter out dismissed items so the sidebar
@@ -1034,94 +1035,6 @@ function App() {
     } catch (error) {
       console.error('Retry failed:', error);
       showToast('Failed to retry download', 'error');
-    }
-  };
-
-  // Universal-mode "Get" action (open releases, request-book, or block by policy).
-  const handleGetReleases = async (book: Book) => {
-    let mode = getUniversalDefaultPolicyMode();
-    const normalizedContentType = toContentType(contentType);
-    policyTrace('universal.get:start', {
-      bookId: book.id,
-      contentType: normalizedContentType,
-      cachedMode: mode,
-      isAdmin: requestRoleIsAdmin,
-    });
-    try {
-      const latestPolicy = await refreshRequestPolicy({ force: true });
-      const effectiveIsAdmin = latestPolicy ? Boolean(latestPolicy.is_admin) : requestRoleIsAdmin;
-      mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, contentType);
-      policyTrace('universal.get:resolved', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-        resolvedMode: mode,
-        effectiveIsAdmin,
-        defaults: latestPolicy?.defaults ?? null,
-        requestsEnabled: latestPolicy?.requests_enabled ?? null,
-      });
-    } catch (error) {
-      console.warn('Failed to refresh request policy before universal action:', error);
-      policyTrace('universal.get:refresh_failed', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-        mode,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    if (mode === 'blocked') {
-      policyTrace('universal.get:block', { bookId: book.id, contentType: normalizedContentType });
-      showToast('This title is unavailable by policy', 'error');
-      return;
-    }
-
-    if (mode === 'request_book') {
-      policyTrace('universal.get:request_modal', {
-        bookId: book.id,
-        requestLevel: 'book',
-        contentType: normalizedContentType,
-      });
-      openRequestConfirmation({
-        book_data: buildMetadataBookRequestData(book, normalizedContentType),
-        release_data: null,
-        context: {
-          source: '*',
-          content_type: normalizedContentType,
-          request_level: 'book',
-        },
-      });
-      return;
-    }
-
-    if (book.provider && book.provider_id) {
-      try {
-        policyTrace('universal.get:open_release_modal', {
-          bookId: book.id,
-          contentType: normalizedContentType,
-        });
-        const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
-        setReleaseBook({
-          ...book,
-          description: fullBook.description || book.description,
-          series_name: fullBook.series_name,
-          series_position: fullBook.series_position,
-          series_count: fullBook.series_count,
-        });
-      } catch (error) {
-        console.error('Failed to load book description, using search data:', error);
-        policyTrace('universal.get:open_release_modal_fallback', {
-          bookId: book.id,
-          contentType: normalizedContentType,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        setReleaseBook(book);
-      }
-    } else {
-      policyTrace('universal.get:open_release_modal_no_provider', {
-        bookId: book.id,
-        contentType: normalizedContentType,
-      });
-      setReleaseBook(book);
     }
   };
 
@@ -1987,10 +1900,12 @@ function App() {
       isAdmin={requestRoleIsAdmin}
       onClearCompleted={handleClearCompleted}
       onCancel={handleCancel}
+      onRetry={handleRetry}
       onDownloadDismiss={handleDownloadDismiss}
       requestItems={requestItems}
       dismissedItemKeys={dismissedActivityKeys}
       historyItems={historyItems}
+      historyLoaded={activityHistoryLoaded}
       historyHasMore={activityHistoryHasMore}
       historyLoading={activityHistoryLoading}
       onHistoryLoadMore={handleActivityHistoryLoadMore}

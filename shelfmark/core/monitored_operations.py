@@ -542,7 +542,6 @@ def search_missing_books(
     user_id: int | None,
     content_type: str = "ebook",
     min_match_score: float | None = None,
-    activity_service: Any = None,
 ) -> SearchSummary:
     """Find monitored books with no existing file and queue downloads for them.
 
@@ -554,7 +553,6 @@ def search_missing_books(
     Raises:
         MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
     """
-    from shelfmark.core.activity_service import build_download_item_key
     from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
     from shelfmark.core.monitored_release_scoring import is_book_released
     from shelfmark.metadata_providers import BookMetadata
@@ -585,32 +583,6 @@ def search_missing_books(
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    def _emit_error(*, provider: str, provider_book_id: str, title: str | None, reason: str, detail: str | None = None) -> None:
-        if activity_service is None or user_id is None:
-            return
-        try:
-            task_id = f"monitored-search:{entity_id}:{provider}:{provider_book_id}:{content_type}"
-            activity_service.record_terminal_snapshot(
-                user_id=int(user_id),
-                item_type="download",
-                item_key=build_download_item_key(task_id),
-                origin="direct",
-                final_status="error",
-                source_id=provider_book_id,
-                snapshot={
-                    "kind": "monitored_search",
-                    "entity_id": entity_id,
-                    "content_type": content_type,
-                    "provider": provider,
-                    "provider_book_id": provider_book_id,
-                    "title": title,
-                    "reason": reason,
-                    "detail": detail,
-                },
-            )
-        except Exception:
-            pass
-
     for row in candidates:
         provider = str(row.get("provider") or "").strip()
         provider_book_id = str(row.get("provider_book_id") or "").strip()
@@ -639,14 +611,6 @@ def search_missing_books(
                 status="no_match",
                 error_message="skip_existing_file_history_final_path_exists",
             )
-            if activity_service is not None and user_id is not None:
-                _emit_error(
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    title=book_title,
-                    reason="skipped_existing_file",
-                    detail=f"Final path exists on disk: {skip_detail}",
-                )
             continue
         if skip_reason == "existing_file":
             summary.skipped_existing_file += 1
@@ -661,14 +625,6 @@ def search_missing_books(
                 status="no_match",
                 error_message="skip_existing_file",
             )
-            if activity_service is not None and user_id is not None:
-                _emit_error(
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                    title=book_title,
-                    reason="skipped_existing_file",
-                    detail=f"{has_file_key}=true",
-                )
             continue
 
         release_date_raw = str(row.get("release_date") or "").strip()
@@ -694,13 +650,6 @@ def search_missing_books(
                 attempted_at=now_iso,
                 status="not_released",
                 error_message=unreleased_message,
-            )
-            _emit_error(
-                provider=provider,
-                provider_book_id=provider_book_id,
-                title=book_title,
-                reason="not_released",
-                detail=unreleased_message,
             )
             continue
 
@@ -736,7 +685,6 @@ def search_missing_books(
                     content_type=content_type, attempted_at=now_iso,
                     status="no_match",
                 )
-                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="no_match")
                 continue
 
             success, message = process_monitored_book(
@@ -755,13 +703,10 @@ def search_missing_books(
                 pass
             elif "unreleased" in message.lower():
                 summary.unreleased += 1
-                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="not_released", detail=message)
             elif "match score" in message.lower() or "no valid" in message.lower():
                 summary.below_cutoff += 1
-                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="below_cutoff", detail=message)
             else:
                 summary.failed += 1
-                _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="error", detail=message)
 
         except Exception as exc:
             summary.failed += 1
@@ -771,6 +716,5 @@ def search_missing_books(
                 content_type=content_type, attempted_at=now_iso,
                 status="error", error_message=str(exc),
             )
-            _emit_error(provider=provider, provider_book_id=provider_book_id, title=book_title, reason="error", detail=str(exc))
 
     return summary

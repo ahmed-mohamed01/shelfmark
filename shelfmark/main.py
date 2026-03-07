@@ -1033,13 +1033,7 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
         from shelfmark.core.monitored_routes import get_monitored_config_additions
 
-        monitored_cfg, config_user_id = get_monitored_config_additions(app_config, session.get("db_user_id"))
-
-        raw_db_user_id = session.get("db_user_id")
-        try:
-            db_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
-        except (TypeError, ValueError):
-            db_user_id = None
+        monitored_cfg, db_user_id = get_monitored_config_additions(app_config, session.get("db_user_id"))
 
         search_mode = app_config.get("SEARCH_MODE", "direct", user_id=db_user_id)
         default_release_source = app_config.get(

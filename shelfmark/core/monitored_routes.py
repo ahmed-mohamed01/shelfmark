@@ -31,7 +31,6 @@ from shelfmark.core.monitored_types import MonitoredEntityNotFound, MonitoredPat
 from shelfmark.core.monitored_utils import normalize_preferred_languages, transform_cached_cover_urls
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
-from shelfmark.core.activity_service import ActivityService
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 
@@ -248,7 +247,6 @@ def register_monitored_routes(
     monitored_db: MonitoredDB,
     *,
     resolve_auth_mode: Callable[[], str],
-    activity_service: ActivityService | None = None,
     ws_manager: Any = None,
 ) -> None:
 
@@ -1021,7 +1019,6 @@ def register_monitored_routes(
                 user_id=db_user_id,
                 content_type=content_type,
                 min_match_score=threshold / 100.0,
-                activity_service=activity_service,
             )
         except MonitoredEntityNotFound:
             return jsonify({"error": "Not found"}), 404

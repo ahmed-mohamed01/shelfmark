@@ -9,7 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.utils import parseaddr
 from pathlib import Path
 from threading import Event, Lock
@@ -170,6 +170,27 @@ def queue_book(
         return False, error_msg
 
 
+def _parse_release_date(value: Any) -> Optional[date]:
+    """Parse release date values from API/search payloads."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    token = raw
+    if "T" in token:
+        token = token.split("T", 1)[0]
+    elif " " in token:
+        token = token.split(" ", 1)[0]
+
+    try:
+        return date.fromisoformat(token)
+    except ValueError:
+        return None
+
+
 def queue_release(
     release_data: dict,
     priority: int = 0,
@@ -184,6 +205,16 @@ def queue_release(
         request_id: Optional[int] = None
         if isinstance(raw_request_id, int) and raw_request_id > 0:
             request_id = raw_request_id
+
+        # Skip unreleased books
+        explicit_release_date = _parse_release_date(
+            release_data.get('release_date')
+            or extra.get('release_date')
+            or extra.get('publication_date')
+            or extra.get('publish_date')
+        )
+        if explicit_release_date is not None and datetime.now(timezone.utc).date() < explicit_release_date:
+            return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
 
         # Get author, year, preview, and content_type from top-level (preferred) or extra (fallback)
         author = release_data.get('author') or extra.get('author')
