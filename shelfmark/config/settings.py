@@ -472,7 +472,6 @@ def search_mode_settings():
             label="Allow auto-download in standard search",
             description="Show separate Auto and Interactive actions instead of a single Get button in standalone search results.",
             default=False,
-            user_overridable=True,
             show_when={"field": "SEARCH_MODE", "value": "universal"},
         ),
     ]
@@ -877,7 +876,6 @@ def download_settings():
             description="Internal: remembered root folders for monitored ebook authors.",
             default=[],
             env_supported=False,
-            user_overridable=True,
             hidden_in_ui=True,
         ),
         TagListField(
@@ -886,7 +884,6 @@ def download_settings():
             description="Internal: remembered root folders for monitored audiobook authors.",
             default=[],
             env_supported=False,
-            user_overridable=True,
             hidden_in_ui=True,
         ),
         HeadingField(
@@ -1156,7 +1153,6 @@ def download_settings():
                 },
             ],
             default="allow_duplicates",
-            user_overridable=True,
         ),
         CheckboxField(
             key="AUTO_OPEN_DOWNLOADS_SIDEBAR",

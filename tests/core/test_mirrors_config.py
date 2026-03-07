@@ -35,7 +35,7 @@ def test_get_aa_mirrors_falls_back_to_defaults_and_legacy_additional(monkeypatch
 
     aa = mirrors.get_aa_mirrors()
     assert "https://annas-archive.gl" in aa
-    assert "https://annas-archive.pk" in aa
+    assert "https://annas-archive.li" in aa
     assert "https://extra.example" in aa
     assert "https://extra2.example" in aa
 

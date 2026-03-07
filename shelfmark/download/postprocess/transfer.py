@@ -16,7 +16,7 @@ from shelfmark.core.naming import (
 )
 from shelfmark.core.utils import is_audiobook as check_audiobook
 from shelfmark.download.fs import atomic_copy, atomic_hardlink, atomic_move, run_blocking_io
-from shelfmark.download.postprocess.policy import get_file_organization, get_template, get_template_for_task
+from shelfmark.download.postprocess.policy import get_file_organization, get_template
 
 from .scan import collect_directory_files, scan_directory_tree
 from .types import TransferPlan
@@ -31,11 +31,9 @@ DUPLICATE_BEHAVIOR_KEEP_ONE_PER_BOOK = "keep_one_per_book"
 
 
 def _resolve_duplicate_file_behavior(task: DownloadTask) -> str:
-    user_id = task.user_id if task.user_id is not None else None
     raw = core_config.config.get(
         "DUPLICATE_FILE_BEHAVIOR",
         DUPLICATE_BEHAVIOR_ALLOW_DUPLICATES,
-        user_id=user_id,
     )
     value = str(raw or "").strip().lower()
     if value in {
@@ -221,7 +219,7 @@ def transfer_book_files(
     op_counts: Dict[str, int] = {"hardlink": 0, "copy": 0, "move": 0}
 
     if organization_mode == "organize":
-        template = get_template_for_task(task, "organize")
+        template = get_template(is_audiobook, "organize")
 
         if len(book_files) == 1:
             source_file = book_files[0]
@@ -284,7 +282,7 @@ def transfer_book_files(
             if not task.format:
                 task.format = book_file.suffix.lower().lstrip(".")
 
-            template = get_template_for_task(task, "rename")
+            template = get_template(is_audiobook, "rename")
             metadata = build_file_metadata(task, book_file)
             extension = book_file.suffix.lstrip(".") or task.format or ""
 
