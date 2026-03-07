@@ -234,3 +234,4 @@ AGENTS.md
 .playwright-mcp/
 frontend-dist/
 .windsurf/rules/shelfmark.md
+node_modules/

@@ -52,6 +52,7 @@ interface DropdownProps {
   noScrollLimit?: boolean;
   /** Render the panel in a portal to escape overflow:hidden containers */
   usePortal?: boolean;
+  triggerChrome?: 'default' | 'minimal';
 }
 
 export const Dropdown = ({
@@ -66,6 +67,7 @@ export const Dropdown = ({
   renderTrigger,
   noScrollLimit = false,
   usePortal = false,
+  triggerChrome = 'default',
 }: DropdownProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -185,23 +187,28 @@ export const Dropdown = ({
             type="button"
             onClick={toggleOpen}
             disabled={disabled}
-            className={`w-full px-3 py-2 text-sm border flex items-center justify-between text-left focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-[border-radius] duration-150 ${buttonClassName}`}
+            className={`w-full px-3 py-2 text-sm border flex items-center justify-between gap-2 text-left focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-[border-radius] duration-150 ${buttonClassName}`}
             style={{
-              background: 'var(--bg-soft)',
+              background: triggerChrome === 'minimal' ? 'transparent' : 'var(--bg-soft)',
               color: 'var(--text)',
-              borderColor: 'var(--border-muted)',
+              borderColor: triggerChrome === 'minimal' ? 'transparent' : 'var(--border-muted)',
+              borderWidth: triggerChrome === 'minimal' ? 0 : undefined,
               borderRadius: isOpen
-                ? panelDirection === 'down'
-                  ? '0.5rem 0.5rem 0 0'
-                  : '0 0 0.5rem 0.5rem'
-                : '0.5rem',
+                ? triggerChrome === 'minimal'
+                  ? '0'
+                  : panelDirection === 'down'
+                    ? '0.5rem 0.5rem 0 0'
+                    : '0 0 0.5rem 0.5rem'
+                : triggerChrome === 'minimal'
+                  ? '0'
+                  : '0.5rem',
             }}
           >
-            <span className="truncate">
+            <span className="min-w-0 flex-1 truncate">
               {summary ?? <span className="opacity-60">Select an option</span>}
             </span>
             <svg
-              className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+              className={`h-4 w-4 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -261,4 +268,3 @@ export const Dropdown = ({
     </div>
   );
 };
-

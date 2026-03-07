@@ -165,10 +165,6 @@ const extractPrimaryAuthorName = (value: string): string => {
   return normalizeAuthor(first);
 };
 
-const MONITORED_SEARCH_SCOPE_OPTIONS = [
-  { value: 'authors', label: 'Authors' },
-  { value: 'books', label: 'Books' },
-];
 
 const SEARCH_VIEW_ICON_GRID = (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -2044,24 +2040,14 @@ export const MonitoredPage = ({
     setView(landingTab === 'search' ? 'search' : 'landing');
   }, [landingTab]);
 
-  const handleHeaderAuthorSearchChange = useCallback((value: string) => {
-    setAuthorQuery(value);
-    if (!value.trim()) {
+  const handleHeaderAuthorSearchChange = useCallback((value: string | number | boolean) => {
+    const strValue = String(value);
+    setAuthorQuery(strValue);
+    setSearchScope('authors');
+    if (!strValue.trim()) {
       clearSearchAndReturn();
     }
-  }, [clearSearchAndReturn]);
-
-  const handleSearchScopeChange = useCallback((value: string) => {
-    const nextScope: 'authors' | 'books' = value === 'books' ? 'books' : 'authors';
-    setSearchScope(nextScope);
-    setSearchError(null);
-    setAuthorResults([]);
-    setAuthorCards([]);
-    setBookSearchResults([]);
-    if (!authorQuery.trim()) {
-      setView(landingTab === 'search' ? 'search' : 'landing');
-    }
-  }, [authorQuery, landingTab]);
+  }, [clearSearchAndReturn, setSearchScope]);
 
   const isAuthorDetailsRoute = location.pathname === '/monitored/author';
   const authorDetailsSearchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
@@ -2077,12 +2063,8 @@ export const MonitoredPage = ({
       showSearch
       logoUrl={logoUrl}
       searchInput={authorQuery}
-      searchPlaceholder="Search authors to monitor.."
       onSearchChange={handleHeaderAuthorSearchChange}
       onSearch={handleMonitoredHeaderSearch}
-      searchScopeOptions={MONITORED_SEARCH_SCOPE_OPTIONS}
-      searchScopeValue={searchScope}
-      onSearchScopeChange={handleSearchScopeChange}
       isLoading={isSearching}
       onDownloadsClick={onActivityClick}
       isActivityOpen={isActivityOpen}

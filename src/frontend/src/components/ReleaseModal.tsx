@@ -103,7 +103,7 @@ interface ReleaseModalProps {
   currentStatus: StatusData;
   defaultReleaseSource?: string;  // Default tab to show (e.g., 'direct_download')
   showMatchScore?: boolean;
-  onSearchSeries?: (seriesName: string) => void;  // Callback to search for series
+  onSearchSeries?: (seriesName: string, seriesId?: string) => void;  // Callback to search for series
   defaultShowManualQuery?: boolean;
   isRequestMode?: boolean;
   embedded?: boolean;
@@ -410,7 +410,7 @@ const ReleaseRow = ({
   );
 };
 
-// Shimmer block with wave animation - same as DownloadsSidebar
+// Shimmer block with wave animation
 function ShimmerBlock({ className }: { className: string }) {
   return (
     <div
@@ -563,13 +563,13 @@ export const ReleaseModal = ({
   const effectiveFormats = contentType === 'audiobook' && supportedAudiobookFormats.length > 0
     ? supportedAudiobookFormats
     : supportedFormats;
-  const isDirectProviderContext = (book?.provider || '').toLowerCase() === 'direct_download';
   const [isClosing, setIsClosing] = useState(false);
   const [isRequestingBook, setIsRequestingBook] = useState(false);
 
   // Available sources from plugin registry
   const [availableSources, setAvailableSources] = useState<ReleaseSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
 
   // Active tab (source name)
   const [activeTab, setActiveTab] = useState<string>('');
@@ -796,24 +796,22 @@ export const ReleaseModal = ({
     const fetchSources = async () => {
       try {
         setSourcesLoading(true);
+        setSourcesError(null);
         const sources = await getReleaseSources();
-        const modalSources = isDirectProviderContext
-          ? sources.filter((source) => source.name === 'direct_download')
-          : sources;
-        setAvailableSources(modalSources);
+        setAvailableSources(sources);
+
+        const providerContextSource = sources.find((source) => (
+          source.name === book.provider && source.browse_results_are_releases
+        ));
 
         // Filter sources by content type support
-        const supportedSources = modalSources.filter(s => {
+        const supportedSources = sources.filter(s => {
           const types = s.supported_content_types || ['ebook', 'audiobook'];
           return types.includes(contentType);
         });
 
-        if (isDirectProviderContext) {
-          if (supportedSources.some((source) => source.name === 'direct_download')) {
-            setActiveTab('direct_download');
-          } else {
-            setActiveTab('');
-          }
+        if (providerContextSource) {
+          setActiveTab(providerContextSource.name);
           return;
         }
 
@@ -835,26 +833,21 @@ export const ReleaseModal = ({
         } else if (sources.length > 0) {
           // No sources support this content type - fall back to first source
           setActiveTab(sources[0].name);
+        } else {
+          setActiveTab('');
         }
       } catch (err) {
         console.error('Failed to fetch release sources:', err);
-        // Fallback: assume direct_download is available (for ebooks)
-        setAvailableSources([{
-          name: 'direct_download',
-          display_name: "Direct Download",
-          enabled: true,
-          supported_content_types: ['ebook']
-        }]);
-        if (contentType === 'ebook') {
-          setActiveTab('direct_download');
-        }
+        setAvailableSources([]);
+        setActiveTab('');
+        setSourcesError(err instanceof Error ? err.message : 'Failed to load release sources');
       } finally {
         setSourcesLoading(false);
       }
     };
 
     fetchSources();
-  }, [book, defaultReleaseSource, contentType, isDirectProviderContext]);
+  }, [book, defaultReleaseSource, contentType]);
 
   // Fetch releases when active tab changes (with caching)
   // Initial fetch always uses ISBN-first search; expansion is handled by handleExpandSearch
@@ -952,12 +945,21 @@ export const ReleaseModal = ({
     type TabInfo = { name: string; displayName: string; enabled: boolean };
 
     const enabledTabs: TabInfo[] = [];
+    const providerContextSourceName = (
+      availableSources.find((source) => (
+        source.name === book?.provider && source.browse_results_are_releases
+      ))?.name || null
+    );
 
     // Filter to only enabled sources that support this content type
     availableSources.forEach((src) => {
-      const allowDisabledDirectTab = isDirectProviderContext && src.name === 'direct_download';
-      // Skip disabled sources entirely, except direct tab in direct-provider context.
-      if (!src.enabled && !allowDisabledDirectTab) {
+      if (providerContextSourceName && src.name !== providerContextSourceName) {
+        return;
+      }
+
+      const allowDisabledProviderContextTab = providerContextSourceName === src.name;
+      // Skip disabled sources entirely, except the source that owns the current browse record.
+      if (!src.enabled && !allowDisabledProviderContextTab) {
         return;
       }
 
@@ -980,7 +982,7 @@ export const ReleaseModal = ({
     }
 
     return enabledTabs;
-  }, [availableSources, defaultReleaseSource, contentType, isDirectProviderContext]);
+  }, [availableSources, book?.provider, defaultReleaseSource, contentType]);
 
   // Update tab indicator position when active tab changes
   useEffect(() => {
@@ -1307,7 +1309,10 @@ export const ReleaseModal = ({
 
   const currentTabLoading = loadingBySource[activeTab] ?? false;
   const currentTabError = errorBySource[activeTab] ?? null;
-  const isInitialLoading = currentTabLoading || (releasesBySource[activeTab] === undefined && !currentTabError);
+  const hasActiveTab = activeTab.length > 0;
+  const isInitialLoading = hasActiveTab && (
+    currentTabLoading || (releasesBySource[activeTab] === undefined && !currentTabError)
+  );
 
   // Embedded mode: render source tabs + release list inline (no portal/backdrop/header)
   if (embedded) {
@@ -1838,7 +1843,7 @@ export const ReleaseModal = ({
                         <button
                           type="button"
                           onClick={() => {
-                            onSearchSeries(book.series_name!);
+                            onSearchSeries(book.series_name!, book.series_id);
                             handleClose();
                           }}
                           className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-full hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors"
@@ -1927,6 +1932,10 @@ export const ReleaseModal = ({
               {sourcesLoading ? (
                 <div className="flex gap-1 px-5 py-2">
                   <div className="h-10 w-32 animate-pulse bg-gray-200 dark:bg-gray-700 rounded" />
+                </div>
+              ) : allTabs.length === 0 ? (
+                <div className="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
+                  {sourcesError || 'No release sources are available for this book.'}
                 </div>
               ) : (
                 <div className="flex items-center justify-between px-5">
@@ -2199,8 +2208,9 @@ export const ReleaseModal = ({
                                 placeholder="All Indexers"
                               />
                             )}
-                            {/* Apply button - re-fetch with server-side filters/expansion (e.g. language-aware searches) */}
-                            {(activeTab === 'direct_download' || activeTab === 'prowlarr') && (
+                            {/* Apply button - re-fetch when the source supports server-side filters */}
+                            {(columnConfig.supported_filters?.includes('language') ||
+                              columnConfig.supported_filters?.includes('indexer')) && (
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -2339,6 +2349,10 @@ export const ReleaseModal = ({
             <div className="min-h-[200px]">
               {sourcesLoading ? (
                 <ReleaseSkeleton />
+              ) : sourcesError ? (
+                <ErrorState message={sourcesError} />
+              ) : !hasActiveTab ? (
+                <EmptyState message="No release sources are available for this book." />
               ) : isInitialLoading && filteredReleases.length === 0 ? (
                 <ReleaseSkeleton />
               ) : currentTabError ? (

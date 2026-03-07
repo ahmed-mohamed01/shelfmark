@@ -113,8 +113,7 @@ export const AuthorDetailsPage = ({
           showSearch
           logoUrl={logoUrl}
           searchInput={headerSearch}
-          searchPlaceholder="Search authors to monitor.."
-          onSearchChange={setHeaderSearch}
+          onSearchChange={(value) => setHeaderSearch(String(value))}
           onSearch={() => {
             const q = headerSearch.trim();
             navigate(q ? `/monitored?q=${encodeURIComponent(q)}` : '/monitored');

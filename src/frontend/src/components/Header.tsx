@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImper
 import { SearchBar, SearchBarHandle } from './SearchBar';
 import { DropdownList } from './DropdownList';
 import { getAdminUsers } from '../services/api';
-import { ContentType, ActingAsUserSelection } from '../types';
+import { ContentType, ActingAsUserSelection, MetadataSearchField, QueryTargetOption } from '../types';
 import { ActivityStatusCounts, getActivityBadgeState } from '../utils/activityBadge';
 import { formatActingAsUserName } from '../utils/actingAsUser';
 import { withBasePath } from '../utils/basePath';
@@ -17,9 +17,9 @@ interface HeaderProps {
   debug?: boolean;
   logoUrl?: string;
   showSearch?: boolean;
-  searchInput?: string;
-  searchPlaceholder?: string;
-  onSearchChange?: (value: string) => void;
+  searchInput?: string | number | boolean;
+  searchInputLabel?: string;
+  onSearchChange?: (value: string | number | boolean, label?: string) => void;
   onSearch?: () => void;
   onAdvancedToggle?: () => void;
   isLoading?: boolean;
@@ -27,6 +27,8 @@ interface HeaderProps {
   onMonitoredClick?: () => void;
   onSettingsClick?: () => void;
   isAdmin?: boolean;
+  activeTopNav?: 'standalone' | 'monitoring' | 'activity';
+  isActivityOpen?: boolean;
   canAccessSettings?: boolean;
   statusCounts?: ActivityStatusCounts;
   onLogoClick?: () => void;
@@ -41,15 +43,11 @@ interface HeaderProps {
   onRemoveToast?: (id: string) => void;
   contentType?: ContentType;
   onContentTypeChange?: (type: ContentType) => void;
-  searchScopeOptions?: Array<{ value: string; label: string }>;
-  searchScopeValue?: string;
-  onSearchScopeChange?: (value: string) => void;
-  activeTopNav?: 'standalone' | 'monitoring' | 'activity';
-  isActivityOpen?: boolean;
   allowedContentTypes?: ContentType[];
-  isManualSearch?: boolean;
-  searchDisabled?: boolean;
-  activeListLabel?: string;
+  queryTargets?: QueryTargetOption[];
+  activeQueryTarget?: string;
+  onQueryTargetChange?: (target: string) => void;
+  activeQueryField?: MetadataSearchField | null;
 }
 
 export const Header = forwardRef<HeaderHandle, HeaderProps>(({
@@ -59,7 +57,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   logoUrl,
   showSearch = false,
   searchInput = '',
-  searchPlaceholder,
+  searchInputLabel,
   onSearchChange,
   onSearch,
   onAdvancedToggle,
@@ -68,6 +66,8 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onMonitoredClick,
   onSettingsClick,
   isAdmin = false,
+  activeTopNav,
+  isActivityOpen = false,
   canAccessSettings,
   statusCounts = { ongoing: 0, completed: 0, errored: 0, pendingRequests: 0 },
   onLogoClick,
@@ -82,15 +82,11 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onRemoveToast,
   contentType = 'ebook',
   onContentTypeChange,
-  searchScopeOptions,
-  searchScopeValue,
-  onSearchScopeChange,
-  activeTopNav,
-  isActivityOpen = false,
   allowedContentTypes,
-  isManualSearch = false,
-  searchDisabled = false,
-  activeListLabel,
+  queryTargets = [],
+  activeQueryTarget = 'general',
+  onQueryTargetChange,
+  activeQueryField = null,
 }, ref) => {
   const activityBadge = getActivityBadgeState(statusCounts, isAdmin);
   const settingsEnabled = canAccessSettings ?? isAdmin;
@@ -279,8 +275,8 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
     onSearch?.();
   };
 
-  const handleSearchChange = (value: string) => {
-    onSearchChange?.(value);
+  const handleSearchChange = (value: string | number | boolean, label?: string) => {
+    onSearchChange?.(value, label);
   };
 
   const handleActingAsChange = (nextValue: string[] | string) => {
@@ -304,7 +300,6 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   // Determine if we should show icons only (both URLs configured)
   const showIconsOnly = Boolean(calibreWebUrl && audiobookLibraryUrl);
   const isActivityActive = isActivityOpen || activeTopNav === 'activity';
-  const isStandaloneActive = !isActivityActive && activeTopNav === 'standalone';
   const isMonitoringActive = !isActivityActive && activeTopNav === 'monitoring';
   const navButtonClass = (active: boolean) =>
     `relative flex items-center gap-2 px-3 py-2 rounded-full transition-all duration-200 ${
@@ -348,21 +343,6 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
           </svg>
           {!showIconsOnly && <span className="text-sm font-medium">Go To Library</span>}
         </a>
-      )}
-
-      {/* Standalone Button */}
-      {onLogoClick && (
-        <button
-          onClick={onLogoClick}
-          className={navButtonClass(isStandaloneActive)}
-          aria-label="View standalone"
-          title="Standalone"
-        >
-          <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
-          <span className="hidden sm:inline text-sm font-medium">Standalone</span>
-        </button>
       )}
 
       {/* Monitoring Button */}
@@ -715,23 +695,20 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
               )}
               <SearchBar
                 ref={searchBarRef}
-                className="flex-1 lg:flex-initial"
-                inputClassName="lg:w-[50vw]"
+                className="flex-1 lg:w-[calc(50vw+5rem)] lg:flex-none"
                 value={searchInput}
+                valueLabel={searchInputLabel}
                 onChange={handleSearchChange}
                 onSubmit={handleHeaderSearch}
-                placeholder={searchPlaceholder}
                 onAdvancedToggle={onAdvancedToggle}
                 isLoading={isLoading}
                 contentType={contentType}
                 onContentTypeChange={onContentTypeChange}
-                searchScopeOptions={searchScopeOptions}
-                searchScopeValue={searchScopeValue}
-                onSearchScopeChange={onSearchScopeChange}
                 allowedContentTypes={allowedContentTypes}
-                isManualSearch={isManualSearch}
-                disabled={searchDisabled}
-                activeListLabel={activeListLabel}
+                queryTargets={queryTargets}
+                activeQueryTarget={activeQueryTarget}
+                onQueryTargetChange={onQueryTargetChange}
+                activeQueryField={activeQueryField}
               />
             </div>
           </div>
