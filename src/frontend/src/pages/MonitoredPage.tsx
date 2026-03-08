@@ -2773,7 +2773,7 @@ export const MonitoredPage = ({
                                 borderLeft: '1px solid var(--border-muted)',
                               }}
                             />
-                            <div className="rounded-xl border border-[var(--border-muted)] bg-white/95 dark:bg-[#1a1a1a]/95 backdrop-blur-sm shadow-2xl overflow-hidden">
+                            <div className="rounded-xl border border-[var(--border-muted)] shadow-2xl overflow-hidden" style={{ background: 'var(--bg)' }}>
                             <div className="flex items-center gap-2 px-3 py-2 border-b border-black/10 dark:border-white/10">
                               <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
