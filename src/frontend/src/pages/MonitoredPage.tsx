@@ -2425,7 +2425,7 @@ export const MonitoredPage = ({
         {monitoredHeader}
       </div>
 
-      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-6 pt-24">
+      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-6 pt-20 sm:pt-24">
         <div className="flex flex-col gap-6">
           {searchError || monitoredError || rootsError ? (
             <div className="flex flex-col gap-3">
@@ -2657,11 +2657,11 @@ export const MonitoredPage = ({
                       </svg>
                     </button>
                     {/* Mobile: compact active-tab label */}
-                    <div className="sm:hidden flex items-center gap-1.5">
-                      <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    <div className="sm:hidden flex items-center gap-2">
+                      <span className="text-base font-bold text-gray-900 dark:text-gray-100">
                         {landingTab === 'authors' ? 'Authors' : landingTab === 'books' ? 'Books' : landingTab === 'upcoming' ? 'Upcoming' : 'Search'}
                       </span>
-                      <span className="text-xs opacity-60">
+                      <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-2 py-0.5 min-w-[1.5rem] leading-none">
                         {landingTab === 'authors' ? displayAuthorsCount : landingTab === 'books' ? displayBooksCount : landingTab === 'upcoming' ? displayUpcomingCount : displaySearchCount}
                       </span>
                     </div>
@@ -2670,39 +2670,39 @@ export const MonitoredPage = ({
                       <button
                         type="button"
                         onClick={() => openMonitoredTab('authors')}
-                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'authors'}
                       >
                         <span className="hidden sm:inline">Monitored </span>Authors
-                        <span className="ml-1 opacity-85">{displayAuthorsCount}</span>
+                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'authors' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayAuthorsCount}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => openMonitoredTab('books')}
-                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'books'}
                       >
                         <span className="hidden sm:inline">Monitored </span>Books
-                        <span className="ml-1 opacity-85">{displayBooksCount}</span>
+                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'books' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayBooksCount}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => openMonitoredTab('upcoming')}
-                        className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
                         aria-pressed={landingTab === 'upcoming'}
                       >
                         Upcoming
-                        <span className="ml-1 opacity-85">{displayUpcomingCount}</span>
+                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'upcoming' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayUpcomingCount}</span>
                       </button>
                       {hasStartedSearch ? (
                         <button
                           type="button"
                           onClick={() => openMonitoredTab('search')}
-                          className="px-3.5 py-2 rounded-full text-xs font-medium transition-colors text-gray-700 dark:text-gray-200 hover-action"
+                          className="px-3.5 py-2 rounded-full text-sm font-medium transition-colors text-gray-700 dark:text-gray-200 hover-action flex items-center gap-1.5"
                           aria-pressed={false}
                         >
                           Search
-                          <span className="ml-1 opacity-85">{displaySearchCount}</span>
+                          <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem]">{displaySearchCount}</span>
                         </button>
                       ) : null}
                     </div>
