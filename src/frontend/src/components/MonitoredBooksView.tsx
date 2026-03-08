@@ -162,13 +162,13 @@ export function MonitoredBooksView({
                 const popularityLine = [ratingLabel, popularityLabel].filter(Boolean).join(' • ');
                 const releaseDatePart = isUpcomingTab ? formatUpcomingDate(book) : (book.publish_year ? String(book.publish_year) : null);
                 const subtitleRow = (
-                  <div className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
+                  <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
                     {[authorName, releaseDatePart].filter(Boolean).join(' • ')}
                   </div>
                 );
                 const titleRow = (
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <h3 className="font-semibold text-xs sm:text-sm leading-tight truncate min-w-0" title={book.title || 'Unknown title'}>
+                    <h3 className="font-semibold text-sm leading-tight truncate min-w-0" title={book.title || 'Unknown title'}>
                       {book.title || 'Unknown title'}
                     </h3>
                     {/* Series info: desktop only */}
@@ -204,13 +204,13 @@ export function MonitoredBooksView({
                   <>
                     {/* Mobile: series info */}
                     {seriesLabel && (
-                      <div className="sm:hidden text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                      <div className="sm:hidden text-xs text-gray-500 dark:text-gray-400 truncate">
                         {seriesLabel}
                       </div>
                     )}
                     {/* sm+: popularity */}
                     {popularityLine ? (
-                      <div className="hidden sm:block text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 truncate">
+                      <div className="hidden sm:block text-xs text-gray-500 dark:text-gray-400 truncate">
                         {popularityLine}
                       </div>
                     ) : null}

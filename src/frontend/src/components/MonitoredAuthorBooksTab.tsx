@@ -1661,7 +1661,7 @@ export const MonitoredAuthorBooksTab = ({
                                       onOpen={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))}
                                       titleRow={(
                                         <div className="flex items-center gap-1.5 min-w-0">
-                                          <h3 className="font-semibold text-xs sm:text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
+                                          <h3 className="font-semibold text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
                                           {/* Series info: desktop only */}
                                           {showSeriesInfo ? <span className="hidden sm:inline shrink-0 text-xs text-gray-500 dark:text-gray-400">• {seriesLabel}</span> : null}
                                           {hasSeriesPosition ? (
@@ -1685,7 +1685,7 @@ export const MonitoredAuthorBooksTab = ({
                                         </div>
                                       )}
                                       subtitleRow={(
-                                        <p className="text-[10px] sm:text-xs text-gray-600 dark:text-gray-300 truncate">
+                                        <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
                                           {book.author || author?.name || 'Unknown author'}
                                           {book.year ? <span> • {book.year}</span> : null}
                                         </p>
@@ -1694,13 +1694,13 @@ export const MonitoredAuthorBooksTab = ({
                                         <>
                                           {/* Mobile: series info */}
                                           {showSeriesInfo && (
-                                            <div className="sm:hidden text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                                            <div className="sm:hidden text-xs text-gray-500 dark:text-gray-400 truncate">
                                               {seriesLabel}{hasSeriesPosition ? ` #${groupSeriesPos}${groupSeriesCount != null ? `/${groupSeriesCount}` : ''}` : ''}
                                             </div>
                                           )}
                                           {/* sm+: popularity */}
                                           {hasPopularity && (
-                                            <div className="hidden sm:flex text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 items-center gap-2">
+                                            <div className="hidden sm:flex text-xs text-gray-500 dark:text-gray-400 items-center gap-2">
                                               {popularity.rating !== null ? (
                                                 <span className="inline-flex items-center gap-1 whitespace-nowrap">
                                                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" /></svg>
