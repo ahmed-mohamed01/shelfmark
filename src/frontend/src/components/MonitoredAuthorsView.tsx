@@ -36,8 +36,8 @@ export function MonitoredAuthorsView({
 }: MonitoredAuthorsViewProps) {
   if (viewMode === 'table') {
     return (
-      <div className="flex flex-col gap-2">
-        {authors.map((author) => {
+      <div key="table" className="flex flex-col gap-2">
+        {authors.map((author, index) => {
           const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
           const subtitle = author.provider ? `${booksCountLabel} • ${author.provider}` : booksCountLabel;
           const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
@@ -45,17 +45,22 @@ export function MonitoredAuthorsView({
             ? Boolean(selectedAuthorKeys[String(authorEntityId)])
             : false;
           return (
-            <MonitoredAuthorTableRow
+            <div
               key={`${author.provider}:${author.provider_id}`}
-              name={author.name || 'Unknown author'}
-              subtitle={subtitle}
-              thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Unknown author'} kind="author" />}
-              onOpen={() => onNavigate({ ...author, monitoredEntityId: authorEntityId ?? null })}
-              onEdit={typeof authorEntityId === 'number' ? () => onEdit(authorEntityId, author.name || 'Unknown author') : undefined}
-              onToggleSelect={typeof authorEntityId === 'number' ? () => onToggleSelect(authorEntityId) : undefined}
-              isSelected={isSelected}
-              hasActiveSelection={hasActiveSelection}
-            />
+              className="animate-pop-up will-change-transform"
+              style={{ animationDelay: `${index * 30}ms`, }}
+            >
+              <MonitoredAuthorTableRow
+                name={author.name || 'Unknown author'}
+                subtitle={subtitle}
+                thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Unknown author'} kind="author" />}
+                onOpen={() => onNavigate({ ...author, monitoredEntityId: authorEntityId ?? null })}
+                onEdit={typeof authorEntityId === 'number' ? () => onEdit(authorEntityId, author.name || 'Unknown author') : undefined}
+                onToggleSelect={typeof authorEntityId === 'number' ? () => onToggleSelect(authorEntityId) : undefined}
+                isSelected={isSelected}
+                hasActiveSelection={hasActiveSelection}
+              />
+            </div>
           );
         })}
       </div>
@@ -64,10 +69,11 @@ export function MonitoredAuthorsView({
 
   return (
     <div
+      key="compact"
       className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
       style={compactGridStyle}
     >
-      {authors.map((author) => {
+      {authors.map((author, index) => {
         const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
         const subtitle = booksCountLabel;
         const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
@@ -75,17 +81,22 @@ export function MonitoredAuthorsView({
           ? Boolean(selectedAuthorKeys[String(authorEntityId)])
           : false;
         return (
-          <MonitoredAuthorCompactTile
+          <div
             key={`${author.provider}:${author.provider_id}`}
-            name={author.name || 'Unknown author'}
-            thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Author photo'} kind="author" className="w-full aspect-[2/3]" />}
-            subtitle={subtitle}
-            onOpenDetails={() => onNavigate({ ...author, monitoredEntityId: authorEntityId ?? null })}
-            onEdit={typeof authorEntityId === 'number' ? () => onEdit(authorEntityId, author.name || 'Unknown author') : undefined}
-            onToggleSelect={typeof authorEntityId === 'number' ? () => onToggleSelect(authorEntityId) : undefined}
-            isSelected={isSelected}
-            hasActiveSelection={hasActiveSelection}
-          />
+            className="animate-pop-up will-change-transform"
+            style={{ animationDelay: `${index * 30}ms`, }}
+          >
+            <MonitoredAuthorCompactTile
+              name={author.name || 'Unknown author'}
+              thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Author photo'} kind="author" className="w-full aspect-[2/3]" />}
+              subtitle={subtitle}
+              onOpenDetails={() => onNavigate({ ...author, monitoredEntityId: authorEntityId ?? null })}
+              onEdit={typeof authorEntityId === 'number' ? () => onEdit(authorEntityId, author.name || 'Unknown author') : undefined}
+              onToggleSelect={typeof authorEntityId === 'number' ? () => onToggleSelect(authorEntityId) : undefined}
+              isSelected={isSelected}
+              hasActiveSelection={hasActiveSelection}
+            />
+          </div>
         );
       })}
     </div>

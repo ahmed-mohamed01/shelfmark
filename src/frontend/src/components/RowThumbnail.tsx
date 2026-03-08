@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 interface RowThumbnailProps {
   url?: string | null;
@@ -51,6 +51,19 @@ export const RowThumbnail = ({
 }: RowThumbnailProps) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  // If the browser already has this image in cache, img.complete fires synchronously
+  // before React's onLoad can run, so we check immediately after mount to skip the fade-in.
+  // useLayoutEffect fires before the browser paints so cached images are never shown as skeletons.
+  useLayoutEffect(() => {
+    if (imgRef.current?.complete && !imgRef.current.naturalWidth) {
+      // complete=true but naturalWidth=0 means load failed
+      setImageError(true);
+    } else if (imgRef.current?.complete) {
+      setImageLoaded(true);
+    }
+  }, []);
 
   if (!url || imageError) {
     const iconClass = 'w-1/2 h-1/2 opacity-40';
@@ -70,14 +83,16 @@ export const RowThumbnail = ({
 
   return (
     <div className={`relative ${className} rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70`}>
-      {!imageLoaded && (
-        <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
-      )}
+      <div
+        className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse"
+        style={{ opacity: imageLoaded ? 0 : 1, transition: 'opacity 0.2s ease-in-out', pointerEvents: 'none' }}
+      />
       <img
+        ref={imgRef}
         src={url}
         alt={alt || (kind === 'author' ? 'Author photo' : 'Book cover')}
         className="w-full h-full object-cover object-top"
-        loading="lazy"
+        loading="eager"
         onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}
         style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}

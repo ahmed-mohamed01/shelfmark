@@ -6,7 +6,7 @@
 /* Fonts */
 @font-face {
   font-family: 'Inter';
-  src: url('./assets/fonts/Inter-Variable.ttf') format('truetype');
+  src: url('./assets/fonts/Inter-Variable.woff2') format('woff2');
   font-weight: 100 900;
   font-display: swap;
   font-style: normal;
@@ -248,7 +248,7 @@ footer {
 }
 
 .animate-pop-up {
-    animation: pop-up 0.35s ease-out;
+    animation: pop-up 0.35s ease-out both;
     -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
     -webkit-transform: translateZ(0);

@@ -432,11 +432,15 @@ def register_monitored_routes(
 
     @app.route("/api/monitored", methods=["GET"])
     def api_list_monitored():
+        import time as _time
+        _t0 = _time.perf_counter()
+
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
         rows = monitored_db.list_monitored_entities(user_id=db_user_id)
+        _t_db = _time.perf_counter()
 
         # Enrich with cached author details (bio, source_url) if available
         try:
@@ -455,22 +459,65 @@ def register_monitored_routes(
                         row["cached_source_url"] = author_data.get("source_url")
         except Exception:
             pass  # Best-effort enrichment
+        _t_meta = _time.perf_counter()
 
-        # For author entities without a profile photo, compute best book cover as fallback
-        for row in rows:
-            if row.get("kind") != "author":
-                continue
-            settings = row.get("settings") or {}
-            if settings.get("photo_url"):
-                continue
+        # For author entities without a profile photo, compute best book cover as fallback.
+        # Fetch all covers in one query to avoid N+1 DB round-trips.
+        author_ids_needing_cover = [
+            int(row["id"])
+            for row in rows
+            if row.get("kind") == "author"
+            and not (row.get("settings") or {}).get("photo_url")
+        ]
+        if author_ids_needing_cover:
             try:
-                row["best_book_cover_url"] = monitored_db.get_best_book_cover_url(
-                    user_id=db_user_id, entity_id=int(row["id"])
+                from shelfmark.core.utils import transform_cover_url
+                cover_by_entity = monitored_db.get_best_book_cover_urls_batch(
+                    user_id=db_user_id, entity_ids=author_ids_needing_cover
                 )
+                for row in rows:
+                    entity_id = int(row.get("id", 0))
+                    info = cover_by_entity.get(entity_id)
+                    if info:
+                        # Use the same cache_id format as the sync prefetch so we
+                        # always get a disk-cache hit after the first sync.
+                        provider = info["provider"]
+                        book_id = info["provider_book_id"]
+                        cache_id = (
+                            f"{provider}_{book_id}"
+                            if provider and book_id
+                            else f"monitored_author_{entity_id}"
+                        )
+                        row["best_book_cover_url"] = transform_cover_url(info["cover_url"], cache_id)
             except Exception:
                 pass
+        _t_covers = _time.perf_counter()
 
-        return jsonify(rows)
+        resp = jsonify(rows)
+        resp.headers["Server-Timing"] = (
+            f"db;dur={(_t_db - _t0)*1000:.1f},"
+            f"meta;dur={(_t_meta - _t_db)*1000:.1f},"
+            f"covers;dur={(_t_covers - _t_meta)*1000:.1f},"
+            f"total;dur={(_t_covers - _t0)*1000:.1f}"
+        )
+
+        # Emit Link: rel=preload for cover images so the browser can start
+        # fetching them while the JS is still parsing the JSON response body.
+        try:
+            preload_urls: list[str] = []
+            for row in rows:
+                settings = row.get("settings") or {}
+                url = settings.get("photo_url") or row.get("best_book_cover_url")
+                if url and isinstance(url, str) and url.startswith("/"):
+                    preload_urls.append(f"<{url}>; rel=preload; as=image")
+                    if len(preload_urls) >= 20:
+                        break
+            if preload_urls:
+                resp.headers["Link"] = ", ".join(preload_urls)
+        except Exception:
+            pass
+
+        return resp
 
     @app.route("/api/monitored/search/books", methods=["GET"])
     def api_search_monitored_author_books():

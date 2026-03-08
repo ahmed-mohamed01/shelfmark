@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, CSSProperties, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense, CSSProperties, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import {
   Book,
@@ -57,7 +57,7 @@ import { ToastContainer } from './components/ToastContainer';
 import { Footer } from './components/Footer';
 import { ActivitySidebar } from './components/activity';
 import { LoginPage } from './pages/LoginPage';
-import { MonitoredPage } from './pages/MonitoredPage';
+const MonitoredPage = lazy(() => import('./pages/MonitoredPage').then(m => ({ default: m.MonitoredPage })));
 import { SelfSettingsModal, SettingsModal } from './components/settings';
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -2327,42 +2327,44 @@ function App() {
           authRequired && !isAuthenticated ? (
             <Navigate to="/login" replace />
           ) : (
-            <MonitoredPage
-              onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
-              isActivityOpen={downloadsSidebarOpen}
-              onBack={() => navigate('/')}
-              onMonitoredClick={() => navigate('/monitored')}
-              logoUrl={logoUrl}
-              debug={config?.debug || false}
-              onSettingsClick={() => {
-                if (config?.settings_enabled) {
-                  if (authIsAdmin) {
-                    setSettingsOpen(true);
+            <Suspense fallback={null}>
+              <MonitoredPage
+                onActivityClick={() => setDownloadsSidebarOpen((prev) => !prev)}
+                isActivityOpen={downloadsSidebarOpen}
+                onBack={() => navigate('/')}
+                onMonitoredClick={() => navigate('/monitored')}
+                logoUrl={logoUrl}
+                debug={config?.debug || false}
+                onSettingsClick={() => {
+                  if (config?.settings_enabled) {
+                    if (authIsAdmin) {
+                      setSettingsOpen(true);
+                    } else {
+                      setSelfSettingsOpen(true);
+                    }
                   } else {
-                    setSelfSettingsOpen(true);
+                    setConfigBannerOpen(true);
                   }
-                } else {
-                  setConfigBannerOpen(true);
-                }
-              }}
-              statusCounts={statusCounts}
-              isAdmin={requestRoleIsAdmin}
-              canAccessSettings={isAuthenticated}
-              authRequired={authRequired}
-              isAuthenticated={isAuthenticated}
-              username={username}
-              displayName={displayName}
-              onLogout={handleLogoutWithCleanup}
-              onGetReleases={openReleasesForBook}
-              renderEmbeddedSearch={renderEmbeddedSearch}
-              defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
-              defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
-              defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
-              metadataSortOptions={config?.metadata_sort_options}
-              status={currentStatus}
-              onShowToast={showToast}
-              onRemoveToast={removeToast}
-            />
+                }}
+                statusCounts={statusCounts}
+                isAdmin={requestRoleIsAdmin}
+                canAccessSettings={isAuthenticated}
+                authRequired={authRequired}
+                isAuthenticated={isAuthenticated}
+                username={username}
+                displayName={displayName}
+                onLogout={handleLogoutWithCleanup}
+                onGetReleases={openReleasesForBook}
+                renderEmbeddedSearch={renderEmbeddedSearch}
+                defaultReleaseContentType={config?.release_primary_content_type || 'ebook'}
+                defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
+                defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
+                metadataSortOptions={config?.metadata_sort_options}
+                status={currentStatus}
+                onShowToast={showToast}
+                onRemoveToast={removeToast}
+              />
+            </Suspense>
           )
         }
       />

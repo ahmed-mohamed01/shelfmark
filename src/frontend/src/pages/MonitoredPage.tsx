@@ -192,6 +192,9 @@ const MONITORED_COMPACT_MIN_WIDTH_MIN = 120;
 const MONITORED_COMPACT_MIN_WIDTH_MAX = 185;
 const MONITORED_COMPACT_MIN_WIDTH_DEFAULT = 150;
 const MONITORED_COUNTS_CACHE_KEY = 'monitoredCountsSnapshot';
+// Stale-while-revalidate cache for the entity list so the page renders instantly on revisit.
+const MONITORED_ENTITY_CACHE_KEY = 'monitoredEntities_v2';
+const MONITORED_ENTITY_CACHE_MAX_AGE = 10 * 60 * 1000; // 10 minutes
 const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
@@ -348,6 +351,7 @@ export const MonitoredPage = ({
   const [monitoredLoaded, setMonitoredLoaded] = useState(false);
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
+  const [monitoredBooksEverLoaded, setMonitoredBooksEverLoaded] = useState(false);
   const [monitoredBooksLoadError, setMonitoredBooksLoadError] = useState<string | null>(null);
   const [activeBookEntityId, setActiveBookEntityId] = useState<number | null>(null);
   const [activeBookSourceRow, setActiveBookSourceRow] = useState<MonitoredBookListRow | null>(null);
@@ -552,6 +556,29 @@ export const MonitoredPage = ({
 
     const load = async () => {
       setMonitoredError(null);
+
+      // Render from cache immediately so the page feels instant on revisit.
+      // The fresh fetch below will update the UI if anything changed.
+      try {
+        const raw = localStorage.getItem(MONITORED_ENTITY_CACHE_KEY);
+        if (raw) {
+          const { ts, authors, sources } = JSON.parse(raw) as {
+            ts: number;
+            authors: MonitoredAuthor[];
+            sources: MonitoredBooksSourceEntity[];
+          };
+          if (Date.now() - ts < MONITORED_ENTITY_CACHE_MAX_AGE && Array.isArray(authors) && authors.length > 0) {
+            if (alive) {
+              setMonitored(authors);
+              setMonitoredBooksSources(sources ?? []);
+              setMonitoredLoaded(true);
+            }
+          }
+        }
+      } catch {
+        // Corrupt cache — ignore, fresh fetch will populate it
+      }
+
       try {
         const entities = await listMonitoredEntities();
         const nextSources = entities
@@ -579,6 +606,12 @@ export const MonitoredPage = ({
         }
         setMonitoredBooksSources(nextSources);
         setMonitored(next);
+        // Persist for next visit
+        try {
+          localStorage.setItem(MONITORED_ENTITY_CACHE_KEY, JSON.stringify({ ts: Date.now(), authors: next, sources: nextSources }));
+        } catch {
+          // localStorage quota exceeded — non-fatal
+        }
       } catch (e) {
         if (!alive) {
           return;
@@ -918,6 +951,7 @@ export const MonitoredPage = ({
     if (monitoredBooksSources.length === 0) {
       setMonitoredBooksRows([]);
       setMonitoredBooksLoading(false);
+      setMonitoredBooksEverLoaded(true);
       setMonitoredBooksLoadError(null);
       return;
     }
@@ -970,6 +1004,7 @@ export const MonitoredPage = ({
       setMonitoredBooksRows(rows);
       setMonitoredBooksLoadError(failedCount > 0 ? 'Some monitored books could not be loaded.' : null);
       setMonitoredBooksLoading(false);
+      setMonitoredBooksEverLoaded(true);
     })();
 
     return () => {
@@ -1006,7 +1041,7 @@ export const MonitoredPage = ({
   const isUpcomingTab = landingTab === 'upcoming';
   const activeBookGroups = isUpcomingTab ? upcomingBookGroups : monitoredBookGroups;
   const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
-  const monitoredBooksCountsReady = monitoredLoaded && (monitored.length === 0 || !monitoredBooksLoading);
+  const monitoredBooksCountsReady = monitoredLoaded && (monitored.length === 0 || (monitoredBooksEverLoaded && !monitoredBooksLoading));
   const displayAuthorsCount = monitoredLoaded ? monitored.length : (cachedMonitoredCounts?.authors ?? '–');
   const displayBooksCount = monitoredBooksCountsReady ? filteredRegularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
   const displayUpcomingCount = monitoredBooksCountsReady ? upcomingMonitoredBooksForTable.length : (cachedMonitoredCounts?.upcoming ?? '–');

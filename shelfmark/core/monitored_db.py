@@ -547,22 +547,50 @@ class MonitoredDB:
         Ranked by readers_count DESC, ratings_count DESC, rating DESC, title ASC.
         Returns None if the entity has no books with a cover_url.
         """
+        result = self.get_best_book_cover_urls_batch(user_id=user_id, entity_ids=[entity_id])
+        entry = result.get(entity_id)
+        return entry["cover_url"] if entry else None
+
+    def get_best_book_cover_urls_batch(
+        self, *, user_id: int | None, entity_ids: list[int]  # noqa: ARG002
+    ) -> dict[int, dict[str, str]]:
+        """Return best cover_url (with provider info) for multiple entities in one query.
+
+        Uses a window function to pick the most popular book per entity.
+        Returns a dict mapping entity_id → {cover_url, provider, provider_book_id}.
+        Omits entities that have no books with a cover_url.
+        """
+        if not entity_ids:
+            return {}
+        placeholders = ",".join("?" * len(entity_ids))
         conn = self._connect()
         try:
-            row = conn.execute(
-                """
-                SELECT cover_url FROM monitored_books
-                WHERE entity_id = ?
-                  AND cover_url IS NOT NULL AND cover_url != ''
-                ORDER BY COALESCE(readers_count, -1) DESC,
-                         COALESCE(ratings_count, -1) DESC,
-                         COALESCE(rating, -1) DESC,
-                         title ASC
-                LIMIT 1
+            rows = conn.execute(
+                f"""
+                SELECT entity_id, cover_url, provider, provider_book_id FROM (
+                    SELECT entity_id, cover_url, provider, provider_book_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY entity_id
+                               ORDER BY COALESCE(readers_count, -1) DESC,
+                                        COALESCE(ratings_count, -1) DESC,
+                                        COALESCE(rating, -1) DESC,
+                                        title ASC
+                           ) AS rn
+                    FROM monitored_books
+                    WHERE entity_id IN ({placeholders})
+                      AND cover_url IS NOT NULL AND cover_url != ''
+                ) WHERE rn = 1
                 """,
-                (entity_id,),
-            ).fetchone()
-            return row["cover_url"] if row else None
+                entity_ids,
+            ).fetchall()
+            return {
+                row["entity_id"]: {
+                    "cover_url": row["cover_url"],
+                    "provider": row["provider"] or "",
+                    "provider_book_id": row["provider_book_id"] or "",
+                }
+                for row in rows
+            }
         finally:
             conn.close()
 
@@ -1071,7 +1099,7 @@ class MonitoredDB:
                         asins=COALESCE(excluded.asins, monitored_books.asins),
                         pages=COALESCE(excluded.pages, monitored_books.pages),
                         cached_tags=COALESCE(excluded.cached_tags, monitored_books.cached_tags),
-                        cover_url=excluded.cover_url,
+                        cover_url=COALESCE(excluded.cover_url, monitored_books.cover_url),
                         series_name=COALESCE(NULLIF(excluded.series_name, ''), monitored_books.series_name),
                         series_position=COALESCE(excluded.series_position, monitored_books.series_position),
                         series_count=COALESCE(excluded.series_count, monitored_books.series_count),

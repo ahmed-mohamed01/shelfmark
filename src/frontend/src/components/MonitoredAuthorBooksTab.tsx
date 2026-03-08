@@ -395,6 +395,10 @@ export const MonitoredAuthorBooksTab = ({
   const booksToolbarRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollToSeriesRef = useRef<string | null>(null);
   const lastAutoRefreshSignatureRef = useRef({ value: '' });
+  const isLoadingBooksRef = useRef(false);
+  // Track the entity ID whose books are currently shown — used to avoid clearing
+  // covers when re-fetching for the *same* author (e.g. on WebSocket sync_complete).
+  const loadedEntityIdRef = useRef<number | null>(null);
 
   const { socket } = useSocket();
 
@@ -587,8 +591,15 @@ export const MonitoredAuthorBooksTab = ({
     });
 
     const loadBooks = async () => {
-      setBooks([]);
+      // Only clear existing covers when switching to a different author.
+      // Keeping them visible during same-author refreshes (e.g. triggered by
+      // WebSocket sync_complete on startup) avoids the blink-then-reload flash.
+      if (loadedEntityIdRef.current !== monitoredEntityId) {
+        setBooks([]);
+        loadedEntityIdRef.current = monitoredEntityId ?? null; // set before await to prevent race with concurrent calls
+      }
       setBooksError(null);
+      isLoadingBooksRef.current = true;
       setIsLoadingBooks(true);
       setIsRefreshing(false);
       try {
@@ -603,6 +614,7 @@ export const MonitoredAuthorBooksTab = ({
         const message = e instanceof Error ? e.message : 'Failed to load books';
         setBooksError(message);
       } finally {
+        isLoadingBooksRef.current = false;
         if (!isCancelled) { setIsLoadingBooks(false); setIsRefreshing(false); }
       }
     };
@@ -618,6 +630,7 @@ export const MonitoredAuthorBooksTab = ({
       if (data.entity_id !== monitoredEntityId) return;
       setSyncStatus('idle');
       setSyncPhase(null);
+      if (isLoadingBooksRef.current) return; // fetch already in flight — skip duplicate
       setRefreshKey((k) => k + 1);
     };
     const handleSyncError = (data: { entity_id: number; error: string }) => {
@@ -1511,15 +1524,14 @@ export const MonitoredAuthorBooksTab = ({
             ) : syncStatus === 'error' ? (
               <div className="text-sm text-red-500 mb-2">Sync error — try refreshing manually.</div>
             ) : null}
-            {books.length === 0 && isLoadingBooks ? (
-              <div className="text-sm text-gray-600 dark:text-gray-300">Loading…</div>
-            ) : books.length === 0 && !isLoadingBooks && syncStatus !== 'syncing' ? (
+            {books.length === 0 && isLoadingBooks ? null
+            : books.length === 0 && !isLoadingBooks && syncStatus !== 'syncing' ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">No books found.</div>
             ) : filteredGroupedBooks.length === 0 ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
             ) : (
               <>
-                <div className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
+                <div key={booksViewMode} className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
                   {filteredGroupedBooks.map((group, groupIndex) => {
                     const isCollapsed = collapsedGroups[group.key] ?? false;
                     const isDormantGroup = Boolean((group as any).isDormantGroup);
@@ -1550,7 +1562,7 @@ export const MonitoredAuthorBooksTab = ({
                         {!isCollapsed ? (
                           booksViewMode === 'compact' ? (
                             <div className="px-3 py-3 grid gap-3 justify-start" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${booksCompactMinWidth}px, ${booksCompactMinWidth}px))` }}>
-                              {group.books.map((book) => {
+                              {group.books.map((book, bookIndex) => {
                                 const isSelected = Boolean(selectedBookIds[book.id]);
                                 const _bookProvider = (book.provider || '').trim();
                                 const _bookProviderId = (book.provider_id || '').trim();
@@ -1578,7 +1590,9 @@ export const MonitoredAuthorBooksTab = ({
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
                                 return (
-                                  <MonitoredBookCompactTile key={book.id} title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
+                                  <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
+                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
+                                  </div>
                                 );
                               })}
                             </div>
@@ -1589,7 +1603,7 @@ export const MonitoredAuthorBooksTab = ({
                                 <div className="flex w-full justify-center"><span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</span></div>
                                 <div />
                               </div>
-                              {group.books.map((book) => (
+                              {group.books.map((book, bookIndex) => (
                                 (() => {
                                   const popularity = extractBookPopularity(book);
                                   const hasPopularity = popularity.rating !== null || popularity.readersCount !== null;
@@ -1611,7 +1625,8 @@ export const MonitoredAuthorBooksTab = ({
                                   const tEbookStatus = _tRow ? getFormatStatus(_tRow, 'ebook') : null;
                                   const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
-                                    <MonitoredBookTableRow key={book.id} isDimmed={isDormant}
+                                    <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
+                                    <MonitoredBookTableRow isDimmed={isDormant}
                                       leadingControl={(() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);
                                         return (
@@ -1667,6 +1682,7 @@ export const MonitoredAuthorBooksTab = ({
                                       )}
                                       trailingSlot={renderBookTableActions(book)}
                                     />
+                                    </div>
                                   );
                                 })()
                               ))}

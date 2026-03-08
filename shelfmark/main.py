@@ -751,8 +751,15 @@ def _serve_index_html() -> Response:
 def serve_frontend_assets(filename: str) -> Response:
     """
     Serve static assets from the built frontend.
+
+    Vite content-hashes all filenames (e.g. index-CcKvNkTU.js), so it is safe
+    to cache them indefinitely. Without this override Flask would use the global
+    SEND_FILE_MAX_AGE_DEFAULT=0 and force the browser to re-download the entire
+    ~860 KB JS bundle on every page load.
     """
-    return send_from_directory(os.path.join(FRONTEND_DIST, 'assets'), filename)
+    resp = send_from_directory(os.path.join(FRONTEND_DIST, 'assets'), filename)
+    resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return resp
 
 @app.route('/')
 def index() -> Response:
@@ -1432,6 +1439,7 @@ def api_cover(cover_id: str) -> Union[Response, Tuple[Response, int]]:
     """
     try:
         import base64
+        import time as _time
         from shelfmark.core.image_cache import get_image_cache
         from shelfmark.config.env import is_covers_cache_enabled
 
@@ -1439,10 +1447,12 @@ def api_cover(cover_id: str) -> Union[Response, Tuple[Response, int]]:
         if not is_covers_cache_enabled():
             return jsonify({"error": "Cover caching is disabled"}), 404
 
+        _t0 = _time.perf_counter()
         cache = get_image_cache()
 
         # Try to get from cache first
         cached = cache.get(cover_id)
+        _t_lookup = _time.perf_counter()
         if cached:
             image_data, content_type = cached
             response = app.response_class(
@@ -1452,6 +1462,7 @@ def api_cover(cover_id: str) -> Union[Response, Tuple[Response, int]]:
             )
             response.headers['Cache-Control'] = 'public, max-age=86400'
             response.headers['X-Cache'] = 'HIT'
+            response.headers['Server-Timing'] = f"lookup;dur={(_t_lookup - _t0)*1000:.1f}"
             return response
 
         # Cache miss - get URL from query parameter
@@ -1467,6 +1478,7 @@ def api_cover(cover_id: str) -> Union[Response, Tuple[Response, int]]:
 
         # Fetch and cache the image
         result = cache.fetch_and_cache(cover_id, original_url)
+        _t_fetch = _time.perf_counter()
         if not result:
             return jsonify({"error": "Failed to fetch cover image"}), 404
 
@@ -1478,6 +1490,10 @@ def api_cover(cover_id: str) -> Union[Response, Tuple[Response, int]]:
         )
         response.headers['Cache-Control'] = 'public, max-age=86400'
         response.headers['X-Cache'] = 'MISS'
+        response.headers['Server-Timing'] = (
+            f"lookup;dur={(_t_lookup - _t0)*1000:.1f},"
+            f"fetch;dur={(_t_fetch - _t_lookup)*1000:.1f}"
+        )
         return response
 
     except Exception as e:

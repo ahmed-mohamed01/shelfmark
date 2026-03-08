@@ -303,9 +303,10 @@ class ImageCacheService:
                 with open(image_path, 'rb') as f:
                     data = f.read()
 
-                # Update accessed time
+                # Update accessed time in memory only (not persisted on every hit
+                # to avoid serialising concurrent requests through a disk write).
+                # The index is persisted on put/delete/eviction which is sufficient.
                 entry['accessed_at'] = time.time()
-                self._save_index()
 
                 self._hits += 1
                 return data, content_type

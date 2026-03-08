@@ -207,8 +207,12 @@ def _run_author_sync(
         try:
             from shelfmark.config.env import is_covers_cache_enabled
             if is_covers_cache_enabled():
+                import base64
+                from urllib.parse import parse_qs, urlparse
                 from shelfmark.core.image_cache import get_image_cache
                 img_cache = get_image_cache()
+
+                # Prefetch book covers
                 all_books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
                 for book in all_books:
                     cover_url = book.get("cover_url")
@@ -218,6 +222,22 @@ def _run_author_sync(
                         cache_id = f"{book_provider}_{book_id}"
                         if img_cache.get(cache_id) is None:
                             img_cache.fetch_and_cache(cache_id, cover_url)
+
+                # Prefetch the author's own photo if stored as a proxy URL
+                entity_row = db.get_monitored_entity(user_id=user_id, entity_id=entity_id) or {}
+                photo_proxy = (entity_row.get("settings") or {}).get("photo_url") or ""
+                if photo_proxy and "/api/covers/" in photo_proxy:
+                    try:
+                        parsed = urlparse(photo_proxy)
+                        # path looks like /api/covers/{cache_id} or /{base}/api/covers/{cache_id}
+                        photo_cache_id = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+                        encoded = parse_qs(parsed.query).get("url", [None])[0]
+                        if photo_cache_id and encoded:
+                            original_url = base64.urlsafe_b64decode(encoded.encode()).decode()
+                            if img_cache.get(photo_cache_id) is None:
+                                img_cache.fetch_and_cache(photo_cache_id, original_url)
+                    except Exception:
+                        pass
         except Exception:
             pass
 

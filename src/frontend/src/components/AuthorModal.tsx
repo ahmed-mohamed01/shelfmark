@@ -3,6 +3,10 @@ import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusDat
 import { getMetadataAuthorInfo, MetadataAuthor, MetadataAuthorDetailsResult } from '../services/monitoredApi';
 import { withBasePath } from '../utils/basePath';
 import { EditAuthorModal } from './EditAuthorModal';
+
+// Module-level cache so re-opening the same author shows the bio immediately
+// rather than flashing null while the fetch runs.
+const authorDetailsCache = new Map<string, MetadataAuthor>();
 import { MonitoredAuthorBooksTab } from './MonitoredAuthorBooksTab';
 
 export interface AuthorModalAuthor {
@@ -140,7 +144,10 @@ export const AuthorModal = ({
     let isCancelled = false;
 
     const load = async () => {
-      setDetails(null);
+      const cacheKey = author.provider && author.provider_id
+        ? `${author.provider}:${author.provider_id}` : null;
+      const cached = cacheKey ? authorDetailsCache.get(cacheKey) : null;
+      setDetails(cached ?? null); // show stale cache immediately; null only if no entry
       setSupportsDetails(null);
       setDetailsError(null);
       setIsLoadingDetails(true);
@@ -151,6 +158,7 @@ export const AuthorModal = ({
           if (isCancelled) return;
           setSupportsDetails(res.supportsAuthors);
           setDetails(res.author);
+          if (cacheKey && res.author) authorDetailsCache.set(cacheKey, res.author);
         } else {
           setSupportsDetails(false);
           setDetails(null);
@@ -206,7 +214,7 @@ export const AuthorModal = ({
           aria-labelledby={titleId}
         >
           <div className={isPageMode
-            ? 'flex flex-col overflow-visible rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl'
+            ? 'flex flex-col overflow-visible rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl animate-slide-up'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
             <header className={`flex items-start gap-4 px-5 py-4 ${isPageMode ? 'border-b border-black/10 dark:border-white/10 bg-transparent' : 'border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">

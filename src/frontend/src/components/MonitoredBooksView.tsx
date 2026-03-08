@@ -112,7 +112,7 @@ export function MonitoredBooksView({
   );
 
   if (isLoading) {
-    return <div className="text-sm text-gray-500 dark:text-gray-400">Loading monitored books…</div>;
+    return null;
   }
 
   if (activeBooksCount === 0) {
@@ -126,7 +126,7 @@ export function MonitoredBooksView({
   return (
     <>
       {viewMode === 'table' ? (
-        <div className="flex flex-col gap-4">
+        <div key="table" className="flex flex-col gap-4">
           {bookGroups.map((group) => {
             const isCollapsed = groupBy !== 'none' && Boolean(collapsedGroups[group.key]);
             const authorPhotoUrl = group.rows[0]?.author_photo_url;
@@ -154,7 +154,7 @@ export function MonitoredBooksView({
                   </span>
                 </button>
               ) : null}
-              {!isCollapsed && group.rows.map((book) => {
+              {!isCollapsed && group.rows.map((book, bookIndex) => {
                 const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
                 const tracksEbook = monitoredBookTracksEbook(book);
                 const tracksAudiobook = monitoredBookTracksAudiobook(book);
@@ -206,44 +206,49 @@ export function MonitoredBooksView({
                 ) : undefined;
 
                 return (
-                  <MonitoredBookTableRow
+                  <div
                     key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}`}
-                    leadingControl={(
-                      <button
-                        type="button"
-                        onClick={() => onToggleSelect(book)}
-                        className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'} ${isSelected || hasAnySelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} transition-opacity`}
-                        role="checkbox"
-                        aria-checked={isSelected}
-                        aria-label={`Select ${book.title || 'book'}`}
-                        title={isSelected ? 'Unselect book' : 'Select book'}
-                      >
-                        {isSelected ? (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                            <rect x="4" y="4" width="16" height="16" rx="3" />
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                            <rect x="4" y="4" width="16" height="16" rx="3" />
-                          </svg>
-                        )}
-                      </button>
-                    )}
-                    thumbnail={<RowThumbnail url={book.cover_url} alt={book.title || 'Unknown title'} />}
-                    onOpen={() => onOpenDetails(book)}
-                    titleRow={titleRow}
-                    subtitleRow={subtitleRow}
-                    metaRow={metaRow}
-                    availabilitySlot={(
-                      <div className="flex items-center justify-center gap-1">
-                        {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} /> : null}
-                        {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} /> : null}
-                      </div>
-                    )}
-                    trailingSlot={renderBookActions(book)}
-                    isDimmed={isDormant || (!tracksEbook && !tracksAudiobook)}
-                  />
+                    className="animate-pop-up will-change-transform"
+                    style={{ animationDelay: `${bookIndex * 30}ms`, }}
+                  >
+                    <MonitoredBookTableRow
+                      leadingControl={(
+                        <button
+                          type="button"
+                          onClick={() => onToggleSelect(book)}
+                          className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'} ${isSelected || hasAnySelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} transition-opacity`}
+                          role="checkbox"
+                          aria-checked={isSelected}
+                          aria-label={`Select ${book.title || 'book'}`}
+                          title={isSelected ? 'Unselect book' : 'Select book'}
+                        >
+                          {isSelected ? (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <rect x="4" y="4" width="16" height="16" rx="3" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <rect x="4" y="4" width="16" height="16" rx="3" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                      thumbnail={<RowThumbnail url={book.cover_url} alt={book.title || 'Unknown title'} />}
+                      onOpen={() => onOpenDetails(book)}
+                      titleRow={titleRow}
+                      subtitleRow={subtitleRow}
+                      metaRow={metaRow}
+                      availabilitySlot={(
+                        <div className="flex items-center justify-center gap-1">
+                          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} /> : null}
+                          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} /> : null}
+                        </div>
+                      )}
+                      trailingSlot={renderBookActions(book)}
+                      isDimmed={isDormant || (!tracksEbook && !tracksAudiobook)}
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -251,7 +256,7 @@ export function MonitoredBooksView({
           })}
         </div>
       ) : (
-        <div className="flex flex-col gap-5">
+        <div key="compact" className="flex flex-col gap-5">
           {bookGroups.map((group) => {
             const isCollapsed = groupBy !== 'none' && Boolean(collapsedGroups[group.key]);
             const authorPhotoUrl = group.rows[0]?.author_photo_url;
@@ -283,7 +288,7 @@ export function MonitoredBooksView({
                 className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
                 style={booksGridStyle}
               >
-                {group.rows.map((book) => {
+                {group.rows.map((book, bookIndex) => {
                   const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
                   const isDormant = isMonitoredBookDormantState(book);
                   const authorName = book.author_name || 'Unknown author';
@@ -306,24 +311,29 @@ export function MonitoredBooksView({
                     : (seriesLabel || (book.publish_year ? String(book.publish_year) : undefined));
 
                   return (
-                    <MonitoredBookCompactTile
+                    <div
                       key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}:compact`}
-                      title={book.title || 'Unknown title'}
-                      thumbnail={<RowThumbnail url={book.cover_url} alt={book.title || 'Book cover'} className="w-full aspect-[2/3]" />}
-                      onOpenDetails={() => onOpenDetails(book)}
-                      onToggleSelect={() => onToggleSelect(book)}
-                      isSelected={isSelected}
-                      hasActiveSelection={hasAnySelection}
-                      subtitle={groupBy !== 'author' ? authorName : undefined}
-                      metaLine={metaLine}
-                      showMetaLine={Boolean(metaLine)}
-                      popularityLine={popularityLine}
-                      showPopularityLine={showPopularity}
-                      ebookStatus={ebookStatus}
-                      audiobookStatus={audiobookStatus}
-                      overflowMenu={renderBookActions(book, true)}
-                      isDimmed={isDormant}
-                    />
+                      className="animate-pop-up will-change-transform"
+                      style={{ animationDelay: `${bookIndex * 30}ms`, }}
+                    >
+                      <MonitoredBookCompactTile
+                        title={book.title || 'Unknown title'}
+                        thumbnail={<RowThumbnail url={book.cover_url} alt={book.title || 'Book cover'} className="w-full aspect-[2/3]" />}
+                        onOpenDetails={() => onOpenDetails(book)}
+                        onToggleSelect={() => onToggleSelect(book)}
+                        isSelected={isSelected}
+                        hasActiveSelection={hasAnySelection}
+                        subtitle={groupBy !== 'author' ? authorName : undefined}
+                        metaLine={metaLine}
+                        showMetaLine={Boolean(metaLine)}
+                        popularityLine={popularityLine}
+                        showPopularityLine={showPopularity}
+                        ebookStatus={ebookStatus}
+                        audiobookStatus={audiobookStatus}
+                        overflowMenu={renderBookActions(book, true)}
+                        isDimmed={isDormant}
+                      />
+                    </div>
                   );
                 })}
               </div>}
