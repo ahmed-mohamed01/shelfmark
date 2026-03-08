@@ -264,7 +264,15 @@ def _parse_search_result_row(row: Tag) -> Optional[BrowseRecord]:
             return None
         cells = row.find_all("td")
         preview_img = cells[0].find("img")
-        preview = preview_img["src"] if preview_img else None
+        if preview_img:
+            raw_src = preview_img["src"]
+            preview = (
+                f"{network.get_aa_base_url()}{raw_src}"
+                if isinstance(raw_src, str) and raw_src.startswith("/")
+                else raw_src
+            )
+        else:
+            preview = None
 
         return BrowseRecord(
             id=row.find_all("a")[0]["href"].split("/")[-1],
@@ -300,6 +308,8 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
             preview = preview_value[0]
         else:
             preview = preview_value
+        if isinstance(preview, str) and preview.startswith("/"):
+            preview = f"{network.get_aa_base_url()}{preview}"
 
     data = soup.find_all("div", {"class": "main-inner"})[0].find_next("div")
     divs = list(data.children)
@@ -1111,7 +1121,7 @@ def _browse_record_to_release(record: BrowseRecord) -> Release:
 
     This bridges the direct source's browse data to the generic release model.
     """
-    series_name, series_number = _extract_series_from_info(book_info.info)
+    series_name, series_number = _extract_series_from_info(record.info)
 
     return Release(
         source=record.source,
