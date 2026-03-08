@@ -300,6 +300,7 @@ export interface AppConfig {
   onboarding_complete: boolean;  // Whether the user has completed initial setup
   default_sort: string;  // Default sort for direct mode
   metadata_default_sort: string;  // Default sort for universal mode (from metadata provider)
+  default_to_monitored_view?: boolean;  // Open app on Monitored view by default
 }
 
 export interface MetadataProviderSummary {

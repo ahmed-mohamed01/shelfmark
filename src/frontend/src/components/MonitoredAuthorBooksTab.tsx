@@ -365,6 +365,12 @@ export const MonitoredAuthorBooksTab = ({
     if (!Number.isFinite(parsed)) return AUTHOR_BOOKS_COMPACT_MIN_WIDTH_DEFAULT;
     return Math.max(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN, Math.min(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX, parsed));
   });
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
   const [booksFilters, setBooksFilters] = useState<AuthorBooksFilters>(() => createDefaultAuthorBooksFilters());
   const [isSeriesFilterMenuOpen, setIsSeriesFilterMenuOpen] = useState(false);
   const [closeSeriesFilterOnSelect, setCloseSeriesFilterOnSelect] = useState(false);
@@ -1300,17 +1306,29 @@ export const MonitoredAuthorBooksTab = ({
           ref={booksToolbarRef}
           className={`sticky z-40 bg-[var(--bg)] ${isPageMode ? 'top-[76px]' : 'top-0'} ${isBooksToolbarPinned ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
         >
-          <div className="flex items-center justify-between gap-3 px-4 py-2">
+          <div className="flex flex-wrap items-center gap-2 gap-y-1.5 px-4 py-2">
             <div className="flex items-center gap-2 min-w-0">
               <button type="button" onClick={toggleAllGroups} className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200" aria-label={allGroupsCollapsed ? 'Expand all series groups' : 'Collapse all series groups'} title={allGroupsCollapsed ? 'Expand all' : 'Collapse all'}>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
               </button>
-              <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">
-                Books
-                {isRefreshing ? <span className="ml-2 text-[10px] text-gray-400 dark:text-gray-500">refreshing…</span> : null}
-              </p>
+              <div className="relative overflow-hidden min-w-0">
+                {/* Static label: "BOOKS" */}
+                <p
+                  className={`text-[11px] uppercase tracking-wide truncate transition-all duration-300 ${isBooksToolbarPinned ? 'opacity-0 -translate-y-3 pointer-events-none select-none absolute' : 'text-gray-500 dark:text-gray-400'}`}
+                >
+                  Books
+                  {isRefreshing ? <span className="ml-2 text-[10px] text-gray-400 dark:text-gray-500">refreshing…</span> : null}
+                </p>
+                {/* Pinned label: "Books by [Author]" */}
+                <p
+                  className={`text-sm font-semibold truncate transition-all duration-300 ${isBooksToolbarPinned ? 'opacity-100 translate-y-0 text-gray-900 dark:text-gray-100' : 'opacity-0 translate-y-3 pointer-events-none select-none absolute'}`}
+                >
+                  Books by {author?.name || 'Author'}
+                  {isRefreshing ? <span className="ml-2 text-[10px] font-normal text-gray-400 dark:text-gray-500">refreshing…</span> : null}
+                </p>
+              </div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
               {onGetReleases && selectedBooks.length > 0 ? (
                 <>
                   <button type="button" onClick={() => void runBulkDownloadForSelection('ebook')} disabled={selectedBooks.length === 0 || bulkDownloadRunningByType.ebook} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 hover-action disabled:opacity-40 disabled:cursor-not-allowed" title="Automatically search/download eBooks for selected books">
@@ -1470,7 +1488,7 @@ export const MonitoredAuthorBooksTab = ({
                   </div>
                 )}
               </Dropdown>
-              <ViewModeToggle className="hidden sm:inline-flex" value={booksViewMode} onChange={(next) => setBooksViewMode(next as AuthorBooksViewMode)} options={[
+              <ViewModeToggle value={booksViewMode} onChange={(next) => setBooksViewMode(next as AuthorBooksViewMode)} options={[
                 { value: 'table', label: 'Table view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" /></svg> },
                 { value: 'compact', label: 'Compact view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" /></svg> },
               ]} />
@@ -1479,11 +1497,11 @@ export const MonitoredAuthorBooksTab = ({
               </button>
               {monitoredEntityId ? (
                 <>
-                  <button type="button" onClick={() => void handleRunMonitoredSearch('ebook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40" title="Search monitored ebook candidates">
-                    {monitorSearchBusyByType.ebook ? 'Searching eBooks…' : 'Search eBooks'}
+                  <button type="button" onClick={() => void handleRunMonitoredSearch('ebook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored ebook candidates">
+                    {monitorSearchBusyByType.ebook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>eBooks</>}
                   </button>
-                  <button type="button" onClick={() => void handleRunMonitoredSearch('audiobook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40" title="Search monitored audiobook candidates">
-                    {monitorSearchBusyByType.audiobook ? 'Searching audiobooks…' : 'Search audiobooks'}
+                  <button type="button" onClick={() => void handleRunMonitoredSearch('audiobook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored audiobook candidates">
+                    {monitorSearchBusyByType.audiobook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>audiobooks</>}
                   </button>
                 </>
               ) : null}
@@ -1514,24 +1532,24 @@ export const MonitoredAuthorBooksTab = ({
             </div>
           ) : null}
 
-          <div className="px-4 py-3">
-            {booksError && <div className="text-sm text-red-500">{booksError}</div>}
+          <div className="py-2">
+            {booksError && <div className="px-4 text-sm text-red-500">{booksError}</div>}
             {syncStatus === 'syncing' ? (
-              <div className="flex items-center gap-2 mb-2 text-sm text-gray-500 dark:text-gray-400">
+              <div className="px-4 flex items-center gap-2 mb-2 text-sm text-gray-500 dark:text-gray-400">
                 <svg className="w-4 h-4 animate-spin flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" /></svg>
                 <span>{syncPhase === 'fetching_books' ? 'Fetching books…' : syncPhase === 'scanning_files' ? 'Scanning filesystem…' : syncPhase === 'fetching_covers' ? 'Fetching covers…' : 'Syncing…'}</span>
               </div>
             ) : syncStatus === 'error' ? (
-              <div className="text-sm text-red-500 mb-2">Sync error — try refreshing manually.</div>
+              <div className="px-4 text-sm text-red-500 mb-2">Sync error — try refreshing manually.</div>
             ) : null}
             {books.length === 0 && isLoadingBooks ? null
             : books.length === 0 && !isLoadingBooks && syncStatus !== 'syncing' ? (
-              <div className="text-sm text-gray-600 dark:text-gray-300">No books found.</div>
+              <div className="px-4 text-sm text-gray-600 dark:text-gray-300">No books found.</div>
             ) : filteredGroupedBooks.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
+              <div className="px-4 text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
             ) : (
               <>
-                <div key={booksViewMode} className={`w-full rounded-xl ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`} style={{ background: 'var(--bg-soft)' }}>
+                <div key={booksViewMode} className={`w-full ${booksViewMode === 'compact' ? 'px-3 py-1 overflow-visible' : 'overflow-hidden'}`}>
                   {filteredGroupedBooks.map((group, groupIndex) => {
                     const isCollapsed = collapsedGroups[group.key] ?? false;
                     const isDormantGroup = Boolean((group as any).isDormantGroup);
@@ -1561,7 +1579,7 @@ export const MonitoredAuthorBooksTab = ({
                         </div>
                         {!isCollapsed ? (
                           booksViewMode === 'compact' ? (
-                            <div className="px-3 py-3 grid gap-3 justify-start" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${booksCompactMinWidth}px, ${booksCompactMinWidth}px))` }}>
+                            <div className="px-3 py-3 grid gap-3" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? Math.min(booksCompactMinWidth, 100) : booksCompactMinWidth}px, 1fr))` }}>
                               {group.books.map((book, bookIndex) => {
                                 const isSelected = Boolean(selectedBookIds[book.id]);
                                 const _bookProvider = (book.provider || '').trim();
@@ -1626,7 +1644,7 @@ export const MonitoredAuthorBooksTab = ({
                                   const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
                                     <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
-                                    <MonitoredBookTableRow isDimmed={isDormant}
+                                    <MonitoredBookTableRow isDimmed={isDormant} hasActiveSelection={hasActiveBookSelection}
                                       leadingControl={(() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);
                                         return (
@@ -1642,45 +1660,75 @@ export const MonitoredAuthorBooksTab = ({
                                       thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} />}
                                       onOpen={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))}
                                       titleRow={(
-                                        <div className="flex items-center gap-2 min-w-0">
-                                          <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
-                                          {showSeriesInfo ? <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">• {seriesLabel}</span> : null}
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <h3 className="font-semibold text-xs sm:text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
+                                          {/* Series info: desktop only */}
+                                          {showSeriesInfo ? <span className="hidden sm:inline shrink-0 text-xs text-gray-500 dark:text-gray-400">• {seriesLabel}</span> : null}
                                           {hasSeriesPosition ? (
-                                            <span className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)', textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)' }} title={seriesLabel ? `${seriesLabel}${groupSeriesCount ? ` (${groupSeriesPos}/${groupSeriesCount})` : ` (#${groupSeriesPos})`}` : undefined}>
+                                            <span className="hidden sm:inline-flex shrink-0 px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded" style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.3)', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>
                                               #{groupSeriesPos}{groupSeriesCount != null ? `/${groupSeriesCount}` : ''}
                                             </span>
                                           ) : null}
+                                          {/* Availability dots: mobile only (replaces the hidden availability column) */}
+                                          <span className="md:hidden inline-flex items-center gap-0.5 flex-shrink-0">
+                                            {tEbookStatus && (
+                                              <span title={`eBook: ${tEbookStatus}`}>
+                                                <svg className={`w-3 h-3 ${tEbookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
+                                              </span>
+                                            )}
+                                            {tAudiobookStatus && (
+                                              <span title={`Audiobook: ${tAudiobookStatus}`}>
+                                                <svg className={`w-3 h-3 ${tAudiobookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>
+                                              </span>
+                                            )}
+                                          </span>
                                         </div>
                                       )}
                                       subtitleRow={(
-                                        <p className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
+                                        <p className="text-[10px] sm:text-xs text-gray-600 dark:text-gray-300 truncate">
                                           {book.author || author?.name || 'Unknown author'}
                                           {book.year ? <span> • {book.year}</span> : null}
                                         </p>
                                       )}
-                                      metaRow={hasPopularity ? (
-                                        <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
-                                          {popularity.rating !== null ? (
-                                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" /></svg>
-                                              <span>{popularity.rating.toFixed(1)}{popularity.ratingsCount !== null ? ` (${popularity.ratingsCount.toLocaleString()})` : ''}</span>
-                                            </span>
-                                          ) : null}
-                                          {popularity.readersCount !== null ? (
-                                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0-3-.479c-1.07 0-2.098.18-3 .512m6 0a7.5 7.5 0 1 0-6 0m6 0a9.372 9.372 0 0 1 3 .512M9 10.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0Z" /></svg>
-                                              <span>{popularity.readersCount.toLocaleString()}</span>
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                      ) : undefined}
+                                      metaRow={(
+                                        <>
+                                          {/* Mobile: series info */}
+                                          {showSeriesInfo && (
+                                            <div className="sm:hidden text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                                              {seriesLabel}{hasSeriesPosition ? ` #${groupSeriesPos}${groupSeriesCount != null ? `/${groupSeriesCount}` : ''}` : ''}
+                                            </div>
+                                          )}
+                                          {/* sm+: popularity */}
+                                          {hasPopularity && (
+                                            <div className="hidden sm:flex text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 items-center gap-2">
+                                              {popularity.rating !== null ? (
+                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.96a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.96c.3.921-.755 1.688-1.538 1.118l-3.367-2.446a1 1 0 00-1.176 0l-3.367 2.446c-.783.57-1.838-.197-1.539-1.118l1.287-3.96a1 1 0 00-.364-1.118L2.063 9.387c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.96Z" /></svg>
+                                                  <span>{popularity.rating.toFixed(1)}{popularity.ratingsCount !== null ? ` (${popularity.ratingsCount.toLocaleString()})` : ''}</span>
+                                                </span>
+                                              ) : null}
+                                              {popularity.readersCount !== null ? (
+                                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0-3-.479c-1.07 0-2.098.18-3 .512m6 0a7.5 7.5 0 1 0-6 0m6 0a9.372 9.372 0 0 1 3 .512M9 10.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0Z" /></svg>
+                                                  <span>{popularity.readersCount.toLocaleString()}</span>
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
                                       availabilitySlot={(
                                         <div className="flex items-center justify-center gap-1">
                                           {tEbookStatus ? <FormatStatusBadge format="ebook" status={tEbookStatus} /> : null}
                                           {tAudiobookStatus ? <FormatStatusBadge format="audiobook" status={tAudiobookStatus} /> : null}
                                         </div>
                                       )}
-                                      trailingSlot={renderBookTableActions(book)}
+                                      trailingSlot={(
+                                        <>
+                                          <div className="hidden sm:block">{renderBookTableActions(book)}</div>
+                                          <div className="sm:hidden">{renderBookOverflowMenu(book)}</div>
+                                        </>
+                                      )}
                                     />
                                     </div>
                                   );

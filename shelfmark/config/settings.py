@@ -1554,6 +1554,12 @@ def mirror_settings():
 def advanced_settings():
     """Advanced settings for power users."""
     return [
+        CheckboxField(
+            key="DEFAULT_TO_MONITORED_VIEW",
+            label="Open app on Monitored view",
+            description="Navigate to the Monitored page automatically when the app loads or the Shelfmark logo is clicked.",
+            default=False,
+        ),
         TextField(
             key="URL_BASE",
             label="Base Path",

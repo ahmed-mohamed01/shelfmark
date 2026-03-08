@@ -4,8 +4,6 @@ import { RowThumbnail } from './RowThumbnail';
 import {
   getFormatStatus,
   isMonitoredBookDormantState,
-  monitoredBookTracksAudiobook,
-  monitoredBookTracksEbook,
 } from '../utils/monitoredBookState';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
@@ -39,12 +37,6 @@ export interface MonitoredBooksGroup {
   rows: MonitoredBookListRow[];
 }
 
-const GRID_CLASSES = {
-  mobile: 'grid-cols-1 items-start',
-  compact: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 items-start',
-} as const;
-
-
 export interface MonitoredBooksViewProps {
   isLoading: boolean;
   isUpcomingTab: boolean;
@@ -53,7 +45,6 @@ export interface MonitoredBooksViewProps {
   bookGroups: MonitoredBooksGroup[];
   groupBy: string;
   selectedBookKeys: Record<string, boolean>;
-  isDesktop: boolean;
   booksGridStyle: CSSProperties | undefined;
   compactMinWidth: number;
   loadError: string | null;
@@ -91,7 +82,6 @@ export function MonitoredBooksView({
   bookGroups,
   groupBy,
   selectedBookKeys,
-  isDesktop,
   booksGridStyle,
   compactMinWidth,
   loadError,
@@ -156,8 +146,6 @@ export function MonitoredBooksView({
               ) : null}
               {!isCollapsed && group.rows.map((book, bookIndex) => {
                 const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
-                const tracksEbook = monitoredBookTracksEbook(book);
-                const tracksAudiobook = monitoredBookTracksAudiobook(book);
                 const isDormant = isMonitoredBookDormantState(book);
                 const authorName = book.author_name || 'Unknown author';
                 const ebookStatus = getFormatStatus(book, 'ebook');
@@ -179,31 +167,55 @@ export function MonitoredBooksView({
                   </div>
                 );
                 const titleRow = (
-                  <div className="flex items-center gap-2 min-w-0">
-                    <h3 className="font-semibold text-xs min-[400px]:text-sm sm:text-base leading-tight truncate" title={book.title || 'Unknown title'}>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h3 className="font-semibold text-xs sm:text-sm leading-tight truncate min-w-0" title={book.title || 'Unknown title'}>
                       {book.title || 'Unknown title'}
                     </h3>
+                    {/* Series info: desktop only */}
                     {seriesLabel ? (
-                      <span className="text-[10px] min-[400px]:text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
+                      <span className="hidden sm:inline shrink-0 text-xs text-gray-500 dark:text-gray-400">
                         • {book.series_name}
                       </span>
                     ) : null}
                     {book.series_position != null && seriesLabel ? (
                       <span
-                        className="inline-flex px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded flex-shrink-0"
+                        className="hidden sm:inline-flex shrink-0 px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded"
                         style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.3)', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}
-                        title={seriesLabel}
                       >
                         #{book.series_position}{book.series_count != null ? `/${book.series_count}` : ''}
                       </span>
                     ) : null}
+                    {/* Availability dots: mobile only */}
+                    <span className="md:hidden inline-flex items-center gap-0.5 flex-shrink-0">
+                      {ebookStatus && (
+                        <span title={`eBook: ${ebookStatus}`}>
+                          <svg className={`w-3 h-3 ${ebookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
+                        </span>
+                      )}
+                      {audiobookStatus && (
+                        <span title={`Audiobook: ${audiobookStatus}`}>
+                          <svg className={`w-3 h-3 ${audiobookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>
+                        </span>
+                      )}
+                    </span>
                   </div>
                 );
-                const metaRow = popularityLine ? (
-                  <div className="text-[10px] min-[400px]:text-xs text-gray-500 dark:text-gray-400 truncate">
-                    {popularityLine}
-                  </div>
-                ) : undefined;
+                const metaRow = (
+                  <>
+                    {/* Mobile: series info */}
+                    {seriesLabel && (
+                      <div className="sm:hidden text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                        {seriesLabel}
+                      </div>
+                    )}
+                    {/* sm+: popularity */}
+                    {popularityLine ? (
+                      <div className="hidden sm:block text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 truncate">
+                        {popularityLine}
+                      </div>
+                    ) : null}
+                  </>
+                );
 
                 return (
                   <div
@@ -246,7 +258,7 @@ export function MonitoredBooksView({
                         </div>
                       )}
                       trailingSlot={renderBookActions(book)}
-                      isDimmed={isDormant || (!tracksEbook && !tracksAudiobook)}
+                      isDimmed={isDormant}
                     />
                   </div>
                 );
@@ -285,7 +297,7 @@ export function MonitoredBooksView({
                 </button>
               ) : null}
               {!isCollapsed && <div
-                className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
+                className="grid gap-4 items-start"
                 style={booksGridStyle}
               >
                 {group.rows.map((book, bookIndex) => {

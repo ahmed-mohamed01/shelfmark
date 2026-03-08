@@ -214,7 +214,7 @@ export const AuthorModal = ({
           aria-labelledby={titleId}
         >
           <div className={isPageMode
-            ? 'flex flex-col overflow-visible rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 text-[var(--text)] shadow-xl'
+            ? 'flex flex-col overflow-visible rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 text-[var(--text)] sm:shadow-xl'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
             <header className={`flex items-start gap-4 px-5 py-4 ${isPageMode ? 'border-b border-black/10 dark:border-white/10 bg-transparent' : 'border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">
@@ -255,15 +255,15 @@ export const AuthorModal = ({
               <div className="flex items-center gap-2 flex-shrink-0">
                 {isPageMode ? (
                   <>
-                    <div className="hidden sm:flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5 bg-white/70 dark:bg-white/10">
+                    <div className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5 bg-white/70 dark:bg-white/10">
                       <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
                       </svg>
                       <input
                         value={activeBooksQuery}
                         onChange={(e) => updateBooksQuery(e.target.value)}
-                        placeholder="Search monitored books"
-                        className="w-44 bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
+                        placeholder="Search books"
+                        className="w-20 sm:w-44 bg-transparent outline-none text-xs text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
                         aria-label="Search monitored books"
                       />
                       {activeBooksQuery ? (

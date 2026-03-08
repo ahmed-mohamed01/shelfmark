@@ -641,6 +641,11 @@ function App() {
         setOnboardingOpen(true);
       }
 
+      // Navigate to Monitored view on initial load if configured
+      if (mode === 'initial' && cfg.default_to_monitored_view) {
+        navigate('/monitored');
+      }
+
       // Determine the default sort based on search mode
       const defaultSort = cfg.search_mode === 'universal'
         ? resolvedMetadataDefaultSort
@@ -665,7 +670,7 @@ function App() {
     } catch (error) {
       console.error('Failed to load config:', error);
     }
-  }, [clearTracking, contentType, setAdvancedFilters, setBooks]);
+  }, [clearTracking, contentType, navigate, setAdvancedFilters, setBooks]);
 
   // Fetch config when authenticated
   useEffect(() => {
@@ -2057,9 +2062,13 @@ function App() {
           onActingAsUserChange={setActingAsUser}
           statusCounts={statusCounts}
           onLogoClick={() => {
-            handleResetSearch(config);
-            setActiveQueryTarget('general');
-            setActiveResultsSort('');
+            if (config?.default_to_monitored_view) {
+              navigate('/monitored');
+            } else {
+              handleResetSearch(config);
+              setActiveQueryTarget('general');
+              setActiveResultsSort('');
+            }
           }}
           authRequired={authRequired}
           isAuthenticated={isAuthenticated}

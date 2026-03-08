@@ -4,18 +4,12 @@ import { MonitoredAuthorCompactTile } from './MonitoredAuthorCompactTile';
 import { MonitoredAuthorTableRow } from './AuthorTableRow';
 import { RowThumbnail } from './RowThumbnail';
 
-const GRID_CLASSES = {
-  mobile: 'grid-cols-1 items-start',
-  compact: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 items-start',
-} as const;
-
 export interface MonitoredAuthorsViewProps {
   viewMode: 'table' | 'compact';
   authors: MetadataAuthor[];
   entityIdByName: Map<string, number>;
   selectedAuthorKeys: Record<string, boolean>;
   hasActiveSelection: boolean;
-  isDesktop: boolean;
   compactGridStyle: CSSProperties | undefined;
   onNavigate: (author: MetadataAuthor & { monitoredEntityId: number | null }) => void;
   onEdit: (entityId: number, authorName: string) => void;
@@ -28,7 +22,6 @@ export function MonitoredAuthorsView({
   entityIdByName,
   selectedAuthorKeys,
   hasActiveSelection,
-  isDesktop,
   compactGridStyle,
   onNavigate,
   onEdit,
@@ -70,7 +63,7 @@ export function MonitoredAuthorsView({
   return (
     <div
       key="compact"
-      className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : 'items-stretch'}`}
+      className="grid gap-4 items-start"
       style={compactGridStyle}
     >
       {authors.map((author, index) => {

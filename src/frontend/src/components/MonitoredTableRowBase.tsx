@@ -24,7 +24,7 @@ export const MonitoredTableRowBase = ({
   mainSlot,
   middleSlot,
   rightSlot,
-  leftClassName = 'flex items-center justify-center pl-0.5 sm:pl-1',
+  leftClassName = 'flex items-center justify-center pl-0.5 sm:pl-1 overflow-hidden',
   mediaClassName = 'flex items-center pl-1 sm:pl-3',
   mainClassName,
   middleClassName = 'hidden sm:flex w-full items-center justify-center gap-1',

@@ -74,7 +74,10 @@ export const Dropdown = ({
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [panelDirection, setPanelDirection] = useState<'down' | 'up'>('down');
-  const [portalPosition, setPortalPosition] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [portalPosition, setPortalPosition] = useState<{ top: number; left: number; width: number; caretLeft: number } | null>(null);
+  // Computed horizontal offset for non-portal panels (relative to containerRef left edge)
+  const [nonPortalLeft, setNonPortalLeft] = useState<number | null>(null);
+  const [nonPortalCaretLeft, setNonPortalCaretLeft] = useState<number>(16);
 
   const toggleOpen = () => {
     if (disabled) return;
@@ -136,14 +139,29 @@ export const Dropdown = ({
 
     setPanelDirection(shouldOpenUp ? 'up' : 'down');
 
-    // Update portal position
+    const panelWidth = panelRef.current.offsetWidth || 200;
+    const viewportWidth = window.innerWidth;
+    const triggerCenter = rect.left + rect.width / 2;
+
+    // Ideal panel left in viewport coords
+    const idealLeft = align === 'right' ? rect.right - panelWidth : rect.left;
+    // Clamp to viewport with 8px margin
+    const clampedLeft = Math.max(8, Math.min(viewportWidth - panelWidth - 8, idealLeft));
+    // Caret offset relative to the panel's left edge, pointing at trigger centre
+    const computedCaretLeft = Math.max(10, Math.min(panelWidth - 10, triggerCenter - clampedLeft));
+
     if (usePortal) {
-      const panelWidth = panelRef.current.offsetWidth || 200;
       setPortalPosition({
         top: shouldOpenUp ? rect.top - panelHeight - 8 : rect.bottom + 8,
-        left: align === 'right' ? rect.right - panelWidth : rect.left,
+        left: clampedLeft,
         width: panelWidth,
+        caretLeft: computedCaretLeft,
       });
+    } else if (containerRef.current) {
+      // Express clamped position relative to the container div
+      const containerRect = containerRef.current.getBoundingClientRect();
+      setNonPortalLeft(clampedLeft - containerRect.left);
+      setNonPortalCaretLeft(computedCaretLeft);
     }
   }, [usePortal, align]);
 
@@ -171,6 +189,45 @@ export const Dropdown = ({
       window.removeEventListener('scroll', handleScroll, true);
     };
   }, [isOpen, updatePanelDirection]);
+
+  // Reset computed position when closed so next open recalculates
+  useEffect(() => {
+    if (!isOpen) {
+      setNonPortalLeft(null);
+    }
+  }, [isOpen]);
+
+  // Rotated-square caret for "renderTrigger" dropdowns (seamless border, no seam line)
+  const renderCaret = (direction: 'up' | 'down', offsetLeft: number) => {
+    if (!renderTrigger) return null;
+    // A 16×16 square rotated 45° — only the two outward-facing edges have a border.
+    // The other two edges are buried inside the panel, so the join is seamless.
+    return (
+      <span
+        className="pointer-events-none absolute z-10"
+        aria-hidden="true"
+        style={{
+          width: 16,
+          height: 16,
+          transform: 'rotate(45deg)',
+          background: 'var(--bg)',
+          ...(direction === 'down'
+            ? {
+                top: -8,
+                left: offsetLeft - 8,
+                borderTop: '1px solid var(--border-muted)',
+                borderLeft: '1px solid var(--border-muted)',
+              }
+            : {
+                bottom: -8,
+                left: offsetLeft - 8,
+                borderBottom: '1px solid var(--border-muted)',
+                borderRight: '1px solid var(--border-muted)',
+              }),
+        }}
+      />
+    );
+  };
 
   return (
     <div className={`${widthClassName} relative ${isOpen ? 'z-[2600]' : 'z-0'}`} ref={containerRef}>
@@ -222,7 +279,7 @@ export const Dropdown = ({
         {isOpen && !usePortal && (
           <div
             ref={panelRef}
-            className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} ${
+            className={`absolute ${
               panelDirection === 'down'
                 ? renderTrigger ? 'mt-2' : ''
                 : renderTrigger ? 'bottom-full mb-2' : 'bottom-full'
@@ -237,8 +294,12 @@ export const Dropdown = ({
                   : '0.5rem 0.5rem 0 0',
               marginTop: !renderTrigger && panelDirection === 'down' ? '-1px' : undefined,
               marginBottom: !renderTrigger && panelDirection === 'up' ? '-1px' : undefined,
+              // Viewport-clamped horizontal position (falls back to align until computed)
+              left: nonPortalLeft !== null ? nonPortalLeft : align === 'right' ? undefined : 0,
+              right: nonPortalLeft !== null ? undefined : align === 'right' ? 0 : undefined,
             }}
           >
+            {renderCaret(panelDirection, nonPortalCaretLeft)}
             <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
               {children({ close })}
             </div>
@@ -259,6 +320,10 @@ export const Dropdown = ({
             maxWidth: 'min(90vw, 28rem)',
           }}
         >
+          {portalPosition && renderCaret(
+            (portalPosition.top > (triggerRef.current?.getBoundingClientRect().bottom ?? 0)) ? 'down' : 'up',
+            portalPosition.caretLeft,
+          )}
           <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
             {children({ close })}
           </div>

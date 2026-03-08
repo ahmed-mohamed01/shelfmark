@@ -48,6 +48,8 @@ interface HeaderProps {
   activeQueryTarget?: string;
   onQueryTargetChange?: (target: string) => void;
   activeQueryField?: MetadataSearchField | null;
+  /** When provided, a mobile-only hamburger button calls this instead of opening the dropdown */
+  onMobileMenuClick?: () => void;
 }
 
 export const Header = forwardRef<HeaderHandle, HeaderProps>(({
@@ -87,6 +89,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   activeQueryTarget = 'general',
   onQueryTargetChange,
   activeQueryField = null,
+  onMobileMenuClick,
 }, ref) => {
   const activityBadge = getActivityBadgeState(statusCounts, isAdmin);
   const settingsEnabled = canAccessSettings ?? isAdmin;
@@ -345,11 +348,11 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
         </a>
       )}
 
-      {/* Monitoring Button */}
+      {/* Monitoring Button — hidden on mobile when slide sheet handles nav */}
       {onMonitoredClick && (
         <button
           onClick={onMonitoredClick}
-          className={navButtonClass(isMonitoringActive)}
+          className={`${onMobileMenuClick ? 'hidden sm:inline-flex' : ''} ${navButtonClass(isMonitoringActive)}`}
           aria-label="View monitoring"
           title="Monitoring"
         >
@@ -409,9 +412,26 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
 
       {/* User Menu Dropdown */}
       <div className="relative" ref={dropdownRef}>
+        {/* Mobile: delegate to parent-provided sheet opener */}
+        {onMobileMenuClick && (
+          <button
+            type="button"
+            onClick={onMobileMenuClick}
+            className="sm:hidden relative p-2 rounded-full hover-action transition-colors"
+            aria-label="Open navigation menu"
+          >
+            <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+            </svg>
+            {actingAsUser && (
+              <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-sky-500 border border-[var(--bg)]" title={`Downloading as ${formatActingAsUserName(actingAsUser)}`} />
+            )}
+          </button>
+        )}
+        {/* Desktop (or mobile when no sheet handler): standard dropdown button */}
         <button
           onClick={toggleDropdown}
-          className={`relative p-2 rounded-full hover-action transition-colors ${
+          className={`${onMobileMenuClick ? 'hidden sm:inline-flex' : ''} relative p-2 rounded-full hover-action transition-colors ${
             isDropdownOpen ? 'bg-[var(--hover-action)]' : ''
           }`}
           aria-label="User menu"
@@ -664,38 +684,24 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
       style={{ background: 'var(--bg)', paddingTop: 'env(safe-area-inset-top)' }}
     >
       <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        {/* When search is active: stack on mobile, side-by-side on desktop */}
+        {/* When search is active: always single-row, search bar shrinks as needed */}
         {showSearch && (
-          <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-3 animate-pop-up">
-            {/* Logo + Icon buttons - appear first on mobile (above search), last on desktop (right side) */}
-            <div className="flex items-center justify-between w-full lg:w-auto lg:justify-end lg:order-2">
-              {/* Logo - visible on mobile only, aligned left */}
-              {logoUrl && (
-                <img
-                  src={logoUrl}
-                  onClick={onLogoClick}
-                  alt="Logo"
-                  className="h-10 w-10 flex-shrink-0 cursor-pointer lg:hidden"
-                />
-              )}
+          <div className="flex flex-row items-center gap-3 animate-pop-up">
+            {/* Logo */}
+            {logoUrl && (
+              <img
+                src={logoUrl}
+                onClick={onLogoClick}
+                alt="Logo"
+                className="h-10 w-10 flex-shrink-0 cursor-pointer"
+              />
+            )}
 
-              <IconButtons />
-            </div>
-
-            {/* Search bar - appear second on mobile (below logo+icons), first on desktop (left side) */}
-            <div className="flex items-center gap-4 lg:order-1 flex-1">
-              {/* Logo - visible on desktop only, aligned with search */}
-              {logoUrl && (
-                <img
-                  src={logoUrl}
-                  onClick={onLogoClick}
-                  alt="Logo"
-                  className="hidden lg:block h-12 w-12 flex-shrink-0 cursor-pointer"
-                />
-              )}
+            {/* Search bar - fills available space and shrinks gracefully */}
+            <div className="flex-1 min-w-0">
               <SearchBar
                 ref={searchBarRef}
-                className="flex-1 lg:w-[calc(50vw+5rem)] lg:flex-none"
+                className="w-full"
                 value={searchInput}
                 valueLabel={searchInputLabel}
                 onChange={handleSearchChange}
@@ -711,12 +717,27 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 activeQueryField={activeQueryField}
               />
             </div>
+
+            <IconButtons />
           </div>
         )}
 
-        {/* When search is NOT active: show icon buttons only on the right */}
+        {/* When search is NOT active: brand on left, icon buttons on right */}
         {!showSearch && (
-          <div className="flex items-center justify-end min-h-[48px]">
+          <div className="flex items-center justify-between min-h-[48px]">
+            <div
+              className="flex items-center gap-2 cursor-pointer select-none"
+              onClick={onLogoClick}
+              role={onLogoClick ? 'button' : undefined}
+              tabIndex={onLogoClick ? 0 : undefined}
+              onKeyDown={onLogoClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLogoClick(); } } : undefined}
+              aria-label="Home"
+            >
+              {logoUrl && (
+                <img src={logoUrl} alt="Logo" className="h-8 w-8 flex-shrink-0" />
+              )}
+              <span className="text-base font-semibold tracking-tight" style={{ color: 'var(--text)' }}>Shelfmark</span>
+            </div>
             <IconButtons />
           </div>
         )}
