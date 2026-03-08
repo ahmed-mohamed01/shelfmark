@@ -2023,6 +2023,8 @@ export const MonitoredPage = ({
           widthClassName="w-auto"
           align="right"
           panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          noScrollLimit={true}
+          usePortal={true}
           renderTrigger={({ isOpen, toggle }) => (
             <button
               type="button"
@@ -2060,6 +2062,8 @@ export const MonitoredPage = ({
           widthClassName="w-auto"
           align="right"
           panelClassName="z-[2200] min-w-[220px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          noScrollLimit={true}
+          usePortal={true}
           renderTrigger={({ isOpen, toggle }) => (
             <button
               type="button"
@@ -2210,7 +2214,7 @@ export const MonitoredPage = ({
       </div>
 
       {/* Navigation */}
-      <div className="flex flex-col py-2">
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-2">
         {/* Search Books — navigates to main search page */}
         <button
           type="button"
@@ -2280,9 +2284,6 @@ export const MonitoredPage = ({
           </div>
         )}
       </div>
-
-      {/* Spacer pushes settings to bottom */}
-      <div className="flex-1" />
 
       {/* Settings / app actions */}
       <div className="border-t py-2" style={{ borderColor: 'var(--border-muted)' }}>
@@ -2379,7 +2380,7 @@ export const MonitoredPage = ({
   if (isAuthorDetailsRoute) {
     return (
       <div className="min-h-screen overflow-x-clip" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
-        <div className="fixed top-0 left-0 right-0 z-40">
+        <div className="fixed top-0 left-0 right-0 z-50">
           {monitoredHeader}
         </div>
 

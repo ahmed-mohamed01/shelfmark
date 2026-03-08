@@ -309,7 +309,7 @@ export const Dropdown = ({
       {isOpen && usePortal && createPortal(
         <div
           ref={panelRef}
-          className={`fixed inline-block border z-[9999] shadow-xl ${panelClassName || widthClassName}`}
+          className={`fixed inline-block border shadow-xl ${panelClassName || `z-[9999] ${widthClassName}`}`}
           style={{
             background: 'var(--bg)',
             borderColor: 'var(--border-muted)',

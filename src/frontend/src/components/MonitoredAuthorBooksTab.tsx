@@ -1255,7 +1255,7 @@ export const MonitoredAuthorBooksTab = ({
   const renderBookOverflowMenu = (book: Book) => {
     const { defaultContentType, defaultAction } = getDefaultBookSearchMode();
     return (
-      <Dropdown widthClassName="w-auto" align="right" panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+      <Dropdown widthClassName="w-auto" align="right" panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl" noScrollLimit={true} usePortal={true}
         renderTrigger={({ isOpen, toggle }) => (
           <button type="button" onClick={toggle} className={`inline-flex items-center justify-center rounded-full text-gray-600 dark:text-gray-200 hover-action transition-colors h-6 w-6 ${isOpen ? 'text-gray-900 dark:text-gray-100' : ''}`} aria-label={`More actions for ${book.title || 'this book'}`} title="More actions">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 12.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM12 18.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" /></svg>
@@ -1285,7 +1285,7 @@ export const MonitoredAuthorBooksTab = ({
             )}
           </span>
         </button>
-        <Dropdown widthClassName="w-auto" align="right" panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+        <Dropdown widthClassName="w-auto" align="right" panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl" noScrollLimit={true} usePortal={true}
           renderTrigger={({ isOpen, toggle }) => (
             <button type="button" onClick={toggle} className={`inline-flex items-center justify-center h-8 w-7 border-l border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover-action ${isOpen ? 'bg-emerald-500/10' : ''}`} aria-label={`More actions for ${book.title || 'this book'}`} title="More actions">
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" /></svg>
