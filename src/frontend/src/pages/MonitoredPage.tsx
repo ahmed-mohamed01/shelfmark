@@ -2179,7 +2179,7 @@ export const MonitoredPage = ({
 
   if (isAuthorDetailsRoute) {
     return (
-      <div className="min-h-screen" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
+      <div className="min-h-screen overflow-x-clip" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
         <div className="fixed top-0 left-0 right-0 z-40">
           {monitoredHeader}
         </div>
