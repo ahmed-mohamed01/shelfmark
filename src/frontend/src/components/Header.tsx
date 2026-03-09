@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { SearchBar, SearchBarHandle } from './SearchBar';
 import { DropdownList } from './DropdownList';
 import { getAdminUsers } from '../services/api';
@@ -104,6 +105,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   const [isClosing, setIsClosing] = useState(false);
   const [shouldAnimateIn, setShouldAnimateIn] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
   const [adminUsers, setAdminUsers] = useState<ActingAsUserSelection[]>([]);
   const [isAdminUsersLoading, setIsAdminUsersLoading] = useState(false);
   const [adminUsersError, setAdminUsersError] = useState<string | null>(null);
@@ -266,6 +268,10 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
     } else {
       if (isAdmin && !hasLoadedAdminUsers && !isAdminUsersLoading) {
         void loadAdminUsers();
+      }
+      if (dropdownRef.current) {
+        const rect = dropdownRef.current.getBoundingClientRect();
+        setPanelPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
       }
       setShouldAnimateIn(true);
       setIsDropdownOpen(true);
@@ -461,14 +467,16 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
         </button>
 
         {/* Dropdown Menu */}
-        {(isDropdownOpen || isClosing) && (
+        {(isDropdownOpen || isClosing) && panelPos && createPortal(
           <div
-            className={`absolute right-0 mt-2 ${dropdownPanelWidthClass} rounded-lg shadow-lg border z-50 ${
+            className={`fixed ${dropdownPanelWidthClass} rounded-lg shadow-lg border z-[9999] ${
               isClosing ? 'animate-fade-out-up' : shouldAnimateIn ? 'animate-fade-in-down' : ''
             }`}
             style={{
               background: 'var(--bg)',
               borderColor: 'var(--border-muted)',
+              top: panelPos.top,
+              right: panelPos.right,
             }}
           >
             <div className="py-1">
@@ -672,7 +680,8 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 </div>
               )}
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
     </div>
