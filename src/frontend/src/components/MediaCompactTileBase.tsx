@@ -3,7 +3,7 @@ import { ReactNode } from 'react';
 interface MediaCompactTileBaseProps {
   title: string;
   media: ReactNode;
-  onOpen: () => void;
+  onOpen?: (() => void) | undefined;
   overflowMenu?: ReactNode;
   topLeftOverlay?: ReactNode;
   topRightOverlay?: ReactNode;
@@ -28,6 +28,16 @@ export const MediaCompactTileBase = ({
   isDimmed = false,
 }: MediaCompactTileBaseProps) => {
   const computedTooltip = tooltip || [title, subtitle, metaLine].filter(Boolean).join('\n');
+  const mediaContent = (
+    <div className={`relative w-full overflow-hidden rounded-t-xl ${isDimmed ? 'opacity-50' : ''}`}>
+      {media}
+      {topRightOverlay ? (
+        <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">
+          {topRightOverlay}
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)]" title={computedTooltip}>
@@ -36,21 +46,22 @@ export const MediaCompactTileBase = ({
           {topLeftOverlay}
         </div>
       ) : null}
-      <button type="button" onClick={onOpen} className="block w-full text-left">
-        <div className={`relative w-full overflow-hidden rounded-t-xl ${isDimmed ? 'opacity-50' : ''}`}>
-          {media}
-          {topRightOverlay ? (
-            <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">
-              {topRightOverlay}
-            </div>
-          ) : null}
-        </div>
-      </button>
+      {onOpen ? (
+        <button type="button" onClick={onOpen} className="block w-full text-left">
+          {mediaContent}
+        </button>
+      ) : (
+        <div>{mediaContent}</div>
+      )}
 
       <div className="flex items-start gap-1 pl-2 pr-0.5 pt-1.5">
-        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
-          <p className={`text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
-        </button>
+        {onOpen ? (
+          <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+            <p className={`text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
+          </button>
+        ) : (
+          <p className={`min-w-0 flex-1 text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
+        )}
         {overflowMenu ? (
           <div className="flex-shrink-0 z-30">
             {overflowMenu}

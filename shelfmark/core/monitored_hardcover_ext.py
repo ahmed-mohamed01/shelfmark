@@ -99,6 +99,60 @@ class MonitoredHardcoverProvider(HardcoverProvider):
         )
         return (result or {}).get("books") or []
 
+    def browse_author_books(
+        self,
+        author_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Fetch all books for an author without download-availability filters.
+
+        Used for the unmonitored author browse view. Returns all books regardless
+        of whether they have ISBNs or ASINs — just filters compilations and
+        requires at least 1 user to reduce noise.
+        """
+        query = """
+        query BrowseAuthorBooks($authorId: Int!, $limit: Int!, $offset: Int!) {
+            books(
+                where: {
+                    contributions: { author: { id: { _eq: $authorId } } }
+                    compilation: { _eq: false }
+                    users_count: { _gt: 0 }
+                }
+                limit: $limit
+                offset: $offset
+                order_by: { release_date: asc }
+            ) {
+                id
+                title
+                description
+                rating
+                users_read_count
+                release_date
+                image { url }
+                book_series {
+                    position
+                    series { name primary_books_count }
+                }
+                featured_book_series {
+                    position
+                    series { name primary_books_count }
+                }
+                default_physical_edition {
+                    isbn_13
+                    isbn_10
+                    release_date
+                }
+            }
+        }
+        """
+        result = self._execute_query(
+            query,
+            {"authorId": int(author_id), "limit": limit, "offset": offset},
+        )
+        return (result or {}).get("books") or []
+
     def get_book_rich(
         self, book_id: str, *, lang_codes: list[str] | None = None
     ) -> dict | None:

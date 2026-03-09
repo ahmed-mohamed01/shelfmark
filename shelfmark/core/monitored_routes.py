@@ -1626,3 +1626,133 @@ def register_monitored_routes(
         except Exception as e:
             logger.error_trace(f"Metadata author details error: {e}")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/metadata/authors/<provider>/<author_id>/books", methods=["GET"])
+    def api_metadata_author_books(provider: str, author_id: str):
+        """Fetch an author's book list directly from a metadata provider (no DB writes)."""
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        try:
+            limit = min(int(request.args.get("limit", 200)), 500)
+        except (TypeError, ValueError):
+            limit = 200
+
+        try:
+            from shelfmark.metadata_providers import (
+                get_provider,
+                is_provider_registered,
+                get_provider_kwargs,
+            )
+            from shelfmark.core.utils import transform_cover_url
+
+            if not is_provider_registered(provider):
+                return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
+
+            kwargs = get_provider_kwargs(provider)
+            prov = get_provider(provider, **kwargs)
+            if not prov.is_available():
+                return jsonify({"error": f"Provider '{provider}' is not available"}), 503
+
+            if provider != "hardcover":
+                return jsonify({"provider": provider, "provider_id": str(author_id), "books": []})
+
+            from shelfmark.core.monitored_hardcover_ext import MonitoredHardcoverProvider
+            if not isinstance(prov, MonitoredHardcoverProvider):
+                # Upgrade the provider instance to the monitored subclass
+                mono_prov = MonitoredHardcoverProvider(**kwargs)
+            else:
+                mono_prov = prov
+
+            if not mono_prov.is_available():
+                return jsonify({"error": "Provider not available"}), 503
+
+            raw_books = []
+            offset = 0
+            page_size = min(limit, 100)
+            while len(raw_books) < limit:
+                batch = mono_prov.browse_author_books(author_id, offset=offset, limit=page_size)
+                if not batch:
+                    break
+                raw_books.extend(batch)
+                if len(batch) < page_size:
+                    break
+                offset += page_size
+
+            raw_books = raw_books[:limit]
+
+            def _normalize_book(book: dict) -> dict:
+                # Series: prefer featured_book_series, fall back to book_series[0].
+                # featured_book_series may be a single dict (Hardcover returns just the
+                # featured entry) while book_series is always a list.
+                fbs = book.get("featured_book_series")
+                first: dict | None = None
+                if isinstance(fbs, dict) and fbs:
+                    first = fbs
+                elif isinstance(fbs, list) and fbs:
+                    first = fbs[0]
+                else:
+                    bs = book.get("book_series")
+                    if isinstance(bs, list) and bs:
+                        first = bs[0]
+                series_name: str | None = None
+                series_position: float | None = None
+                series_count: int | None = None
+                if first:
+                    s = first.get("series") or {}
+                    series_name = s.get("name") or None
+                    series_position = first.get("position")
+                    series_count = s.get("primary_books_count")
+
+                # Cover URL
+                cover_url: str | None = None
+                image = book.get("image")
+                if isinstance(image, dict):
+                    cover_url = image.get("url")
+                elif isinstance(image, str):
+                    cover_url = image
+                if cover_url:
+                    cache_id = f"hardcover_book_{book.get('id')}"
+                    cover_url = transform_cover_url(cover_url, cache_id)
+
+                # Release date / year
+                release_date: str | None = book.get("release_date")
+                edition = book.get("default_physical_edition") or {}
+                if not release_date:
+                    release_date = edition.get("release_date")
+                publish_year: int | None = None
+                if release_date:
+                    try:
+                        publish_year = int(str(release_date)[:4])
+                    except (ValueError, TypeError):
+                        pass
+
+                # ISBN
+                isbn_13: str | None = None
+                preferred = book.get("preferred_isbns") or []
+                if preferred:
+                    isbn_13 = preferred[0].get("isbn_13")
+                if not isbn_13:
+                    isbn_13 = edition.get("isbn_13")
+
+                return {
+                    "provider": "hardcover",
+                    "provider_book_id": str(book.get("id")),
+                    "title": book.get("title") or "",
+                    "publish_year": publish_year,
+                    "release_date": release_date,
+                    "cover_url": cover_url,
+                    "description": book.get("description"),
+                    "series_name": series_name,
+                    "series_position": series_position,
+                    "series_count": series_count,
+                    "isbn_13": isbn_13,
+                }
+
+            books = [_normalize_book(b) for b in raw_books]
+            return jsonify({"provider": provider, "provider_id": str(author_id), "books": books})
+
+        except Exception as e:
+            logger.error_trace(f"Metadata author books error: {e}")
+            return jsonify({"error": str(e)}), 500

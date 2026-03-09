@@ -62,7 +62,7 @@ export const MonitoredTableRowBase = ({
       tabIndex={onRowClick ? 0 : undefined}
     >
       <div className={`grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full ${gridClassName}`}>
-        {leftSlot ? <div className={leftClassName}>{leftSlot}</div> : null}
+        <div className={leftClassName}>{leftSlot}</div>
         {mediaSlot ? <div className={mediaClassName}>{mediaSlot}</div> : null}
         <div className={mainClassName}>{mainSlot}</div>
         {middleSlot ? <div className={middleClassName}>{middleSlot}</div> : null}

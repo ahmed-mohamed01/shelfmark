@@ -7,8 +7,8 @@ interface MonitoredBookCompactTileProps {
   title: string;
   thumbnail: ReactNode;
   overflowMenu: ReactNode;
-  onOpenDetails: () => void;
-  onToggleSelect: () => void;
+  onOpenDetails?: (() => void) | undefined;
+  onToggleSelect?: (() => void) | undefined;
   isSelected: boolean;
   hasActiveSelection: boolean;
   seriesPosition?: number;
@@ -47,7 +47,7 @@ export const MonitoredBookCompactTile = ({
   showPopularityLine = false,
   isDimmed = false,
 }: MonitoredBookCompactTileProps) => {
-  const topLeftOverlay = (
+  const topLeftOverlay = onToggleSelect ? (
     <button
       type="button"
       onClick={onToggleSelect}
@@ -62,7 +62,7 @@ export const MonitoredBookCompactTile = ({
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /></svg>
       )}
     </button>
-  );
+  ) : null;
 
   const topRightOverlay = (
     <>

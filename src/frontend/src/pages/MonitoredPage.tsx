@@ -22,6 +22,7 @@ import {
   deleteMonitoredAuthorsByIds,
 } from '../services/monitoredApi';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
+import { BookMonitorModal } from '../components/BookMonitorModal';
 import { EditAuthorModal } from '../components/EditAuthorModal';
 import { Dropdown } from '../components/Dropdown';
 import { BookDetailsModal } from '../components/BookDetailsModal';
@@ -420,19 +421,9 @@ export const MonitoredPage = ({
   }));
 
   const [bookMonitorModalState, setBookMonitorModalState] = useState<{
-    open: boolean;
     book: Book | null;
-    ebookAuthorDir: string;
-    audiobookAuthorDir: string;
-    monitorEbook: boolean;
-    monitorAudiobook: boolean;
   }>({
-    open: false,
     book: null,
-    ebookAuthorDir: '',
-    audiobookAuthorDir: '',
-    monitorEbook: true,
-    monitorAudiobook: true,
   });
 
   const [monitoredEbookRoots, setMonitoredEbookRoots] = useState<string[]>([]);
@@ -1541,31 +1532,12 @@ export const MonitoredPage = ({
   }, [authorQuery, location.pathname, navigate]);
 
   const closeBookMonitorModal = useCallback(() => {
-    setBookMonitorModalState({
-      open: false,
-      book: null,
-      ebookAuthorDir: '',
-      audiobookAuthorDir: '',
-      monitorEbook: true,
-      monitorAudiobook: true,
-    });
-    setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
+    setBookMonitorModalState({ book: null });
   }, []);
 
   const openBookMonitorModal = useCallback((book: Book) => {
-    const primaryAuthor = extractPrimaryAuthorName(book.author || '') || normalizeAuthor(book.title || '') || 'Unknown';
-    const ebookSuggestion = monitoredEbookRoots.length > 0 ? joinPath(monitoredEbookRoots[0], primaryAuthor) : '';
-    const audioSuggestion = monitoredAudiobookRoots.length > 0 ? joinPath(monitoredAudiobookRoots[0], primaryAuthor) : '';
-    setBookMonitorModalState({
-      open: true,
-      book,
-      ebookAuthorDir: ebookSuggestion,
-      audiobookAuthorDir: audioSuggestion,
-      monitorEbook: true,
-      monitorAudiobook: true,
-    });
-    setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
-  }, [joinPath, monitoredAudiobookRoots, monitoredEbookRoots]);
+    setBookMonitorModalState({ book });
+  }, []);
 
   const runBookResultInteractiveSearch = useCallback((book: Book, contentType: ContentType) => {
     if (!onGetReleases) {
@@ -1625,75 +1597,6 @@ export const MonitoredPage = ({
   const handleBookSearchResultGet = useCallback(async (book: Book) => {
     runBookResultInteractiveSearch(book, defaultReleaseContentType);
   }, [defaultReleaseContentType, runBookResultInteractiveSearch]);
-
-  const confirmMonitorBook = useCallback(async () => {
-    const book = bookMonitorModalState.book;
-    if (!book) return;
-
-    const provider = (book.provider || '').trim();
-    const providerId = (book.provider_id || '').trim();
-    if (!provider || !providerId) {
-      setMonitoredError('Selected book is missing provider metadata and cannot be monitored.');
-      return;
-    }
-
-    const monitorEbook = Boolean(bookMonitorModalState.monitorEbook);
-    const monitorAudiobook = Boolean(bookMonitorModalState.monitorAudiobook);
-    if (!monitorEbook && !monitorAudiobook) {
-      setMonitoredError('Enable eBook, Audiobook, or both to monitor this book.');
-      return;
-    }
-
-    const ebookAuthorDir = normalizeAbsolutePath(bookMonitorModalState.ebookAuthorDir);
-    const audiobookAuthorDir = normalizeAbsolutePath(bookMonitorModalState.audiobookAuthorDir);
-
-    if (!ebookAuthorDir && !audiobookAuthorDir) {
-      setMonitoredError('Please set an Ebook folder or Audiobook folder.');
-      return;
-    }
-
-    setMonitoredError(null);
-    try {
-      const created = await createMonitoredEntity({
-        kind: 'book',
-        name: (book.title || '').trim() || `${provider}:${providerId}`,
-        provider,
-        provider_id: providerId,
-        settings: {
-          photo_url: book.preview,
-          book_title: book.title,
-          book_author: book.author,
-          book_source_url: book.source_url,
-          ebook_author_dir: ebookAuthorDir || undefined,
-          audiobook_author_dir: audiobookAuthorDir || undefined,
-          monitor_ebook: monitorEbook,
-          monitor_audiobook: monitorAudiobook,
-        },
-      });
-
-      setMonitoredBooksSources((prev) => {
-        if (prev.some((entity) => entity.id === created.id)) {
-          return prev;
-        }
-        return [
-          {
-            id: created.id,
-            kind: created.kind,
-            name: created.name,
-            provider: created.provider || undefined,
-            provider_id: created.provider_id || undefined,
-            cached_source_url: created.cached_source_url || undefined,
-            settings: created.settings,
-          },
-          ...prev,
-        ];
-      });
-      closeBookMonitorModal();
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to monitor book';
-      setMonitoredError(message);
-    }
-  }, [bookMonitorModalState, closeBookMonitorModal, normalizeAbsolutePath]);
 
   const openMonitorModal = useCallback((payload: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number }) => {
     const normalized = normalizeAuthor(payload.name);
@@ -2438,248 +2341,27 @@ export const MonitoredPage = ({
             </div>
           ) : null}
 
-      {bookMonitorModalState.open && bookMonitorModalState.book ? (
-        <div
-          className="modal-overlay active sm:px-6 sm:py-6"
-          style={{ zIndex: 1200 }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              closeBookMonitorModal();
-            }
-          }}
-        >
-          <div
-            className="details-container w-full max-w-lg h-auto settings-modal-enter"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Monitor book"
-          >
-            <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
-              <header className="flex items-start justify-between gap-3 border-b border-[var(--border-muted)] px-5 py-4">
-                <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Monitor book</div>
-                  <div className="mt-1 text-base font-semibold truncate">{bookMonitorModalState.book.title || 'Unknown title'}</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">{bookMonitorModalState.book.author || 'Unknown author'}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeBookMonitorModal}
-                  className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-                  aria-label="Close"
-                >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </header>
-
-              <div className="px-5 py-4 space-y-4">
-                <div className="flex items-center gap-2">
-                  <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
-                    <input
-                      type="checkbox"
-                      checked={bookMonitorModalState.monitorEbook}
-                      onChange={(e) => setBookMonitorModalState((prev) => ({ ...prev, monitorEbook: e.target.checked }))}
-                      className="accent-emerald-600"
-                    />
-                    Monitor eBook
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
-                    <input
-                      type="checkbox"
-                      checked={bookMonitorModalState.monitorAudiobook}
-                      onChange={(e) => setBookMonitorModalState((prev) => ({ ...prev, monitorAudiobook: e.target.checked }))}
-                      className="accent-emerald-600"
-                    />
-                    Monitor Audiobook
-                  </label>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Ebook folder</div>
-                  <div className="space-y-2">
-                    {(() => {
-                      const authorName = extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
-                      const rootValue = stripTrailingAuthorName(bookMonitorModalState.ebookAuthorDir, authorName);
-                      const suffix = authorName ? `/${authorName}` : '';
-                      return (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFolderBrowserState({ open: true, kind: 'ebook', initialPath: rootValue || null });
-                              }}
-                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                            >
-                              Browse
-                            </button>
-                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">Type or browse to set the root author folder.</div>
-                          </div>
-                          <div className="relative">
-                            <div className="flex items-stretch rounded-xl border border-black/10 dark:border-white/10 overflow-hidden bg-white/80 dark:bg-white/10">
-                              <input
-                                value={rootValue}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  const nextFull = authorName ? joinPath(value, authorName) : value;
-                                  setBookMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: nextFull }));
-                                  void refreshPathSuggestions('ebook', value);
-                                }}
-                                onFocus={() => void refreshPathSuggestions('ebook', rootValue)}
-                                onBlur={() => {
-                                  window.setTimeout(() => {
-                                    setPathSuggestState((prev) => ({ ...prev, open: false }));
-                                  }, 150);
-                                }}
-                                placeholder="/books/ebooks"
-                                className="flex-1 min-w-0 px-3 py-2 text-sm bg-transparent outline-none"
-                              />
-                              {suffix ? (
-                                <div className="flex items-center px-2 text-sm text-gray-400 dark:text-gray-500 border-l border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 select-none whitespace-nowrap">
-                                  {suffix}
-                                </div>
-                              ) : null}
-                            </div>
-                            {pathSuggestState.open && pathSuggestState.kind === 'ebook' ? (
-                              <div className="absolute z-10 mt-1 w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-lg overflow-hidden">
-                                {pathSuggestState.loading ? (
-                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Loading…</div>
-                                ) : pathSuggestState.error ? (
-                                  <div className="px-3 py-2 text-xs text-red-500">{pathSuggestState.error}</div>
-                                ) : pathSuggestState.entries.length === 0 ? (
-                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">No folders</div>
-                                ) : (
-                                  <div className="max-h-56 overflow-auto">
-                                    {pathSuggestState.entries.map((entry) => (
-                                      <button
-                                        key={entry.path}
-                                        type="button"
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        onClick={() => {
-                                          const nextFull = authorName ? joinPath(entry.path, authorName) : entry.path;
-                                          setBookMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: nextFull }));
-                                          setPathSuggestState((prev) => ({ ...prev, open: false }));
-                                        }}
-                                        className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                                      >
-                                        {entry.path}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ) : null}
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Audiobook folder</div>
-                  <div className="space-y-2">
-                    {(() => {
-                      const authorName = extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
-                      const rootValue = stripTrailingAuthorName(bookMonitorModalState.audiobookAuthorDir, authorName);
-                      const suffix = authorName ? `/${authorName}` : '';
-                      return (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFolderBrowserState({ open: true, kind: 'audiobook', initialPath: rootValue || null });
-                              }}
-                              className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                            >
-                              Browse
-                            </button>
-                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">Type or browse to set the root author folder.</div>
-                          </div>
-                          <div className="relative">
-                            <div className="flex items-stretch rounded-xl border border-black/10 dark:border-white/10 overflow-hidden bg-white/80 dark:bg-white/10">
-                              <input
-                                value={rootValue}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  const nextFull = authorName ? joinPath(value, authorName) : value;
-                                  setBookMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: nextFull }));
-                                  void refreshPathSuggestions('audiobook', value);
-                                }}
-                                onFocus={() => void refreshPathSuggestions('audiobook', rootValue)}
-                                onBlur={() => {
-                                  window.setTimeout(() => {
-                                    setPathSuggestState((prev) => ({ ...prev, open: false }));
-                                  }, 150);
-                                }}
-                                placeholder="/books/audiobooks"
-                                className="flex-1 min-w-0 px-3 py-2 text-sm bg-transparent outline-none"
-                              />
-                              {suffix ? (
-                                <div className="flex items-center px-2 text-sm text-gray-400 dark:text-gray-500 border-l border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 select-none whitespace-nowrap">
-                                  {suffix}
-                                </div>
-                              ) : null}
-                            </div>
-                            {pathSuggestState.open && pathSuggestState.kind === 'audiobook' ? (
-                              <div className="absolute z-10 mt-1 w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-lg overflow-hidden">
-                                {pathSuggestState.loading ? (
-                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Loading…</div>
-                                ) : pathSuggestState.error ? (
-                                  <div className="px-3 py-2 text-xs text-red-500">{pathSuggestState.error}</div>
-                                ) : pathSuggestState.entries.length === 0 ? (
-                                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">No folders</div>
-                                ) : (
-                                  <div className="max-h-56 overflow-auto">
-                                    {pathSuggestState.entries.map((entry) => (
-                                      <button
-                                        key={entry.path}
-                                        type="button"
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        onClick={() => {
-                                          const nextFull = authorName ? joinPath(entry.path, authorName) : entry.path;
-                                          setBookMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: nextFull }));
-                                          setPathSuggestState((prev) => ({ ...prev, open: false }));
-                                        }}
-                                        className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                                      >
-                                        {entry.path}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ) : null}
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-
-              <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
-                <button
-                  type="button"
-                  onClick={closeBookMonitorModal}
-                  className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-gray-900 font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void confirmMonitorBook()}
-                  className="px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium"
-                >
-                  Monitor
-                </button>
-              </footer>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <BookMonitorModal
+        book={bookMonitorModalState.book}
+        onClose={closeBookMonitorModal}
+        onMonitored={(created) => {
+          setMonitoredBooksSources((prev) => {
+            if (prev.some((entity) => entity.id === created.id)) return prev;
+            return [
+              {
+                id: created.id,
+                kind: created.kind,
+                name: created.name,
+                provider: created.provider || undefined,
+                provider_id: created.provider_id || undefined,
+                cached_source_url: created.cached_source_url || undefined,
+                settings: created.settings,
+              },
+              ...prev,
+            ];
+          });
+        }}
+      />
 
           {(view === 'landing' && landingTab !== 'search') ? (
             (!monitoredLoaded && monitored.length === 0) ? (
@@ -3699,23 +3381,8 @@ export const MonitoredPage = ({
         overlayZIndex={1300}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
-          const authorName = monitorModalState.author?.name
-            || extractPrimaryAuthorName(bookMonitorModalState.book?.author || '');
+          const authorName = monitorModalState.author?.name;
           const suggested = authorName ? joinPath(path, authorName) : path;
-          if (bookMonitorModalState.open && bookMonitorModalState.book) {
-            if (folderBrowserState.kind === 'audiobook') {
-              setBookMonitorModalState((prev) => ({
-                ...prev,
-                audiobookAuthorDir: suggested,
-              }));
-            } else {
-              setBookMonitorModalState((prev) => ({
-                ...prev,
-                ebookAuthorDir: suggested,
-              }));
-            }
-            return;
-          }
           if (folderBrowserState.kind === 'audiobook') {
             setMonitorModalState((prev) => ({
               ...prev,

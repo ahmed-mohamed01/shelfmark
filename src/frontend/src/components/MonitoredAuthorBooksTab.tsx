@@ -7,6 +7,8 @@ import {
   syncMonitoredEntity,
   scanMonitoredEntityFiles,
   updateMonitoredBooksMonitorFlags,
+  getMetadataAuthorBooks,
+  ExternalBookRow,
 } from '../services/monitoredApi';
 import { useSocket } from '../contexts/SocketContext';
 import { Dropdown } from './Dropdown';
@@ -322,6 +324,7 @@ export interface MonitoredAuthorBooksTabProps {
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
   onFallbackPhotoChange?: (url: string | null) => void;
+  onMonitorBook?: (book: Book) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +346,7 @@ export const MonitoredAuthorBooksTab = ({
   defaultReleaseActionAudiobook = 'interactive_search',
   renderEmbeddedSearch,
   onFallbackPhotoChange,
+  onMonitorBook,
 }: MonitoredAuthorBooksTabProps) => {
   // --- state ---
   const [booksSort, setBooksSort] = useState<AuthorBooksSort>(() => {
@@ -608,8 +612,34 @@ export const MonitoredAuthorBooksTab = ({
       isLoadingBooksRef.current = true;
       setIsLoadingBooks(true);
       setIsRefreshing(false);
+      const externalBookToBook = (row: ExternalBookRow): Book => ({
+        id: `${row.provider || 'unknown'}:${row.provider_book_id}`,
+        title: row.title,
+        author: row.authors || author?.name || '',
+        year: row.publish_year != null ? String(row.publish_year) : undefined,
+        release_date: row.release_date || undefined,
+        preview: row.cover_url || undefined,
+        isbn_13: row.isbn_13 || undefined,
+        provider: row.provider || undefined,
+        provider_id: row.provider_book_id || undefined,
+        series_name: (row.series_name || '').trim() || undefined,
+        series_position: row.series_position != null ? row.series_position : undefined,
+        series_count: row.series_count != null ? row.series_count : undefined,
+        description: (typeof row.description === 'string' && row.description.trim()) ? row.description.trim() : undefined,
+        display_fields: [
+          { label: 'Release Date', value: (typeof row.release_date === 'string' && row.release_date.trim()) ? row.release_date.trim() : 'TBA' },
+        ],
+      });
+
       try {
-        if (!monitoredEntityId) return;
+        if (!monitoredEntityId) {
+          if (author?.provider && author?.provider_id) {
+            const resp = await getMetadataAuthorBooks(author.provider, author.provider_id);
+            if (isCancelled) return;
+            setBooks(resp.books.map(externalBookToBook));
+          }
+          return;
+        }
         const resp: MonitoredBooksResponse = await listMonitoredBooks(monitoredEntityId);
         if (isCancelled) return;
         setSyncStatus(resp.sync_status ?? 'idle');
@@ -1247,6 +1277,11 @@ export const MonitoredAuthorBooksTab = ({
               {monitorState.monitorAudiobook ? <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg> : null}
             </button>
           </>
+        ) : onMonitorBook ? (
+          <>
+            <div className="my-1 border-t border-[var(--border-muted)]" />
+            <button type="button" onClick={() => { close(); onMonitorBook(book); }} className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap">Monitor this book</button>
+          </>
         ) : null}
       </div>
     );
@@ -1553,27 +1588,29 @@ export const MonitoredAuthorBooksTab = ({
                   {filteredGroupedBooks.map((group, groupIndex) => {
                     const isCollapsed = collapsedGroups[group.key] ?? false;
                     const isDormantGroup = Boolean((group as any).isDormantGroup);
-                    const allSelectedInGroup = group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]));
-                    const booksInSeries = group.books.length;
-                    const booksOnDisk = group.books.reduce((count, book) => {
+                    const allSelectedInGroup = monitoredEntityId ? (group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]))) : false;
+                    const booksInSeries = monitoredEntityId ? group.books.length : 0;
+                    const booksOnDisk = monitoredEntityId ? group.books.reduce((count, book) => {
                       const availability = getMonitoredAvailabilityForBook(book);
                       return count + (availability.hasEbook || availability.hasAudiobook ? 1 : 0);
-                    }, 0);
+                    }, 0) : 0;
                     return (
                       <div key={group.key} data-series-key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
                         <div className={`w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3 ${isDormantGroup ? 'opacity-60' : ''}`}>
-                          <button type="button" onClick={() => toggleSelectAllInGroup(group.books)} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
-                            {allSelectedInGroup ? (
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /><path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" /></svg>
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /></svg>
-                            )}
-                          </button>
+                          {monitoredEntityId ? (
+                            <button type="button" onClick={() => toggleSelectAllInGroup(group.books)} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
+                              {allSelectedInGroup ? (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /><path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" /></svg>
+                              ) : (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /></svg>
+                              )}
+                            </button>
+                          ) : null}
                           <button type="button" onClick={() => toggleGroupCollapsed(group.key)} className="flex-1 flex items-center gap-2 min-w-0 hover-action" aria-expanded={!isCollapsed}>
                             <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                             <div className="min-w-0 flex items-center gap-2">
                               <p className="text-s font-semibold text-gray-700 dark:text-gray-200 truncate">{group.title}</p>
-                              <span className={`text-[11px] tabular-nums ${booksOnDisk > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}>({booksOnDisk}/{booksInSeries})</span>
+                              {monitoredEntityId ? <span className={`text-[11px] tabular-nums ${booksOnDisk > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}>({booksOnDisk}/{booksInSeries})</span> : null}
                             </div>
                           </button>
                         </div>
@@ -1609,18 +1646,20 @@ export const MonitoredAuthorBooksTab = ({
                                 const isDormant = isBookDormant(book);
                                 return (
                                   <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
-                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))} onToggleSelect={() => toggleBookSelection(book.id)} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={renderBookOverflowMenu(book)} isDimmed={isDormant} />
+                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant} />
                                   </div>
                                 );
                               })}
                             </div>
                           ) : (
                             <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                              <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(190px,190px)_minmax(90px,90px)]">
-                                <div /><div /><div />
-                                <div className="flex w-full justify-center"><span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</span></div>
-                                <div />
-                              </div>
+                              {monitoredEntityId ? (
+                                <div className="hidden sm:grid items-center px-1.5 sm:px-2 pt-1 pb-2 sm:gap-y-1 sm:gap-x-2 grid-cols-[auto_auto_minmax(0,2fr)_minmax(190px,190px)_minmax(90px,90px)]">
+                                  <div /><div /><div />
+                                  <div className="flex w-full justify-center"><span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</span></div>
+                                  <div />
+                                </div>
+                              ) : null}
                               {group.books.map((book, bookIndex) => (
                                 (() => {
                                   const popularity = extractBookPopularity(book);
@@ -1644,8 +1683,8 @@ export const MonitoredAuthorBooksTab = ({
                                   const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
                                     <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
-                                    <MonitoredBookTableRow isDimmed={isDormant} hasActiveSelection={hasActiveBookSelection}
-                                      leadingControl={(() => {
+                                    <MonitoredBookTableRow isDimmed={isDormant} hasActiveSelection={monitoredEntityId ? hasActiveBookSelection : false}
+                                      leadingControl={monitoredEntityId ? (() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);
                                         return (
                                           <button type="button" onClick={() => toggleBookSelection(book.id)} className={`transition-opacity ${isSelected || hasActiveBookSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`} role="checkbox" aria-checked={isSelected} aria-label={`Select ${book.title || 'book'}`} title={isSelected ? 'Unselect book' : 'Select book'}>
@@ -1656,9 +1695,9 @@ export const MonitoredAuthorBooksTab = ({
                                             )}
                                           </button>
                                         );
-                                      })()}
+                                      })() : null}
                                       thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} />}
-                                      onOpen={() => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows))}
+                                      onOpen={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined}
                                       titleRow={(
                                         <div className="flex items-center gap-1.5 min-w-0">
                                           <h3 className="font-semibold text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
@@ -1669,19 +1708,21 @@ export const MonitoredAuthorBooksTab = ({
                                               #{groupSeriesPos}{groupSeriesCount != null ? `/${groupSeriesCount}` : ''}
                                             </span>
                                           ) : null}
-                                          {/* Availability dots: mobile only (replaces the hidden availability column) */}
-                                          <span className="md:hidden inline-flex items-center gap-0.5 flex-shrink-0">
-                                            {tEbookStatus && (
-                                              <span title={`eBook: ${tEbookStatus}`}>
-                                                <svg className={`w-3 h-3 ${tEbookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
-                                              </span>
-                                            )}
-                                            {tAudiobookStatus && (
-                                              <span title={`Audiobook: ${tAudiobookStatus}`}>
-                                                <svg className={`w-3 h-3 ${tAudiobookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>
-                                              </span>
-                                            )}
-                                          </span>
+                                          {/* Availability dots: mobile only, monitored authors only */}
+                                          {monitoredEntityId ? (
+                                            <span className="md:hidden inline-flex items-center gap-0.5 flex-shrink-0">
+                                              {tEbookStatus && (
+                                                <span title={`eBook: ${tEbookStatus}`}>
+                                                  <svg className={`w-3 h-3 ${tEbookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
+                                                </span>
+                                              )}
+                                              {tAudiobookStatus && (
+                                                <span title={`Audiobook: ${tAudiobookStatus}`}>
+                                                  <svg className={`w-3 h-3 ${tAudiobookStatus === 'available' ? 'text-emerald-500' : 'text-sky-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>
+                                                </span>
+                                              )}
+                                            </span>
+                                          ) : null}
                                         </div>
                                       )}
                                       subtitleRow={(
@@ -1717,18 +1758,18 @@ export const MonitoredAuthorBooksTab = ({
                                           )}
                                         </>
                                       )}
-                                      availabilitySlot={(
+                                      availabilitySlot={monitoredEntityId ? (
                                         <div className="flex items-center justify-center gap-1">
                                           {tEbookStatus ? <FormatStatusBadge format="ebook" status={tEbookStatus} /> : null}
                                           {tAudiobookStatus ? <FormatStatusBadge format="audiobook" status={tAudiobookStatus} /> : null}
                                         </div>
-                                      )}
-                                      trailingSlot={(
+                                      ) : null}
+                                      trailingSlot={monitoredEntityId ? (
                                         <>
                                           <div className="hidden sm:block">{renderBookTableActions(book)}</div>
                                           <div className="sm:hidden">{renderBookOverflowMenu(book)}</div>
                                         </>
-                                      )}
+                                      ) : null}
                                     />
                                     </div>
                                   );
@@ -1757,8 +1798,10 @@ export const MonitoredAuthorBooksTab = ({
         entityId={monitoredEntityId ?? null}
         provider={activeBookDetails?.provider ?? null}
         providerBookId={activeBookDetails?.provider_id ?? null}
+        previewBook={!monitoredEntityId ? activeBookDetails : null}
+        onMonitorBook={!monitoredEntityId ? onMonitorBook : undefined}
         onClose={() => setActiveBookDetails(null)}
-        onToggleMonitor={activeBookDetails ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
+        onToggleMonitor={activeBookDetails && monitoredEntityId ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
         renderEmbeddedSearch={(book, contentType) => {
           if (renderEmbeddedSearch) {

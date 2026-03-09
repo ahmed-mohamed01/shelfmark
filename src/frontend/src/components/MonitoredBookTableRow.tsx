@@ -4,7 +4,7 @@ import { MonitoredTableRowBase } from './MonitoredTableRowBase';
 interface MonitoredBookTableRowProps {
   leadingControl: ReactNode;
   thumbnail: ReactNode;
-  onOpen: () => void;
+  onOpen?: (() => void) | undefined;
   titleRow: ReactNode;
   subtitleRow: ReactNode;
   metaRow?: ReactNode;
@@ -26,7 +26,7 @@ export const MonitoredBookTableRow = ({
   isDimmed = false,
   hasActiveSelection = false,
 }: MonitoredBookTableRowProps) => {
-  const mainSlot = (
+  const mainSlot = onOpen ? (
     <button
       type="button"
       className="w-full min-w-0 flex flex-col justify-center sm:pl-3 text-left"
@@ -36,6 +36,12 @@ export const MonitoredBookTableRow = ({
       {subtitleRow}
       {metaRow}
     </button>
+  ) : (
+    <div className="w-full min-w-0 flex flex-col justify-center sm:pl-3">
+      {titleRow}
+      {subtitleRow}
+      {metaRow}
+    </div>
   );
 
   const gridClassName = hasActiveSelection

@@ -76,9 +76,9 @@ export const MonitoredAuthorTableRow = ({
 
   return (
     <MonitoredTableRowBase
-      gridClassName={onToggleSelect
+      gridClassName={onToggleSelect || onEdit
         ? (trailingAction ? 'grid-cols-[auto_auto_minmax(0,1fr)_auto]' : 'grid-cols-[auto_auto_minmax(0,1fr)]')
-        : (trailingAction ? 'grid-cols-[auto_minmax(0,1fr)_auto]' : 'grid-cols-[auto_minmax(0,1fr)]')}
+        : (trailingAction ? 'grid-cols-[0px_auto_minmax(0,1fr)_auto]' : 'grid-cols-[0px_auto_minmax(0,1fr)]')}
       leftSlot={leftSlot}
       mediaSlot={thumbnail}
       mainSlot={mainSlot}

@@ -554,6 +554,35 @@ export const fsMkdir = async (parent: string, name: string): Promise<{ path: str
 };
 
 // ---------------------------------------------------------------------------
+// External metadata author books (no DB — live from provider)
+// ---------------------------------------------------------------------------
+
+export interface ExternalBookRow {
+  provider: string;
+  provider_book_id: string;
+  title: string;
+  authors?: string | null;
+  publish_year?: number | null;
+  release_date?: string | null;
+  cover_url?: string | null;
+  description?: string | null;
+  series_name?: string | null;
+  series_position?: number | null;
+  series_count?: number | null;
+  isbn_13?: string | null;
+}
+
+export const getMetadataAuthorBooks = async (
+  provider: string,
+  authorId: string,
+  limit = 200,
+): Promise<{ provider: string; provider_id: string; books: ExternalBookRow[] }> => {
+  return fetchJSON(
+    `${API_BASE}/metadata/authors/${encodeURIComponent(provider)}/${encodeURIComponent(authorId)}/books?limit=${limit}`,
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Batch delete helper (was in monitoredAuthors.ts)
 // ---------------------------------------------------------------------------
 

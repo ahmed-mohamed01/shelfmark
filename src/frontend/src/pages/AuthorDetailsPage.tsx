@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
+import { BookMonitorModal } from '../components/BookMonitorModal';
 import { ActivityStatusCounts } from '../utils/activityBadge';
 import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusData } from '../types';
 
@@ -81,6 +82,7 @@ export const AuthorDetailsPage = ({
     ? initialActionOverride
     : defaultReleaseActionAudiobook;
   const [headerSearch, setHeaderSearch] = useState('');
+  const [monitorBookTarget, setMonitorBookTarget] = useState<Book | null>(null);
 
   const author = useMemo<AuthorModalAuthor | null>(() => {
     const name = (searchParams.get('name') || '').trim();
@@ -151,6 +153,7 @@ export const AuthorDetailsPage = ({
             initialBookProviderId={initialBookProviderId}
             monitoredEntityId={monitoredEntityId}
             status={status}
+            onMonitorBook={setMonitorBookTarget}
           />
         ) : (
           <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">
@@ -165,6 +168,12 @@ export const AuthorDetailsPage = ({
           </section>
         )}
       </main>
+
+      <BookMonitorModal
+        book={monitorBookTarget}
+        onClose={() => setMonitorBookTarget(null)}
+        onMonitored={() => setMonitorBookTarget(null)}
+      />
     </div>
   );
 };

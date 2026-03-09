@@ -40,6 +40,7 @@ interface AuthorModalProps {
   onBooksSearchQueryChange?: (value: string) => void;
   openEditOnMount?: boolean;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  onMonitorBook?: (book: Book) => void;
 }
 
 export const AuthorModal = ({
@@ -59,6 +60,7 @@ export const AuthorModal = ({
   onBooksSearchQueryChange,
   openEditOnMount = false,
   renderEmbeddedSearch,
+  onMonitorBook,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -446,6 +448,7 @@ export const AuthorModal = ({
                 defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
                 renderEmbeddedSearch={renderEmbeddedSearch}
                 onFallbackPhotoChange={setFallbackAuthorPhoto}
+                onMonitorBook={onMonitorBook}
               />
             </div>
           </div>

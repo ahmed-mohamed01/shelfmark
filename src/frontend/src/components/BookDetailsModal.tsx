@@ -21,13 +21,15 @@ interface BookDetailsModalProps {
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
   renderEmbeddedSearch: (book: Book, contentType: ContentType) => ReactNode;
+  previewBook?: Book | null;
+  onMonitorBook?: (book: Book) => void;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch, previewBook, onMonitorBook }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -414,7 +416,87 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
     return fields;
   }, [bookRow?.language, bookRow?.readers_count, bookRow?.rating, bookRow?.ratings_count]);
 
-  if (entityId == null || !provider || !providerBookId) return null;
+  // Preview mode: render simplified modal when no monitored entity but previewBook is provided
+  if (entityId == null || !provider || !providerBookId) {
+    if (!previewBook) return null;
+    const pb = previewBook;
+    return (
+      <div
+        className="modal-overlay active sm:px-6 sm:py-6"
+        onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+      >
+        <div
+          className={`details-container w-full max-w-4xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
+            <header className="flex items-start gap-3 border-b border-[var(--border-muted)] px-5 py-4">
+              <div className="flex-1 space-y-1 min-w-0">
+                <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
+                <h3 className="text-lg font-semibold leading-snug truncate">{pb.title || 'Untitled'}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{pb.author || 'Unknown author'}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {onMonitorBook ? (
+                  <button
+                    type="button"
+                    onClick={() => { onMonitorBook(pb); handleClose(); }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    Monitor
+                  </button>
+                ) : null}
+                <button type="button" onClick={handleClose} className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100" aria-label="Close">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </header>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <div className="flex gap-4 px-5 py-4 border-b border-[var(--border-muted)]">
+                {pb.preview ? (
+                  <img src={pb.preview} alt="Book cover" className="rounded-lg shadow-md object-cover object-top flex-shrink-0 w-20 h-[120px]" />
+                ) : (
+                  <div className="rounded-lg border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[10px] text-gray-500 flex-shrink-0 w-20 h-[120px]">No cover</div>
+                )}
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
+                    {pb.year ? <span>{pb.year}</span> : null}
+                    {pb.series_name ? (
+                      <span className="truncate">
+                        {pb.series_position != null ? (
+                          <>#{ pb.series_position}{pb.series_count != null ? `/${pb.series_count}` : ''} in {pb.series_name}</>
+                        ) : (
+                          <>Part of {pb.series_name}</>
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                  {pb.description ? (
+                    <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-4">{pb.description}</p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="px-5 py-4 space-y-4">
+                <div className="text-sm font-medium text-gray-700 dark:text-gray-300">Download</div>
+                <div className="flex flex-wrap gap-2">
+                  {renderEmbeddedSearch(pb, 'ebook')}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {renderEmbeddedSearch(pb, 'audiobook')}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!bookRow || bookLoading || !embeddedSearchBook) {
     return (
       <div className="modal-overlay active sm:px-6 sm:py-6">
