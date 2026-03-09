@@ -35,7 +35,7 @@ export const MonitoredAuthorTableRow = ({
     </div>
   );
 
-  const leftSlot = (
+  const leftSlot = onToggleSelect || onEdit ? (
     <div className="flex items-center gap-1">
       {onToggleSelect ? (
         <button
@@ -72,7 +72,7 @@ export const MonitoredAuthorTableRow = ({
         </button>
       ) : null}
     </div>
-  );
+  ) : null;
 
   return (
     <MonitoredTableRowBase

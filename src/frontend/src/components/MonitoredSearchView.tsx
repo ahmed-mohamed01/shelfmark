@@ -1,27 +1,14 @@
+import type { CSSProperties } from 'react';
 import type { MetadataAuthor } from '../services/monitoredApi';
 import type { Book, ButtonStateInfo, SortOption } from '../types';
-import { AuthorCompactView } from './resultsViews/AuthorCompactView';
 import { Dropdown } from './Dropdown';
 import { MonitoredAuthorTableRow } from './AuthorTableRow';
+import { MonitoredAuthorCompactTile } from './MonitoredAuthorCompactTile';
 import { ResultsSection } from './ResultsSection';
 import { RowThumbnail } from './RowThumbnail';
 import { ViewModeToggle, type ViewModeToggleOption } from './ViewModeToggle';
 
-const GRID_CLASSES = {
-  mobile: 'grid-cols-1 items-start',
-  compact: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 items-start',
-} as const;
-
 export interface MonitoredSearchViewProps {
-  // navigation
-  onBack: () => void;
-  landingTab: string;
-  hasStartedSearch: boolean;
-  displayAuthorsCount: string | number;
-  displayBooksCount: string | number;
-  displayUpcomingCount: string | number;
-  displaySearchCount: string | number;
-  onTabChange: (tab: 'authors' | 'books' | 'upcoming' | 'search') => void;
   // search state
   searchScope: 'authors' | 'books';
   authorQuery: string;
@@ -39,6 +26,8 @@ export interface MonitoredSearchViewProps {
   monitoredSearchSortOptions: SortOption[];
   onBookSortChange: (value: string) => void;
   // author search
+  authorSearchSortValue: string;
+  onAuthorSortChange: (value: string) => void;
   authorResults: string[];
   authorCards: MetadataAuthor[];
   monitoredNames: Set<string>;
@@ -51,18 +40,10 @@ export interface MonitoredSearchViewProps {
   isBookMonitored: (book: Book) => boolean;
   getMonitorResultButtonState: (bookId: string) => ButtonStateInfo;
   noopDownload: (book: Book) => Promise<void>;
-  isDesktop: boolean;
+  compactGridStyle?: CSSProperties;
 }
 
 export function MonitoredSearchView({
-  onBack,
-  landingTab,
-  hasStartedSearch,
-  displayAuthorsCount,
-  displayBooksCount,
-  displayUpcomingCount,
-  displaySearchCount,
-  onTabChange,
   searchScope,
   authorQuery,
   isSearching,
@@ -73,6 +54,8 @@ export function MonitoredSearchView({
   onAuthorViewModeChange,
   onBookSearchViewModeChange,
   bookSearchResults,
+  authorSearchSortValue,
+  onAuthorSortChange,
   bookSearchSortValue,
   monitoredSearchSortOptions,
   onBookSortChange,
@@ -87,7 +70,7 @@ export function MonitoredSearchView({
   isBookMonitored,
   getMonitorResultButtonState,
   noopDownload,
-  isDesktop,
+  compactGridStyle,
 }: MonitoredSearchViewProps) {
   // Prefer enriched author cards; fall back to plain name-only stubs from text search
   const displayedAuthors: MetadataAuthor[] = authorCards.length > 0
@@ -101,82 +84,10 @@ export function MonitoredSearchView({
 
   return (
     <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-4">
-      <div className="mb-3 pb-2 border-b border-black/10 dark:border-white/10">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <button
-              type="button"
-              onClick={onBack}
-              className="rounded-full p-1.5 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-              aria-label="Back to home"
-              title="Back"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.5 7.5 12 15 4.5" />
-              </svg>
-            </button>
-            <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
-              <button
-                type="button"
-                onClick={() => onTabChange('authors')}
-                className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                aria-pressed={landingTab === 'authors'}
-              >
-                Monitored Authors
-                <span className="ml-1 opacity-85">{displayAuthorsCount}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onTabChange('books')}
-                className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                aria-pressed={landingTab === 'books'}
-              >
-                Monitored Books
-                <span className="ml-1 opacity-85">{displayBooksCount}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onTabChange('upcoming')}
-                className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                aria-pressed={landingTab === 'upcoming'}
-              >
-                Upcoming
-                <span className="ml-1 opacity-85">{displayUpcomingCount}</span>
-              </button>
-              {hasStartedSearch ? (
-                <button
-                  type="button"
-                  onClick={() => onTabChange('search')}
-                  className={`px-3.5 py-2 rounded-full text-xs font-medium transition-colors ${landingTab === 'search' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                  aria-pressed={landingTab === 'search'}
-                >
-                  Search
-                  <span className="ml-1 opacity-85">{displaySearchCount}</span>
-                </button>
-              ) : null}
-            </div>
-          </div>
-          <div className="shrink-0">
-            {searchScope === 'authors' ? (
-              <ViewModeToggle
-                value={authorViewMode}
-                onChange={onAuthorViewModeChange}
-                options={authorSearchViewOptions}
-              />
-            ) : (
-              <ViewModeToggle
-                value={bookSearchViewMode}
-                onChange={onBookSearchViewModeChange}
-                options={bookSearchViewOptions}
-              />
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3">
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-black/10 dark:border-white/10 gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-100 truncate">
-            {searchScope === 'books' ? 'New Books' : 'New Authors'}
+            Search Results
           </h2>
           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
             {searchScope === 'books' ? bookSearchResults.length : authorResults.length}
@@ -230,9 +141,63 @@ export function MonitoredSearchView({
               )}
             </Dropdown>
           ) : (
-            <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 text-gray-900 dark:bg-white/10 dark:text-gray-100">
-              Most relevant
-            </span>
+            <Dropdown
+              align="left"
+              widthClassName="w-60 sm:w-72"
+              renderTrigger={({ isOpen, toggle }) => (
+                <button
+                  type="button"
+                  onClick={toggle}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium bg-white/70 hover:bg-white text-gray-900 dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100 ${isOpen ? 'ring-1 ring-emerald-500/50' : ''}`}
+                  title="Sort"
+                  aria-label="Sort"
+                  aria-haspopup="listbox"
+                  aria-expanded={isOpen}
+                >
+                  {monitoredSearchSortOptions.find((o) => o.value === authorSearchSortValue)?.label || monitoredSearchSortOptions[0]?.label || 'Most relevant'}
+                </button>
+              )}
+            >
+              {({ close }) => (
+                <div role="listbox" aria-label="Sort search results">
+                  {monitoredSearchSortOptions.map((option) => {
+                    const isSelected = option.value === authorSearchSortValue;
+                    return (
+                      <button
+                        type="button"
+                        key={option.value}
+                        className={`w-full px-3 py-2 text-left text-base flex items-center justify-between gap-2 hover-surface ${isSelected ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}
+                        onClick={() => { onAuthorSortChange(option.value); close(); }}
+                        role="option"
+                        aria-selected={isSelected}
+                      >
+                        <span>{option.label}</span>
+                        {isSelected ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                          </svg>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Dropdown>
+          )}
+        </div>
+        <div className="shrink-0">
+          {searchScope === 'authors' ? (
+            <ViewModeToggle
+              value={authorViewMode}
+              onChange={onAuthorViewModeChange}
+              options={authorSearchViewOptions}
+            />
+          ) : (
+            <ViewModeToggle
+              value={bookSearchViewMode}
+              onChange={onBookSearchViewModeChange}
+              options={bookSearchViewOptions}
+            />
           )}
         </div>
       </div>
@@ -315,26 +280,47 @@ export function MonitoredSearchView({
             })}
           </div>
         ) : (
-          <div className={`grid gap-4 ${!isDesktop ? GRID_CLASSES.mobile : GRID_CLASSES.compact}`}>
+          <div className="grid gap-4 items-start" style={compactGridStyle}>
             {displayedAuthors.map((author, index) => {
               const name = author.name;
               const isMonitored = monitoredNames.has(name.toLowerCase());
+              const booksCount = author.stats?.books_count;
+              const subtitle = typeof booksCount === 'number' ? `${booksCount} books` : 'Unknown';
               return (
-                <AuthorCompactView
+                <div
                   key={`${author.provider}:${author.provider_id}`}
-                  author={author}
-                  actionLabel={isMonitored ? 'Monitored' : 'Monitor'}
-                  actionDisabled={isMonitored}
-                  onAction={() => onMonitorAuthor({
-                    name,
-                    provider: author.provider,
-                    provider_id: author.provider_id,
-                    photo_url: author.photo_url || undefined,
-                    books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
-                  })}
-                  onOpen={() => onAuthorNavigate(author)}
-                  animationDelay={index * 50}
-                />
+                  className="animate-pop-up will-change-transform"
+                  style={{ animationDelay: `${index * 30}ms` }}
+                >
+                  <MonitoredAuthorCompactTile
+                    name={name || 'Unknown author'}
+                    thumbnail={<RowThumbnail url={author.photo_url} alt={name || 'Author photo'} kind="author" className="w-full aspect-[2/3]" />}
+                    subtitle={subtitle}
+                    onOpenDetails={() => onAuthorNavigate(author)}
+                    footer={(
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMonitorAuthor({
+                            name,
+                            provider: author.provider,
+                            provider_id: author.provider_id,
+                            photo_url: author.photo_url || undefined,
+                            books_count: typeof author.stats?.books_count === 'number' ? author.stats?.books_count : undefined,
+                          });
+                        }}
+                        disabled={isMonitored}
+                        className="inline-flex items-center justify-center gap-1.5 rounded text-white transition-all duration-200 px-2.5 py-1.5 text-xs w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                        {isMonitored ? 'Monitored' : 'Monitor'}
+                      </button>
+                    )}
+                  />
+                </div>
               );
             })}
           </div>

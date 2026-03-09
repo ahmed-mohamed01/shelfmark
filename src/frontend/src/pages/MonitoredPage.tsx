@@ -289,6 +289,7 @@ export const MonitoredPage = ({
     return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
   });
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [view, setView] = useState<'landing' | 'search'>('landing');
   const [searchScope, setSearchScope] = useState<'authors' | 'books'>('authors');
   const [authorQuery, setAuthorQuery] = useState('');
@@ -300,6 +301,7 @@ export const MonitoredPage = ({
   const [authorCards, setAuthorCards] = useState<MetadataAuthor[]>([]);
   const [bookSearchResults, setBookSearchResults] = useState<Book[]>([]);
   const [bookSearchSortValue, setBookSearchSortValue] = useState('relevance');
+  const [authorSearchSortValue, setAuthorSearchSortValue] = useState('relevance');
   const [bookSearchViewMode, setBookSearchViewMode] = useState<'compact' | 'list'>(() => {
     const saved = localStorage.getItem('bookViewMode');
     return saved === 'list' ? 'list' : 'compact';
@@ -1037,6 +1039,12 @@ export const MonitoredPage = ({
     return { gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` };
   }, [isDesktop, monitoredBooksViewMode, monitoredCompactMinWidth]);
 
+  const searchCompactGridStyle = useMemo(() => {
+    if (authorViewMode !== 'compact') return undefined;
+    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.min(monitoredCompactMinWidth, 90);
+    return { gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` };
+  }, [isDesktop, authorViewMode, monitoredCompactMinWidth]);
+
   const isUpcomingTab = landingTab === 'upcoming';
   const activeBookGroups = isUpcomingTab ? upcomingBookGroups : monitoredBookGroups;
   const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
@@ -1461,7 +1469,7 @@ export const MonitoredPage = ({
         return;
       }
 
-      const result = await searchMetadata('', 40, 'relevance', { author: q }, 1, 'ebook');
+      const result = await searchMetadata('', 40, authorSearchSortValue, { author: q }, 1, 'ebook');
       const unique = new Map<string, string>();
 
       result.books.forEach((book) => {
@@ -1489,7 +1497,7 @@ export const MonitoredPage = ({
     } finally {
       setIsSearching(false);
     }
-  }, [authorQuery, bookSearchSortValue, defaultReleaseContentType, searchScope]);
+  }, [authorQuery, authorSearchSortValue, bookSearchSortValue, defaultReleaseContentType, searchScope]);
 
   useEffect(() => {
     if (searchScope !== 'books') {
@@ -1506,6 +1514,16 @@ export const MonitoredPage = ({
       setBookSearchSortValue(monitoredSearchSortOptions[0]?.value || 'relevance');
     }
   }, [bookSearchSortValue, monitoredSearchSortOptions]);
+
+  useEffect(() => {
+    if (searchScope !== 'authors') {
+      return;
+    }
+    if (!normalizeAuthor(authorQuery)) {
+      return;
+    }
+    void runAuthorSearch();
+  }, [authorSearchSortValue, runAuthorSearch, searchScope, authorQuery]);
 
   const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search') => {
     setLandingTab(tab);
@@ -2135,6 +2153,10 @@ export const MonitoredPage = ({
       displayName={displayName}
       onLogout={onLogout}
       onMobileMenuClick={() => setIsMobileNavOpen(true)}
+      showMobileSearchToggle={!isDesktop}
+      mobileSearchOpen={isMobileSearchOpen}
+      onMobileSearchToggle={() => setIsMobileSearchOpen((prev) => !prev)}
+      mobileSearchPlaceholder="Search authors..."
     />
   );
 
@@ -3197,14 +3219,6 @@ export const MonitoredPage = ({
             )
           ) : (
             <MonitoredSearchView
-              onBack={onBack ?? (() => navigate('/'))}
-              landingTab={landingTab}
-              hasStartedSearch={hasStartedSearch}
-              displayAuthorsCount={displayAuthorsCount}
-              displayBooksCount={displayBooksCount}
-              displayUpcomingCount={displayUpcomingCount}
-              displaySearchCount={displaySearchCount}
-              onTabChange={openMonitoredTab}
               searchScope={searchScope}
               authorViewMode={authorViewMode}
               bookSearchViewMode={bookSearchViewMode}
@@ -3215,6 +3229,8 @@ export const MonitoredPage = ({
               authorQuery={authorQuery}
               isSearching={isSearching}
               bookSearchResults={bookSearchResults}
+              authorSearchSortValue={authorSearchSortValue}
+              onAuthorSortChange={setAuthorSearchSortValue}
               bookSearchSortValue={bookSearchSortValue}
               monitoredSearchSortOptions={monitoredSearchSortOptions}
               onBookSortChange={setBookSearchSortValue}
@@ -3229,7 +3245,7 @@ export const MonitoredPage = ({
               isBookMonitored={isBookSearchResultMonitored}
               getMonitorResultButtonState={getMonitorResultButtonState}
               noopDownload={noopDownload}
-              isDesktop={isDesktop}
+              compactGridStyle={searchCompactGridStyle}
             />
           )}
         </div>

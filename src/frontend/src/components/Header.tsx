@@ -51,6 +51,14 @@ interface HeaderProps {
   activeQueryField?: MetadataSearchField | null;
   /** When provided, a mobile-only hamburger button calls this instead of opening the dropdown */
   onMobileMenuClick?: () => void;
+  /** Show a search icon button on mobile (when showSearch is false) */
+  showMobileSearchToggle?: boolean;
+  /** Whether the mobile search bar is currently expanded */
+  mobileSearchOpen?: boolean;
+  /** Called when the mobile search icon is clicked */
+  onMobileSearchToggle?: () => void;
+  /** Placeholder text for the mobile search input */
+  mobileSearchPlaceholder?: string;
 }
 
 export const Header = forwardRef<HeaderHandle, HeaderProps>(({
@@ -91,6 +99,10 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   onQueryTargetChange,
   activeQueryField = null,
   onMobileMenuClick,
+  showMobileSearchToggle = false,
+  mobileSearchOpen = false,
+  onMobileSearchToggle,
+  mobileSearchPlaceholder = 'Search authors...',
 }, ref) => {
   const activityBadge = getActivityBadgeState(statusCounts, isAdmin);
   const settingsEnabled = canAccessSettings ?? isAdmin;
@@ -320,6 +332,24 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   // Icon buttons component - reused for both states
   const IconButtons = () => (
     <div className="flex items-center gap-2">
+      {/* Mobile author search toggle — hidden on desktop since the header search bar handles it */}
+      {showMobileSearchToggle && (
+        <button
+          type="button"
+          onClick={onMobileSearchToggle}
+          className={`sm:hidden p-2 rounded-full transition-colors ${
+            mobileSearchOpen
+              ? 'bg-emerald-600 text-white'
+              : 'hover-action text-gray-900 dark:text-gray-100'
+          }`}
+          aria-label="Search authors"
+          title="Search authors"
+        >
+          <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+          </svg>
+        </button>
+      )}
       {/* Book Library Button */}
       {calibreWebUrl && (
         <a
@@ -733,21 +763,64 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
 
         {/* When search is NOT active: brand on left, icon buttons on right */}
         {!showSearch && (
-          <div className="flex items-center justify-between min-h-[48px]">
-            <div
-              className="flex items-center gap-2 cursor-pointer select-none"
-              onClick={onLogoClick}
-              role={onLogoClick ? 'button' : undefined}
-              tabIndex={onLogoClick ? 0 : undefined}
-              onKeyDown={onLogoClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLogoClick(); } } : undefined}
-              aria-label="Home"
-            >
-              {logoUrl && (
-                <img src={logoUrl} alt="Logo" className="h-8 w-8 flex-shrink-0" />
-              )}
-              <span className="text-base font-semibold tracking-tight" style={{ color: 'var(--text)' }}>Shelfmark</span>
+          <div>
+            <div className="flex items-center justify-between min-h-[48px]">
+              <div
+                className="flex items-center gap-2 cursor-pointer select-none"
+                onClick={onLogoClick}
+                role={onLogoClick ? 'button' : undefined}
+                tabIndex={onLogoClick ? 0 : undefined}
+                onKeyDown={onLogoClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLogoClick(); } } : undefined}
+                aria-label="Home"
+              >
+                {logoUrl && (
+                  <img src={logoUrl} alt="Logo" className="h-8 w-8 flex-shrink-0" />
+                )}
+                <span className="text-base font-semibold tracking-tight" style={{ color: 'var(--text)' }}>Shelfmark</span>
+              </div>
+              <IconButtons />
             </div>
-            <IconButtons />
+            {/* Mobile expandable author search bar */}
+            {showMobileSearchToggle && mobileSearchOpen && (
+              <div className="sm:hidden mt-2 animate-pop-up">
+                <div
+                  className="flex items-center gap-2 rounded-full border px-4 py-2.5"
+                  style={{ borderColor: 'var(--border-muted)', background: 'var(--surface)' }}
+                >
+                  <svg className="w-4 h-4 shrink-0 opacity-50" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+                  </svg>
+                  <input
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
+                    autoFocus
+                    type="text"
+                    value={String(searchInput)}
+                    onChange={(e) => onSearchChange?.(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') onSearch?.(); }}
+                    placeholder={mobileSearchPlaceholder}
+                    className="flex-1 bg-transparent outline-none text-sm"
+                    style={{ color: 'var(--text)' }}
+                  />
+                  {isLoading ? (
+                    <svg className="w-4 h-4 shrink-0 animate-spin opacity-60" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : String(searchInput).trim() ? (
+                    <button
+                      type="button"
+                      onClick={onSearch}
+                      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-emerald-600 text-white"
+                      aria-label="Submit search"
+                    >
+                      <svg className="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                      </svg>
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
