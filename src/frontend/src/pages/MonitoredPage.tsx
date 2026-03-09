@@ -2261,28 +2261,6 @@ export const MonitoredPage = ({
           </button>
         )}
 
-        {/* Search filter — for Books and Upcoming tabs */}
-        {(landingTab === 'books' || landingTab === 'upcoming') && (
-          <div className="px-4 pt-2 pb-1">
-            <div className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] px-3 py-1.5" style={{ background: 'var(--bg-soft)' }}>
-              <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-              </svg>
-              <input
-                value={monitoredBooksSearchQuery}
-                onChange={(e) => setMonitoredBooksSearchQuery(e.target.value)}
-                placeholder="Filter books…"
-                className="flex-1 bg-transparent outline-none text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-500 min-w-0"
-                aria-label="Filter books"
-              />
-              {monitoredBooksSearchQuery && (
-                <button type="button" onClick={() => setMonitoredBooksSearchQuery('')} className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100" aria-label="Clear search">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Settings / app actions */}
