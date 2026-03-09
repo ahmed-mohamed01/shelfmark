@@ -1339,7 +1339,7 @@ export const MonitoredAuthorBooksTab = ({
       <div className="mt-4">
         <div
           ref={booksToolbarRef}
-          className={`sticky bg-[var(--bg)] ${isPageMode ? 'z-50 top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
+          className={`sticky bg-[var(--bg)] ${isPageMode ? 'z-[45] top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
         >
           <div className="flex flex-wrap items-center gap-2 gap-y-1.5 px-4 py-2">
             <div className="flex items-center gap-2 min-w-0">
