@@ -545,6 +545,14 @@ export const fsListDirectories = async (path?: string | null): Promise<FsListRes
   return fetchJSON<FsListResponse>(url);
 };
 
+export const fsMkdir = async (parent: string, name: string): Promise<{ path: string }> => {
+  return fetchJSON<{ path: string }>(`${API_BASE}/fs/mkdir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent, name }),
+  });
+};
+
 // ---------------------------------------------------------------------------
 // Batch delete helper (was in monitoredAuthors.ts)
 // ---------------------------------------------------------------------------

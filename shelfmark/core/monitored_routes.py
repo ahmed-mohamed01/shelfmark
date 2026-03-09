@@ -1242,6 +1242,96 @@ def register_monitored_routes(
             "directories": children,
         })
 
+    @app.route("/api/fs/mkdir", methods=["POST"])
+    def api_fs_mkdir():
+        """Create a new directory within an allowed root.
+
+        Request body (JSON):
+          - parent: absolute path of the parent directory
+          - name: new folder name (no path separators allowed)
+        """
+        from shelfmark.core.config import config as app_config
+
+        if user_db is None:
+            return jsonify({"error": "Filesystem operations unavailable"}), 503
+
+        raw_user_id = session.get("db_user_id")
+        try:
+            db_user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid user context"}), 400
+
+        data = request.get_json(silent=True) or {}
+        parent_raw = (data.get("parent") or "").strip()
+        name_raw = (data.get("name") or "").strip()
+
+        if not parent_raw or not name_raw:
+            return jsonify({"error": "parent and name are required"}), 400
+        if "/" in name_raw or "\\" in name_raw or name_raw in (".", ".."):
+            return jsonify({"error": "Invalid folder name"}), 400
+
+        def _normalize_root(value: Any) -> str | None:
+            if not isinstance(value, str):
+                return None
+            v = value.strip().rstrip("/")
+            if not v or not v.startswith("/"):
+                return None
+            return v
+
+        allowed_roots: list[Path] = []
+        try:
+            dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
+            if dest:
+                allowed_roots.append(Path(dest).resolve())
+            dest_audio = _normalize_root(app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id))
+            if dest_audio:
+                allowed_roots.append(Path(dest_audio).resolve())
+        except Exception:
+            pass
+
+        try:
+            user_settings = user_db.get_user_settings(db_user_id)
+        except Exception:
+            user_settings = {}
+
+        for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
+            roots_value = user_settings.get(key)
+            if isinstance(roots_value, list):
+                for item in roots_value:
+                    root = _normalize_root(item)
+                    if root:
+                        allowed_roots.append(Path(root).resolve())
+
+        try:
+            parent_path = Path(parent_raw).resolve()
+        except Exception:
+            return jsonify({"error": "Invalid parent path"}), 400
+
+        allowed = False
+        for root in allowed_roots:
+            try:
+                parent_path.relative_to(root)
+                allowed = True
+                break
+            except Exception:
+                continue
+        if not allowed:
+            return jsonify({"error": "Path not allowed"}), 403
+
+        if not parent_path.exists() or not parent_path.is_dir():
+            return jsonify({"error": "Parent directory not found"}), 404
+
+        new_dir = parent_path / name_raw
+        if new_dir.exists():
+            return jsonify({"path": str(new_dir)}), 200
+
+        try:
+            new_dir.mkdir(parents=False, exist_ok=True)
+        except Exception as exc:
+            return jsonify({"error": f"Failed to create directory: {exc}"}), 500
+
+        return jsonify({"path": str(new_dir)}), 201
+
     # ------------------------------------------------------------------
     # Metadata author search (hardcover-specific, used by monitored UI)
     # ------------------------------------------------------------------

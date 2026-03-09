@@ -172,7 +172,7 @@ export const EditAuthorModal = ({
     <>
       <div
         className="modal-overlay active sm:px-6 sm:py-6"
-        style={{ zIndex: 2000, pointerEvents: folderBrowserState.open ? 'none' : 'auto' }}
+        style={{ zIndex: 2000 }}
         onClick={(e) => {
           if (e.target === e.currentTarget && !saving && !deleting) {
             handleCancel();
@@ -318,6 +318,7 @@ export const EditAuthorModal = ({
         open={folderBrowserState.open}
         title={folderBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
         initialPath={folderBrowserState.initialPath}
+        overlayZIndex={2100}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
           if (folderBrowserState.kind === 'audiobook') {

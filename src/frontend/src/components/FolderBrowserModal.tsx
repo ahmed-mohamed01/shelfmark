@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fsListDirectories, FsDirectoryEntry } from '../services/monitoredApi';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { fsListDirectories, fsMkdir, FsDirectoryEntry } from '../services/monitoredApi';
 
 interface FolderBrowserModalProps {
   open: boolean;
@@ -16,9 +16,17 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
   const [directories, setDirectories] = useState<FsDirectoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [newFolderMode, setNewFolderMode] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
+  const [newFolderSaving, setNewFolderSaving] = useState(false);
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) {
+      setNewFolderMode(false);
+      setNewFolderName('');
+      setNewFolderError(null);
       return;
     }
     setCurrentPath(initialPath ?? null);
@@ -73,6 +81,22 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
     onSelect(currentPath);
     onClose();
   }, [currentPath, onClose, onSelect]);
+
+  const handleCreateFolder = useCallback(async () => {
+    if (!currentPath || !newFolderName.trim() || newFolderSaving) return;
+    setNewFolderSaving(true);
+    setNewFolderError(null);
+    try {
+      const result = await fsMkdir(currentPath, newFolderName.trim());
+      setNewFolderMode(false);
+      setNewFolderName('');
+      setCurrentPath(result.path);
+    } catch (e) {
+      setNewFolderError(e instanceof Error ? e.message : 'Failed to create folder');
+    } finally {
+      setNewFolderSaving(false);
+    }
+  }, [currentPath, newFolderName, newFolderSaving]);
 
   if (!open) return null;
 
@@ -130,17 +154,33 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
             </div>
 
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  if (parentPath) setCurrentPath(parentPath);
-                  else setCurrentPath(null);
-                }}
-                disabled={!parentPath && currentPath === null}
-                className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100 disabled:opacity-50"
-              >
-                Up
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (parentPath) setCurrentPath(parentPath);
+                    else setCurrentPath(null);
+                  }}
+                  disabled={!parentPath && currentPath === null}
+                  className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100 disabled:opacity-50"
+                >
+                  Up
+                </button>
+                {currentPath ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewFolderMode(true);
+                      setNewFolderName('');
+                      setNewFolderError(null);
+                      window.setTimeout(() => newFolderInputRef.current?.focus(), 50);
+                    }}
+                    className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                  >
+                    + New folder
+                  </button>
+                ) : null}
+              </div>
               <button
                 type="button"
                 onClick={handleSelectCurrent}
@@ -150,6 +190,39 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
                 Select this folder
               </button>
             </div>
+
+            {newFolderMode ? (
+              <div className="flex items-center gap-2">
+                <input
+                  ref={newFolderInputRef}
+                  value={newFolderName}
+                  onChange={(e) => { setNewFolderName(e.target.value); setNewFolderError(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleCreateFolder();
+                    if (e.key === 'Escape') { setNewFolderMode(false); setNewFolderName(''); setNewFolderError(null); }
+                  }}
+                  placeholder="New folder name"
+                  className="flex-1 px-3 py-1.5 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm outline-none"
+                  disabled={newFolderSaving}
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCreateFolder()}
+                  disabled={!newFolderName.trim() || newFolderSaving}
+                  className="px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium disabled:opacity-50"
+                >
+                  {newFolderSaving ? 'Creating…' : 'Create'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setNewFolderMode(false); setNewFolderName(''); setNewFolderError(null); }}
+                  className="px-3 py-1.5 rounded-full bg-white/70 hover:bg-white text-gray-900 text-xs font-medium dark:bg-white/10 dark:hover:bg-white/20 dark:text-gray-100"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : null}
+            {newFolderError ? <div className="text-xs text-red-500">{newFolderError}</div> : null}
 
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
 
