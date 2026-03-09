@@ -3231,6 +3231,7 @@ export const MonitoredPage = ({
               bookSearchResults={bookSearchResults}
               authorSearchSortValue={authorSearchSortValue}
               onAuthorSortChange={setAuthorSearchSortValue}
+              onScopeChange={setSearchScope}
               bookSearchSortValue={bookSearchSortValue}
               monitoredSearchSortOptions={monitoredSearchSortOptions}
               onBookSortChange={setBookSearchSortValue}
@@ -3246,6 +3247,12 @@ export const MonitoredPage = ({
               getMonitorResultButtonState={getMonitorResultButtonState}
               noopDownload={noopDownload}
               compactGridStyle={searchCompactGridStyle}
+              onTabChange={openMonitoredTab}
+              onBack={() => { if (onBack) { onBack(); } else { navigate('/'); } }}
+              displayAuthorsCount={displayAuthorsCount}
+              displayBooksCount={displayBooksCount}
+              displayUpcomingCount={displayUpcomingCount}
+              displaySearchCount={displaySearchCount}
             />
           )}
         </div>
