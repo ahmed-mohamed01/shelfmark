@@ -20,6 +20,7 @@ import {
   searchMonitoredAuthorBooks,
   searchMetadataAuthors,
   deleteMonitoredAuthorsByIds,
+  syncMonitoredEntity,
 } from '../services/monitoredApi';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { BookMonitorModal } from '../components/BookMonitorModal';
@@ -392,6 +393,7 @@ export const MonitoredPage = ({
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
   const [bulkDeleteAuthorsRunning, setBulkDeleteAuthorsRunning] = useState(false);
   const [bulkDeleteAuthorsConfirmOpen, setBulkDeleteAuthorsConfirmOpen] = useState(false);
+  const [bulkSyncAuthorsRunning, setBulkSyncAuthorsRunning] = useState(false);
   const [cachedMonitoredCounts, setCachedMonitoredCounts] = useState<MonitoredCountsSnapshot | null>(() => readMonitoredCountsSnapshot());
 
   const [editAuthorModalState, setEditAuthorModalState] = useState<{
@@ -1144,6 +1146,7 @@ export const MonitoredPage = ({
   );
 
   const hasActiveMonitoredAuthorSelection = selectedMonitoredAuthorCount > 0;
+  const allMonitoredAuthorsSelected = monitored.length > 0 && selectedMonitoredAuthorCount === monitored.length;
   const selectedSingleMonitoredAuthorName = selectedMonitoredAuthors.length === 1
     ? selectedMonitoredAuthors[0]?.name || 'this author'
     : null;
@@ -1318,6 +1321,28 @@ export const MonitoredPage = ({
       setBulkDeleteAuthorsConfirmOpen(false);
     }
   }, [bulkDeleteAuthorsRunning, monitored, selectedMonitoredAuthorKeys]);
+
+  const selectAllMonitoredAuthors = useCallback(() => {
+    const all: Record<string, boolean> = {};
+    for (const author of monitored) all[String(author.id)] = true;
+    setSelectedMonitoredAuthorKeys(all);
+  }, [monitored]);
+
+  const clearMonitoredAuthorSelection = useCallback(() => {
+    setSelectedMonitoredAuthorKeys({});
+  }, []);
+
+  const runBulkSyncSelectedAuthors = useCallback(async () => {
+    if (bulkSyncAuthorsRunning) return;
+    const selectedAuthors = monitored.filter((author) => selectedMonitoredAuthorKeys[String(author.id)]);
+    if (selectedAuthors.length === 0) return;
+    setBulkSyncAuthorsRunning(true);
+    try {
+      await Promise.all(selectedAuthors.map((author) => syncMonitoredEntity(author.id).catch(() => null)));
+    } finally {
+      setBulkSyncAuthorsRunning(false);
+    }
+  }, [bulkSyncAuthorsRunning, monitored, selectedMonitoredAuthorKeys]);
 
   useEffect(() => {
     const validAuthorIds = new Set(monitored.map((author) => String(author.id)));
@@ -2469,24 +2494,70 @@ export const MonitoredPage = ({
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end ml-auto">
-                    {landingTab === 'authors' ? (
-                      <div className="relative h-8 w-8 shrink-0">
-                        {selectedMonitoredAuthorCount > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => setBulkDeleteAuthorsConfirmOpen(true)}
-                            className="absolute inset-0 flex items-center justify-center p-1 rounded-full border border-red-500/40 text-red-600 dark:text-red-400 hover-action"
-                            title={`Delete selected authors (${selectedMonitoredAuthorCount})`}
-                            aria-label={`Delete selected authors (${selectedMonitoredAuthorCount})`}
-                          >
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M9 3.75A1.5 1.5 0 0 1 10.5 2.25h3A1.5 1.5 0 0 1 15 3.75v.75h3.75a.75.75 0 0 1 0 1.5h-.53l-.64 11.32A2.25 2.25 0 0 1 15.34 19.5H8.66a2.25 2.25 0 0 1-2.24-2.18L5.78 6h-.53a.75.75 0 0 1 0-1.5H9v-.75Zm2.25 0v.75h1.5v-.75h-1.5Zm-.7 5.18a.75.75 0 0 0-1.06 1.06L10.94 12l-1.45 2.01a.75.75 0 1 0 1.22.88L12 13.06l1.29 1.83a.75.75 0 0 0 1.22-.88L13.06 12l1.45-2.01a.75.75 0 1 0-1.22-.88L12 10.94l-1.45-2.01Z" />
+                    {landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Select all */}
+                        <button
+                          type="button"
+                          onClick={allMonitoredAuthorsSelected ? clearMonitoredAuthorSelection : selectAllMonitoredAuthors}
+                          className="relative flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
+                          title={allMonitoredAuthorsSelected ? 'Deselect all authors' : `Select all authors (${monitored.length})`}
+                          aria-label={allMonitoredAuthorsSelected ? 'Deselect all authors' : `Select all authors (${monitored.length})`}
+                        >
+                          {allMonitoredAuthorsSelected ? (
+                            /* check-square (all selected) */
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                              <rect x="3" y="3" width="18" height="18" rx="3" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m7.5 12 3 3 6-6" />
                             </svg>
-                            <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white leading-none">
-                              {selectedMonitoredAuthorCount}
-                            </span>
-                          </button>
-                        ) : null}
+                          ) : (
+                            /* minus-square (partial) */
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                              <rect x="3" y="3" width="18" height="18" rx="3" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h8" />
+                            </svg>
+                          )}
+                        </button>
+                        {/* Deselect all */}
+                        <button
+                          type="button"
+                          onClick={clearMonitoredAuthorSelection}
+                          className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
+                          title="Deselect all"
+                          aria-label="Deselect all"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                        {/* Refresh selected */}
+                        <button
+                          type="button"
+                          onClick={runBulkSyncSelectedAuthors}
+                          disabled={bulkSyncAuthorsRunning}
+                          className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300 disabled:opacity-50"
+                          title={`Refresh selected authors (${selectedMonitoredAuthorCount})`}
+                          aria-label={`Refresh selected authors (${selectedMonitoredAuthorCount})`}
+                        >
+                          <svg className={`w-5 h-5${bulkSyncAuthorsRunning ? ' animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                          </svg>
+                        </button>
+                        {/* Delete selected */}
+                        <button
+                          type="button"
+                          onClick={() => setBulkDeleteAuthorsConfirmOpen(true)}
+                          className="relative flex items-center justify-center h-8 w-8 rounded-full border border-red-500/40 text-red-600 dark:text-red-400 hover-action"
+                          title={`Delete selected authors (${selectedMonitoredAuthorCount})`}
+                          aria-label={`Delete selected authors (${selectedMonitoredAuthorCount})`}
+                        >
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M9 3.75A1.5 1.5 0 0 1 10.5 2.25h3A1.5 1.5 0 0 1 15 3.75v.75h3.75a.75.75 0 0 1 0 1.5h-.53l-.64 11.32A2.25 2.25 0 0 1 15.34 19.5H8.66a2.25 2.25 0 0 1-2.24-2.18L5.78 6h-.53a.75.75 0 0 1 0-1.5H9v-.75Zm2.25 0v.75h1.5v-.75h-1.5Zm-.7 5.18a.75.75 0 0 0-1.06 1.06L10.94 12l-1.45 2.01a.75.75 0 1 0 1.22.88L12 13.06l1.29 1.83a.75.75 0 0 0 1.22-.88L13.06 12l1.45-2.01a.75.75 0 1 0-1.22-.88L12 10.94l-1.45-2.01Z" />
+                          </svg>
+                          <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white leading-none">
+                            {selectedMonitoredAuthorCount}
+                          </span>
+                        </button>
                       </div>
                     ) : null}
                     <div className="relative" ref={monitoredBooksSearchRef}>
