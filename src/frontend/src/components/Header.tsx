@@ -329,8 +329,9 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
         : 'text-gray-900 dark:text-gray-100 hover-action'
     }`;
 
-  // Icon buttons component - reused for both states
-  const IconButtons = () => (
+  // Icon buttons JSX — kept as a plain variable so React doesn't unmount/remount
+  // it as a component on every Header re-render (which would destroy the portal mid-click)
+  const iconButtons = (
     <div className="flex items-center gap-2">
       {/* Mobile author search toggle — hidden on desktop since the header search bar handles it */}
       {showMobileSearchToggle && (
@@ -757,7 +758,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
               />
             </div>
 
-            <IconButtons />
+            {iconButtons}
           </div>
         )}
 
@@ -778,7 +779,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 )}
                 <span className="text-base font-semibold tracking-tight" style={{ color: 'var(--text)' }}>Shelfmark</span>
               </div>
-              <IconButtons />
+              {iconButtons}
             </div>
             {/* Mobile expandable author search bar */}
             {showMobileSearchToggle && mobileSearchOpen && (
