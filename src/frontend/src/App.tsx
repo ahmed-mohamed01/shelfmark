@@ -299,6 +299,7 @@ function App() {
     releaseMonitoredEntityId,
     setReleaseMonitoredEntityId,
     batchAutoStatsRef,
+    cancelledBatchIdsRef,
     dismissedDownloadTaskIds,
     isDownloadTaskDismissed,
     statusForButtonState,
@@ -1254,6 +1255,15 @@ function App() {
 
   // Cancel download
   const handleCancel = async (id: string) => {
+    if (id.startsWith('auto-search-batch:')) {
+      cancelledBatchIdsRef.current.add(id);
+      setTransientDownloadActivityItems((prev) => prev.map((item) =>
+        item.id === id
+          ? { ...item, statusLabel: 'Cancelling', statusDetail: 'Waiting for current book…', downloadBookId: undefined, progressAnimated: false }
+          : item
+      ));
+      return;
+    }
     try {
       await cancelDownload(id);
       await fetchStatus();
@@ -1309,6 +1319,7 @@ function App() {
     removeToast,
     setTransientDownloadActivityItems,
     batchAutoStatsRef,
+    cancelledBatchIdsRef,
     handleReleaseDownload,
   });
 

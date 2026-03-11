@@ -17,6 +17,7 @@ interface UseMonitoredAutoSearchParams {
   removeToast: (id: string) => void;
   setTransientDownloadActivityItems: Dispatch<SetStateAction<ActivityItem[]>>;
   batchAutoStatsRef: MutableRefObject<Record<string, BatchAutoStats>>;
+  cancelledBatchIdsRef: MutableRefObject<Set<string>>;
   handleReleaseDownload: (book: Book, release: Release, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
 }
 
@@ -27,6 +28,7 @@ export function useMonitoredAutoSearch({
   removeToast,
   setTransientDownloadActivityItems,
   batchAutoStatsRef,
+  cancelledBatchIdsRef,
   handleReleaseDownload,
 }: UseMonitoredAutoSearchParams) {
   const executeAutoSearch = useCallback(async (
@@ -78,6 +80,7 @@ export function useMonitoredAutoSearch({
             progressAnimated: true,
             timestamp: Date.now() / 1000,
             username: username || undefined,
+            downloadBookId: masterActivityId,
           };
         const updated: ActivityItem = {
           ...baseItem,
@@ -110,6 +113,16 @@ export function useMonitoredAutoSearch({
       if (!batchStats) {
         return;
       }
+      if (batchStats.cancelled) {
+        setTransientDownloadActivityItems((prev) => prev.map((item) =>
+          item.id === batchMasterActivityId
+            ? { ...item, visualStatus: 'cancelled', statusLabel: 'Cancelled', statusDetail: `${batchStats.queued} queued before cancel`, progressAnimated: false, downloadBookId: undefined }
+            : item
+        ));
+        delete batchAutoStatsRef.current[batchStatsKey];
+        cancelledBatchIdsRef.current.delete(batchMasterActivityId!);
+        return;
+      }
       const total = Math.max(1, batchStats.total || 0);
       const processed = batchStats.queued + batchStats.skipped + batchStats.failed;
       const completedLabel = batchStats.failed > 0 ? 'Error' : 'Complete';
@@ -137,6 +150,7 @@ export function useMonitoredAutoSearch({
           skippedExistingFile: 0,
           failed: 0,
           started: false,
+          cancelled: false,
           contentType: batchAuto.contentType,
         };
       }
@@ -144,6 +158,14 @@ export function useMonitoredAutoSearch({
         batchAutoStatsRef.current[batchStatsKey].started = true;
         showToast('Batch processing downloads started…', 'info');
       }
+      // Check if this batch was cancelled before processing this book
+      if (cancelledBatchIdsRef.current.has(batchMasterActivityId!)) {
+        const batchStats = batchAutoStatsRef.current[batchStatsKey];
+        if (batchStats) batchStats.cancelled = true;
+        if (batchAuto.index >= batchAuto.total) finalizeBatchIfComplete();
+        return 'skip';
+      }
+
       updateBatchMasterActivity({
         statusDetail: `Processing book ${batchAuto.index}/${batchAuto.total} (pre-process)…`,
         progress: Math.max(5, Math.min(95, Math.round(((batchAuto.index - 1) / Math.max(1, batchAuto.total)) * 100))),
@@ -407,6 +429,7 @@ export function useMonitoredAutoSearch({
     removeToast,
     setTransientDownloadActivityItems,
     batchAutoStatsRef,
+    cancelledBatchIdsRef,
     handleReleaseDownload,
   ]);
 

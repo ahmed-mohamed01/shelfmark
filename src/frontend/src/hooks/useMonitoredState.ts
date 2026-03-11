@@ -14,6 +14,7 @@ export interface BatchAutoStats {
   skippedExistingFile: number;
   failed: number;
   started: boolean;
+  cancelled: boolean;
   contentType: ContentType;
 }
 
@@ -30,6 +31,7 @@ export function useMonitoredState({ dismissedActivityKeys, currentStatus, activi
   const [releaseMonitoredEntityId, setReleaseMonitoredEntityId] = useState<number | null>(null);
 
   const batchAutoStatsRef = useRef<Record<string, BatchAutoStats>>({});
+  const cancelledBatchIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!config) {
@@ -86,6 +88,7 @@ export function useMonitoredState({ dismissedActivityKeys, currentStatus, activi
     releaseMonitoredEntityId,
     setReleaseMonitoredEntityId,
     batchAutoStatsRef,
+    cancelledBatchIdsRef,
     dismissedDownloadTaskIds,
     isDownloadTaskDismissed,
     statusForButtonState,
