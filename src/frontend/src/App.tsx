@@ -2372,6 +2372,7 @@ function App() {
                 status={currentStatus}
                 onShowToast={showToast}
                 onRemoveToast={removeToast}
+                setTransientActivityItems={setTransientDownloadActivityItems}
               />
             </Suspense>
           )
@@ -2383,7 +2384,7 @@ function App() {
     <ActivitySidebar
       isOpen={downloadsSidebarOpen}
       onClose={() => setDownloadsSidebarOpen(false)}
-      status={currentStatus}
+      status={activitySidebarStatus}
       transientDownloadItems={transientDownloadActivityItems}
       isAdmin={requestRoleIsAdmin}
       onClearCompleted={handleClearCompleted}

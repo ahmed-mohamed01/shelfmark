@@ -8,6 +8,7 @@ import {
   updateSelfUser,
   searchMetadata,
 } from '../services/api';
+import { ActivityItem } from '../components/activity/activityTypes';
 import {
   createMonitoredEntity,
   listMonitoredEntities,
@@ -155,6 +156,7 @@ interface MonitoredPageProps {
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
   onShowToast?: (message: string, type?: 'info' | 'success' | 'error', persistent?: boolean) => string;
   onRemoveToast?: (id: string) => void;
+  setTransientActivityItems?: (updater: (prev: ActivityItem[]) => ActivityItem[]) => void;
 }
 
 const normalizeAuthor = (value: string): string => {
@@ -285,6 +287,7 @@ export const MonitoredPage = ({
   renderEmbeddedSearch,
   onShowToast,
   onRemoveToast,
+  setTransientActivityItems,
 }: MonitoredPageProps) => {
   const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
@@ -365,7 +368,9 @@ export const MonitoredPage = ({
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocket();
-  const syncToastIds = useRef<Map<number, string>>(new Map());
+  const syncActivityTimeoutsRef = useRef<Map<number, number>>(new Map());
+  const monitoredRef = useRef<MonitoredAuthor[]>([]);
+  monitoredRef.current = monitored;
   const [monitoredBooksSearchQuery, setMonitoredBooksSearchQuery] = useState(() => {
     try {
       return sessionStorage.getItem(MONITORED_BOOKS_SEARCH_QUERY_KEY) || '';
@@ -455,39 +460,92 @@ export const MonitoredPage = ({
 
   const [isDesktop, setIsDesktop] = useState(false);
 
-  // Toast notifications for background author sync events
+  // Activity-panel notifications for background author sync events
   useEffect(() => {
-    if (!socket || (!onShowToast && !onRemoveToast)) return;
-    const phaseLabel: Record<string, string> = {
+    if (!socket || !setTransientActivityItems) return;
+
+    const phaseDetail: Record<string, string> = {
       fetching_books: 'Fetching books…',
       scanning_files: 'Scanning filesystem…',
       fetching_covers: 'Fetching covers…',
     };
-    const replaceToast = (entityId: number, message: string, type: 'info' | 'success' | 'error', persistent: boolean) => {
-      const old = syncToastIds.current.get(entityId);
-      if (old) onRemoveToast?.(old);
-      if (onShowToast) {
-        const id = onShowToast(message, type, persistent);
-        if (persistent) syncToastIds.current.set(entityId, id);
-        else syncToastIds.current.delete(entityId);
-      }
+
+    const upsert = (entityId: number, patch: Partial<ActivityItem>, name?: string, photoUrl?: string | null) => {
+      const id = `sync:${entityId}`;
+      setTransientActivityItems((prev) => {
+        const exists = prev.some((item) => item.id === id);
+        if (exists) {
+          return prev.map((item) => item.id === id ? { ...item, ...patch } : item);
+        }
+        if (!name) return prev;
+        const newItem: ActivityItem = {
+          id,
+          kind: 'download',
+          visualStatus: 'resolving',
+          title: name,
+          author: 'Author sync',
+          metaLine: 'Monitored authors',
+          statusLabel: 'Syncing',
+          statusDetail: 'Fetching book data…',
+          progressAnimated: true,
+          timestamp: Date.now(),
+          preview: photoUrl ?? undefined,
+          ...patch,
+        };
+        return [...prev, newItem];
+      });
     };
+
+    const scheduleRemoval = (entityId: number, delayMs: number) => {
+      const existing = syncActivityTimeoutsRef.current.get(entityId);
+      if (existing) clearTimeout(existing);
+      const tid = window.setTimeout(() => {
+        setTransientActivityItems((prev) => prev.filter((item) => item.id !== `sync:${entityId}`));
+        syncActivityTimeoutsRef.current.delete(entityId);
+      }, delayMs);
+      syncActivityTimeoutsRef.current.set(entityId, tid);
+    };
+
     const onStarted = (data: { entity_id: number; name: string }) => {
-      replaceToast(data.entity_id, `${data.name} added. Fetching book data…`, 'info', true);
+      const existing = syncActivityTimeoutsRef.current.get(data.entity_id);
+      if (existing) clearTimeout(existing);
+      syncActivityTimeoutsRef.current.delete(data.entity_id);
+      const photoUrl = monitoredRef.current.find((a) => a.id === data.entity_id)?.photo_url ?? null;
+      onShowToast?.(`Syncing ${data.name}…`, 'info', false);
+      upsert(data.entity_id, {
+        visualStatus: 'resolving',
+        statusLabel: 'Syncing',
+        statusDetail: 'Fetching book data…',
+        progressAnimated: true,
+        timestamp: Date.now(),
+        preview: photoUrl ?? undefined,
+      }, data.name, photoUrl);
     };
+
     const onProgress = (data: { entity_id: number; phase: string }) => {
-      const label = phaseLabel[data.phase] ?? 'Syncing…';
-      replaceToast(data.entity_id, label, 'info', true);
+      upsert(data.entity_id, { statusDetail: phaseDetail[data.phase] ?? 'Syncing…' });
     };
+
     const onComplete = (data: { entity_id: number; name: string; books_count: number }) => {
-      replaceToast(data.entity_id, `${data.name}: ${data.books_count} books synced`, 'success', false);
+      upsert(data.entity_id, {
+        visualStatus: 'complete',
+        statusLabel: 'Synced',
+        statusDetail: `${data.books_count} books synced`,
+        progressAnimated: false,
+      }, data.name);
+      scheduleRemoval(data.entity_id, 12000);
     };
+
     const onError = (data: { entity_id: number; error: string }) => {
-      const old = syncToastIds.current.get(data.entity_id);
-      if (old) onRemoveToast?.(old);
-      syncToastIds.current.delete(data.entity_id);
-      onShowToast?.(`Sync failed: ${data.error}`, 'error', false);
+      upsert(data.entity_id, {
+        visualStatus: 'error',
+        statusLabel: 'Sync failed',
+        statusDetail: data.error,
+        progressAnimated: false,
+      });
+      scheduleRemoval(data.entity_id, 20000);
     };
+
     socket.on('monitored_sync_started', onStarted);
     socket.on('monitored_sync_progress', onProgress);
     socket.on('monitored_sync_complete', onComplete);
@@ -498,7 +556,7 @@ export const MonitoredPage = ({
       socket.off('monitored_sync_complete', onComplete);
       socket.off('monitored_sync_error', onError);
     };
-  }, [socket, onShowToast, onRemoveToast]);
+  }, [socket, setTransientActivityItems, onShowToast]);
 
   useEffect(() => {
     let timeoutId: number;
