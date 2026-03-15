@@ -72,7 +72,11 @@ RUN apt-get update && \
     # --- Tor support (activated via USING_TOR=true) ---
     tor \
     supervisor \
-    iptables && \
+    iptables \
+    # --- WireGuard support (activated via USING_VPN=true) ---
+    wireguard-tools \
+    iproute2 \
+    openresolv && \
     # Configure iptables alternatives for tor.sh compatibility
     update-alternatives --set iptables /usr/sbin/iptables-legacy && \
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
@@ -108,7 +112,7 @@ COPY --from=frontend-builder /frontend/dist /app/frontend-dist
 # Only creating directories and setting executable bits.
 # Ownership will be handled by the entrypoint script.
 RUN mkdir -p /var/log/shelfmark /books && \
-    chmod +x /app/entrypoint.sh /app/tor.sh /app/genDebug.sh
+    chmod +x /app/entrypoint.sh /app/tor.sh /app/vpn.sh /app/genDebug.sh
 
 # Expose the application port
 EXPOSE ${FLASK_PORT}

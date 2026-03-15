@@ -56,6 +56,14 @@ fi
     fi
 )
 
+(
+    if [ "$USING_VPN" = "true" ] && [ "$USING_TOR" = "true" ]; then
+        echo "[!] USING_VPN and USING_TOR cannot both be enabled. Skipping VPN setup."
+    elif [ "$USING_VPN" = "true" ]; then
+        ./vpn.sh
+    fi
+)
+
 if is_truthy "$ENABLE_LOGGING_VALUE"; then
     start_file_logging "$LOG_FILE"
 fi

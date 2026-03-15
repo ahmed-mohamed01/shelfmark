@@ -1,0 +1,38 @@
+# WireGuard VPN override for Shelfmark
+#
+# Usage:
+#   docker compose -f compose/docker-compose.yml -f compose/docker-compose.vpn.yml up -d
+#
+# Prerequisites:
+#   1. Place your WireGuard config at /path/to/config/wg0.conf
+#      (same /config volume you already use for Shelfmark)
+#   2. Your wg0.conf should include kill switch rules for full protection:
+#
+#        [Interface]
+#        Address = 10.x.x.x/32
+#        PrivateKey = <your-private-key>
+#        DNS = 1.1.1.1
+#        PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT
+#        PreDown = iptables -D OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT
+#
+#        [Peer]
+#        PublicKey = <server-public-key>
+#        AllowedIPs = 0.0.0.0/0
+#        Endpoint = <server-ip>:<port>
+#
+# The PostUp/PreDown rules block all non-VPN outbound traffic (hard kill switch).
+# If the VPN drops, no traffic leaks — downloads will fail until VPN is restored.
+#
+services:
+  shelfmark:
+    environment:
+      USING_VPN: true
+      WG_CONFIG_PATH: /config/wg0.conf  # path inside container; default
+      WG_IFACE: wg0
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      # Uncomment if the WireGuard kernel module isn't already loaded on the host:
+      # - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1

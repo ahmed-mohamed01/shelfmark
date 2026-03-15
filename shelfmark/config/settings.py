@@ -1749,3 +1749,4 @@ register_on_save("advanced", _on_save_advanced)
 
 import shelfmark.config.monitored_settings as _  # noqa: F401 - registers release_scoring tab
 import shelfmark.config.integrations_settings as _  # noqa: F401 - registers integrations tab
+import shelfmark.config.vpn_settings as _  # noqa: F401 - registers vpn tab

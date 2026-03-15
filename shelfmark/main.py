@@ -446,6 +446,15 @@ if user_db is not None:
     except Exception as e:
         logger.warning(f"Failed to register request routes: {e}")
 
+# VPN manager init and routes (branch-only addition)
+try:
+    from shelfmark.core.vpn_manager import init_vpn_manager
+    from shelfmark.core.vpn_routes import register_vpn_routes
+    _vpn_manager = init_vpn_manager()
+    register_vpn_routes(app, _vpn_manager, resolve_auth_mode=lambda: get_auth_mode())
+except Exception as e:
+    logger.warning(f"Failed to register VPN routes: {e}")
+
 
 # Enable CORS in development mode for local frontend development
 if DEBUG:

@@ -62,7 +62,7 @@ def _get_release_priority_prowlarr_indexer_options() -> list[dict[str, str]]:
     try:
         from shelfmark.release_sources.prowlarr.api import ProwlarrClient
 
-        client = ProwlarrClient(url, api_key)
+        client = ProwlarrClient(url, api_key, timeout=5)
         indexers = client.get_enabled_indexers_detailed()
     except Exception:
         return []
