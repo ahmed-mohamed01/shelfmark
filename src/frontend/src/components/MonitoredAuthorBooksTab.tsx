@@ -8,6 +8,7 @@ import {
   scanMonitoredEntityFiles,
   updateMonitoredBooksMonitorFlags,
   getMetadataAuthorBooks,
+  deleteMonitoredBook,
   ExternalBookRow,
 } from '../services/monitoredApi';
 import { useSocket } from '../contexts/SocketContext';
@@ -977,11 +978,20 @@ export const MonitoredAuthorBooksTab = ({
           return true;
         });
         const isDormantGroup = nextBooks.length > 0 && nextBooks.every((book) => isDormantBookInGroup(book));
-        return { ...group, books: nextBooks, isDormantGroup };
+        const isRemovedGroup = nextBooks.length > 0 && nextBooks.every((book) => {
+          const p = (book.provider || '').trim();
+          const pid = (book.provider_id || '').trim();
+          const row = (p && pid) ? monitoredBookRowByKey.get(`${p}:${pid}`) : undefined;
+          return row?.state === 'removed_from_provider';
+        });
+        return { ...group, books: nextBooks, isDormantGroup, isRemovedGroup };
       })
       .filter((group) => group.books.length > 0);
 
     return [...groups].sort((a, b) => {
+      const aRemoved = Boolean((a as any).isRemovedGroup);
+      const bRemoved = Boolean((b as any).isRemovedGroup);
+      if (aRemoved !== bRemoved) return aRemoved ? 1 : -1;
       const ad = Boolean((a as any).isDormantGroup);
       const bd = Boolean((b as any).isDormantGroup);
       if (ad === bd) return 0;
@@ -1276,6 +1286,26 @@ export const MonitoredAuthorBooksTab = ({
               <span>Monitor Audiobook</span>
               {monitorState.monitorAudiobook ? <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg> : null}
             </button>
+            {(() => {
+              const p = (book.provider || '').trim();
+              const pid = (book.provider_id || '').trim();
+              const row = (p && pid) ? monitoredBookRowByKey.get(`${p}:${pid}`) : undefined;
+              if (row?.state !== 'removed_from_provider') return null;
+              return (
+                <>
+                  <div className="my-1 border-t border-[var(--border-muted)]" />
+                  <button type="button" onClick={() => {
+                    if (!confirm(`Permanently delete "${book.title || 'this book'}" from your library?`)) return;
+                    close();
+                    void deleteMonitoredBook(monitoredEntityId!, p, pid).then(() => {
+                      setMonitoredBookRows((prev) => prev.filter((b) => !(b.provider === p && b.provider_book_id === pid)));
+                    });
+                  }} className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap text-red-600 dark:text-red-400">
+                    Delete permanently
+                  </button>
+                </>
+              );
+            })()}
           </>
         ) : onMonitorBook ? (
           <>
@@ -1644,9 +1674,13 @@ export const MonitoredAuthorBooksTab = ({
                                 const metaLine = yearPart ? `${yearPart}${book.author ? ` • ${book.author}` : ''}` : (book.author || '');
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
+                                const _cProvider = (book.provider || '').trim();
+                                const _cProviderId = (book.provider_id || '').trim();
+                                const _cRow = (_cProvider && _cProviderId) ? monitoredBookRowByKey.get(`${_cProvider}:${_cProviderId}`) : undefined;
+                                const isRemovedCard = _cRow?.state === 'removed_from_provider';
                                 return (
                                   <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
-                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant} />
+                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} />
                                   </div>
                                 );
                               })}
@@ -1679,11 +1713,12 @@ export const MonitoredAuthorBooksTab = ({
                                   const _tProvider = (book.provider || '').trim();
                                   const _tProviderId = (book.provider_id || '').trim();
                                   const _tRow = (_tProvider && _tProviderId) ? monitoredBookRowByKey.get(`${_tProvider}:${_tProviderId}`) : undefined;
+                                  const isRemovedFromProvider = _tRow?.state === 'removed_from_provider';
                                   const tEbookStatus = _tRow ? getFormatStatus(_tRow, 'ebook') : null;
                                   const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
                                     <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
-                                    <MonitoredBookTableRow isDimmed={isDormant} hasActiveSelection={monitoredEntityId ? hasActiveBookSelection : false}
+                                    <MonitoredBookTableRow isDimmed={isDormant || isRemovedFromProvider} hasActiveSelection={monitoredEntityId ? hasActiveBookSelection : false}
                                       leadingControl={monitoredEntityId ? (() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);
                                         return (
@@ -1703,6 +1738,11 @@ export const MonitoredAuthorBooksTab = ({
                                           <h3 className="font-semibold text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>
                                           {/* Series info: desktop only */}
                                           {showSeriesInfo ? <span className="hidden sm:inline shrink-0 text-xs text-gray-500 dark:text-gray-400">• {seriesLabel}</span> : null}
+                                          {isRemovedFromProvider ? (
+                                            <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide rounded bg-red-500/20 text-red-600 dark:text-red-400">
+                                              Removed
+                                            </span>
+                                          ) : null}
                                           {hasSeriesPosition ? (
                                             <span className="hidden sm:inline-flex shrink-0 px-1 py-0 text-[9px] sm:text-[10px] font-bold text-white bg-emerald-600 rounded" style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.3)', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>
                                               #{groupSeriesPos}{groupSeriesCount != null ? `/${groupSeriesCount}` : ''}

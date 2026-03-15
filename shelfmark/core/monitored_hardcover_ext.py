@@ -2,16 +2,102 @@
 
 Subclasses HardcoverProvider to add queries not in the upstream provider.
 Uses _execute_query() which is accessible to subclasses by design.
+
+The monitored sync path requires *strict* error handling — API failures must
+raise typed exceptions instead of silently returning None/[], which upstream's
+_execute_query() does.  _execute_query_strict() fills this role.
 """
 from __future__ import annotations
 
-from shelfmark.metadata_providers.hardcover import HardcoverProvider
+import logging
+from typing import Any, Dict
+
+import requests as _requests
+
+from shelfmark.core.monitored_types import (
+    MonitoredProviderAPIError,
+    MonitoredProviderAuthError,
+    MonitoredProviderNetworkError,
+    MonitoredProviderRateLimitError,
+    MonitoredProviderTimeoutError,
+)
+from shelfmark.metadata_providers.hardcover import HARDCOVER_API_URL, HardcoverProvider
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_LANG_CODES = ["en"]
 
 
 class MonitoredHardcoverProvider(HardcoverProvider):
     """HardcoverProvider extended with monitored author book queries."""
+
+    # ------------------------------------------------------------------
+    # Strict query executor — raises typed exceptions on failure
+    # ------------------------------------------------------------------
+
+    def _execute_query_strict(self, query: str, variables: Dict[str, Any]) -> Dict:
+        """Execute a GraphQL query, raising typed exceptions on any failure.
+
+        Unlike the base ``_execute_query()`` (which catches everything and
+        returns ``None``), this method propagates failures as structured
+        exceptions so callers can distinguish network errors from auth errors
+        from rate limits, etc.
+        """
+        from shelfmark.download.network import get_ssl_verify
+
+        try:
+            response = self.session.post(
+                HARDCOVER_API_URL,
+                json={"query": query, "variables": variables},
+                timeout=15,
+                verify=get_ssl_verify(HARDCOVER_API_URL),
+            )
+        except _requests.Timeout as exc:
+            raise MonitoredProviderTimeoutError(
+                f"Hardcover API request timed out: {exc}"
+            ) from exc
+        except _requests.ConnectionError as exc:
+            raise MonitoredProviderNetworkError(
+                f"Cannot reach Hardcover API: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise MonitoredProviderNetworkError(
+                f"Hardcover API request failed: {exc}"
+            ) from exc
+
+        # HTTP-level errors
+        try:
+            response.raise_for_status()
+        except _requests.HTTPError as exc:
+            status = response.status_code
+            if status in (401, 403):
+                raise MonitoredProviderAuthError(
+                    f"Hardcover API auth error (HTTP {status})"
+                ) from exc
+            if status == 429:
+                raise MonitoredProviderRateLimitError(
+                    "Hardcover API rate limited (HTTP 429)"
+                ) from exc
+            raise MonitoredProviderAPIError(
+                f"Hardcover API HTTP error {status}: {exc}"
+            ) from exc
+
+        # Parse JSON
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise MonitoredProviderAPIError(
+                f"Hardcover API returned non-JSON response: {exc}"
+            ) from exc
+
+        # GraphQL-level errors
+        if "errors" in data:
+            msgs = "; ".join(
+                str(e.get("message", e)) for e in data["errors"]
+            )
+            raise MonitoredProviderAPIError(f"Hardcover GraphQL errors: {msgs}")
+
+        return data.get("data") or {}
 
     def get_author_books_paginated(
         self,
@@ -93,11 +179,11 @@ class MonitoredHardcoverProvider(HardcoverProvider):
             }
         }
         """
-        result = self._execute_query(
+        result = self._execute_query_strict(
             query,
             {"authorId": int(author_id), "limit": limit, "offset": offset, "langCodes": codes},
         )
-        return (result or {}).get("books") or []
+        return result.get("books") or []
 
     def browse_author_books(
         self,
@@ -209,8 +295,8 @@ class MonitoredHardcoverProvider(HardcoverProvider):
             }
         }
         """
-        result = self._execute_query(query, {"bookId": int(book_id), "langCodes": codes})
-        books = (result or {}).get("books") or []
+        result = self._execute_query_strict(query, {"bookId": int(book_id), "langCodes": codes})
+        books = result.get("books") or []
         book = books[0] if books else None
 
         if book is not None and cache_enabled:

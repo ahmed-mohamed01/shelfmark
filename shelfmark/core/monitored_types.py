@@ -23,11 +23,70 @@ class MonitoredEntityNotFound(MonitoredError):
 
 
 class MonitoredProviderError(MonitoredError):
-    """Raised when a metadata provider is unavailable or returns an error."""
+    """Base provider error — includes error_type for structured handling."""
+
+    def __init__(self, message: str, *, error_type: str = "unknown") -> None:
+        super().__init__(message)
+        self.error_type = error_type
+
+
+class MonitoredProviderNetworkError(MonitoredProviderError):
+    """Network unreachable, DNS failure, connection refused."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="network")
+
+
+class MonitoredProviderTimeoutError(MonitoredProviderError):
+    """Request timed out."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="timeout")
+
+
+class MonitoredProviderRateLimitError(MonitoredProviderError):
+    """HTTP 429 — rate limited."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="rate_limit")
+
+
+class MonitoredProviderAuthError(MonitoredProviderError):
+    """HTTP 401/403 — invalid or expired API key."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="auth")
+
+
+class MonitoredProviderNotFoundError(MonitoredProviderError):
+    """Author/book not found at provider (404 or empty GraphQL result)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="not_found")
+
+
+class MonitoredProviderAPIError(MonitoredProviderError):
+    """Server error (5xx) or GraphQL errors."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_type="api_error")
 
 
 class MonitoredPathError(MonitoredError):
     """Raised when a configured path is invalid, missing, or outside allowed roots."""
+
+
+# =============================================================================
+# Transient error detection
+# =============================================================================
+
+#: Error types that may succeed on retry (network glitches, rate limits, server errors).
+TRANSIENT_ERROR_TYPES = frozenset({"network", "timeout", "rate_limit", "api_error"})
+
+
+def is_transient_provider_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a provider error that may succeed on retry."""
+    return isinstance(exc, MonitoredProviderError) and exc.error_type in TRANSIENT_ERROR_TYPES
 
 
 # =============================================================================
@@ -36,10 +95,29 @@ class MonitoredPathError(MonitoredError):
 
 
 @dataclass
+class DiffResult:
+    """Result of diff_sync_books() — tracks provider-removal changes."""
+    removed: int = 0
+    removed_titles: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RefreshResult:
     """Result of refresh_author()."""
     books_upserted: int = 0
-    books_pruned: int = 0
+    books_removed: int = 0
+    removed_titles: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BatchSyncResult:
+    """Result of _run_batch_sync()."""
+    total: int = 0
+    successful: int = 0
+    failed: int = 0
+    info: list[dict[str, Any]] = field(default_factory=list)
+    retried: int = 0
+    retry_succeeded: int = 0
 
 
 @dataclass

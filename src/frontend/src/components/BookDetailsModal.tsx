@@ -569,6 +569,11 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
               <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
                 {embeddedSearchBook.title || 'Untitled'}
               </h3>
+              {bookRow?.state === 'removed_from_provider' && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-red-500/20 text-red-700 dark:text-red-300">
+                  Removed from Hardcover
+                </span>
+              )}
               <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{embeddedSearchBook.author || 'Unknown author'}</p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">

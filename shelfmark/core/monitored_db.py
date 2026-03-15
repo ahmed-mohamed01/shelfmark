@@ -959,7 +959,7 @@ class MonitoredDB:
             return
 
         normalized_state = (state or "").strip().lower() or "discovered"
-        if normalized_state not in {"discovered", "ignored"}:
+        if normalized_state not in {"discovered", "ignored", "removed_from_provider"}:
             normalized_state = "discovered"
 
         year_value: int | None = None
@@ -1108,7 +1108,12 @@ class MonitoredDB:
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
-                        state=excluded.state
+                        state=CASE
+                            WHEN monitored_books.state = 'ignored' THEN 'ignored'
+                            WHEN monitored_books.state = 'removed_from_provider'
+                                 AND excluded.state = 'discovered' THEN 'discovered'
+                            ELSE excluded.state
+                        END
                     """,
                     (
                         entity_id,
@@ -1182,6 +1187,49 @@ class MonitoredDB:
                 )
                 conn.commit()
                 return bool(cursor.rowcount)
+            finally:
+                conn.close()
+
+    def bulk_update_monitored_book_state(
+        self,
+        *,
+        entity_id: int,
+        keys: list[tuple[str, str]],
+        state: str,
+    ) -> int:
+        """Batch-update state for multiple books. *keys* is a list of (provider, provider_book_id).
+
+        Returns the total number of rows updated.
+        """
+        if not keys:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                updated = 0
+                # SQLite has a variable limit (~999); batch in chunks of 400
+                for i in range(0, len(keys), 400):
+                    chunk = keys[i:i + 400]
+                    or_clauses = " OR ".join(
+                        ["(provider = ? AND provider_book_id = ?)"] * len(chunk)
+                    )
+                    params: list = [state, entity_id]
+                    for prov, pid in chunk:
+                        params.extend([prov, pid])
+                    params.append(state)
+                    cursor = conn.execute(
+                        f"""
+                        UPDATE monitored_books
+                        SET state = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE entity_id = ?
+                          AND ({or_clauses})
+                          AND state != ?
+                        """,
+                        params,
+                    )
+                    updated += cursor.rowcount or 0
+                conn.commit()
+                return updated
             finally:
                 conn.close()
 

@@ -214,6 +214,18 @@ export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boole
   });
 };
 
+export const syncAllMonitoredEntities = async (): Promise<{ ok: boolean; batch_id?: string; total?: number; already_running?: boolean }> => {
+  return fetchJSON<{ ok: boolean; batch_id?: string; total?: number; already_running?: boolean }>(`${API_BASE}/monitored/sync-all`, {
+    method: 'POST',
+  });
+};
+
+export const deleteMonitoredBook = async (entityId: number, provider: string, providerBookId: string): Promise<{ ok: boolean; deleted: boolean }> => {
+  return fetchJSON<{ ok: boolean; deleted: boolean }>(`${API_BASE}/monitored/${entityId}/books/${encodeURIComponent(provider)}/${encodeURIComponent(providerBookId)}`, {
+    method: 'DELETE',
+  });
+};
+
 // ---------------------------------------------------------------------------
 // Monitored book files and history
 // ---------------------------------------------------------------------------

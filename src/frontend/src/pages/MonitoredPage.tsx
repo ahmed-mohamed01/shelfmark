@@ -22,6 +22,7 @@ import {
   searchMetadataAuthors,
   deleteMonitoredAuthorsByIds,
   syncMonitoredEntity,
+  syncAllMonitoredEntities,
 } from '../services/monitoredApi';
 import { FolderBrowserModal } from '../components/FolderBrowserModal';
 import { BookMonitorModal } from '../components/BookMonitorModal';
@@ -53,6 +54,7 @@ interface MonitoredAuthor {
   created_at?: string;
   cached_bio?: string;
   cached_source_url?: string;
+  last_error?: string | null;
 }
 
 interface MonitoredBooksSourceEntity {
@@ -558,6 +560,125 @@ export const MonitoredPage = ({
     };
   }, [socket, setTransientActivityItems, onShowToast]);
 
+  // Batch sync notifications (scheduled + manual sync-all)
+  const batchSyncTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const [syncAllRunning, setSyncAllRunning] = useState(false);
+
+  useEffect(() => {
+    if (!socket || !setTransientActivityItems) return;
+
+    const batchUpsert = (batchId: string, patch: Partial<ActivityItem>) => {
+      const id = `batch-sync:${batchId}`;
+      setTransientActivityItems((prev) => {
+        const exists = prev.some((item) => item.id === id);
+        if (exists) return prev.map((item) => item.id === id ? { ...item, ...patch } : item);
+        const newItem: ActivityItem = {
+          id,
+          kind: 'download',
+          visualStatus: 'resolving',
+          title: 'Sync all authors',
+          author: 'Monitored authors',
+          metaLine: 'Batch sync',
+          statusLabel: 'Syncing',
+          statusDetail: 'Starting…',
+          progressAnimated: true,
+          timestamp: Date.now(),
+          ...patch,
+        };
+        return [...prev, newItem];
+      });
+    };
+
+    const scheduleBatchRemoval = (batchId: string, delayMs: number) => {
+      const existing = batchSyncTimeoutsRef.current.get(batchId);
+      if (existing) clearTimeout(existing);
+      const tid = window.setTimeout(() => {
+        setTransientActivityItems((prev) => prev.filter((item) => item.id !== `batch-sync:${batchId}`));
+        batchSyncTimeoutsRef.current.delete(batchId);
+      }, delayMs);
+      batchSyncTimeoutsRef.current.set(batchId, tid);
+    };
+
+    const onBatchStarted = (data: { batch_id: string; total: number }) => {
+      setSyncAllRunning(true);
+      onShowToast?.(`Syncing ${data.total} authors…`, 'info', false);
+      batchUpsert(data.batch_id, {
+        visualStatus: 'resolving',
+        statusLabel: 'Syncing',
+        statusDetail: `0/${data.total}`,
+        progressAnimated: true,
+        timestamp: Date.now(),
+      });
+    };
+
+    const onBatchProgress = (data: { batch_id: string; index: number; total: number; entity_name: string; entity_cover?: string }) => {
+      batchUpsert(data.batch_id, {
+        statusDetail: `${data.entity_name} (${data.index}/${data.total})`,
+        progress: Math.round((data.index / data.total) * 100),
+        ...(data.entity_cover ? { preview: data.entity_cover } : {}),
+      });
+    };
+
+    const onBatchComplete = (data: { batch_id: string; total: number; successful: number; failed: number; info?: { entity_name?: string; message?: string; is_error?: boolean }[]; retried?: number; retry_succeeded?: number }) => {
+      setSyncAllRunning(false);
+      const errors = (data.info ?? []).filter((i) => i.is_error);
+      const notices = (data.info ?? []).filter((i) => !i.is_error);
+      let statusDetail = `${data.successful}/${data.total} synced`;
+      if (data.failed > 0) statusDetail += ` · ${data.failed} failed`;
+      if (notices.length > 0) statusDetail += ` · ${notices.length} info`;
+      if (data.retried && data.retried > 0) statusDetail += ` · ${data.retry_succeeded ?? 0}/${data.retried} retried`;
+
+      const hasFailed = data.failed > 0;
+      batchUpsert(data.batch_id, {
+        visualStatus: hasFailed ? 'error' : 'complete',
+        statusLabel: hasFailed ? 'Errors' : 'Complete',
+        statusDetail,
+        progressAnimated: false,
+        progress: 100,
+      });
+
+      if (hasFailed && errors.length > 0) {
+        const failedNames = errors.slice(0, 3).map((e) => e.entity_name).join(', ');
+        const suffix = errors.length > 3 ? ` +${errors.length - 3} more` : '';
+        onShowToast?.(`Sync failed for: ${failedNames}${suffix}`, 'error', false);
+      } else {
+        const toastType = hasFailed ? 'error' : 'success';
+        onShowToast?.(`Batch sync: ${statusDetail}`, toastType, false);
+      }
+
+      if (!hasFailed) {
+        scheduleBatchRemoval(data.batch_id, notices.length > 0 ? 20000 : 12000);
+      }
+    };
+
+    socket.on('monitored_batch_sync_started', onBatchStarted);
+    socket.on('monitored_batch_sync_progress', onBatchProgress);
+    socket.on('monitored_batch_sync_complete', onBatchComplete);
+    return () => {
+      socket.off('monitored_batch_sync_started', onBatchStarted);
+      socket.off('monitored_batch_sync_progress', onBatchProgress);
+      socket.off('monitored_batch_sync_complete', onBatchComplete);
+      for (const tid of batchSyncTimeoutsRef.current.values()) clearTimeout(tid);
+      batchSyncTimeoutsRef.current.clear();
+    };
+  }, [socket, setTransientActivityItems, onShowToast]);
+
+  const runSyncAll = useCallback(async () => {
+    if (syncAllRunning) return;
+    setSyncAllRunning(true);
+    try {
+      const res = await syncAllMonitoredEntities();
+      if (res.already_running) {
+        onShowToast?.('A batch sync is already running', 'info', false);
+        setSyncAllRunning(false);
+      }
+      // setSyncAllRunning(false) will happen via the batch_sync_complete event
+    } catch {
+      setSyncAllRunning(false);
+      onShowToast?.('Failed to start batch sync', 'error', false);
+    }
+  }, [syncAllRunning, onShowToast]);
+
   useEffect(() => {
     let timeoutId: number;
 
@@ -607,6 +728,7 @@ export const MonitoredPage = ({
         created_at: entity.created_at || undefined,
         cached_bio: entity.cached_bio || undefined,
         cached_source_url: entity.cached_source_url || undefined,
+        last_error: entity.last_error || undefined,
       };
     };
 
@@ -1072,6 +1194,14 @@ export const MonitoredPage = ({
     const map = new Map<string, number>();
     for (const item of monitored) {
       map.set(item.name.toLowerCase(), item.id);
+    }
+    return map;
+  }, [monitored]);
+
+  const monitoredEntityErrorById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const item of monitored) {
+      if (item.last_error) map.set(item.id, item.last_error);
     }
     return map;
   }, [monitored]);
@@ -2617,6 +2747,22 @@ export const MonitoredPage = ({
                           </span>
                         </button>
                       </div>
+                    ) : landingTab === 'authors' && monitored.length > 0 ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Sync All */}
+                        <button
+                          type="button"
+                          onClick={runSyncAll}
+                          disabled={syncAllRunning}
+                          className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300 disabled:opacity-50"
+                          title="Sync all authors"
+                          aria-label="Sync all authors"
+                        >
+                          <svg className={`w-5 h-5${syncAllRunning ? ' animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                          </svg>
+                        </button>
+                      </div>
                     ) : null}
                     <div className="relative" ref={monitoredBooksSearchRef}>
                         <button
@@ -3078,6 +3224,7 @@ export const MonitoredPage = ({
                     viewMode={monitoredViewMode}
                     authors={monitoredAuthorsForCards}
                     entityIdByName={monitoredEntityIdByName}
+                    entityErrorById={monitoredEntityErrorById}
                     selectedAuthorKeys={selectedMonitoredAuthorKeys}
                     hasActiveSelection={hasActiveMonitoredAuthorSelection}
                     compactGridStyle={monitoredCompactGridStyle}

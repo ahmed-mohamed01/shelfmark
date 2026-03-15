@@ -7,7 +7,7 @@ Import graph: monitored_db_ops → monitored_utils (no other monitored_* imports
 
 Key public functions:
   fetch_entity_metadata  — fetch books from provider and upsert; dispatches on entity.kind
-  prune_deleted_books    — remove books no longer present at the provider
+  diff_sync_books        — soft-flag books no longer present at the provider
   fetch_book_releases    — search all configured sources for releases of a single book
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
+from shelfmark.core.monitored_types import DiffResult
 from shelfmark.core.monitored_utils import extract_book_popularity
 from shelfmark.metadata_providers import normalize_language_code
 
@@ -139,7 +140,7 @@ def fetch_entity_metadata(
     get_author_books_paginated(), paginates up to 2,000 results (100/page),
     and upserts each page immediately. Raises MonitoredProviderError if the
     provider is unavailable. Returns a set of 'provider:book_id' strings for
-    use with prune_deleted_books().
+    use with diff_sync_books().
 
     For 'book' entities: fetches a single book via get_book_rich() (Hardcover)
     or get_book() (generic providers), seeding from entity.settings defaults
@@ -356,44 +357,62 @@ def fetch_entity_metadata(
 # =============================================================================
 
 
-def prune_deleted_books(
+def diff_sync_books(
     db: MonitoredDB,
     *,
     entity_id: int,
     user_id: int | None,
     current_provider_ids: set[str],
-) -> int:
-    """Delete books from DB that are no longer present at the provider.
+) -> "DiffResult":
+    """Diff existing books against the latest provider fetch.
+
+    Books missing from *current_provider_ids* are soft-flagged as
+    ``removed_from_provider`` (skipping already-flagged and user-ignored).
+    Resurrection of returning books is handled by the upsert CASE expression
+    in ``upsert_monitored_book()`` — no extra work needed here.
 
     Args:
-        current_provider_ids: Set of 'provider:provider_book_id' strings from
-            the latest provider fetch. Books not in this set are removed.
+        current_provider_ids: Set of ``'provider:provider_book_id'`` strings
+            from the latest provider fetch.
 
     Returns:
-        Number of books pruned.
+        DiffResult with counts and titles of removed books.
     """
     existing_books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
-    pruned = 0
+    result = DiffResult()
+
+    # Collect books to flag as removed (single batch UPDATE instead of N queries)
+    keys_to_remove: list[tuple[str, str]] = []
     for book in existing_books:
         provider = str(book.get("provider") or "").strip()
         provider_book_id = str(book.get("provider_book_id") or "").strip()
         if not provider or not provider_book_id:
             continue
         key = f"{provider}:{provider_book_id}"
+        state = str(book.get("state") or "discovered")
+
         if key not in current_provider_ids:
-            try:
-                db.delete_monitored_book(
-                    entity_id=entity_id,
-                    provider=provider,
-                    provider_book_id=provider_book_id,
-                )
-                pruned += 1
-            except Exception as exc:
-                logger.warning(
-                    "Failed to prune book entity_id=%s provider=%s book_id=%s: %s",
-                    entity_id, provider, provider_book_id, exc,
-                )
-    return pruned
+            if state in ("removed_from_provider", "ignored"):
+                continue  # already flagged or user-ignored
+            keys_to_remove.append((provider, provider_book_id))
+            result.removed_titles.append(str(book.get("title") or "Unknown"))
+
+    if keys_to_remove:
+        try:
+            result.removed = db.bulk_update_monitored_book_state(
+                entity_id=entity_id,
+                keys=keys_to_remove,
+                state="removed_from_provider",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to flag %d books as removed entity_id=%s: %s",
+                len(keys_to_remove), entity_id, exc,
+            )
+            result.removed = 0
+            result.removed_titles.clear()
+
+    return result
 
 
 # =============================================================================

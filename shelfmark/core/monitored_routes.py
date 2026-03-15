@@ -20,8 +20,8 @@ from shelfmark.core.monitored_files import (
 )
 from shelfmark.core.monitored_operations import (
     record_scan_error,
-    refresh_author,
     resolve_book_auto_search_precheck,
+    run_batch_sync,
     search_missing_books,
     start_author_background_sync,
     update_file_availability,
@@ -250,6 +250,8 @@ def register_monitored_routes(
     ws_manager: Any = None,
 ) -> None:
 
+    _batch_sync_lock = threading.Lock()
+
     def _parse_schedule_times(raw_value: Any) -> list[str]:
         raw = str(raw_value or "").strip()
         if not raw:
@@ -270,6 +272,23 @@ def register_monitored_routes(
 
 
 
+    def _collect_enabled_author_entities() -> list[tuple[int, dict]]:
+        """Collect all enabled author entities across all users. Returns ``(user_id, entity)`` tuples."""
+        result: list[tuple[int, dict]] = []
+        user_ids = {int(u.get("id")) for u in user_db.list_users() if u.get("id") is not None}
+        global_user = user_db.get_user(username="global")
+        if global_user and global_user.get("id") is not None:
+            user_ids.add(int(global_user.get("id")))
+        for uid in sorted(user_ids):
+            entities = monitored_db.list_monitored_entities(user_id=uid)
+            for entity in entities:
+                if not bool(int(entity.get("enabled") or 0)):
+                    continue
+                if str(entity.get("kind") or "") != "author":
+                    continue
+                result.append((uid, entity))
+        return result
+
     def _start_monitored_refresh_scheduler() -> None:
         if app.config.get("TESTING"):
             return
@@ -277,6 +296,20 @@ def register_monitored_routes(
             return
 
         stop_event = threading.Event()
+
+        def _run_scheduled(ents: list, bid: str, s: str) -> None:
+            try:
+                batch_result = run_batch_sync(
+                    ents, monitored_db, ws_manager, user_db,
+                    batch_id=bid,
+                )
+                logger.info(
+                    "Scheduled monitored refresh complete slot=%s total=%s successful=%s failed=%s retried=%s",
+                    s, batch_result.total, batch_result.successful,
+                    batch_result.failed, batch_result.retried,
+                )
+            finally:
+                app.extensions["monitored_batch_sync_running"] = False
 
         def _run() -> None:
             from shelfmark.core.config import config as app_config
@@ -296,46 +329,21 @@ def register_monitored_routes(
                         marker = f"{now.strftime('%Y-%m-%d')}@{slot}"
                         if marker != last_run_marker:
                             last_run_marker = marker
-                            user_ids = {int(u.get("id")) for u in user_db.list_users() if u.get("id") is not None}
-                            global_user = user_db.get_user(username="global")
-                            if global_user and global_user.get("id") is not None:
-                                user_ids.add(int(global_user.get("id")))
+                            with _batch_sync_lock:
+                                if app.extensions.get("monitored_batch_sync_running"):
+                                    logger.info("Scheduled refresh skipped slot=%s — batch sync already running", slot)
+                                    continue
+                                app.extensions["monitored_batch_sync_running"] = True
 
-                            total_entities = 0
-                            total_books = 0
-                            for uid in sorted(user_ids):
-                                preferred_languages = _resolve_preferred_languages_for_user(user_db, uid)
-                                entities = monitored_db.list_monitored_entities(user_id=uid)
-                                for entity in entities:
-                                    if not bool(int(entity.get("enabled") or 0)):
-                                        continue
-                                    if str(entity.get("kind") or "") != "author":
-                                        continue
-                                    total_entities += 1
-                                    try:
-                                        result = refresh_author(
-                                            monitored_db,
-                                            entity_id=int(entity.get("id")),
-                                            user_id=uid,
-                                            preferred_languages=preferred_languages,
-                                        )
-                                        total_books += result.books_upserted
-                                    except Exception as exc:
-                                        logger.warning("Scheduled monitored sync failed entity_id=%s user_id=%s: %s", entity.get("id"), uid, exc)
-                                        try:
-                                            monitored_db.update_monitored_entity_check(
-                                                entity_id=int(entity.get("id") or 0),
-                                                last_error=str(exc),
-                                            )
-                                        except Exception:
-                                            pass
+                            entities = _collect_enabled_author_entities()
+                            if not entities:
+                                app.extensions["monitored_batch_sync_running"] = False
+                                continue
 
-                            logger.info(
-                                "Scheduled monitored refresh complete slot=%s entities=%s discovered_books=%s",
-                                slot,
-                                total_entities,
-                                total_books,
-                            )
+                            threading.Thread(
+                                target=_run_scheduled, args=(entities, marker, slot),
+                                daemon=True, name=f"MonitoredBatchSync-{marker}",
+                            ).start()
                 except Exception as exc:
                     logger.warning("Scheduled monitored refresh loop error: %s", exc)
 
@@ -1108,6 +1116,69 @@ def register_monitored_routes(
             return jsonify({"ok": True, "syncing": True})
 
         return jsonify({"ok": True, "syncing": False})
+
+    # ------------------------------------------------------------------
+    # Delete a single monitored book
+    # ------------------------------------------------------------------
+
+    @app.route("/api/monitored/<int:entity_id>/books/<provider>/<provider_book_id>", methods=["DELETE"])
+    def api_delete_monitored_book(entity_id: int, provider: str, provider_book_id: str):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
+        if not allowed:
+            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+
+        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
+        deleted = monitored_db.delete_monitored_book(
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+        )
+        return jsonify({"ok": True, "deleted": deleted})
+
+    # ------------------------------------------------------------------
+    # Sync all authors
+    # ------------------------------------------------------------------
+
+    @app.route("/api/monitored/sync-all", methods=["POST"])
+    def api_sync_all_monitored():
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
+        if not allowed:
+            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+
+        # Guard against concurrent batch syncs (atomic check-then-set)
+        with _batch_sync_lock:
+            if app.extensions.get("monitored_batch_sync_running"):
+                return jsonify({"ok": True, "already_running": True}), 409
+            app.extensions["monitored_batch_sync_running"] = True
+
+        entities = _collect_enabled_author_entities()
+        if not entities:
+            app.extensions["monitored_batch_sync_running"] = False
+            return jsonify({"ok": True, "total": 0})
+
+        batch_id = f"manual-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+        def _run_and_clear() -> None:
+            try:
+                run_batch_sync(entities, monitored_db, ws_manager, user_db, batch_id=batch_id)
+            finally:
+                app.extensions["monitored_batch_sync_running"] = False
+
+        t = threading.Thread(target=_run_and_clear, daemon=True, name=f"MonitoredBatchSync-{batch_id}")
+        t.start()
+
+        return jsonify({"ok": True, "batch_id": batch_id, "total": len(entities)})
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)

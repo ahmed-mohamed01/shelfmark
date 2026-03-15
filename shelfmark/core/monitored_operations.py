@@ -16,17 +16,20 @@ from typing import Any
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_db_ops import (
+    diff_sync_books,
     fetch_book_releases,
     fetch_entity_metadata,
-    prune_deleted_books,
 )
 from shelfmark.core.monitored_types import (
     AvailabilityData,
+    BatchSyncResult,
     MonitoredEntityNotFound,
     MonitoredPathError,
+    MonitoredProviderError,
     RefreshResult,
     ScanResult,
     SearchSummary,
+    is_transient_provider_error,
 )
 
 logger = setup_logger(__name__)
@@ -44,27 +47,32 @@ def _sync_author_core(
     user_id: int | None,
     preferred_languages: set[str] | None = None,
 ) -> RefreshResult:
-    """Fetch books, prune deleted, apply monitor modes, clear last_error.
+    """Fetch books, diff-sync (soft-flag removals), apply monitor modes, clear last_error.
 
     Pure data operation — no WS broadcasts, no sync_status updates.
     Shared by refresh_author() (scheduler) and _run_author_sync() (background thread).
-    Returns RefreshResult for the scheduler's progress tracking.
+
+    Provider errors now raise typed exceptions (MonitoredProviderTimeoutError,
+    MonitoredProviderNetworkError, etc.) which prevent diff_sync_books from
+    running — no data loss on API failure.
     """
     entity_id = int(entity["id"])
 
-    # Returns set of 'provider:provider_book_id' strings
+    # Returns set of 'provider:provider_book_id' strings.
+    # Raises MonitoredProvider*Error on any API failure — diff never runs.
     discovered_ids = fetch_entity_metadata(
         db, entity=entity, user_id=user_id, preferred_languages=preferred_languages
     )
 
-    books_pruned = prune_deleted_books(
+    # Diff-based sync: soft-flag missing books, resurrect returning ones.
+    diff = diff_sync_books(
         db,
         entity_id=entity_id,
         user_id=user_id,
         current_provider_ids=discovered_ids,
     )
 
-    # Re-load books after pruning to pass accurate list to monitor modes
+    # Re-load books after diff to pass accurate list to monitor modes
     books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
     existing_files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
 
@@ -80,7 +88,11 @@ def _sync_author_core(
     )
 
     db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
-    return RefreshResult(books_upserted=len(books), books_pruned=books_pruned)
+    return RefreshResult(
+        books_upserted=len(books),
+        books_removed=diff.removed,
+        removed_titles=diff.removed_titles,
+    )
 
 
 def refresh_author(
@@ -161,10 +173,10 @@ def _run_author_sync(
 
         preferred_languages = _resolve_preferred_languages(user_db, user_id)
 
-        # Fetch, prune, apply monitor modes — shared with the scheduler path.
+        # Fetch, diff-sync, apply monitor modes — shared with the scheduler path.
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
                    {"entity_id": entity_id, "phase": "fetching_books"})
-        _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
+        sync_result = _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
 
         # Auto file scan (best-effort — skipped if library paths not configured)
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
@@ -244,14 +256,26 @@ def _run_author_sync(
         books_count = len(db.list_monitored_books(user_id=user_id, entity_id=entity_id) or [])
         db.update_entity_sync_status(entity_id, "idle")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
-        _broadcast(ws_manager, user_id, "monitored_sync_complete",
-                   {"entity_id": entity_id, "books_count": books_count, "name": entity_name})
+        complete_data: dict[str, Any] = {
+            "entity_id": entity_id, "books_count": books_count, "name": entity_name,
+        }
+        if sync_result.books_removed > 0:
+            complete_data["books_removed"] = sync_result.books_removed
+            complete_data["removed_titles"] = sync_result.removed_titles
+        _broadcast(ws_manager, user_id, "monitored_sync_complete", complete_data)
 
-    except Exception as exc:
+    except MonitoredProviderError as exc:
+        error_msg = f"[{exc.error_type}] {exc}"
         db.update_entity_sync_status(entity_id, "error")
-        db.update_monitored_entity_check(entity_id=entity_id, last_error=str(exc))
+        db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
         _broadcast(ws_manager, user_id, "monitored_sync_error",
-                   {"entity_id": entity_id, "error": str(exc)})
+                   {"entity_id": entity_id, "error": error_msg, "error_type": exc.error_type})
+    except Exception as exc:
+        error_msg = f"[unknown] {exc}"
+        db.update_entity_sync_status(entity_id, "error")
+        db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
+        _broadcast(ws_manager, user_id, "monitored_sync_error",
+                   {"entity_id": entity_id, "error": error_msg, "error_type": "unknown"})
 
 
 def start_author_background_sync(
@@ -270,6 +294,140 @@ def start_author_background_sync(
         name=f"MonitoredSync-{entity_id}",
     )
     t.start()
+
+
+# =============================================================================
+# Batch sync (shared by scheduler and sync-all route)
+# =============================================================================
+
+
+def _entity_cover(entity: dict) -> str | None:
+    """Extract a cover/photo URL from an entity dict (best-effort)."""
+    settings = entity.get("settings")
+    if isinstance(settings, dict):
+        photo = settings.get("photo_url")
+        if isinstance(photo, str) and photo.strip():
+            return photo.strip()
+    cover = entity.get("best_book_cover_url")
+    return cover if isinstance(cover, str) and cover.strip() else None
+
+
+def _record_sync_failure(
+    db: MonitoredDB,
+    result: BatchSyncResult,
+    *,
+    eid: int,
+    ename: str,
+    exc: BaseException,
+) -> None:
+    """Record a failed entity sync into *result* and DB."""
+    error_msg = f"[{getattr(exc, 'error_type', 'unknown')}] {exc}"
+    db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
+    result.failed += 1
+    result.info.append({
+        "entity_id": eid, "entity_name": ename,
+        "message": error_msg, "is_error": True,
+    })
+    logger.warning("Batch sync failed entity_id=%s: %s", eid, error_msg)
+
+
+def _record_sync_success(
+    result: BatchSyncResult,
+    sync_res: RefreshResult,
+    *,
+    eid: int,
+    ename: str,
+) -> None:
+    """Record a successful entity sync into *result*."""
+    result.successful += 1
+    if sync_res.books_removed > 0:
+        result.info.append({
+            "entity_id": eid, "entity_name": ename,
+            "message": f"{sync_res.books_removed} book(s) removed from provider",
+            "removed_titles": sync_res.removed_titles,
+        })
+
+
+def run_batch_sync(
+    entities: list[tuple[int, dict]],
+    db: MonitoredDB,
+    ws_manager: Any,
+    user_db: Any,
+    batch_id: str,
+) -> BatchSyncResult:
+    """Iterate *entities*, sync each, broadcast batch-level progress.
+
+    Each entry in *entities* is ``(user_id, entity_dict)``.
+    Failed entities with transient errors are retried once after all others.
+    """
+    total = len(entities)
+    result = BatchSyncResult(total=total)
+
+    _broadcast(ws_manager, None, "monitored_batch_sync_started",
+               {"batch_id": batch_id, "total": total})
+
+    retry_queue: list[tuple[int, int, dict]] = []  # (index, user_id, entity)
+
+    for idx, (uid, entity) in enumerate(entities, 1):
+        eid = int(entity.get("id") or 0)
+        ename = str(entity.get("name") or "Author")
+
+        _broadcast(ws_manager, uid, "monitored_batch_sync_progress", {
+            "batch_id": batch_id, "index": idx, "total": total,
+            "entity_id": eid, "entity_name": ename,
+            "entity_cover": _entity_cover(entity),
+        })
+
+        preferred_languages = _resolve_preferred_languages(user_db, uid)
+        try:
+            sync_res = _sync_author_core(
+                db, entity=entity, user_id=uid,
+                preferred_languages=preferred_languages,
+            )
+            _record_sync_success(result, sync_res, eid=eid, ename=ename)
+        except MonitoredProviderError as exc:
+            if is_transient_provider_error(exc):
+                error_msg = f"[{exc.error_type}] {exc}"
+                db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
+                retry_queue.append((idx, uid, entity))
+            else:
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+        except Exception as exc:
+            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+
+    # Retry transient failures once
+    if retry_queue:
+        result.retried = len(retry_queue)
+        for idx, uid, entity in retry_queue:
+            eid = int(entity.get("id") or 0)
+            ename = str(entity.get("name") or "Author")
+            _broadcast(ws_manager, uid, "monitored_batch_sync_progress", {
+                "batch_id": batch_id, "index": idx, "total": total,
+                "entity_id": eid, "entity_name": f"{ename} (retry)",
+                "entity_cover": _entity_cover(entity),
+            })
+            preferred_languages = _resolve_preferred_languages(user_db, uid)
+            try:
+                sync_res = _sync_author_core(
+                    db, entity=entity, user_id=uid,
+                    preferred_languages=preferred_languages,
+                )
+                _record_sync_success(result, sync_res, eid=eid, ename=ename)
+                result.retry_succeeded += 1
+            except Exception as exc:
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+
+    _broadcast(ws_manager, None, "monitored_batch_sync_complete", {
+        "batch_id": batch_id,
+        "total": total,
+        "successful": result.successful,
+        "failed": result.failed,
+        "info": result.info,
+        "retried": result.retried,
+        "retry_succeeded": result.retry_succeeded,
+    })
+
+    return result
 
 
 # =============================================================================
@@ -588,6 +746,7 @@ def search_missing_books(
     candidates = [
         row for row in availability.books
         if bool(int(row.get(monitor_col) or 0))
+        and str(row.get("state") or "") != "removed_from_provider"
         and str(row.get("provider") or "").strip()
         and str(row.get("provider_book_id") or "").strip()
     ]
