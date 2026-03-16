@@ -23,13 +23,14 @@ interface BookDetailsModalProps {
   renderEmbeddedSearch: (book: Book, contentType: ContentType) => ReactNode;
   previewBook?: Book | null;
   onMonitorBook?: (book: Book) => void;
+  onSetReleaseDate?: (book: MonitoredBookRow) => void;
 }
 
 type TabKey = 'files' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch, previewBook, onMonitorBook }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('files');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -699,7 +700,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                   </div>
                 ) : null}
 
-                {(genresSummary || releaseDateSummary) ? (
+                {(genresSummary || releaseDateSummary || (onSetReleaseDate && bookRow && !releaseDateSummary)) ? (
                   <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
                     {genresSummary ? (
                       <div className="min-w-0 truncate">
@@ -712,6 +713,15 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                         <span className="font-medium text-gray-600 dark:text-gray-300">Release date:</span>{' '}
                         <span>{releaseDateSummary}</span>
                       </div>
+                    ) : onSetReleaseDate && bookRow ? (
+                      <button
+                        type="button"
+                        onClick={() => onSetReleaseDate(bookRow)}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                        Set release date
+                      </button>
                     ) : null}
                   </div>
                 ) : null}

@@ -29,6 +29,7 @@ import { BookMonitorModal } from '../components/BookMonitorModal';
 import { EditAuthorModal } from '../components/EditAuthorModal';
 import { Dropdown } from '../components/Dropdown';
 import { BookDetailsModal } from '../components/BookDetailsModal';
+import ReleaseDateSearchModal from '../components/ReleaseDateSearchModal';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
 import { MonitoredAuthorsView } from '../components/MonitoredAuthorsView';
@@ -367,6 +368,7 @@ export const MonitoredPage = ({
   const [monitoredBooksLoadError, setMonitoredBooksLoadError] = useState<string | null>(null);
   const [activeBookEntityId, setActiveBookEntityId] = useState<number | null>(null);
   const [activeBookSourceRow, setActiveBookSourceRow] = useState<MonitoredBookListRow | null>(null);
+  const [releaseDateBook, setReleaseDateBook] = useState<{ row: MonitoredBookListRow; entityId: number } | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocket();
@@ -3648,7 +3650,29 @@ export const MonitoredPage = ({
           );
         }}
         onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
+        onSetReleaseDate={activeBookEntityId != null && activeBookSourceRow ? (_row) => {
+          setActiveBookEntityId(null);
+          setActiveBookSourceRow(null);
+          setReleaseDateBook({ row: activeBookSourceRow, entityId: activeBookEntityId });
+        } : undefined}
       />
+
+      {releaseDateBook && (
+        <ReleaseDateSearchModal
+          book={releaseDateBook.row}
+          entityId={releaseDateBook.entityId}
+          onClose={() => setReleaseDateBook(null)}
+          onMatched={(releaseDate) => {
+            setMonitoredBooksRows((prev) =>
+              prev.map((r) =>
+                r.provider === releaseDateBook.row.provider && r.provider_book_id === releaseDateBook.row.provider_book_id && r.entity_id === releaseDateBook.row.entity_id
+                  ? { ...r, release_date: releaseDate, publish_year: releaseDate ? parseInt(releaseDate.slice(0, 4), 10) : r.publish_year }
+                  : r
+              )
+            );
+          }}
+        />
+      )}
 
       <FolderBrowserModal
         open={folderBrowserState.open}

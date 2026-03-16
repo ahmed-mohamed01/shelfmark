@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     audiobook_last_search_status TEXT,
     ebook_last_search_at TIMESTAMP,
     audiobook_last_search_at TIMESTAMP,
+    release_date_checked_at TIMESTAMP,
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, provider, provider_book_id)
 );
@@ -258,6 +259,13 @@ class MonitoredDB:
                 _migrate_monitored_book_files_v2(conn)
                 _migrate_monitored_book_files_v3(conn)
                 conn.executescript(_CREATE_MONITORED_TABLES_SQL)
+                # Lazy migration: column is in CREATE TABLE for new DBs but
+                # existing tables need ALTER TABLE (CREATE IF NOT EXISTS is a no-op).
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_checked_at TIMESTAMP")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
                 conn.commit()
             finally:
                 conn.close()
@@ -640,6 +648,80 @@ class MonitoredDB:
                 )
                 conn.commit()
                 return bool(cur.rowcount)
+            finally:
+                conn.close()
+
+    def update_book_release_date(
+        self,
+        *,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        release_date: str | None,
+        audible_asin: str | None = None,
+    ) -> bool:
+        """Update release_date (and optionally ASIN) for a monitored book."""
+
+        # Derive publish_year from release_date
+        publish_year: int | None = None
+        if release_date and isinstance(release_date, str):
+            try:
+                publish_year = int(release_date[:4])
+            except (ValueError, TypeError):
+                pass
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, user_id),
+                ).fetchone()
+                if not exists:
+                    return False
+
+                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP"]
+                params: list[Any] = [release_date, publish_year]
+
+                if audible_asin:
+                    updates.append("asins = ?")
+                    params.append(json.dumps([audible_asin]))
+
+                params.extend([entity_id, provider, provider_book_id])
+                cur = conn.execute(
+                    f"""
+                    UPDATE monitored_books
+                    SET {", ".join(updates)}
+                    WHERE entity_id = ?
+                      AND provider = ?
+                      AND provider_book_id = ?
+                    """,
+                    params,
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+            finally:
+                conn.close()
+
+    def mark_release_date_checked(
+        self,
+        *,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+    ) -> None:
+        """Mark that we attempted a release-date lookup (no ownership check — internal use)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """UPDATE monitored_books
+                       SET release_date_checked_at = CURRENT_TIMESTAMP
+                       WHERE entity_id = ? AND provider = ? AND provider_book_id = ?""",
+                    (entity_id, provider, provider_book_id),
+                )
+                conn.commit()
             finally:
                 conn.close()
 

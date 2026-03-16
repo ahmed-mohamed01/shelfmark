@@ -623,3 +623,48 @@ export const deleteMonitoredAuthorsByIds = async (entityIds: number[]): Promise<
 
   return { successfulIds, failedIds };
 };
+
+// ── Release date search ─────────────────────────────────────
+
+export interface ReleaseDateSearchResult {
+  asin: string;
+  title: string;
+  authors: string[];
+  release_date: string | null;
+  publish_year: number | null;
+  cover_url: string | null;
+  series_name: string | null;
+  source: 'audible' | 'google';
+}
+
+export const searchReleaseDates = async (
+  title: string,
+  author?: string,
+): Promise<ReleaseDateSearchResult[]> => {
+  const params = new URLSearchParams();
+  if (title) params.set('title', title);
+  if (author) params.set('author', author);
+  const resp = await fetchJSON<{ results: ReleaseDateSearchResult[] }>(
+    `${API_BASE}/monitored/release-date-search?${params}`,
+  );
+  return resp.results;
+};
+
+export const setBookReleaseDate = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+  asin: string,
+  releaseDate: string | null,
+): Promise<{ ok: boolean }> => {
+  return fetchJSON(`${API_BASE}/monitored/${entityId}/books/release-date`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      provider_book_id: providerBookId,
+      asin,
+      release_date: releaseDate,
+    }),
+  });
+};

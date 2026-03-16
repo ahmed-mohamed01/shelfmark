@@ -28,6 +28,7 @@ import {
 } from '../utils/monitoredBookState';
 import type { AuthorModalAuthor } from './AuthorModal';
 import { RowThumbnail } from './RowThumbnail';
+import ReleaseDateSearchModal from './ReleaseDateSearchModal';
 
 const BookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
@@ -397,6 +398,7 @@ export const MonitoredAuthorBooksTab = ({
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const [syncPhase, setSyncPhase] = useState<string | null>(null);
   const [activeBookDetails, setActiveBookDetails] = useState<Book | null>(null);
+  const [releaseDateBook, setReleaseDateBook] = useState<MonitoredBookRow | null>(null);
   const [hasAppliedInitialBookSelection, setHasAppliedInitialBookSelection] = useState(false);
   const [isBooksToolbarPinned, setIsBooksToolbarPinned] = useState(false);
 
@@ -1845,6 +1847,23 @@ export const MonitoredAuthorBooksTab = ({
         </div>
       </div>
 
+      {releaseDateBook && monitoredEntityId && (
+        <ReleaseDateSearchModal
+          book={releaseDateBook}
+          entityId={monitoredEntityId}
+          onClose={() => setReleaseDateBook(null)}
+          onMatched={(releaseDate) => {
+            setMonitoredBookRows((prev) =>
+              prev.map((r) =>
+                r.provider === releaseDateBook.provider && r.provider_book_id === releaseDateBook.provider_book_id
+                  ? { ...r, release_date: releaseDate, publish_year: releaseDate ? parseInt(releaseDate.slice(0, 4), 10) : r.publish_year }
+                  : r
+              )
+            );
+          }}
+        />
+      )}
+
       <BookDetailsModal
         entityId={monitoredEntityId ?? null}
         provider={activeBookDetails?.provider ?? null}
@@ -1854,6 +1873,7 @@ export const MonitoredAuthorBooksTab = ({
         onClose={() => setActiveBookDetails(null)}
         onToggleMonitor={activeBookDetails && monitoredEntityId ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
+        onSetReleaseDate={monitoredEntityId ? (row) => { setActiveBookDetails(null); setReleaseDateBook(row); } : undefined}
         renderEmbeddedSearch={(book, contentType) => {
           if (renderEmbeddedSearch) {
             return renderEmbeddedSearch(book, contentType);

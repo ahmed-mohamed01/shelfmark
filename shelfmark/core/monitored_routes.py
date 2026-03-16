@@ -1098,6 +1098,125 @@ def register_monitored_routes(
 
         return jsonify({"ok": True, "updated": updated})
 
+    # ── Release-date lookup (AudiMeta + Google Books) ───────────
+
+    def _search_audimeta(title: str, author: str) -> list[dict[str, Any]]:
+        """Search AudiMeta for books, returning normalised result dicts."""
+        from shelfmark.core.config import config as app_config
+
+        base_url = str(app_config.get("AUDIBLE_BASE_URL", "https://audimeta.de")).rstrip("/")
+        region = str(app_config.get("AUDIBLE_REGION", "us"))
+        user_agent = str(
+            app_config.get(
+                "AUDIBLE_USER_AGENT",
+                "Shelfmark Audible Provider/1.0 (+https://github.com/calibrain/shelfmark; metadata-provider)",
+            )
+        )
+        params: dict[str, Any] = {"cache": "true", "region": region, "limit": "10"}
+        if title:
+            params["title"] = title
+        if author:
+            params["author"] = author
+        try:
+            import requests as http_requests
+            from shelfmark.download.network import get_ssl_verify
+
+            resp = http_requests.get(
+                f"{base_url}/search", params=params,
+                headers={"User-Agent": user_agent}, timeout=15,
+                verify=get_ssl_verify(base_url),
+            )
+            resp.raise_for_status()
+            items = resp.json()
+            if not isinstance(items, list):
+                return []
+        except Exception as exc:
+            logger.warning("AudiMeta search failed: %s", exc)
+            return []
+
+        results: list[dict[str, Any]] = []
+        for item in items:
+            raw_date = item.get("releaseDate") or ""
+            release_date = raw_date[:10] if len(raw_date) >= 10 else None
+            pub_year = None
+            if release_date:
+                try:
+                    pub_year = int(release_date[:4])
+                except (ValueError, TypeError):
+                    pass
+            authors = [a.get("name", "") for a in (item.get("authors") or []) if isinstance(a, dict)]
+            results.append({
+                "asin": item.get("asin") or "",
+                "title": item.get("title") or "",
+                "authors": authors,
+                "release_date": release_date,
+                "publish_year": pub_year,
+                "cover_url": item.get("imageUrl") or None,
+                "series_name": next(
+                    (s.get("name") for s in (item.get("series") or []) if isinstance(s, dict) and s.get("name")),
+                    None,
+                ),
+                "source": "audible",
+            })
+        return results
+
+    @app.route("/api/monitored/release-date-search")
+    def api_release_date_search():
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        title = request.args.get("title", "").strip()
+        author = request.args.get("author", "").strip()
+        if not title and not author:
+            return jsonify({"error": "title or author required"}), 400
+
+        from shelfmark.core.config import config as app_config
+        from shelfmark.core.monitored_release_enricher import search_google_books
+
+        api_key = str(app_config.get("GOOGLEBOOKS_API_KEY", "") or "")
+
+        try:
+            audimeta_results = _search_audimeta(title, author)
+        except Exception:
+            audimeta_results = []
+        try:
+            google_results = search_google_books(title, author, api_key=api_key)
+        except Exception:
+            google_results = []
+
+        results = audimeta_results + google_results
+
+        return jsonify({"results": results})
+
+    @app.route("/api/monitored/<int:entity_id>/books/release-date", methods=["PATCH"])
+    def api_set_release_date(entity_id: int):
+        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        payload = request.get_json(silent=True) or {}
+        provider = str(payload.get("provider") or "").strip()
+        provider_book_id = str(payload.get("provider_book_id") or "").strip()
+        asin = str(payload.get("asin") or "").strip()
+        release_date = payload.get("release_date") or None
+
+        if not provider or not provider_book_id:
+            return jsonify({"error": "provider and provider_book_id required"}), 400
+
+        ok = monitored_db.update_book_release_date(
+            user_id=db_user_id,
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            release_date=release_date,
+            audible_asin=asin or None,
+        )
+        if not ok:
+            return jsonify({"error": "Book not found or not authorized"}), 404
+
+        return jsonify({"ok": True})
+
     @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
     def api_search_monitored_entity(entity_id: int):
         db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)

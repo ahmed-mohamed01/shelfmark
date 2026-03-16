@@ -74,6 +74,19 @@ def _sync_author_core(
 
     # Re-load books after diff to pass accurate list to monitor modes
     books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+
+    # Enrich missing release dates via Google Books
+    try:
+        from shelfmark.core.monitored_release_enricher import enrich_release_dates
+
+        enriched_count = enrich_release_dates(
+            db, entity_id=entity_id, user_id=user_id, books=books,
+        )
+        if enriched_count:
+            books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    except Exception as exc:
+        logger.warning("Release date enrichment failed for entity %d: %s", entity_id, exc)
+
     existing_files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
 
     if books and existing_files:
