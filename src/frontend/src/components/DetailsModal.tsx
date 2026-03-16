@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Book, ButtonStateInfo, isMetadataBook } from '../types';
 import { isUserCancelledError } from '../utils/errors';
+import { BookTargetDropdown } from './BookTargetDropdown';
+import { bookSupportsTargets } from '../utils/bookTargetLoader';
 
 interface DetailsModalProps {
   book: Book | null;
@@ -10,9 +12,20 @@ interface DetailsModalProps {
   onFindDownloads?: (book: Book) => void;  // For Universal mode
   onSearchSeries?: (seriesName: string, seriesId?: string) => void;  // Callback to search for series
   buttonState: ButtonStateInfo;
+  showReleaseSourceLinks?: boolean;
+  onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
 }
 
-export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSearchSeries, buttonState }: DetailsModalProps) => {
+export const DetailsModal = ({
+  book,
+  onClose,
+  onDownload,
+  onFindDownloads,
+  onSearchSeries,
+  buttonState,
+  showReleaseSourceLinks = true,
+  onShowToast,
+}: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
 
@@ -56,6 +69,8 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
     }
   }, [book]);
 
+  const hasBookTargets = Boolean(book && isMetadataBook(book) && bookSupportsTargets(book));
+
   if (!book && !isClosing) return null;
   if (!book) return null;
 
@@ -78,6 +93,7 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
 
   // Determine if this is a metadata book (Universal mode) vs a release (Direct Download)
   const isMetadata = isMetadataBook(book);
+  const showBookSourceLink = Boolean(book.source_url) && (isMetadata || showReleaseSourceLinks);
   const metadataActionText =
     isMetadata && buttonState.state === 'download' && buttonState.text === 'Get'
       ? 'Find Downloads'
@@ -112,8 +128,11 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
   // Use provider display name from backend, fall back to capitalized provider name
   const providerDisplay = book.provider_display_name
     || (book.provider ? book.provider.charAt(0).toUpperCase() + book.provider.slice(1) : '');
+  const isSquareCover = book.cover_aspect === 'square';
   const artworkMaxHeight = 'calc(90vh - 220px)';
-  const artworkMaxWidth = 'min(45vw, 520px, calc((90vh - 220px) / 1.6))';
+  const artworkMaxWidth = isSquareCover
+    ? 'min(45vw, 400px, calc(90vh - 220px))'
+    : 'min(45vw, 520px, calc((90vh - 220px) / 1.6))';
   const additionalInfo =
     book.info && Object.keys(book.info).length > 0
       ? Object.entries(book.info).filter(([key]) => {
@@ -122,7 +141,7 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
         })
       : [];
   const extendedInfoEntries = [[publisherInfo.label, publisherInfo.value], ...additionalInfo];
-  const infoCardClass = 'rounded-2xl border border-[var(--border-muted)] px-4 py-3 text-sm bg-[var(--bg-soft)] sm:bg-[var(--bg)]';
+  const infoCardClass = 'rounded-2xl border border-(--border-muted) px-4 py-3 text-sm bg-(--bg-soft) sm:bg-(--bg)';
   const infoLabelClass = 'text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400';
   const infoValueClass = 'text-gray-900 dark:text-gray-100';
 
@@ -134,13 +153,13 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
       }}
     >
       <div
-        className={`details-container w-full max-w-4xl h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
+        className={`details-container w-full h-full sm:h-auto ${isClosing ? 'settings-modal-exit' : 'settings-modal-enter'}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
-          <header className="flex items-start gap-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5 py-4">
+        <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-(--border-muted) bg-(--bg) sm:bg-(--bg-soft) text-(--text) shadow-none sm:shadow-2xl">
+          <header className="flex items-start gap-4 border-b border-(--border-muted) bg-(--bg) sm:bg-(--bg-soft) px-5 py-4">
             <div className="flex-1 space-y-1">
               <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
               <h3 id={titleId} className="text-lg font-semibold leading-snug">
@@ -185,7 +204,7 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
                   </div>
                 ) : (
                   <div
-                    className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 p-6 text-sm text-gray-500 lg:h-full lg:max-w-none"
+                    className="flex w-full items-center justify-center rounded-xl border border-dashed border-(--border-muted) bg-(--bg)/60 p-6 text-sm text-gray-500 lg:h-full lg:max-w-none"
                     style={{ maxHeight: artworkMaxHeight, maxWidth: artworkMaxWidth }}
                   >
                     No cover
@@ -235,29 +254,15 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
                       </p>
                     </div>
                   )}
-                </div>
 
-                {/* Other display fields (pages, editions) - Universal mode only */}
-                {otherDisplayFields && otherDisplayFields.length > 0 && (
-                  <div className="flex flex-wrap gap-4 text-sm">
-                    {otherDisplayFields.map(field => (
-                      <span key={field.label} className="flex items-center gap-1.5">
-                        {field.icon === 'book' && (
-                          <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
-                          </svg>
-                        )}
-                        {field.icon === 'editions' && (
-                          <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 6.878V6a2.25 2.25 0 0 1 2.25-2.25h7.5A2.25 2.25 0 0 1 18 6v.878m-12 0c.235-.083.487-.128.75-.128h10.5c.263 0 .515.045.75.128m-12 0A2.25 2.25 0 0 0 4.5 9v.878m13.5-3A2.25 2.25 0 0 1 19.5 9v.878m0 0a2.246 2.246 0 0 0-.75-.128H5.25c-.263 0-.515.045-.75.128m15 0A2.25 2.25 0 0 1 21 12v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6c0-.98.626-1.813 1.5-2.122" />
-                          </svg>
-                        )}
-                        <span className="text-gray-500 dark:text-gray-400">{field.label}:</span>
-                        <span className="text-gray-900 dark:text-gray-100">{field.value}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
+                  {/* Other display fields (length, narrator, format, etc.) - Universal mode only */}
+                  {otherDisplayFields && otherDisplayFields.map(field => (
+                    <div key={field.label} className={`${infoCardClass} space-y-1`}>
+                      <p className={infoLabelClass}>{field.label}</p>
+                      <p className={infoValueClass}>{field.value}</p>
+                    </div>
+                  ))}
+                </div>
 
                 {/* ISBN - Universal mode only */}
                 {isMetadata && (book.isbn_13 || book.isbn_10) && (
@@ -286,7 +291,7 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
                             onSearchSeries(book.series_name!, book.series_id);
                             handleClose();
                           }}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-full hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors flex-shrink-0"
+                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-full hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors shrink-0"
                         >
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
@@ -316,17 +321,16 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
           </div>
 
           <footer
-            className="border-t border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5 py-4"
-            style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}
+            className="border-t border-(--border-muted) bg-(--bg) sm:bg-(--bg-soft) px-5 py-4"
           >
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               {/* Source link - shown for both Universal and Direct Download modes */}
-              {book.source_url && (
+              {showBookSourceLink && (
                 <a
                   href={book.source_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-muted)] bg-[var(--bg)] px-3 py-2 text-xs font-medium text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-900 dark:text-gray-400 dark:hover:border-gray-500 dark:hover:text-gray-200"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
                 >
                   View on {isMetadata ? providerDisplay : "Source"}
                   <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -339,22 +343,32 @@ export const DetailsModal = ({ book, onClose, onDownload, onFindDownloads, onSea
                   </svg>
                 </a>
               )}
-              {/* Action button - mirrors search result action state/flow */}
-              <button
-                onClick={isMetadata ? () => onFindDownloads?.(book) : handleDownload}
-                disabled={isMetadata ? buttonState.state === 'blocked' : buttonState.state !== 'download'}
-                className={`ml-auto rounded-full px-6 py-2.5 text-sm font-medium text-white transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  isMetadata
-                    ? buttonState.state === 'blocked'
-                      ? 'bg-gray-500 focus:ring-gray-400'
-                      : 'bg-emerald-600 hover:bg-emerald-700 focus:ring-emerald-500'
-                    : buttonState.state === 'blocked'
-                    ? 'bg-gray-500 focus:ring-gray-400'
-                    : 'bg-sky-700 hover:bg-sky-800 focus:ring-sky-500'
-                }`}
-              >
-                {isMetadata ? metadataActionText : buttonState.text}
-              </button>
+              <div className="flex w-full flex-col gap-3 sm:ml-auto sm:w-auto sm:flex-row sm:items-center">
+                {hasBookTargets && book.provider_id && (
+                  <BookTargetDropdown
+                    provider={book.provider!}
+                    bookId={book.provider_id}
+                    onShowToast={onShowToast}
+                    widthClassName="w-full sm:w-56"
+                  />
+                )}
+                {/* Action button - mirrors search result action state/flow */}
+                <button
+                  onClick={isMetadata ? () => onFindDownloads?.(book) : handleDownload}
+                  disabled={isMetadata ? buttonState.state === 'blocked' : buttonState.state !== 'download'}
+                  className={`rounded-lg px-5 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isMetadata
+                      ? buttonState.state === 'blocked'
+                        ? 'bg-gray-500'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                      : buttonState.state === 'blocked'
+                      ? 'bg-gray-500'
+                      : 'bg-sky-700 hover:bg-sky-800'
+                  }`}
+                >
+                  {isMetadata ? metadataActionText : buttonState.text}
+                </button>
+              </div>
             </div>
           </footer>
         </div>

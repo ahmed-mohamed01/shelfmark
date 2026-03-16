@@ -27,12 +27,109 @@ from shelfmark.core.user_db import UserDB
 logger = setup_logger(__name__)
 
 
-def _require_authenticated(resolve_auth_mode: Callable[[], str]):
+def _normalize_log_field(value: Any) -> str:
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    return text or "-"
+
+
+def _log_activity_rejection(
+    action: str,
+    *,
+    status_code: int,
+    reason: str,
+    auth_mode: Any = None,
+    viewer_scope: Any = None,
+    item_type: Any = None,
+    item_key: Any = None,
+    item_count: int | None = None,
+    missing_item_keys: list[str] | None = None,
+    owner_user_id: Any = None,
+    final_status: Any = None,
+    request_id: Any = None,
+) -> None:
+    parts = [
+        f"Activity {action} rejected",
+        f"status={status_code}",
+        f"reason={_normalize_log_field(reason)}",
+        f"method={request.method}",
+        f"path={request.path}",
+        f"user={_normalize_log_field(session.get('user_id'))}",
+        f"db_user_id={_normalize_log_field(session.get('db_user_id'))}",
+        f"is_admin={bool(session.get('is_admin', False))}",
+    ]
+    if auth_mode is not None:
+        parts.append(f"auth_mode={_normalize_log_field(auth_mode)}")
+    if viewer_scope is not None:
+        parts.append(f"viewer_scope={_normalize_log_field(viewer_scope)}")
+    if item_type is not None:
+        parts.append(f"item_type={_normalize_log_field(item_type)}")
+    if item_key is not None:
+        parts.append(f"item_key={_normalize_log_field(item_key)}")
+    if item_count is not None:
+        parts.append(f"item_count={item_count}")
+    if missing_item_keys:
+        parts.append(f"missing_item_keys={','.join(missing_item_keys)}")
+    if owner_user_id is not None:
+        parts.append(f"owner_user_id={_normalize_log_field(owner_user_id)}")
+    if final_status is not None:
+        parts.append(f"final_status={_normalize_log_field(final_status)}")
+    if request_id is not None:
+        parts.append(f"request_id={_normalize_log_field(request_id)}")
+    logger.warning(" ".join(parts))
+
+
+def _activity_error_response(
+    action: str,
+    *,
+    status_code: int,
+    error: str,
+    code: str | None = None,
+    auth_mode: Any = None,
+    viewer_scope: Any = None,
+    item_type: Any = None,
+    item_key: Any = None,
+    item_count: int | None = None,
+    missing_item_keys: list[str] | None = None,
+    owner_user_id: Any = None,
+    final_status: Any = None,
+    request_id: Any = None,
+):
+    _log_activity_rejection(
+        action,
+        status_code=status_code,
+        reason=error,
+        auth_mode=auth_mode,
+        viewer_scope=viewer_scope,
+        item_type=item_type,
+        item_key=item_key,
+        item_count=item_count,
+        missing_item_keys=missing_item_keys,
+        owner_user_id=owner_user_id,
+        final_status=final_status,
+        request_id=request_id,
+    )
+
+    payload: dict[str, Any] = {"error": error}
+    if code:
+        payload["code"] = code
+    if missing_item_keys:
+        payload["missing_item_keys"] = missing_item_keys
+    return jsonify(payload), status_code
+
+
+def _require_authenticated(resolve_auth_mode: Callable[[], str], *, action: str):
     auth_mode = resolve_auth_mode()
     if auth_mode == "none":
         return None
     if "user_id" not in session:
-        return jsonify({"error": "Unauthorized"}), 401
+        return _activity_error_response(
+            action,
+            status_code=401,
+            error="Unauthorized",
+            auth_mode=auth_mode,
+        )
     return None
 
 
@@ -40,46 +137,42 @@ def _resolve_db_user_id(
     require_in_auth_mode: bool = True,
     *,
     user_db: UserDB | None = None,
+    action: str | None = None,
+    auth_mode: str | None = None,
 ):
     raw_db_user_id = session.get("db_user_id")
     if raw_db_user_id is None:
         if not require_in_auth_mode:
             return None, None
-        return None, (
-            jsonify(
-                {
-                    "error": "User identity unavailable for activity workflow",
-                    "code": "user_identity_unavailable",
-                }
-            ),
-            403,
+        return None, _activity_error_response(
+            action or "request",
+            status_code=403,
+            error="User identity unavailable for activity workflow",
+            code="user_identity_unavailable",
+            auth_mode=auth_mode,
         )
     try:
         parsed_db_user_id = int(raw_db_user_id)
     except (TypeError, ValueError):
         if not require_in_auth_mode:
             return None, None
-        return None, (
-            jsonify(
-                {
-                    "error": "User identity unavailable for activity workflow",
-                    "code": "user_identity_unavailable",
-                }
-            ),
-            403,
+        return None, _activity_error_response(
+            action or "request",
+            status_code=403,
+            error="User identity unavailable for activity workflow",
+            code="user_identity_unavailable",
+            auth_mode=auth_mode,
         )
 
     if parsed_db_user_id < 1:
         if not require_in_auth_mode:
             return None, None
-        return None, (
-            jsonify(
-                {
-                    "error": "User identity unavailable for activity workflow",
-                    "code": "user_identity_unavailable",
-                }
-            ),
-            403,
+        return None, _activity_error_response(
+            action or "request",
+            status_code=403,
+            error="User identity unavailable for activity workflow",
+            code="user_identity_unavailable",
+            auth_mode=auth_mode,
         )
 
     if user_db is not None:
@@ -91,14 +184,12 @@ def _resolve_db_user_id(
         if db_user is None:
             if not require_in_auth_mode:
                 return None, None
-            return None, (
-                jsonify(
-                    {
-                        "error": "User identity unavailable for activity workflow",
-                        "code": "user_identity_unavailable",
-                    }
-                ),
-                403,
+            return None, _activity_error_response(
+                action or "request",
+                status_code=403,
+                error="User identity unavailable for activity workflow",
+                code="user_identity_unavailable",
+                auth_mode=auth_mode,
             )
 
     return parsed_db_user_id, None
@@ -116,12 +207,14 @@ def _resolve_activity_actor(
     *,
     user_db: UserDB,
     resolve_auth_mode: Callable[[], str],
+    action: str,
 ) -> tuple[_ActorContext | None, Any | None]:
     """Resolve acting user identity for activity mutations.
 
     Returns (actor, error_response). On success actor is non-None.
     """
-    if resolve_auth_mode() == "none":
+    auth_mode = resolve_auth_mode()
+    if auth_mode == "none":
         return _ActorContext(
             db_user_id=None,
             is_no_auth=True,
@@ -130,7 +223,11 @@ def _resolve_activity_actor(
             viewer_scope=NOAUTH_VIEWER_SCOPE,
         ), None
 
-    db_user_id, db_gate = _resolve_db_user_id(user_db=user_db)
+    db_user_id, db_gate = _resolve_db_user_id(
+        user_db=user_db,
+        action=action,
+        auth_mode=auth_mode,
+    )
     if db_user_id is None:
         return None, db_gate
 
@@ -155,26 +252,41 @@ def _activity_ws_room(actor: _ActorContext) -> str:
 
 
 def _check_item_ownership(actor: _ActorContext, row: dict[str, Any]) -> Any | None:
-    """Return a 403 response if the actor doesn't own the item, else None."""
+    """Return an error string if the actor doesn't own the item, else None."""
     if actor.is_admin:
         return None
     owner_user_id = normalize_positive_int(row.get("user_id"))
     if owner_user_id != actor.db_user_id:
-        return jsonify({"error": "Forbidden"}), 403
+        return "Forbidden"
     return None
 
 
 def _check_terminal_download(row: dict[str, Any]) -> Any | None:
     final_status = str(row.get("final_status") or "").strip().lower()
     if final_status not in VALID_TERMINAL_STATUSES:
-        return jsonify({"error": "Only terminal downloads can be dismissed"}), 409
+        return "Only terminal downloads can be dismissed"
     return None
 
 
 def _check_terminal_request(row: dict[str, Any]) -> Any | None:
     if _request_terminal_status(row) is None:
-        return jsonify({"error": "Only terminal requests can be dismissed"}), 409
+        return "Only terminal requests can be dismissed"
     return None
+
+
+def _download_row_log_context(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "owner_user_id": normalize_positive_int(row.get("user_id")),
+        "final_status": row.get("final_status"),
+        "request_id": normalize_positive_int(row.get("request_id")),
+    }
+
+
+def _request_row_log_context(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "owner_user_id": normalize_positive_int(row.get("user_id")),
+        "request_id": normalize_positive_int(row.get("id")),
+    }
 
 
 def _list_visible_requests(user_db: UserDB, *, is_admin: bool, db_user_id: int | None) -> list[dict[str, Any]]:
@@ -199,6 +311,39 @@ def _parse_item_key(item_key: Any, prefix: str) -> str | None:
 _ALL_BUCKET_KEYS = (*ACTIVE_QUEUE_STATUSES, *TERMINAL_QUEUE_STATUSES)
 
 
+def _build_queue_index(queue_status: dict[str, dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Index live queue entries by task id for fast activity lookups."""
+    queue_index: dict[str, tuple[str, dict[str, Any]]] = {}
+    for bucket_key in _ALL_BUCKET_KEYS:
+        bucket = queue_status.get(bucket_key)
+        if not isinstance(bucket, dict):
+            continue
+        for task_id, payload in bucket.items():
+            normalized_bucket_key = bucket_key.value if isinstance(bucket_key, QueueStatus) else str(bucket_key)
+            queue_index[str(task_id)] = (normalized_bucket_key, payload)
+    return queue_index
+
+
+def _effective_download_row_for_activity(
+    row: dict[str, Any],
+    *,
+    has_live_queue_entry: bool,
+) -> dict[str, Any]:
+    """Treat stale persisted active rows as interrupted failures for activity APIs."""
+    final_status = str(row.get("final_status") or "").strip().lower()
+    if final_status != ACTIVE_DOWNLOAD_STATUS or has_live_queue_entry:
+        return row
+
+    effective_row = dict(row)
+    effective_row["final_status"] = QueueStatus.ERROR.value
+
+    status_message = effective_row.get("status_message")
+    if not isinstance(status_message, str) or not status_message.strip():
+        effective_row["status_message"] = "Interrupted"
+
+    return effective_row
+
+
 def _build_download_status_from_db(
     *,
     db_rows: list[dict[str, Any]],
@@ -211,15 +356,7 @@ def _build_download_status_from_db(
     Stale active rows (no queue entry) are treated as interrupted errors.
     """
     status: dict[str, dict[str, Any]] = {key: {} for key in _ALL_BUCKET_KEYS}
-
-    # Index queue items by task_id for fast lookup: task_id -> (bucket_key, payload)
-    queue_index: dict[str, tuple[str, dict[str, Any]]] = {}
-    for bucket_key in _ALL_BUCKET_KEYS:
-        bucket = queue_status.get(bucket_key)
-        if not isinstance(bucket, dict):
-            continue
-        for task_id, payload in bucket.items():
-            queue_index[str(task_id)] = (bucket_key, payload)
+    queue_index = _build_queue_index(queue_status)
 
     for row in db_rows:
         task_id = str(row.get("task_id") or "").strip()
@@ -234,9 +371,11 @@ def _build_download_status_from_db(
                 bucket_key, queue_payload = queue_entry
                 status[bucket_key][task_id] = queue_payload
             else:
-                # Stale active row — no queue entry means it was interrupted
-                download_payload = DownloadHistoryService.to_download_payload(row)
-                download_payload["status_message"] = "Interrupted"
+                effective_row = _effective_download_row_for_activity(
+                    row,
+                    has_live_queue_entry=False,
+                )
+                download_payload = DownloadHistoryService.to_download_payload(effective_row)
                 status[QueueStatus.ERROR][task_id] = download_payload
         elif final_status in VALID_TERMINAL_STATUSES:
             download_payload = DownloadHistoryService.to_download_payload(row)
@@ -336,13 +475,14 @@ def register_activity_routes(
 
     @app.route("/api/activity/snapshot", methods=["GET"])
     def api_activity_snapshot():
-        auth_gate = _require_authenticated(resolve_auth_mode)
+        auth_gate = _require_authenticated(resolve_auth_mode, action="snapshot")
         if auth_gate is not None:
             return auth_gate
 
         actor, actor_error = _resolve_activity_actor(
             user_db=user_db,
             resolve_auth_mode=resolve_auth_mode,
+            action="snapshot",
         )
         if actor_error is not None:
             return actor_error
@@ -404,20 +544,21 @@ def register_activity_routes(
 
     @app.route("/api/activity/dismiss", methods=["POST"])
     def api_activity_dismiss():
-        auth_gate = _require_authenticated(resolve_auth_mode)
+        auth_gate = _require_authenticated(resolve_auth_mode, action="dismiss")
         if auth_gate is not None:
             return auth_gate
 
         actor, actor_error = _resolve_activity_actor(
             user_db=user_db,
             resolve_auth_mode=resolve_auth_mode,
+            action="dismiss",
         )
         if actor_error is not None:
             return actor_error
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
-            return jsonify({"error": "Invalid payload"}), 400
+            return _activity_error_response("dismiss", status_code=400, error="Invalid payload")
 
         item_type = str(data.get("item_type") or "").strip().lower()
         item_key = data.get("item_key")
@@ -427,18 +568,57 @@ def register_activity_routes(
         if item_type == "download":
             task_id = _parse_item_key(item_key, "download")
             if task_id is None:
-                return jsonify({"error": "item_key must be in the format download:<task_id>"}), 400
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=400,
+                    error="item_key must be in the format download:<task_id>",
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="download",
+                    item_key=item_key,
+                )
 
             existing = download_history_service.get_by_task_id(task_id)
             if existing is None:
-                return jsonify({"error": "Download not found"}), 404
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=404,
+                    error="Download not found",
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="download",
+                    item_key=f"download:{task_id}",
+                )
 
-            ownership_gate = _check_item_ownership(actor, existing)
-            if ownership_gate is not None:
-                return ownership_gate
-            terminal_gate = _check_terminal_download(existing)
-            if terminal_gate is not None:
-                return terminal_gate
+            live_queue_index = _build_queue_index(queue_status(user_id=actor.owner_scope))
+            effective_existing = _effective_download_row_for_activity(
+                existing,
+                has_live_queue_entry=task_id in live_queue_index,
+            )
+            ownership_error = _check_item_ownership(actor, existing)
+            if ownership_error is not None:
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=403,
+                    error=ownership_error,
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="download",
+                    item_key=f"download:{task_id}",
+                    **_download_row_log_context(effective_existing),
+                )
+            terminal_error = _check_terminal_download(effective_existing)
+            if terminal_error is not None:
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=409,
+                    error=terminal_error,
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="download",
+                    item_key=f"download:{task_id}",
+                    **_download_row_log_context(effective_existing),
+                )
 
             activity_view_state_service.dismiss(
                 viewer_scope=actor.viewer_scope,
@@ -450,18 +630,53 @@ def register_activity_routes(
         elif item_type == "request":
             request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
             if request_id is None:
-                return jsonify({"error": "item_key must be in the format request:<id>"}), 400
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=400,
+                    error="item_key must be in the format request:<id>",
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="request",
+                    item_key=item_key,
+                )
 
             request_row = user_db.get_request(request_id)
             if request_row is None:
-                return jsonify({"error": "Request not found"}), 404
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=404,
+                    error="Request not found",
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="request",
+                    item_key=f"request:{request_id}",
+                    request_id=request_id,
+                )
 
-            ownership_gate = _check_item_ownership(actor, request_row)
-            if ownership_gate is not None:
-                return ownership_gate
-            terminal_gate = _check_terminal_request(request_row)
-            if terminal_gate is not None:
-                return terminal_gate
+            ownership_error = _check_item_ownership(actor, request_row)
+            if ownership_error is not None:
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=403,
+                    error=ownership_error,
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="request",
+                    item_key=f"request:{request_id}",
+                    **_request_row_log_context(request_row),
+                )
+            terminal_error = _check_terminal_request(request_row)
+            if terminal_error is not None:
+                return _activity_error_response(
+                    "dismiss",
+                    status_code=409,
+                    error=terminal_error,
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_type="request",
+                    item_key=f"request:{request_id}",
+                    **_request_row_log_context(request_row),
+                )
 
             activity_view_state_service.dismiss(
                 viewer_scope=actor.viewer_scope,
@@ -470,7 +685,15 @@ def register_activity_routes(
             )
             dismissal_item = {"item_type": "request", "item_key": f"request:{request_id}"}
         else:
-            return jsonify({"error": "item_type must be one of: download, request"}), 400
+            return _activity_error_response(
+                "dismiss",
+                status_code=400,
+                error="item_type must be one of: download, request",
+                auth_mode=resolve_auth_mode(),
+                viewer_scope=actor.viewer_scope,
+                item_type=item_type,
+                item_key=item_key,
+            )
 
         room = _activity_ws_room(actor)
         emit_ws_event(
@@ -488,30 +711,51 @@ def register_activity_routes(
 
     @app.route("/api/activity/dismiss-many", methods=["POST"])
     def api_activity_dismiss_many():
-        auth_gate = _require_authenticated(resolve_auth_mode)
+        auth_gate = _require_authenticated(resolve_auth_mode, action="dismiss_many")
         if auth_gate is not None:
             return auth_gate
 
         actor, actor_error = _resolve_activity_actor(
             user_db=user_db,
             resolve_auth_mode=resolve_auth_mode,
+            action="dismiss_many",
         )
         if actor_error is not None:
             return actor_error
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
-            return jsonify({"error": "Invalid payload"}), 400
+            return _activity_error_response(
+                "dismiss_many",
+                status_code=400,
+                error="Invalid payload",
+                auth_mode=resolve_auth_mode(),
+                viewer_scope=actor.viewer_scope,
+            )
         items = data.get("items")
         if not isinstance(items, list):
-            return jsonify({"error": "items must be an array"}), 400
+            return _activity_error_response(
+                "dismiss_many",
+                status_code=400,
+                error="items must be an array",
+                auth_mode=resolve_auth_mode(),
+                viewer_scope=actor.viewer_scope,
+            )
 
         dismissal_items: list[dict[str, str]] = []
         missing_item_keys: list[str] = []
+        live_queue_index: dict[str, tuple[str, dict[str, Any]]] | None = None
 
         for item in items:
             if not isinstance(item, dict):
-                return jsonify({"error": "items must contain objects"}), 400
+                return _activity_error_response(
+                    "dismiss_many",
+                    status_code=400,
+                    error="items must contain objects",
+                    auth_mode=resolve_auth_mode(),
+                    viewer_scope=actor.viewer_scope,
+                    item_count=len(items),
+                )
 
             item_type = str(item.get("item_type") or "").strip().lower()
             item_key = item.get("item_key")
@@ -519,48 +763,121 @@ def register_activity_routes(
             if item_type == "download":
                 task_id = _parse_item_key(item_key, "download")
                 if task_id is None:
-                    return jsonify({"error": "download item_key must be in the format download:<task_id>"}), 400
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=400,
+                        error="download item_key must be in the format download:<task_id>",
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="download",
+                        item_key=item_key,
+                        item_count=len(items),
+                    )
                 existing = download_history_service.get_by_task_id(task_id)
                 if existing is None:
                     missing_item_keys.append(f"download:{task_id}")
                     continue
-                ownership_gate = _check_item_ownership(actor, existing)
-                if ownership_gate is not None:
-                    return ownership_gate
-                terminal_gate = _check_terminal_download(existing)
-                if terminal_gate is not None:
-                    return terminal_gate
+                if live_queue_index is None:
+                    live_queue_index = _build_queue_index(queue_status(user_id=actor.owner_scope))
+                effective_existing = _effective_download_row_for_activity(
+                    existing,
+                    has_live_queue_entry=task_id in live_queue_index,
+                )
+                ownership_error = _check_item_ownership(actor, existing)
+                if ownership_error is not None:
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=403,
+                        error=ownership_error,
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="download",
+                        item_key=f"download:{task_id}",
+                        item_count=len(items),
+                        **_download_row_log_context(effective_existing),
+                    )
+                terminal_error = _check_terminal_download(effective_existing)
+                if terminal_error is not None:
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=409,
+                        error=terminal_error,
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="download",
+                        item_key=f"download:{task_id}",
+                        item_count=len(items),
+                        **_download_row_log_context(effective_existing),
+                    )
                 dismissal_items.append({"item_type": "download", "item_key": f"download:{task_id}"})
                 continue
 
             if item_type == "request":
                 request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
                 if request_id is None:
-                    return jsonify({"error": "request item_key must be in the format request:<id>"}), 400
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=400,
+                        error="request item_key must be in the format request:<id>",
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="request",
+                        item_key=item_key,
+                        item_count=len(items),
+                    )
                 request_row = user_db.get_request(request_id)
                 if request_row is None:
                     missing_item_keys.append(f"request:{request_id}")
                     continue
-                ownership_gate = _check_item_ownership(actor, request_row)
-                if ownership_gate is not None:
-                    return ownership_gate
-                terminal_gate = _check_terminal_request(request_row)
-                if terminal_gate is not None:
-                    return terminal_gate
+                ownership_error = _check_item_ownership(actor, request_row)
+                if ownership_error is not None:
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=403,
+                        error=ownership_error,
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="request",
+                        item_key=f"request:{request_id}",
+                        item_count=len(items),
+                        **_request_row_log_context(request_row),
+                    )
+                terminal_error = _check_terminal_request(request_row)
+                if terminal_error is not None:
+                    return _activity_error_response(
+                        "dismiss_many",
+                        status_code=409,
+                        error=terminal_error,
+                        auth_mode=resolve_auth_mode(),
+                        viewer_scope=actor.viewer_scope,
+                        item_type="request",
+                        item_key=f"request:{request_id}",
+                        item_count=len(items),
+                        **_request_row_log_context(request_row),
+                    )
                 dismissal_items.append({"item_type": "request", "item_key": f"request:{request_id}"})
                 continue
 
-            return jsonify({"error": "item_type must be one of: download, request"}), 400
+            return _activity_error_response(
+                "dismiss_many",
+                status_code=400,
+                error="item_type must be one of: download, request",
+                auth_mode=resolve_auth_mode(),
+                viewer_scope=actor.viewer_scope,
+                item_type=item_type,
+                item_key=item_key,
+                item_count=len(items),
+            )
 
         if missing_item_keys:
-            return (
-                jsonify(
-                    {
-                        "error": "One or more activity items were not found",
-                        "missing_item_keys": missing_item_keys,
-                    }
-                ),
-                404,
+            return _activity_error_response(
+                "dismiss_many",
+                status_code=404,
+                error="One or more activity items were not found",
+                auth_mode=resolve_auth_mode(),
+                viewer_scope=actor.viewer_scope,
+                item_count=len(items),
+                missing_item_keys=missing_item_keys,
             )
 
         dismissed_count = activity_view_state_service.dismiss_many(
@@ -583,13 +900,14 @@ def register_activity_routes(
 
     @app.route("/api/activity/history", methods=["GET"])
     def api_activity_history():
-        auth_gate = _require_authenticated(resolve_auth_mode)
+        auth_gate = _require_authenticated(resolve_auth_mode, action="history")
         if auth_gate is not None:
             return auth_gate
 
         actor, actor_error = _resolve_activity_actor(
             user_db=user_db,
             resolve_auth_mode=resolve_auth_mode,
+            action="history",
         )
         if actor_error is not None:
             return actor_error
@@ -601,15 +919,16 @@ def register_activity_routes(
         if offset is None:
             offset = 0
         if limit < 1:
-            return jsonify({"error": "limit must be a positive integer"}), 400
+            return _activity_error_response("history", status_code=400, error="limit must be a positive integer")
         if offset < 0:
-            return jsonify({"error": "offset must be a non-negative integer"}), 400
+            return _activity_error_response("history", status_code=400, error="offset must be a non-negative integer")
 
         history_rows = activity_view_state_service.list_history(
             viewer_scope=actor.viewer_scope,
             limit=limit,
             offset=offset,
         )
+        live_queue_index = _build_queue_index(queue_status(user_id=actor.owner_scope))
         payload: list[dict[str, Any]] = []
 
         for history_row in history_rows:
@@ -634,9 +953,13 @@ def register_activity_routes(
                     if owner_user_id != actor.db_user_id:
                         raise RuntimeError(f"Viewer state out of scope for {item_key}")
 
+                effective_download_row = _effective_download_row_for_activity(
+                    download_row,
+                    has_live_queue_entry=task_id in live_queue_index,
+                )
                 payload.append(
                     DownloadHistoryService.to_history_row(
-                        download_row,
+                        effective_download_row,
                         dismissed_at=dismissed_at,
                     )
                 )
@@ -672,13 +995,14 @@ def register_activity_routes(
 
     @app.route("/api/activity/history", methods=["DELETE"])
     def api_activity_history_clear():
-        auth_gate = _require_authenticated(resolve_auth_mode)
+        auth_gate = _require_authenticated(resolve_auth_mode, action="history_clear")
         if auth_gate is not None:
             return auth_gate
 
         actor, actor_error = _resolve_activity_actor(
             user_db=user_db,
             resolve_auth_mode=resolve_auth_mode,
+            action="history_clear",
         )
         if actor_error is not None:
             return actor_error

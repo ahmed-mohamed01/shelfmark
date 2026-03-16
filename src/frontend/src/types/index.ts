@@ -33,6 +33,7 @@ export interface Book {
   progress?: number;
   status_message?: string;  // Detailed status message (e.g., "Trying Libgen (2/5)")
   added_time?: number;  // Timestamp when added to queue
+  content_type?: string;  // "ebook", "audiobook", or related book subtype
   source?: string;  // Release source handler (e.g., "direct_download", "prowlarr")
   source_display_name?: string;  // Human-readable source name (e.g., "Direct Download")
   // Metadata provider fields (used in universal search mode)
@@ -52,6 +53,7 @@ export interface Book {
   audiobook_available_format?: string;
   ebook_last_search_status?: string | null;
   audiobook_last_search_status?: string | null;
+  cover_aspect?: 'portrait' | 'square';  // Cover art aspect ratio hint
   // Series info (if book is part of a series)
   series_id?: string;          // Provider-specific series ID
   series_name?: string;        // Name of the series
@@ -125,6 +127,7 @@ export interface Toast {
 export interface SortOption {
   value: string;
   label: string;
+  group?: string;
 }
 
 // Search field types (mirror backend search field types)
@@ -292,10 +295,14 @@ export interface AppConfig {
   metadata_sort_options: SortOption[];
   metadata_search_fields: MetadataSearchField[];
   default_release_source?: string;  // Default tab in ReleaseModal (e.g., 'direct_download')
+  default_release_source_audiobook?: string;  // Default tab in ReleaseModal for audiobooks
+  show_release_source_links: boolean;
   books_output_mode: BooksOutputMode;
   auto_open_downloads_sidebar: boolean;  // Auto-open sidebar when download is queued
   download_to_browser: boolean;  // Auto-download completed files to browser
   show_dual_get_buttons?: boolean;  // User preference to show Auto + Interactive Get buttons
+  hardcover_auto_remove_on_download: boolean;  // Auto-remove from active Hardcover list on download
+  download_to_browser_content_types: string[];  // Auto-download completed files to browser for selected content types
   settings_enabled: boolean;  // Whether config directory is mounted and writable
   onboarding_complete: boolean;  // Whether the user has completed initial setup
   default_sort: string;  // Default sort for direct mode

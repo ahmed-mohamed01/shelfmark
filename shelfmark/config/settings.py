@@ -190,6 +190,23 @@ _AUDIOBOOK_FORMAT_OPTIONS = [
     {"value": "rar", "label": "RAR"},
 ]
 
+_DOWNLOAD_TO_BROWSER_CONTENT_TYPE_OPTIONS = [
+    {
+        "value": "book",
+        "label": "Books",
+        "description": "Automatically download completed book files to this browser.",
+    },
+    {
+        "value": "audiobook",
+        "label": "Audiobooks",
+        "description": "Automatically download completed audiobook files to this browser.",
+    },
+]
+
+_DOWNLOAD_TO_BROWSER_CONTENT_TYPE_VALUES = {
+    option["value"] for option in _DOWNLOAD_TO_BROWSER_CONTENT_TYPE_OPTIONS
+}
+
 
 def _get_metadata_provider_options():
     """Build metadata provider options dynamically from enabled providers only."""
@@ -215,15 +232,28 @@ def _get_metadata_provider_options_with_none():
     return [{"value": "", "label": "Use book provider"}] + _get_metadata_provider_options()
 
 
-def _get_release_source_options():
-    """Build release source options dynamically from registered sources."""
+def _get_release_source_options_for_content_type(content_type: str):
+    """Build release source options dynamically for a specific content type."""
     from shelfmark.release_sources import list_available_sources
 
     return [
         {"value": source["name"], "label": source["display_name"]}
         for source in list_available_sources()
         if source.get("can_be_default", True)
+        and content_type in source.get("supported_content_types", ["ebook", "audiobook"])
     ]
+
+
+def _get_book_release_source_options():
+    """Build default release source options for book searches."""
+    return _get_release_source_options_for_content_type("ebook")
+
+
+def _get_audiobook_release_source_options():
+    """Build default release source options for audiobook searches."""
+    return [{"value": "", "label": "Use book release source"}] + _get_release_source_options_for_content_type(
+        "audiobook"
+    )
 
 
 
@@ -434,6 +464,15 @@ def search_mode_settings():
             default="relevance",
             show_when={"field": "SEARCH_MODE", "value": "direct"},
         ),
+        CheckboxField(
+            key="SHOW_RELEASE_SOURCE_LINKS",
+            label="Show Release Source Links",
+            description=(
+                "Show clickable release-source links in release and details modals. "
+                "Metadata provider links stay enabled."
+            ),
+            default=True,
+        ),
         HeadingField(
             key="universal_mode_heading",
             title="Universal Mode Settings",
@@ -460,10 +499,19 @@ def search_mode_settings():
         ),
         SelectField(
             key="DEFAULT_RELEASE_SOURCE",
-            label="Default Release Source",
-            description="The release source tab to open by default in the release modal.",
-            options=_get_release_source_options,  # Callable - evaluated lazily to avoid circular imports
+            label="Default Book Release Source",
+            description="The release source tab to open by default in the release modal for books.",
+            options=_get_book_release_source_options,  # Callable - evaluated lazily to avoid circular imports
             default="direct_download",
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
+        SelectField(
+            key="DEFAULT_RELEASE_SOURCE_AUDIOBOOK",
+            label="Default Audiobook Release Source",
+            description="The release source tab to open by default in the release modal for audiobooks. Uses the book release source if not set.",
+            options=_get_audiobook_release_source_options,  # Callable - evaluated lazily to avoid circular imports
+            default="",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
             user_overridable=True,
         ),
@@ -630,6 +678,41 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
     existing = load_config_file("downloads")
     effective: dict[str, Any] = dict(existing)
     effective.update(values)
+
+    if "DOWNLOAD_TO_BROWSER_CONTENT_TYPES" in effective:
+        raw_content_types = effective.get("DOWNLOAD_TO_BROWSER_CONTENT_TYPES")
+        if raw_content_types is None:
+            normalized_content_types: list[str] = []
+        elif isinstance(raw_content_types, list):
+            normalized_content_types = [
+                str(value).strip().lower()
+                for value in raw_content_types
+                if str(value).strip()
+            ]
+        else:
+            return {
+                "error": True,
+                "message": "Download to Browser must be a list.",
+                "values": values,
+            }
+
+        deduped_content_types: list[str] = []
+        for content_type in normalized_content_types:
+            if content_type not in _DOWNLOAD_TO_BROWSER_CONTENT_TYPE_VALUES:
+                allowed = ", ".join(sorted(_DOWNLOAD_TO_BROWSER_CONTENT_TYPE_VALUES))
+                return {
+                    "error": True,
+                    "message": (
+                        "Download to Browser contains an unsupported content type "
+                        f"'{content_type}'. Supported values: {allowed}"
+                    ),
+                    "values": values,
+                }
+            if content_type not in deduped_content_types:
+                deduped_content_types.append(content_type)
+
+        values["DOWNLOAD_TO_BROWSER_CONTENT_TYPES"] = deduped_content_types
+        effective["DOWNLOAD_TO_BROWSER_CONTENT_TYPES"] = deduped_content_types
 
     # Books: only validate templates when saving to a folder.
     books_output_mode = effective.get("BOOKS_OUTPUT_MODE", "folder")
@@ -1160,11 +1243,14 @@ def download_settings():
             description="Automatically open the downloads sidebar when a new download is queued.",
             default=False,
         ),
-        CheckboxField(
-            key="DOWNLOAD_TO_BROWSER",
+        MultiSelectField(
+            key="DOWNLOAD_TO_BROWSER_CONTENT_TYPES",
             label="Download to Browser",
-            description="Automatically download completed files to your browser.",
-            default=False,
+            description="Automatically download completed files to your browser for the selected content types.",
+            options=_DOWNLOAD_TO_BROWSER_CONTENT_TYPE_OPTIONS,
+            default=[],
+            variant="dropdown",
+            user_overridable=True,
         ),
         NumberField(
             key="MAX_CONCURRENT_DOWNLOADS",

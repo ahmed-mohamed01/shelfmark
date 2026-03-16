@@ -196,6 +196,9 @@ class BookMetadata:
     search_title: Optional[str] = None  # Cleaner title for search queries (provider-specific)
     search_author: Optional[str] = None  # Cleaner author for search queries (provider-specific)
 
+    # Cover aspect ratio hint for the frontend ("portrait" or "square")
+    cover_aspect: Optional[str] = None
+
     # Provider-specific display fields for cards/lists
     display_fields: List[DisplayField] = field(default_factory=list)
 
@@ -371,6 +374,8 @@ class SearchResult:
     page: int = 1
     total_found: int = 0  # Total matching results (if known)
     has_more: bool = False  # True if more results available
+    source_url: Optional[str] = None  # External URL for the result set (e.g. Hardcover list page)
+    source_title: Optional[str] = None  # Display title for the result set (e.g. list name)
 
 
 class MetadataProvider(ABC):
@@ -433,6 +438,36 @@ class MetadataProvider(ABC):
     ) -> List[Dict[str, str]]:
         """Get dynamic options for a provider-specific search field."""
         return []
+
+    def get_book_targets(self, book_id: str) -> List[Dict[str, Any]]:
+        """Get provider-managed list or status targets for a specific book."""
+        raise NotImplementedError(f"{self.display_name} does not support book targets")
+
+    def get_book_targets_batch(self, book_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """Get provider-managed targets for multiple books.
+
+        Returns a dict mapping each book_id to its list of target options.
+        Default implementation calls get_book_targets per book.
+        """
+        results: Dict[str, List[Dict[str, Any]]] = {}
+        for book_id in book_ids:
+            try:
+                results[book_id] = self.get_book_targets(book_id)
+            except (NotImplementedError, ValueError):
+                results[book_id] = []
+        return results
+
+    def set_book_target_state(
+        self,
+        book_id: str,
+        target: str,
+        selected: bool,
+    ) -> Dict[str, Any]:
+        """Set whether a book belongs to a provider-managed list or shelf.
+
+        Returns a dict with at least ``{"changed": bool}``.
+        """
+        raise NotImplementedError(f"{self.display_name} does not support book targets")
 
 
 # Provider registry
@@ -684,3 +719,8 @@ try:
     from shelfmark.metadata_providers import googlebooks  # noqa: F401, E402
 except ImportError:
     pass  # Google Books provider is optional
+
+try:
+    from shelfmark.metadata_providers import audible  # noqa: F401, E402
+except ImportError:
+    pass  # Audible provider is optional

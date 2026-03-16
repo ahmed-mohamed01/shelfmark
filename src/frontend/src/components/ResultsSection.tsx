@@ -27,6 +27,7 @@ interface ResultsSectionProps {
   sortValue: string;
   onSortChange: (value: string) => void;
   metadataSortOptions?: SortOption[];
+  showSortControl?: boolean;
   // Pagination (universal mode)
   hasMore?: boolean;
   isLoadingMore?: boolean;
@@ -42,6 +43,8 @@ interface ResultsSectionProps {
   hideViewToggle?: boolean;
   viewMode?: 'card' | 'compact' | 'list';
   onViewModeChange?: (value: 'card' | 'compact' | 'list') => void;
+  onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  resultsSourceUrl?: string;
 }
 
 export const ResultsSection = ({
@@ -57,6 +60,7 @@ export const ResultsSection = ({
   sortValue,
   onSortChange,
   metadataSortOptions,
+  showSortControl = true,
   hasMore,
   isLoadingMore,
   onLoadMore,
@@ -66,6 +70,8 @@ export const ResultsSection = ({
   hideViewToggle = false,
   viewMode: controlledViewMode,
   onViewModeChange,
+  onShowToast,
+  resultsSourceUrl,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
   const [internalViewMode, setInternalViewMode] = useState<'card' | 'compact' | 'list'>(() => {
@@ -113,14 +119,31 @@ export const ResultsSection = ({
   return (
     <section id="results-section" className="mb-4 sm:mb-8 w-full">
       <div className="flex items-center justify-between mb-2 sm:mb-3 relative z-10">
-        {!hideSortControl ? (
+        {!hideSortControl && showSortControl ? (
           <SortControl value={sortValue} onChange={onSortChange} metadataSortOptions={metadataSortOptions} />
-        ) : (
+        ) : hideSortControl ? (
           <div />
-        )}
+        ) : resultsSourceUrl ? (
+          <a
+            href={resultsSourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200 animate-pop-up"
+          >
+            View list on Hardcover
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+              />
+            </svg>
+          </a>
+        ) : null}
 
         {!hideViewToggle ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 ml-auto">
             {isDesktop && (
               <button
                 onClick={() => setViewMode('card')}
@@ -218,6 +241,7 @@ export const ResultsSection = ({
           getUniversalButtonState={getUniversalButtonState}
           showSeriesPosition={sortValue === 'series_order'}
           customAction={customAction}
+          onShowToast={onShowToast}
         />
       ) : (
         <div
@@ -245,6 +269,7 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 customAction={customAction}
+                onShowToast={onShowToast}
               />
             ) : (
               <CompactView
@@ -260,6 +285,7 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 customAction={customAction}
+                onShowToast={onShowToast}
               />
             );
           })}
@@ -333,7 +359,7 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
           type="button"
           onClick={toggle}
           className={`relative flex items-center gap-2 px-3 py-2 rounded-full transition-all duration-200 text-gray-900 dark:text-gray-100 hover-action ${
-            isOpen ? 'bg-[var(--hover-action)]' : ''
+            isOpen ? 'bg-(--hover-action)' : ''
           } animate-pop-up`}
           aria-haspopup="listbox"
           aria-expanded={isOpen}

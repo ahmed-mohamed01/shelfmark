@@ -7,7 +7,7 @@ function getScrollableAncestor(element: HTMLElement | null): HTMLElement | null 
   while (current) {
     const style = getComputedStyle(current);
     const overflowY = style.overflowY;
-    if (overflowY === 'auto' || overflowY === 'scroll') {
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'hidden') {
       return current;
     }
     current = current.parentElement;
@@ -42,7 +42,7 @@ interface DropdownProps {
   label?: string;
   summary?: ReactNode;
   children: (helpers: { close: () => void }) => ReactNode;
-  align?: 'left' | 'right';
+  align?: 'left' | 'right' | 'auto';
   widthClassName?: string;
   buttonClassName?: string;
   panelClassName?: string;
@@ -53,6 +53,7 @@ interface DropdownProps {
   /** Render the panel in a portal to escape overflow:hidden containers */
   usePortal?: boolean;
   triggerChrome?: 'default' | 'minimal';
+  onOpenChange?: (isOpen: boolean) => void;
 }
 
 export const Dropdown = ({
@@ -68,6 +69,7 @@ export const Dropdown = ({
   noScrollLimit = false,
   usePortal = false,
   triggerChrome = 'default',
+  onOpenChange,
 }: DropdownProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -81,10 +83,17 @@ export const Dropdown = ({
 
   const toggleOpen = () => {
     if (disabled) return;
-    setIsOpen(prev => !prev);
+    setIsOpen(prev => {
+      const next = !prev;
+      onOpenChange?.(next);
+      return next;
+    });
   };
 
-  const close = () => setIsOpen(false);
+  const close = () => {
+    setIsOpen(false);
+    onOpenChange?.(false);
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -163,6 +172,7 @@ export const Dropdown = ({
       setNonPortalLeft(clampedLeft - containerRect.left);
       setNonPortalCaretLeft(computedCaretLeft);
     }
+
   }, [usePortal, align]);
 
   useLayoutEffect(() => {
@@ -244,9 +254,8 @@ export const Dropdown = ({
             type="button"
             onClick={toggleOpen}
             disabled={disabled}
-            className={`w-full px-3 py-2 text-sm border flex items-center justify-between gap-2 text-left focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-[border-radius] duration-150 ${buttonClassName}`}
+            className={`w-full px-3 py-2 text-sm border flex items-center justify-between gap-2 text-left focus:outline-hidden focus-visible:outline-hidden focus-visible:ring-0 focus-visible:ring-offset-0 ${triggerChrome !== 'minimal' ? 'dropdown-trigger' : ''} ${buttonClassName}`}
             style={{
-              background: triggerChrome === 'minimal' ? 'transparent' : 'var(--bg-soft)',
               color: 'var(--text)',
               borderColor: triggerChrome === 'minimal' ? 'transparent' : 'var(--border-muted)',
               borderWidth: triggerChrome === 'minimal' ? 0 : undefined,
@@ -265,7 +274,7 @@ export const Dropdown = ({
               {summary ?? <span className="opacity-60">Select an option</span>}
             </span>
             <svg
-              className={`h-4 w-4 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+              className={`h-4 w-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"

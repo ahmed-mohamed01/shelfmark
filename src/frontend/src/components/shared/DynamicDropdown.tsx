@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DropdownList, DropdownListOption } from '../DropdownList';
+import { DropdownList, type DropdownListOption } from '../DropdownList';
 import { DynamicFieldOption, fetchFieldOptions } from '../../services/api';
 
 const optionsCache = new Map<string, DynamicFieldOption[]>();
@@ -22,7 +22,15 @@ const buildOptions = (
     value: option.value,
     label: option.label,
     description: option.description,
+    group: option.group,
   }));
+};
+
+/** Look up the group of a cached option by endpoint and value. */
+export const getDynamicOptionGroup = (endpoint: string, value: string): string | undefined => {
+  const cached = optionsCache.get(endpoint);
+  if (!cached) return undefined;
+  return cached.find((o) => o.value === value)?.group;
 };
 
 export const DynamicDropdown = ({
@@ -92,20 +100,22 @@ export const DynamicDropdown = ({
       return [{ value: '__error', label: loadError, disabled: true }];
     }
 
+    if (options.length === 0) {
+      return [{ value: '__empty', label: 'No options available', disabled: true }];
+    }
+
     return buildOptions(options);
   }, [isLoading, loadError, options]);
-
-  const handleChange = (nextValue: string[] | string) => {
-    const normalized = Array.isArray(nextValue) ? nextValue[0] ?? '' : nextValue;
-    const match = options.find((opt) => opt.value === normalized);
-    onChange(normalized, match?.label);
-  };
 
   return (
     <DropdownList
       options={dropdownOptions}
       value={value}
-      onChange={handleChange}
+      onChange={(nextValue) => {
+        const normalized = Array.isArray(nextValue) ? nextValue[0] ?? '' : nextValue;
+        const match = options.find((option) => option.value === normalized);
+        onChange(normalized, match?.label);
+      }}
       placeholder={placeholder}
       widthClassName={widthClassName}
       buttonClassName={buttonClassName}

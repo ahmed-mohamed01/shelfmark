@@ -82,7 +82,7 @@ if BASE_PATH:
 # We run this app under Gunicorn with a gevent websocket worker (even when DEBUG=true),
 # so Socket.IO should always use gevent here.
 async_mode = 'gevent'
-socketio_cors_allowed_origins = "*" if DEBUG else None
+socketio_cors_allowed_origins = "*"
 
 # Initialize Flask-SocketIO with reverse proxy support
 socketio_path = f"{BASE_PATH}/socket.io" if BASE_PATH else "/socket.io"
@@ -683,10 +683,9 @@ def proxy_auth_middleware():
 def set_security_headers(response: Response) -> Response:
     """Add baseline security headers to every response."""
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:",
     )
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Cross-Origin-Embedder-Policy", "credentialless")
@@ -777,6 +776,11 @@ def index() -> Response:
     Authentication is handled by the React app itself.
     """
     return _serve_index_html()
+
+@app.route('/theme-init.js')
+def theme_init_js() -> Response:
+    """Serve the blocking theme-init script."""
+    return send_from_directory(FRONTEND_DIST, 'theme-init.js', mimetype='application/javascript')
 
 @app.route('/logo.png')
 def logo() -> Response:
@@ -1015,6 +1019,11 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "direct_download",
             user_id=db_user_id,
         )
+        default_release_source_audiobook = app_config.get(
+            "DEFAULT_RELEASE_SOURCE_AUDIOBOOK",
+            "",
+            user_id=db_user_id,
+        )
         configured_metadata_provider = app_config.get(
             "METADATA_PROVIDER",
             "",
@@ -1042,9 +1051,16 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "metadata_sort_options": get_provider_sort_options(metadata_ui_provider),
             "metadata_search_fields": get_provider_search_fields(metadata_ui_provider),
             "default_release_source": default_release_source,
+            "default_release_source_audiobook": default_release_source_audiobook,
+            "show_release_source_links": app_config.get("SHOW_RELEASE_SOURCE_LINKS", True),
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),
-            "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False),
+            "hardcover_auto_remove_on_download": app_config.get("HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD", True),
+            "download_to_browser_content_types": app_config.get(
+                "DOWNLOAD_TO_BROWSER_CONTENT_TYPES",
+                [],
+                user_id=db_user_id,
+            ),
             "settings_enabled": _is_config_dir_writable(),
             "onboarding_complete": _get_onboarding_complete(),
             # Default sort orders
@@ -2227,14 +2243,19 @@ def api_metadata_search() -> Union[Response, Tuple[Response, int]]:
                 cache_id = f"{book_dict['provider']}_{book_dict['provider_id']}"
                 book_dict['cover_url'] = transform_cover_url(book_dict['cover_url'], cache_id)
 
-        return jsonify({
+        response_data = {
             "books": books_data,
             "provider": provider.name,
             "query": query,
             "page": search_result.page,
             "total_found": search_result.total_found,
-            "has_more": search_result.has_more
-        })
+            "has_more": search_result.has_more,
+        }
+        if search_result.source_url:
+            response_data["source_url"] = search_result.source_url
+        if search_result.source_title:
+            response_data["source_title"] = search_result.source_title
+        return jsonify(response_data)
     except Exception as e:
         logger.error_trace(f"Metadata search error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -2281,6 +2302,29 @@ def api_metadata_field_options() -> Response:
         return jsonify({"options": []})
 
 
+def _resolve_metadata_provider(provider_name: str):
+    """Validate, instantiate and return a ready metadata provider.
+
+    Raises appropriate HTTP-friendly exceptions on failure.
+    """
+    from shelfmark.metadata_providers import (
+        get_provider,
+        get_provider_kwargs,
+        is_provider_registered,
+    )
+
+    if not is_provider_registered(provider_name):
+        raise ValueError(f"Unknown metadata provider: {provider_name}")
+
+    kwargs = get_provider_kwargs(provider_name)
+    prov = get_provider(provider_name, **kwargs)
+
+    if not prov.is_available():
+        raise RuntimeError(f"Provider '{provider_name}' is not available")
+
+    return prov
+
+
 @app.route('/api/metadata/book/<provider>/<book_id>', methods=['GET'])
 @login_required
 def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Response, int]]:
@@ -2295,22 +2339,9 @@ def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Resp
         flask.Response: JSON with book details.
     """
     try:
-        from shelfmark.metadata_providers import (
-            get_provider,
-            is_provider_registered,
-            get_provider_kwargs,
-        )
         from dataclasses import asdict
 
-        if not is_provider_registered(provider):
-            return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
-
-        # Get provider instance with appropriate configuration
-        kwargs = get_provider_kwargs(provider)
-        prov = get_provider(provider, **kwargs)
-
-        if not prov.is_available():
-            return jsonify({"error": f"Provider '{provider}' is not available"}), 503
+        prov = _resolve_metadata_provider(provider)
 
         # Check persistent metadata cache first
         from shelfmark.core.metadata_cache import get_metadata_file_cache
@@ -2337,9 +2368,82 @@ def api_metadata_book(provider: str, book_id: str) -> Union[Response, Tuple[Resp
         return jsonify(book_dict)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
         logger.error_trace(f"Metadata book error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _handle_target_errors(fallback_message: str):
+    """Decorator that wraps a metadata-target route with standard error handling."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (NotImplementedError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 502
+            except Exception as e:
+                logger.error_trace(f"{fallback_message}: {e}")
+                return jsonify({"error": fallback_message}), 500
+        return wrapper
+    return decorator
+
+
+@app.route('/api/metadata/book/<provider>/<book_id>/targets', methods=['GET'])
+@login_required
+@_handle_target_errors("Failed to load book targets")
+def api_metadata_book_targets(provider: str, book_id: str) -> Union[Response, Tuple[Response, int]]:
+    """Get provider-managed list/status targets for a specific book."""
+    prov = _resolve_metadata_provider(provider)
+    return jsonify({"options": prov.get_book_targets(book_id)})
+
+
+@app.route('/api/metadata/book/<provider>/targets/batch', methods=['POST'])
+@login_required
+@_handle_target_errors("Failed to load book targets")
+def api_metadata_book_targets_batch(provider: str) -> Union[Response, Tuple[Response, int]]:
+    """Get provider-managed list/status targets for multiple books."""
+    prov = _resolve_metadata_provider(provider)
+
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("book_ids", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "book_ids must be a non-empty array"}), 400
+
+    book_ids = [str(bid) for bid in raw_ids[:50]]
+
+    return jsonify({"results": prov.get_book_targets_batch(book_ids)})
+
+
+@app.route('/api/metadata/book/<provider>/<book_id>/targets', methods=['PUT'])
+@login_required
+@_handle_target_errors("Failed to update book targets")
+def api_metadata_book_targets_update(provider: str, book_id: str) -> Union[Response, Tuple[Response, int]]:
+    """Set whether a book belongs to a provider-managed list or shelf."""
+    prov = _resolve_metadata_provider(provider)
+
+    payload = request.get_json(silent=True) or {}
+    target = str(payload.get("target", "")).strip() if isinstance(payload, dict) else ""
+    selected = payload.get("selected") if isinstance(payload, dict) else None
+    if not target:
+        return jsonify({"error": "target is required"}), 400
+    if not isinstance(selected, bool):
+        return jsonify({"error": "selected must be a boolean"}), 400
+
+    result = prov.set_book_target_state(book_id, target, selected)
+    response: dict = {
+        "success": True,
+        "changed": bool(result.get("changed", True)),
+        "selected": selected,
+    }
+    deselected = result.get("deselected_target")
+    if isinstance(deselected, str) and deselected:
+        response["deselected_target"] = deselected
+    return jsonify(response)
 
 
 @app.route('/api/releases', methods=['GET'])

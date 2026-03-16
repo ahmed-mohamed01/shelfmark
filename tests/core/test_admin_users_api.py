@@ -1122,6 +1122,7 @@ class TestAdminDeliveryPreferences:
             "BOOKLORE_PATH_ID",
             "EMAIL_RECIPIENT",
             "DESTINATION_AUDIOBOOK",
+            "DOWNLOAD_TO_BROWSER_CONTENT_TYPES",
         ]
 
         field_keys = [field["key"] for field in data["fields"]]
@@ -1175,6 +1176,7 @@ class TestAdminSearchPreferences:
             "METADATA_PROVIDER": "openlibrary",
             "METADATA_PROVIDER_AUDIOBOOK": "",
             "DEFAULT_RELEASE_SOURCE": "direct_download",
+            "DEFAULT_RELEASE_SOURCE_AUDIOBOOK": "",
         }
         (plugins_dir / "search_mode.json").write_text(json.dumps(search_mode_config))
 
@@ -1189,6 +1191,7 @@ class TestAdminSearchPreferences:
                 "SEARCH_MODE": "universal",
                 "METADATA_PROVIDER": "openlibrary",
                 "DEFAULT_RELEASE_SOURCE": "prowlarr",
+                "DEFAULT_RELEASE_SOURCE_AUDIOBOOK": "audiobookbay",
             },
         )
 
@@ -1202,6 +1205,7 @@ class TestAdminSearchPreferences:
             "METADATA_PROVIDER",
             "METADATA_PROVIDER_AUDIOBOOK",
             "DEFAULT_RELEASE_SOURCE",
+            "DEFAULT_RELEASE_SOURCE_AUDIOBOOK",
         ]
 
         field_keys = [field["key"] for field in data["fields"]]
@@ -1210,6 +1214,7 @@ class TestAdminSearchPreferences:
         assert data["userOverrides"]["SEARCH_MODE"] == "universal"
         assert data["userOverrides"]["METADATA_PROVIDER"] == "openlibrary"
         assert data["userOverrides"]["DEFAULT_RELEASE_SOURCE"] == "prowlarr"
+        assert data["userOverrides"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"] == "audiobookbay"
 
         assert data["effective"]["SEARCH_MODE"]["source"] == "user_override"
         assert data["effective"]["SEARCH_MODE"]["value"] == "universal"
@@ -1217,6 +1222,8 @@ class TestAdminSearchPreferences:
         assert data["effective"]["METADATA_PROVIDER_AUDIOBOOK"]["source"] in {"global_config", "default"}
         assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["source"] == "user_override"
         assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["value"] == "prowlarr"
+        assert data["effective"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"]["source"] == "user_override"
+        assert data["effective"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"]["value"] == "audiobookbay"
 
     def test_returns_404_for_unknown_user(self, admin_client):
         resp = admin_client.get("/api/admin/users/9999/search-preferences")

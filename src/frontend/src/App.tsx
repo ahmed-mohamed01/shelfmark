@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense, CSSProperties, type ReactNode } from 'react';
-import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import {
   Book,
   Release,
@@ -26,11 +26,13 @@ import {
   cancelDownload,
   retryDownload,
   getConfig,
+  getStatus,
   getMetadataProviders,
   getMetadataSearchConfig,
   createRequest,
   isApiResponseError,
   updateSelfUser,
+  setBookTargetState,
   type DownloadReleasePayload,
 } from './services/api';
 import { useMonitoredState } from './hooks/useMonitoredState';
@@ -65,6 +67,7 @@ import { DEFAULT_LANGUAGES, DEFAULT_SUPPORTED_FORMATS } from './data/languages';
 import { buildSearchQuery } from './utils/buildSearchQuery';
 import { formatActingAsUserName } from './utils/actingAsUser';
 import { withBasePath } from './utils/basePath';
+import { buildLoginRedirectPath, getReturnToFromSearch } from './utils/authRedirect';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
 import { getEffectiveMetadataSort } from './utils/metadataSort';
 import {
@@ -81,6 +84,10 @@ import {
   toContentType,
 } from './utils/requestPayload';
 import { bookFromRequestData } from './utils/requestFulfil';
+import { emitBookTargetChange, onBookTargetChange } from './utils/bookTargetEvents';
+import { bookSupportsTargets } from './utils/bookTargetLoader';
+import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
+import { getDynamicOptionGroup } from './components/shared/DynamicDropdown';
 import { policyTrace } from './utils/policyTrace';
 import { SearchModeProvider } from './contexts/SearchModeContext';
 import { useSocket } from './contexts/SocketContext';
@@ -137,6 +144,9 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+const CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE =
+  'Download queued, but the proxy interrupted the response. Status will refresh shortly.';
+
 type PendingOnBehalfDownload =
   | {
       type: 'book';
@@ -153,6 +163,7 @@ type PendingOnBehalfDownload =
 
 function App() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toasts, showToast, removeToast } = useToast();
   const { socket } = useSocket();
 
@@ -369,6 +380,7 @@ function App() {
     isLoadingMore,
     loadMore,
     totalFound,
+    resultsSourceUrl,
   } = useSearch({
     showToast,
     setIsAuthenticated,
@@ -376,6 +388,19 @@ function App() {
     onSearchReset: clearTracking,
     contentType,
   });
+
+  // When a book is removed from the Hardcover list currently being browsed, remove it from results
+  const searchFieldValuesRef = useRef(searchFieldValues);
+  searchFieldValuesRef.current = searchFieldValues;
+
+  useEffect(() => {
+    return onBookTargetChange((event) => {
+      if (event.selected) return;
+      const activeListValue = searchFieldValuesRef.current.hardcover_list;
+      if (!activeListValue || String(activeListValue) !== event.target) return;
+      setBooks((prev) => prev.filter((book) => book.provider_id !== event.bookId));
+    });
+  }, [setBooks]);
 
   const [pendingRequestPayload, setPendingRequestPayload] = useState<CreateRequestPayload | null>(null);
   const [actingAsUser, setActingAsUser] = useState<ActingAsUserSelection | null>(null);
@@ -515,6 +540,16 @@ function App() {
   const detectChanges = useCallback((prev: StatusData, curr: StatusData) => {
     if (!prev || Object.keys(prev).length === 0) return;
 
+    const autoDownloadContentTypes = Array.isArray(config?.download_to_browser_content_types)
+      ? config.download_to_browser_content_types
+      : [];
+    const canAutoDownloadContentType = (contentType?: string): boolean => {
+      const contentTypeKey = String(contentType || '').trim().toLowerCase() === 'audiobook'
+        ? 'audiobook'
+        : 'book';
+      return autoDownloadContentTypes.includes(contentTypeKey);
+    };
+
     // Check for new items in queue
     const prevQueued = prev.queued || {};
     const currQueued = curr.queued || {};
@@ -540,18 +575,16 @@ function App() {
     });
 
     // Check for completed items
-    const prevDownloadingIds = new Set(Object.keys(prevDownloading));
-    const prevResolvingIds = new Set(Object.keys(prev.resolving || {}));
-    const prevQueuedIds = new Set(Object.keys(prevQueued));
+    const prevComplete = prev.complete || {};
     const currComplete = curr.complete || {};
 
     Object.keys(currComplete).forEach(bookId => {
-      if (prevDownloadingIds.has(bookId) || prevQueuedIds.has(bookId)) {
+      if (!prevComplete[bookId]) {
         const book = currComplete[bookId];
         showToast(`${book.title || 'Book'} completed`, 'success');
 
         // Auto-download to browser if enabled
-        if (config?.download_to_browser && book.download_path) {
+        if (book.download_path && canAutoDownloadContentType(book.content_type)) {
           const link = document.createElement('a');
           link.href = withBasePath(`/api/localdownload?id=${encodeURIComponent(bookId)}`);
           link.download = '';
@@ -570,9 +603,10 @@ function App() {
     });
 
     // Check for failed items
+    const prevError = prev.error || {};
     const currError = curr.error || {};
     Object.keys(currError).forEach(bookId => {
-      if (prevDownloadingIds.has(bookId) || prevResolvingIds.has(bookId) || prevQueuedIds.has(bookId)) {
+      if (!prevError[bookId]) {
         const book = currError[bookId];
         const errorMsg = book.status_message || 'Download failed';
         showToast(`${book.title || 'Book'}: ${errorMsg}`, 'error');
@@ -1061,13 +1095,53 @@ function App() {
     []
   );
 
+  // When downloading a book while browsing a Hardcover list the user owns,
+  // automatically remove it from that list (fire-and-forget).
+  const searchFieldLabelsRef = useRef(searchFieldLabels);
+  searchFieldLabelsRef.current = searchFieldLabels;
+  const metadataConfigRef = useRef(activeMetadataConfig);
+  metadataConfigRef.current = activeMetadataConfig;
+
+  const removeBookFromActiveList = useCallback((book: Book) => {
+    if (config?.hardcover_auto_remove_on_download === false) return;
+    if (!bookSupportsTargets(book)) return;
+    const activeList = searchFieldValuesRef.current.hardcover_list;
+    if (!activeList) return;
+    const target = String(activeList);
+
+    // Only auto-remove from lists the user owns (Reading Status / My Lists)
+    const listField = metadataConfigRef.current?.search_fields.find(
+      (f) => f.key === 'hardcover_list' && f.type === 'DynamicSelectSearchField',
+    );
+    if (listField && listField.type === 'DynamicSelectSearchField') {
+      const group = getDynamicOptionGroup(listField.options_endpoint, target);
+      if (group && group !== 'Reading Status' && group !== 'My Lists') return;
+    }
+
+    void setBookTargetState(book.provider!, book.provider_id!, target, false).then((result) => {
+      if (result.changed) {
+        emitBookTargetChange({
+          provider: book.provider!,
+          bookId: book.provider_id!,
+          target,
+          selected: false,
+        });
+        const listName = searchFieldLabelsRef.current['hardcover_list'];
+        showToast(`Removed from ${listName || 'list'}`, 'info');
+      }
+    }).catch(() => {});
+  }, [config?.hardcover_auto_remove_on_download, showToast]);
+
   const executeBookDownload = useCallback(
     async (book: Book, onBehalfOfUserId?: number): Promise<void> => {
       const source = getBrowseSource(book);
       const directContentType: ContentType = 'ebook';
+      const payload = buildReleaseDataFromDirectBook(book);
+      const requestStartedAtSeconds = Date.now() / 1000;
       try {
-        await downloadRelease(buildReleaseDataFromDirectBook(book), onBehalfOfUserId);
+        await downloadRelease(payload, onBehalfOfUserId);
         await fetchStatus();
+        removeBookFromActiveList(book);
       } catch (error) {
         console.error('Download failed:', error);
         if (isPolicyGuardError(error)) {
@@ -1088,11 +1162,22 @@ function App() {
           await refreshRequestPolicy({ force: true });
           return;
         }
+        try {
+          const status = await getStatus();
+          if (wasDownloadQueuedAfterResponseError(status, payload.source_id, requestStartedAtSeconds)) {
+            await fetchStatus();
+            removeBookFromActiveList(book);
+            showToast(CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE, 'info');
+            return;
+          }
+        } catch (verificationError) {
+          console.warn('Failed to verify download after response error:', verificationError);
+        }
         showToast(getErrorMessage(error, 'Failed to queue download'), 'error');
         throw error;
       }
     },
-    [fetchStatus, openRequestConfirmation, refreshRequestPolicy, showToast]
+    [fetchStatus, openRequestConfirmation, refreshRequestPolicy, removeBookFromActiveList, showToast]
   );
 
   const executeReleaseDownload = useCallback(
@@ -1103,6 +1188,7 @@ function App() {
       onBehalfOfUserId?: number,
       monitoredEntityId?: number,
     ): Promise<void> => {
+      const requestStartedAtSeconds = Date.now() / 1000;
       try {
         trackRelease(book.id, release.source_id);
         const basePayload = buildReleaseDownloadPayload(book, release, releaseContentType);
@@ -1117,6 +1203,7 @@ function App() {
           : basePayload;
         await downloadRelease(payload, onBehalfOfUserId);
         await fetchStatus();
+        removeBookFromActiveList(book);
       } catch (error) {
         console.error('Release download failed:', error);
         if (isPolicyGuardError(error)) {
@@ -1161,11 +1248,22 @@ function App() {
           await refreshRequestPolicy({ force: true });
           return;
         }
+        try {
+          const status = await getStatus();
+          if (wasDownloadQueuedAfterResponseError(status, release.source_id, requestStartedAtSeconds)) {
+            await fetchStatus();
+            removeBookFromActiveList(book);
+            showToast(CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE, 'info');
+            return;
+          }
+        } catch (verificationError) {
+          console.warn('Failed to verify release download after response error:', verificationError);
+        }
         showToast(getErrorMessage(error, 'Failed to queue download'), 'error');
         throw error;
       }
     },
-    [buildReleaseDownloadPayload, fetchStatus, openRequestConfirmation, refreshRequestPolicy, showToast, trackRelease]
+    [buildReleaseDownloadPayload, fetchStatus, openRequestConfirmation, refreshRequestPolicy, removeBookFromActiveList, showToast, trackRelease]
   );
 
   const handleConfirmOnBehalfDownload = useCallback(async (): Promise<boolean> => {
@@ -1714,6 +1812,12 @@ function App() {
     && activeQueryValue !== ''
     && activeQueryValue !== false,
   );
+  const activeQueryUsesListBrowse = Boolean(
+    activeQueryOption?.source === 'provider-field'
+    && activeQueryOption.field?.type === 'DynamicSelectSearchField'
+    && activeQueryValue !== ''
+    && activeQueryValue !== false,
+  );
   const effectiveMetadataSort = getEffectiveMetadataSort({
     currentSort: advancedFilters.sort,
     defaultSort: resolvedMetadataDefaultSort,
@@ -2086,6 +2190,7 @@ function App() {
           onLogout={handleLogoutWithCleanup}
           onSearch={handleSearchDispatch}
           onAdvancedToggle={hasAdvancedContent ? () => setShowAdvanced(!showAdvanced) : undefined}
+          isAdvancedActive={showAdvanced}
           isLoading={isSearching}
           onShowToast={showToast}
           onRemoveToast={removeToast}
@@ -2113,7 +2218,7 @@ function App() {
                 bottom: 0,
                 left: 0,
                 right: '25rem',
-                zIndex: 40,
+                zIndex: 20,
               }
             : { paddingTop: `${headerHeight}px` }
         }
@@ -2131,7 +2236,14 @@ function App() {
           onMetadataProviderChange={handleMetadataProviderChange}
           contentType={contentType}
           isAdmin={requestRoleIsAdmin}
+          onClose={() => setShowAdvanced(false)}
         />
+
+        {!isInitialState && activeQueryTarget === 'manual' && (
+          <p className="text-xs opacity-50 px-4 sm:px-6 lg:px-8 pt-2 lg:ml-16">
+            Manual search queries release sources directly. Some sources may return limited metadata, which can affect file naming templates.
+          </p>
+        )}
 
       <main
         className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-6"
@@ -2181,6 +2293,7 @@ function App() {
           getButtonState={getDirectActionButtonState}
           getUniversalButtonState={getUniversalActionButtonState}
           sortValue={visibleResultsSort}
+          showSortControl={!activeQueryUsesSeriesBrowse && !activeQueryUsesListBrowse && !resultsSourceUrl}
           onSortChange={(value) => {
             const request = buildCurrentSearchRequest(value);
             const shouldPersistAppliedSort = !(
@@ -2204,6 +2317,8 @@ function App() {
           isLoadingMore={isLoadingMore}
           onLoadMore={() => loadMore(config, effectiveSearchMode)}
           totalFound={totalFound}
+          onShowToast={showToast}
+          resultsSourceUrl={resultsSourceUrl}
         />
 
         {selectedBook && (
@@ -2211,6 +2326,7 @@ function App() {
             book={selectedBook}
             onClose={() => setSelectedBook(null)}
             onDownload={handleDownload}
+            onShowToast={showToast}
             onFindDownloads={(book) => {
               setSelectedBook(null);
               void handleGetReleases(book);
@@ -2221,6 +2337,7 @@ function App() {
                 ? getUniversalActionButtonState(selectedBook.id)
                 : getDirectActionButtonState(selectedBook.id)
             }
+            showReleaseSourceLinks={config?.show_release_source_links !== false}
           />
         )}
 
@@ -2244,10 +2361,13 @@ function App() {
             bookLanguages={bookLanguages}
             currentStatus={statusForButtonState}
             defaultReleaseSource={config?.default_release_source}
+            defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
             showMatchScore={config?.show_release_match_score !== false}
             onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
             defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' || releaseMonitoredEntityId !== null}
             isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+            showReleaseSourceLinks={config?.show_release_source_links !== false}
+            onShowToast={showToast}
           />
         )}
         {pendingRequestPayload && (
@@ -2313,8 +2433,10 @@ function App() {
   }
 
   const shouldRedirectFromLogin = !authRequired || isAuthenticated;
+  const postLoginPath = getReturnToFromSearch(location.search);
+  const loginRedirectPath = buildLoginRedirectPath(location);
   const appElement = authRequired && !isAuthenticated ? (
-    <Navigate to="/login" replace />
+    <Navigate to={loginRedirectPath} replace />
   ) : (
     mainAppContent
   );
@@ -2327,7 +2449,7 @@ function App() {
         path="/login"
         element={
           shouldRedirectFromLogin ? (
-            <Navigate to="/" replace />
+            <Navigate to={postLoginPath} replace />
           ) : (
             <LoginPage
               onLogin={handleLogin}

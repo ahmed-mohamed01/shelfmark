@@ -26,6 +26,7 @@ interface SearchBarProps {
   onSubmit: () => void;
   isLoading?: boolean;
   onAdvancedToggle?: () => void;
+  isAdvancedActive?: boolean;
   placeholder?: string;
   inputAriaLabel?: string;
   className?: string;
@@ -33,8 +34,6 @@ interface SearchBarProps {
   controlsClassName?: string;
   clearButtonLabel?: string;
   clearButtonTitle?: string;
-  advancedButtonLabel?: string;
-  advancedButtonTitle?: string;
   searchButtonLabel?: string;
   searchButtonTitle?: string;
   autoComplete?: string;
@@ -100,6 +99,12 @@ const AudiobookIcon = () => (
   </svg>
 );
 
+const CheckIcon = ({ className = 'w-3.5 h-3.5' }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+  </svg>
+);
+
 const getDefaultPlaceholder = (
   contentType: ContentType,
   activeQueryTarget: QueryTargetOption | undefined,
@@ -147,6 +152,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   onSubmit,
   isLoading = false,
   onAdvancedToggle,
+  isAdvancedActive = false,
   placeholder,
   inputAriaLabel = 'Search books',
   className = '',
@@ -154,8 +160,6 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   controlsClassName = '',
   clearButtonLabel = 'Clear search input',
   clearButtonTitle = 'Clear search',
-  advancedButtonLabel = 'Search settings',
-  advancedButtonTitle = 'Search settings',
   searchButtonLabel = 'Search books',
   searchButtonTitle = 'Search',
   autoComplete = 'off',
@@ -187,6 +191,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   const selectTriggerRef = useRef<HTMLButtonElement>(null);
   const selectPanelRef = useRef<HTMLDivElement>(null);
   const autocompletePanelRef = useRef<HTMLDivElement>(null);
+  const selectorHoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deferredTextInputValue = useDeferredValue(textInputValue);
 
   const hasMultipleContentTypes = !allowedContentTypes || allowedContentTypes.length !== 1;
@@ -196,7 +201,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
     ? 'pl-3 rounded-r-full'
     : 'pl-4 rounded-full';
   const searchInputClass = [
-    'w-full min-w-0 py-3 border-0 outline-none search-input bg-transparent',
+    'w-full min-w-0 py-3 border-0 outline-hidden search-input bg-transparent',
     inputPaddingClass,
   ].join(' ');
 
@@ -210,9 +215,28 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
   useDismiss(isSelectOpen, [selectPanelRef, selectTriggerRef], () => setIsSelectOpen(false));
   useDismiss(isAutocompleteOpen, [autocompletePanelRef, inputRef], () => setIsAutocompleteOpen(false));
 
-  // Close select dropdown when active field changes
+  // Clean up hover timeout on unmount
   useEffect(() => {
-    setIsSelectOpen(false);
+    return () => {
+      if (selectorHoverTimeout.current) clearTimeout(selectorHoverTimeout.current);
+    };
+  }, []);
+
+  // Auto-open select dropdown only when transitioning into a select field.
+  // Initialise the ref to the current key so that mounting with an already-
+  // active select field (e.g. the Header SearchBar after first search)
+  // doesn't count as a field change. Using `if (fieldChanged)` instead of
+  // always calling setIsSelectOpen avoids StrictMode's second effect
+  // invocation resetting the state set by the first.
+  const prevFieldKeyRef = useRef<string | undefined>(activeQueryField?.key);
+  useEffect(() => {
+    const isSelect = activeQueryField?.type === 'SelectSearchField' || activeQueryField?.type === 'DynamicSelectSearchField';
+    const fieldChanged = activeQueryField?.key !== prevFieldKeyRef.current;
+    prevFieldKeyRef.current = activeQueryField?.key;
+
+    if (fieldChanged) {
+      setIsSelectOpen(isSelect);
+    }
     setIsAutocompleteOpen(false);
     setAutocompleteOptions([]);
   }, [activeQueryField?.key, activeQueryField?.type]);
@@ -250,7 +274,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
 
     fetchFieldOptions(dynamicEndpoint).then((loaded) => {
       if (cancelled) return;
-      setDynamicOptions(loaded.map((o) => ({ value: o.value, label: o.label })));
+      setDynamicOptions(loaded.map((o) => ({ value: o.value, label: o.label, group: o.group })));
       setIsDynamicLoading(false);
     }).catch(() => {
       if (cancelled) return;
@@ -392,7 +416,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
     && textInputValue.trim().length >= autocompleteMinQueryLength;
   const wrapperClasses = ['relative flex items-center rounded-full border', className].filter(Boolean).join(' ').trim();
   const controlsClasses = [
-    'flex items-center gap-1 pr-2 flex-shrink-0',
+    'flex items-center gap-1 pr-2 shrink-0',
     controlsClassName,
   ]
     .filter(Boolean)
@@ -434,6 +458,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
           onFocus={() => {
             if (autocompleteEndpoint && textInputValue.trim().length >= autocompleteMinQueryLength) {
               setIsAutocompleteOpen(true);
+              setIsSelectorOpen(false);
             }
           }}
           onKeyDown={handleKeyDown}
@@ -496,6 +521,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
               if (!disabled && !isDynamicLoading) {
                 setIsSelectOpen((prev) => !prev);
                 setIsSelectorOpen(false);
+                setIsAutocompleteOpen(false);
               }
             }}
             disabled={disabled}
@@ -517,7 +543,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
               <span className="opacity-50 truncate">{effectivePlaceholder}</span>
             )}
             <svg
-              className={`w-3.5 h-3.5 opacity-40 flex-shrink-0 transition-transform duration-200 ${isSelectOpen ? 'rotate-180' : ''}`}
+              className={`w-3.5 h-3.5 opacity-40 shrink-0 transition-transform duration-200 ${isSelectOpen ? 'rotate-180' : ''}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -537,7 +563,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
               type="checkbox"
               checked={Boolean(value)}
               onChange={(e) => onChange(e.target.checked)}
-              className="h-4 w-4 rounded border-[var(--border-muted)] text-emerald-500 focus:ring-emerald-500/50"
+              className="h-4 w-4 rounded-sm border-(--border-muted) text-emerald-500 focus:ring-emerald-500/50"
             />
             <span className="truncate text-sm" style={{ color: 'var(--text)' }}>
               {activeQueryField.label}
@@ -559,10 +585,30 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
       }}
     >
         {showQueryTargetSelector && (
-          <div className="relative flex-shrink-0 flex self-stretch" ref={selectorRef}>
+          <div
+            className="relative shrink-0 flex self-stretch"
+            ref={selectorRef}
+            onPointerEnter={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              if (selectorHoverTimeout.current) {
+                clearTimeout(selectorHoverTimeout.current);
+                selectorHoverTimeout.current = null;
+              }
+              setIsSelectorOpen(true);
+              setIsSelectOpen(false);
+              setIsAutocompleteOpen(false);
+            }}
+            onPointerLeave={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              selectorHoverTimeout.current = setTimeout(() => {
+                setIsSelectorOpen(false);
+                selectorHoverTimeout.current = null;
+              }, 150);
+            }}
+          >
             <button
               type="button"
-              onClick={() => { setIsSelectorOpen((prev) => !prev); setIsSelectOpen(false); }}
+              onClick={() => { setIsSelectorOpen((prev) => !prev); setIsSelectOpen(false); setIsAutocompleteOpen(false); }}
               className="flex items-center gap-1.5 pl-5 pr-2 rounded-l-full transition-colors hover-action"
               style={{ color: 'var(--text)' }}
               aria-label={`Searching ${contentType === 'ebook' ? 'books' : 'audiobooks'} by ${activeTarget?.label ?? 'general'}. Click to change.`}
@@ -605,43 +651,111 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
                 <div className="max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto p-3">
                   {showContentTypeSelector && (
                     <div className="border-b pb-3" style={{ borderColor: 'var(--border-muted)' }}>
-                      <div className="px-1 pb-2 text-xs font-medium uppercase tracking-wide opacity-60">
-                        Content
+                      <div className="flex items-center justify-between px-1 pb-2">
+                        <span className="text-xs font-medium uppercase tracking-wide opacity-60">Content</span>
+                        {onAdvancedToggle && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSelectorOpen(false);
+                              onAdvancedToggle();
+                            }}
+                            className={`flex items-center gap-1.5 px-4 py-2.5 -mt-1.5 -mb-0.5 -mr-1 text-xs font-medium rounded-xl transition-colors ${
+                              isAdvancedActive
+                                ? 'bg-emerald-600 text-white'
+                                : 'hover-surface'
+                            }`}
+                            style={isAdvancedActive
+                              ? { borderColor: 'rgb(16 185 129 / 0.7)' }
+                              : { color: 'var(--text-muted)' }}
+                          >
+                            <svg
+                              className="w-3.5 h-3.5"
+                              xmlns="http://www.w3.org/2000/svg"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth="1.5"
+                              stroke="currentColor"
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"
+                              />
+                            </svg>
+                            Options
+                          </button>
+                        )}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
                           onClick={() => handleContentTypeSelect('ebook')}
-                          className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
+                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                             contentType === 'ebook' ? 'bg-emerald-600 text-white' : 'hover-surface'
                           }`}
                           style={contentType !== 'ebook'
                             ? { color: 'var(--text)', borderColor: 'var(--border-muted)' }
                             : { borderColor: 'rgb(16 185 129 / 0.7)' }}
                         >
-                          <BookIcon />
+                          {contentType === 'ebook' ? <CheckIcon /> : <BookIcon />}
                           <span>Books</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => handleContentTypeSelect('audiobook')}
-                          className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
+                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                             contentType === 'audiobook' ? 'bg-emerald-600 text-white' : 'hover-surface'
                           }`}
                           style={contentType !== 'audiobook'
                             ? { color: 'var(--text)', borderColor: 'var(--border-muted)' }
                             : { borderColor: 'rgb(16 185 129 / 0.7)' }}
                         >
-                          <AudiobookIcon />
+                          {contentType === 'audiobook' ? <CheckIcon /> : <AudiobookIcon />}
                           <span>Audiobooks</span>
                         </button>
                       </div>
                     </div>
                   )}
 
-                  <div className={showContentTypeSelector ? 'pt-3' : ''}>
-                    <div className="px-1 pb-2 text-xs font-medium uppercase tracking-wide opacity-60">
-                      Search By
+                  <div className={showContentTypeSelector ? 'pt-2' : ''}>
+                    <div className="flex items-center justify-between px-1 pb-1.5">
+                      <span className="text-xs font-medium uppercase tracking-wide opacity-60">Search By</span>
+                      {!showContentTypeSelector && onAdvancedToggle && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSelectorOpen(false);
+                            onAdvancedToggle();
+                          }}
+                          className={`flex items-center gap-1.5 px-4 py-2.5 -mt-1.5 -mb-0.5 -mr-1 text-xs font-medium rounded-xl transition-colors ${
+                            isAdvancedActive
+                              ? `${searchMode === 'direct' ? 'bg-sky-700' : 'bg-emerald-600'} text-white`
+                              : 'hover-surface'
+                          }`}
+                          style={isAdvancedActive
+                            ? { borderColor: searchMode === 'direct' ? 'rgb(3 105 161 / 0.7)' : 'rgb(16 185 129 / 0.7)' }
+                            : { color: 'var(--text-muted)' }}
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            xmlns="http://www.w3.org/2000/svg"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            strokeWidth="1.5"
+                            stroke="currentColor"
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"
+                            />
+                          </svg>
+                          Options
+                        </button>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       {queryTargets.map((target) => {
@@ -653,19 +767,21 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
                             onClick={() => handleQueryTargetSelect(target.key)}
                             title={target.description || target.label}
                             aria-label={target.label}
-                            className={`min-w-0 rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition-colors ${
+                            className={`min-w-0 rounded-xl border px-3 py-2 text-sm font-medium transition-colors flex items-center gap-2 ${
                               isActive ? `${searchMode === 'direct' ? 'bg-sky-700' : 'bg-emerald-600'} text-white` : 'hover-surface'
                             }`}
                             style={isActive
                               ? { borderColor: searchMode === 'direct' ? 'rgb(3 105 161 / 0.7)' : 'rgb(16 185 129 / 0.7)' }
                               : { color: 'var(--text)', borderColor: 'var(--border-muted)' }}
                           >
+                            {isActive && <CheckIcon />}
                             <span className="block truncate">{target.label}</span>
                           </button>
                         );
                       })}
                     </div>
                   </div>
+
                 </div>
               </div>
             )}
@@ -696,32 +812,6 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
               aria-hidden="true"
             >
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
-        {onAdvancedToggle && (
-          <button
-            type="button"
-            onClick={onAdvancedToggle}
-            className="p-2 rounded-full hover-action flex items-center justify-center transition-colors"
-            aria-label={advancedButtonLabel}
-            title={advancedButtonTitle}
-          >
-            <svg
-              className="w-5 h-5"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              style={{ color: 'var(--text)' }}
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"
-              />
             </svg>
           </button>
         )}
@@ -756,7 +846,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
             </svg>
           )}
           {isLoading && (
-            <div className="spinner w-3 h-3 border-2 border-white border-t-transparent search-bar-spinner" />
+            <div className="spinner w-5 h-5 border-2 border-white border-t-transparent search-bar-spinner" />
           )}
         </button>
       </div>
@@ -770,34 +860,41 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(({
           aria-label={effectiveInputAriaLabel}
         >
           <div className="max-h-64 overflow-y-auto py-1.5">
-            {selectOptions.map((option) => {
+            {selectOptions.map((option, index) => {
               const currentValue = typeof value === 'string' ? value : String(value ?? '');
               const isSelected = option.value === currentValue;
+              const showGroupHeader = option.group != null && (index === 0 || option.group !== selectOptions[index - 1]?.group);
               return (
-                <button
-                  type="button"
-                  key={option.value}
-                  role="option"
-                  aria-selected={isSelected}
-                  onClick={() => {
-                    onChange(option.value, option.label);
-                    setIsSelectOpen(false);
-                    setTimeout(() => onSubmitRef.current(), 0);
-                  }}
-                  className={`w-full px-5 py-2.5 text-left text-sm flex items-center gap-3 transition-colors ${
-                    isSelected ? '' : 'hover-surface'
-                  }`}
-                  style={{ color: 'var(--text)' }}
-                >
-                  <span className={`flex-1 truncate ${isSelected ? 'font-medium' : ''}`}>
-                    {option.label}
-                  </span>
-                  {isSelected && (
-                    <svg className="w-4 h-4 text-emerald-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" aria-hidden="true">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                    </svg>
+                <div key={option.value}>
+                  {showGroupHeader && (
+                    <div className="px-5 pt-2 pb-1 text-xs font-medium uppercase tracking-wide opacity-60 select-none">
+                      {option.group}
+                    </div>
                   )}
-                </button>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={() => {
+                      onChange(option.value, option.label);
+                      setIsSelectOpen(false);
+                      setTimeout(() => onSubmitRef.current(), 0);
+                    }}
+                    className={`w-full px-5 py-2.5 text-left text-sm flex items-center gap-3 transition-colors ${
+                      isSelected ? '' : 'hover-surface'
+                    }`}
+                    style={{ color: 'var(--text)' }}
+                  >
+                    <span className={`flex-1 truncate ${isSelected ? 'font-medium' : ''}`}>
+                      {option.label}
+                    </span>
+                    {isSelected && (
+                      <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               );
             })}
           </div>

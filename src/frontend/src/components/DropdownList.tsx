@@ -7,6 +7,7 @@ export interface DropdownListOption {
   description?: string;
   disabled?: boolean;
   icon?: ReactNode;
+  group?: string;
 }
 
 interface DropdownListProps {
@@ -17,12 +18,15 @@ interface DropdownListProps {
   showCheckboxes?: boolean;
   value: string[] | string | null | undefined;
   onChange: (value: string[] | string) => void;
-  align?: 'left' | 'right';
+  align?: 'left' | 'right' | 'auto';
   widthClassName?: string;
   buttonClassName?: string;
+  panelClassName?: string;
   summaryFormatter?: (selected: DropdownListOption[], placeholder: string) => ReactNode;
   keepOpenOnSelect?: boolean;
   triggerChrome?: 'default' | 'minimal';
+  renderTrigger?: (props: { isOpen: boolean; toggle: () => void }) => ReactNode;
+  onOpenChange?: (isOpen: boolean) => void;
 }
 
 export const DropdownList = ({
@@ -36,9 +40,12 @@ export const DropdownList = ({
   align,
   widthClassName,
   buttonClassName,
+  panelClassName,
   summaryFormatter,
   keepOpenOnSelect,
   triggerChrome = 'default',
+  renderTrigger,
+  onOpenChange,
 }: DropdownListProps) => {
   const selectedValues = normalizeValue(value, multiple);
   const selectedOptions = options.filter(opt => selectedValues.includes(opt.value));
@@ -104,39 +111,55 @@ export const DropdownList = ({
       align={align}
       widthClassName={widthClassName}
       buttonClassName={buttonClassName}
+      panelClassName={panelClassName}
       triggerChrome={triggerChrome}
+      renderTrigger={renderTrigger}
+      onOpenChange={onOpenChange}
     >
-      {({ close }) => (
-        <div role="listbox" aria-multiselectable={multiple}>
-          {options.map(option => (
-            <button
-              type="button"
-              key={option.value}
-              className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover-surface ${
-                option.disabled ? 'opacity-50 cursor-not-allowed' : ''
-              }`}
-              onClick={() => handleOptionClick(option, close)}
-              disabled={option.disabled}
-            >
-              {checkboxEnabled && (
-                <input
-                  type="checkbox"
-                  checked={selectedValues.includes(option.value)}
-                  readOnly
-                  className="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500 pointer-events-none"
-                />
-              )}
-              {option.icon}
-              <div className="flex flex-col">
-                <span>{option.label}</span>
-                {option.description && (
-                  <span className="text-xs opacity-70">{option.description}</span>
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
+      {({ close }) => {
+        let lastGroup: string | undefined;
+        return (
+          <div role="listbox" aria-multiselectable={multiple}>
+            {options.map(option => {
+              const showGroupHeader = option.group != null && option.group !== lastGroup;
+              if (option.group != null) lastGroup = option.group;
+              return (
+                <div key={option.value}>
+                  {showGroupHeader && (
+                    <div className="px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wide opacity-60 select-none">
+                      {option.group}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover-surface ${
+                      option.disabled ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => handleOptionClick(option, close)}
+                    disabled={option.disabled}
+                  >
+                    {checkboxEnabled && (
+                      <input
+                        type="checkbox"
+                        checked={selectedValues.includes(option.value)}
+                        readOnly
+                        className="h-4 w-4 rounded-sm border-gray-300 text-sky-600 focus:ring-sky-500 pointer-events-none"
+                      />
+                    )}
+                    {option.icon}
+                    <div className="flex flex-col">
+                      <span>{option.label}</span>
+                      {option.description && (
+                        <span className="text-xs opacity-70">{option.description}</span>
+                      )}
+                    </div>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }}
     </Dropdown>
   );
 };
