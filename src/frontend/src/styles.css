@@ -332,7 +332,7 @@
     }
 
     .animate-slide-up {
-        animation: slide-up 0.5s ease-out;
+        animation: slide-up 0.5s ease-out both;
         -webkit-backface-visibility: hidden;
         backface-visibility: hidden;
         -webkit-transform: translateZ(0);
@@ -341,7 +341,7 @@
     }
 
     .animate-pop-up {
-        animation: pop-up 0.35s ease-out;
+        animation: pop-up 0.35s ease-out both;
         -webkit-backface-visibility: hidden;
         backface-visibility: hidden;
         -webkit-transform: translateZ(0);

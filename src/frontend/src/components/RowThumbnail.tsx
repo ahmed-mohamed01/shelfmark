@@ -1,9 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 
-/** URLs that have successfully loaded during this session — lets us skip the
- *  skeleton entirely when the component remounts (e.g. tab switches). */
-const loadedUrls = new Set<string>();
-
 interface RowThumbnailProps {
   url?: string | null;
   alt?: string;
@@ -53,22 +49,16 @@ export const RowThumbnail = ({
   kind = 'book',
   className = 'w-7 h-10 sm:w-10 sm:h-14',
 }: RowThumbnailProps) => {
-  const alreadyKnown = Boolean(url && loadedUrls.has(url));
-  const [imageLoaded, setImageLoaded] = useState(alreadyKnown);
+  const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  // Catch browser-cached images that are already decoded before React's onLoad fires.
-  // This covers the first visit when loadedUrls is still empty but the browser has the image.
+  // Detect already-cached images before first paint so they never show the shimmer.
   useLayoutEffect(() => {
-    if (alreadyKnown) return;
-    const img = imgRef.current;
-    if (!img) return;
-    if (img.complete && img.naturalWidth > 0) {
-      if (url) loadedUrls.add(url);
-      setImageLoaded(true);
-    } else if (img.complete) {
+    if (imgRef.current?.complete && !imgRef.current.naturalWidth) {
       setImageError(true);
+    } else if (imgRef.current?.complete) {
+      setImageLoaded(true);
     }
   }, []);
 
@@ -89,16 +79,22 @@ export const RowThumbnail = ({
   }
 
   return (
-    <div className={`relative ${className} rounded overflow-hidden bg-gray-200 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70`}>
+    <div className={`relative ${className} rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70`}>
+      {/* Shimmer skeleton — animate-pulse class is removed once loaded so Tailwind v4
+          animation keyframes don't override the inline opacity: 0 */}
+      <div
+        className={`absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 ${imageLoaded ? '' : 'animate-pulse'}`}
+        style={{ opacity: imageLoaded ? 0 : 1, transition: 'opacity 0.2s ease-in-out', pointerEvents: 'none' }}
+      />
       <img
         ref={imgRef}
         src={url}
         alt={alt || (kind === 'author' ? 'Author photo' : 'Book cover')}
         className="w-full h-full object-cover object-top"
         loading="eager"
-        onLoad={() => { if (url) loadedUrls.add(url); setImageLoaded(true); }}
+        onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}
-        style={alreadyKnown ? undefined : { opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.15s ease-in' }}
+        style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}
       />
     </div>
   );

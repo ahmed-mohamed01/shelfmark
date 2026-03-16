@@ -1719,7 +1719,7 @@ export const MonitoredAuthorBooksTab = ({
                                 const _cRow = (_cProvider && _cProviderId) ? monitoredBookRowByKey.get(`${_cProvider}:${_cProviderId}`) : undefined;
                                 const isRemovedCard = _cRow?.state === 'removed_from_provider';
                                 return (
-                                  <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
+                                  <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms` }}>
                                     <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} />
                                   </div>
                                 );
@@ -1757,7 +1757,7 @@ export const MonitoredAuthorBooksTab = ({
                                   const tEbookStatus = _tRow ? getFormatStatus(_tRow, 'ebook') : null;
                                   const tAudiobookStatus = _tRow ? getFormatStatus(_tRow, 'audiobook') : null;
                                   return (
-                                    <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms`, }}>
+                                    <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms` }}>
                                     <MonitoredBookTableRow isDimmed={isDormant || isRemovedFromProvider} hasActiveSelection={monitoredEntityId ? hasActiveBookSelection : false}
                                       leadingControl={monitoredEntityId ? (() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);

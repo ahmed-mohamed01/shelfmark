@@ -63,7 +63,7 @@ export function MonitoredAuthorsView({
             <div
               key={`${author.provider}:${author.provider_id}`}
               className="animate-pop-up will-change-transform"
-              style={{ animationDelay: `${index * 30}ms`, animationFillMode: 'both' }}
+              style={{ animationDelay: `${index * 30}ms` }}
             >
               <MonitoredAuthorTableRow
                 name={author.name || 'Unknown author'}
@@ -112,7 +112,7 @@ export function MonitoredAuthorsView({
           <div
             key={`${author.provider}:${author.provider_id}`}
             className="animate-pop-up will-change-transform"
-            style={{ animationDelay: `${index * 30}ms`, animationFillMode: 'both' }}
+            style={{ animationDelay: `${index * 30}ms` }}
           >
             <MonitoredAuthorCompactTile
               name={author.name || 'Unknown author'}
