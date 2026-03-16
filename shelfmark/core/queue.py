@@ -41,8 +41,8 @@ class BookQueue:
         with self._lock:
             task_id = task.task_id
 
-            # Don't add if already exists and not in error/cancelled state
-            if task_id in self._status and self._status[task_id] not in [QueueStatus.ERROR, QueueStatus.CANCELLED]:
+            # Don't add if already exists and not in a terminal (re-queueable) state
+            if task_id in self._status and self._status[task_id] not in TERMINAL_QUEUE_STATUSES:
                 return False
 
             # Ensure added_time is set

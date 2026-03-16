@@ -391,9 +391,6 @@ export const MonitoredAuthorBooksTab = ({
   const [bulkDownloadRunningByType, setBulkDownloadRunningByType] = useState<Record<ContentType, boolean>>({
     ebook: false, audiobook: false,
   });
-  const [monitorSearchBusyByType, setMonitorSearchBusyByType] = useState<Record<ContentType, boolean>>({
-    ebook: false, audiobook: false,
-  });
   const [monitorSearchSummary, setMonitorSearchSummary] = useState<string | null>(null);
   const [monitoredBookRows, setMonitoredBookRows] = useState<MonitoredBookRow[]>([]);
   const [autoRefreshBusy, setAutoRefreshBusy] = useState(false);
@@ -488,22 +485,6 @@ export const MonitoredAuthorBooksTab = ({
       setIsRefreshing(false);
     }
   }, [monitoredEntityId]);
-
-  // handleRunMonitoredSearch
-  const handleRunMonitoredSearch = useCallback(async (contentType: ContentType) => {
-    if (!monitoredEntityId || !onGetReleases) return;
-    setMonitorSearchBusyByType((prev) => ({ ...prev, [contentType]: true }));
-    setMonitorSearchSummary(null);
-    try {
-      await scanMonitoredEntityFiles(monitoredEntityId);
-      const booksResp = await listMonitoredBooks(monitoredEntityId);
-      setMonitoredBookRows(booksResp.books || []);
-    } catch (e) {
-      console.warn('MonitoredAuthorBooksTab: auto refresh after download complete failed', e);
-    } finally {
-      setAutoRefreshBusy(false);
-    }
-  }, [monitoredEntityId, onGetReleases]);
 
   // Auto-refresh after download completion
   useEffect(() => {
@@ -1154,14 +1135,14 @@ export const MonitoredAuthorBooksTab = ({
     });
   }, [visibleBooks]);
 
-  const runBulkDownloadForSelection = useCallback(async (contentType: ContentType) => {
-    if (!onGetReleases || selectedBooks.length === 0 || bulkDownloadRunningByType[contentType]) return;
+  const runBulkDownloadForBooks = useCallback(async (booksToDownload: Book[], contentType: ContentType) => {
+    if (!onGetReleases || booksToDownload.length === 0 || bulkDownloadRunningByType[contentType]) return;
     const batchId = `${contentType}:${Date.now()}`;
-    const batchTotal = selectedBooks.length;
+    const batchTotal = booksToDownload.length;
     setBulkDownloadRunningByType((prev) => ({ ...prev, [contentType]: true }));
     try {
-      for (let idx = 0; idx < selectedBooks.length; idx += 1) {
-        const book = selectedBooks[idx];
+      for (let idx = 0; idx < booksToDownload.length; idx += 1) {
+        const book = booksToDownload[idx];
         await triggerReleaseSearch(book, contentType, 'auto_search_download', {
           suppressPerBookAutoSearchToasts: true,
           batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
@@ -1170,7 +1151,37 @@ export const MonitoredAuthorBooksTab = ({
     } finally {
       setBulkDownloadRunningByType((prev) => ({ ...prev, [contentType]: false }));
     }
-  }, [onGetReleases, selectedBooks, bulkDownloadRunningByType, triggerReleaseSearch]);
+  }, [onGetReleases, bulkDownloadRunningByType, triggerReleaseSearch]);
+
+  const runBulkDownloadForSelection = useCallback(async (contentType: ContentType) => {
+    if (selectedBooks.length === 0) return;
+    return runBulkDownloadForBooks(selectedBooks, contentType);
+  }, [selectedBooks, runBulkDownloadForBooks]);
+
+  // Uses same batch path as "Download selected" but for all monitored+missing books
+  const handleRunMonitoredSearch = useCallback(async (contentType: ContentType) => {
+    if (!onGetReleases || !monitoredEntityId) return;
+    const wantedBooks = books.filter((book) => {
+      if (!book.provider || !book.provider_id) return false;
+      // Use MonitoredBookRow directly — it has the monitor_ebook/audiobook flags
+      const row = monitoredBookRows.find(
+        (r) => r.provider === book.provider && r.provider_book_id === book.provider_id
+      );
+      if (!row) return false;
+      const tracks = contentType === 'ebook'
+        ? monitoredBookTracksEbook(row)
+        : monitoredBookTracksAudiobook(row);
+      if (!tracks) return false;
+      if (monitoredBookHasFormatAvailable(row, contentType)) return false;
+      return !isMonitoredBookDormantState(row);
+    });
+    if (wantedBooks.length === 0) {
+      setMonitorSearchSummary('No missing books found');
+      return;
+    }
+    setMonitorSearchSummary(null);
+    await runBulkDownloadForBooks(wantedBooks, contentType);
+  }, [onGetReleases, monitoredEntityId, books, monitoredBookRows, runBulkDownloadForBooks]);
 
   const toggleSelectAllInGroup = useCallback((groupBooks: Book[]) => {
     if (groupBooks.length === 0) return;
@@ -1562,11 +1573,11 @@ export const MonitoredAuthorBooksTab = ({
               </button>
               {monitoredEntityId ? (
                 <>
-                  <button type="button" onClick={() => void handleRunMonitoredSearch('ebook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored ebook candidates">
-                    {monitorSearchBusyByType.ebook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>eBooks</>}
+                  <button type="button" onClick={() => void handleRunMonitoredSearch('ebook')} disabled={bulkDownloadRunningByType.ebook || bulkDownloadRunningByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored ebook candidates">
+                    {bulkDownloadRunningByType.ebook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>eBooks</>}
                   </button>
-                  <button type="button" onClick={() => void handleRunMonitoredSearch('audiobook')} disabled={monitorSearchBusyByType.ebook || monitorSearchBusyByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored audiobook candidates">
-                    {monitorSearchBusyByType.audiobook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>audiobooks</>}
+                  <button type="button" onClick={() => void handleRunMonitoredSearch('audiobook')} disabled={bulkDownloadRunningByType.ebook || bulkDownloadRunningByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored audiobook candidates">
+                    {bulkDownloadRunningByType.audiobook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>audiobooks</>}
                   </button>
                 </>
               ) : null}

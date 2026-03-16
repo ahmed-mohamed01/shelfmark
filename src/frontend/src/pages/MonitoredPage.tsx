@@ -2378,7 +2378,7 @@ export const MonitoredPage = ({
               aria-pressed={isActive}
             >
               <span>{label}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${isActive ? 'bg-emerald-600 text-white' : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400'}`}>{count}</span>
+              <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>
             </button>
           );
         })}
@@ -2389,7 +2389,7 @@ export const MonitoredPage = ({
             className={`w-full text-left pl-8 pr-4 py-2.5 flex items-center justify-between text-sm transition-colors ${landingTab === 'search' ? 'text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-50/60 dark:bg-emerald-500/10' : 'text-gray-700 dark:text-gray-200 hover-surface'}`}
           >
             <span>Search results</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400">{displaySearchCount}</span>
+            <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem]">{displaySearchCount}</span>
           </button>
         )}
 
