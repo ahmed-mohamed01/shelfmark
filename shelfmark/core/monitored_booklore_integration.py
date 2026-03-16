@@ -134,9 +134,9 @@ def _find_booklore_author_books(
     """Return (ebook_items, pagination_complete) for the best-matching author.
 
     Steps:
-    1. GET /api/mobile/v1/authors?search={name}  (paginated author list)
+    1. GET /api/v1/app/authors?search={name}  (paginated author list)
     2. Fuzzy-match against author_name
-    3. GET /api/mobile/v1/books?authors={matched_name}&size=50 (paginated)
+    3. GET /api/v1/app/books?authors={matched_name}&size=50 (paginated)
     4. Filter out AUDIOBOOK primaryFileType
 
     ``pagination_complete`` is False if pagination was cut short by an
@@ -145,7 +145,7 @@ def _find_booklore_author_books(
     # Step 1: search authors
     try:
         data = _booklore_get(
-            url, token, "/api/mobile/v1/authors",
+            url, token, "/api/v1/app/authors",
             params={"search": author_name, "size": 50, "page": 0},
             timeout=15,
         )
@@ -193,7 +193,7 @@ def _find_booklore_author_books(
     while True:
         try:
             resp = _booklore_get(
-                url, token, "/api/mobile/v1/books",
+                url, token, "/api/v1/app/books",
                 params={"authors": matched_name, "size": 50, "page": page},
                 timeout=30,
             )
@@ -275,16 +275,14 @@ def _match_booklore_item_to_books(
     # ISBN fields — present only in full book detail responses, not list summaries.
     # Included here so Phase 1 fires automatically if enriched items are passed.
     bl_isbn13 = (bl_item.get("isbn13") or "").strip()
-    bl_isbn10 = (bl_item.get("isbn10") or "").strip()
 
     # ------------------------------------------------------------------
     # Phase 1: ISBN exact match
     # ------------------------------------------------------------------
-    if bl_isbn13 or bl_isbn10:
+    if bl_isbn13:
         for book in books:
             b_isbn13 = (book.get("isbn13") or "").strip()
-            b_isbn10 = (book.get("isbn10") or "").strip()
-            if (bl_isbn13 and bl_isbn13 == b_isbn13) or (bl_isbn10 and bl_isbn10 == b_isbn10):
+            if bl_isbn13 == b_isbn13:
                 logger.debug("Booklore match [isbn] %r → %r", bl_title, book.get("title"))
                 return book, 1.0, "bl_isbn"
 
@@ -456,7 +454,9 @@ def sync_booklore_availability_for_entity(
             unmatched_titles.append(bl_title)
             continue
 
-        # Fetch the real filesystem path from Booklore book detail.
+        # Fetch the real filesystem path from the Booklore web API.
+        # The /api/v1/books/ endpoint returns BookFile objects with filePath;
+        # the /api/v1/app/books/ endpoint intentionally omits paths.
         # Falls back to a stable synthetic URI if the fetch fails.
         # Cast bl_id to int to prevent path injection (e.g. "../../admin") in the URL.
         try:
