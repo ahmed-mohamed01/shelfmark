@@ -28,7 +28,7 @@ from shelfmark.core.monitored_operations import (
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_types import MonitoredEntityNotFound, MonitoredPathError
-from shelfmark.core.monitored_utils import normalize_preferred_languages, transform_cached_cover_urls
+from shelfmark.core.monitored_utils import extract_author_photo_url, normalize_preferred_languages, transform_cached_cover_urls
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.monitored_db import MonitoredDB
@@ -239,6 +239,52 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
         "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
         "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
     }, config_user_id
+
+
+def _backfill_search_author_photos(
+    provider: Any,
+    authors: list[dict],
+    transform_fn: Callable,
+) -> None:
+    """Fetch photos for authors missing them via direct GraphQL (not Typesense).
+
+    Mutates the author dicts in-place, setting ``photo_url`` where found.
+    Uses a single batched query with ``id: {_in: [...]}`` to avoid N+1 round-trips.
+    """
+    id_map: dict[int, dict] = {}
+    for a in authors:
+        pid = a.get("provider_id")
+        if pid is None:
+            continue
+        try:
+            id_map[int(pid)] = a
+        except (ValueError, TypeError):
+            continue
+    if not id_map:
+        return
+
+    ids = list(id_map.keys())
+    query = """
+    query GetAuthorPhotos($ids: [Int!]!) {
+        authors(where: {id: {_in: $ids}}) {
+            id
+            image { url }
+            cached_image
+        }
+    }
+    """
+    result = provider._execute_query(query, {"ids": ids})
+    if not result:
+        return
+
+    for author_row in result.get("authors") or []:
+        aid = author_row.get("id")
+        if aid not in id_map:
+            continue
+        photo_url = extract_author_photo_url(author_row)
+        if photo_url:
+            cache_id = f"hardcover_author_{aid}"
+            id_map[aid]["photo_url"] = transform_fn(photo_url, cache_id)
 
 
 def register_monitored_routes(
@@ -498,7 +544,7 @@ def register_monitored_routes(
                         )
                         row["best_book_cover_url"] = transform_cover_url(info["cover_url"], cache_id)
             except Exception:
-                pass
+                logger.warning("Failed to compute best book covers for fallback", exc_info=True)
         _t_covers = _time.perf_counter()
 
         resp = jsonify(rows)
@@ -1508,20 +1554,8 @@ def register_monitored_routes(
                 if not author_id or not name:
                     continue
 
-                photo_url = None
-                for key in ("image", "cached_image", "photo", "avatar"):
-                    value = item.get(key)
-                    if value:
-                        if isinstance(value, str):
-                            photo_url = value
-                            break
-                        if isinstance(value, dict) and value.get("url"):
-                            photo_url = value.get("url")
-                            break
-
-                if photo_url:
-                    cache_id = f"hardcover_author_{author_id}"
-                    photo_url = transform_cover_url(photo_url, cache_id)
+                raw_photo = extract_author_photo_url(item)
+                photo_url = transform_cover_url(raw_photo, f"hardcover_author_{author_id}") if raw_photo else None
 
                 author_payload: dict[str, Any] = {
                     "provider": "hardcover",
@@ -1544,6 +1578,15 @@ def register_monitored_routes(
                     author_payload["source_url"] = f"https://hardcover.app/authors/{slug}"
 
                 authors.append(author_payload)
+
+            # Typesense search index often lacks author photos.
+            # Batch-fetch missing photos from the direct GraphQL API.
+            authors_missing_photo = [a for a in authors if not a.get("photo_url")]
+            if authors_missing_photo:
+                try:
+                    _backfill_search_author_photos(provider, authors_missing_photo, transform_cover_url)
+                except Exception:
+                    logger.debug("Failed to backfill search author photos", exc_info=True)
 
             has_more = False
             if found_count and isinstance(found_count, int):
@@ -1650,14 +1693,7 @@ def register_monitored_routes(
 
             author = authors[0]
 
-            photo_url = None
-            image_obj = author.get("image")
-            if isinstance(image_obj, dict) and image_obj.get("url"):
-                photo_url = image_obj["url"]
-            elif isinstance(image_obj, str) and image_obj:
-                photo_url = image_obj
-            if not photo_url:
-                photo_url = author.get("cached_image")
+            photo_url = extract_author_photo_url(author)
             if photo_url:
                 cache_id = f"hardcover_author_{author.get('id')}"
                 photo_url = transform_cover_url(photo_url, cache_id)

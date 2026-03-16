@@ -192,3 +192,22 @@ def extract_book_popularity(
                 readers_count = parsed_readers
 
     return rating, ratings_count, readers_count
+
+
+# =============================================================================
+# Author photo resolution
+# =============================================================================
+
+
+def extract_author_photo_url(author: dict) -> str | None:
+    """Extract photo URL from a Hardcover author GraphQL/Typesense object.
+
+    Checks ``image.url``, ``image`` (string), then ``cached_image``.
+    Returns the raw external URL or None.
+    """
+    image_obj = author.get("image")
+    if isinstance(image_obj, dict) and image_obj.get("url"):
+        return image_obj["url"]
+    if isinstance(image_obj, str) and image_obj:
+        return image_obj
+    return author.get("cached_image") or None

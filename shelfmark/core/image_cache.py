@@ -488,11 +488,18 @@ class ImageCacheService:
             )
             response.raise_for_status()
 
-            # Validate content type
+            # Validate content type — allow octet-stream since some CDNs
+            # (e.g. Hardcover assets) serve images without a proper MIME type.
+            # When the header isn't image/*, we still read the bytes and rely
+            # on magic-byte detection below to confirm it's a real image.
             content_type = response.headers.get('content-type', '')
+            needs_magic_check = False
             if not content_type.startswith('image/'):
-                self.put_negative(cache_id)
-                return None
+                if content_type in ('application/octet-stream', 'binary/octet-stream', ''):
+                    needs_magic_check = True
+                else:
+                    self.put_negative(cache_id)
+                    return None
 
             # Read with size limit
             data = BytesIO()
@@ -508,12 +515,21 @@ class ImageCacheService:
                 self.put_negative(cache_id)
                 return None
 
-            # Store in cache
-            if self.put(cache_id, image_data, content_type):
-                # Get the actual content type from detection
+            # When Content-Type wasn't image/*, verify via magic bytes
+            if needs_magic_check:
                 detected = _detect_image_type(image_data)
-                if detected:
-                    content_type = detected[0]
+                if not detected:
+                    self.put_negative(cache_id)
+                    return None
+                content_type = detected[0]
+
+            # Store in cache (put() also runs detection for the file extension)
+            if self.put(cache_id, image_data, content_type):
+                # Prefer detected type over the HTTP header
+                if not needs_magic_check:
+                    detected = _detect_image_type(image_data)
+                    if detected:
+                        content_type = detected[0]
                 return image_data, content_type
 
             return None
