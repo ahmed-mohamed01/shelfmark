@@ -72,6 +72,7 @@ const groupMonitoredBooks = (
   rows: MonitoredBookListRow[],
   groupBy: 'none' | 'author' | 'year',
   allLabel: string,
+  yearAscending?: boolean,
 ): MonitoredBooksGroup[] => {
   if (rows.length === 0) {
     return [];
@@ -100,9 +101,9 @@ const groupMonitoredBooks = (
   const sortedGroups = [...groups.values()];
   if (groupBy === 'year') {
     sortedGroups.sort((a, b) => {
-      const aYear = a.title === 'Unknown year' ? Number.NEGATIVE_INFINITY : Number(a.title);
-      const bYear = b.title === 'Unknown year' ? Number.NEGATIVE_INFINITY : Number(b.title);
-      return bYear - aYear;
+      const aYear = a.title === 'Unknown year' ? Number.POSITIVE_INFINITY : Number(a.title);
+      const bYear = b.title === 'Unknown year' ? Number.POSITIVE_INFINITY : Number(b.title);
+      return yearAscending ? aYear - bYear : bYear - aYear;
     });
   } else {
     sortedGroups.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
@@ -328,9 +329,16 @@ export const MonitoredPage = ({
     const saved = localStorage.getItem('monitoredBooksViewMode');
     return saved === 'table' || saved === 'list' ? 'table' : 'compact';
   });
-  const [monitoredBooksSortBy, setMonitoredBooksSortBy] = useState<'alphabetical' | 'year'>(() => {
+  const [monitoredBooksSortBy, setMonitoredBooksSortBy] = useState<'title' | 'date' | 'recently_added' | 'popularity'>(() => {
     const saved = localStorage.getItem('monitoredBooksSortBy');
-    return saved === 'year' ? 'year' : 'alphabetical';
+    if (saved === 'date' || saved === 'year') return 'date';
+    if (saved === 'recently_added') return 'recently_added';
+    if (saved === 'popularity') return 'popularity';
+    return 'title';
+  });
+  const [monitoredBooksSortAsc, setMonitoredBooksSortAsc] = useState(() => {
+    const saved = localStorage.getItem('monitoredBooksSortAsc');
+    return saved === 'false' ? false : true;
   });
   const [monitoredBooksGroupBy, setMonitoredBooksGroupBy] = useState<'none' | 'author' | 'year'>(() => {
     const saved = localStorage.getItem('monitoredBooksGroupBy');
@@ -349,6 +357,10 @@ export const MonitoredPage = ({
     return saved === 'date_added' || saved === 'books_count' || saved === 'alphabetical'
       ? saved
       : 'alphabetical';
+  });
+  const [monitoredSortAsc, setMonitoredSortAsc] = useState(() => {
+    const saved = localStorage.getItem('monitoredAuthorSortAsc');
+    return saved === 'false' ? false : true;
   });
   const [monitoredCompactMinWidth, setMonitoredCompactMinWidth] = useState<number>(() => {
     const raw = localStorage.getItem('monitoredCompactMinWidth');
@@ -903,6 +915,7 @@ export const MonitoredPage = ({
   }, [monitoredEbookRoots, monitoredAudiobookRoots, normalizeAbsolutePath]);
 
   const monitoredAuthorsForCards: MetadataAuthor[] = useMemo(() => {
+    const dir = monitoredSortAsc ? 1 : -1;
     const sorted = [...monitored].sort((a, b) => {
       if (monitoredSortBy === 'date_added') {
         const aDate = a.created_at ? Date.parse(a.created_at) : NaN;
@@ -910,23 +923,23 @@ export const MonitoredPage = ({
         const aHasDate = Number.isFinite(aDate);
         const bHasDate = Number.isFinite(bDate);
         if (aHasDate && bHasDate && aDate !== bDate) {
-          return bDate - aDate;
+          return (bDate - aDate) * dir;
         }
         if (aHasDate !== bHasDate) {
-          return aHasDate ? -1 : 1;
+          return (aHasDate ? -1 : 1) * dir;
         }
-        return b.id - a.id;
+        return (b.id - a.id) * dir;
       }
 
       if (monitoredSortBy === 'books_count') {
         const aCount = typeof a.books_count === 'number' ? a.books_count : -1;
         const bCount = typeof b.books_count === 'number' ? b.books_count : -1;
         if (bCount !== aCount) {
-          return bCount - aCount;
+          return (bCount - aCount) * dir;
         }
       }
 
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) * dir;
     });
 
     return sorted.map((item) => ({
@@ -940,7 +953,7 @@ export const MonitoredPage = ({
         books_count: typeof item.books_count === 'number' ? item.books_count : null,
       },
     }));
-  }, [monitored, monitoredSortBy]);
+  }, [monitored, monitoredSortBy, monitoredSortAsc]);
 
   const monitoredBooksForTable = useMemo(() => {
     const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
@@ -949,20 +962,37 @@ export const MonitoredPage = ({
       || monitoredBookHasAnyAvailable(book)
     ));
 
+    const getReleaseSortKey = (book: MonitoredBookListRow): number => {
+      if (typeof book.release_date === 'string' && book.release_date.trim()) {
+        const parsed = Date.parse(book.release_date);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      if (typeof book.publish_year === 'number') return new Date(book.publish_year, 0, 1).getTime();
+      return Number.POSITIVE_INFINITY;
+    };
+
+    const dir = monitoredBooksSortAsc ? 1 : -1;
+
     return trackedOrFulfilled.sort((a, b) => {
-      if (monitoredBooksSortBy === 'year') {
-        const aYear = typeof a.publish_year === 'number' ? a.publish_year : Number.POSITIVE_INFINITY;
-        const bYear = typeof b.publish_year === 'number' ? b.publish_year : Number.POSITIVE_INFINITY;
-        if (aYear !== bYear) {
-          return aYear - bYear;
-        }
+      if (monitoredBooksSortBy === 'date') {
+        const diff = getReleaseSortKey(a) - getReleaseSortKey(b);
+        if (diff !== 0) return diff * dir;
+      } else if (monitoredBooksSortBy === 'recently_added') {
+        const aTime = Date.parse(a.first_seen_at || '');
+        const bTime = Date.parse(b.first_seen_at || '');
+        const diff = (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+        if (diff !== 0) return diff * dir;
+      } else if (monitoredBooksSortBy === 'popularity') {
+        const aPopularity = typeof a.readers_count === 'number' ? a.readers_count : -1;
+        const bPopularity = typeof b.readers_count === 'number' ? b.readers_count : -1;
+        if (aPopularity !== bPopularity) return (bPopularity - aPopularity) * dir;
       }
 
       const titleCompare = (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
-      if (titleCompare !== 0) return titleCompare;
+      if (titleCompare !== 0) return titleCompare * dir;
       return (a.author_name || '').localeCompare(b.author_name || '', undefined, { sensitivity: 'base' });
     });
-  }, [monitoredBooksRows, monitoredBooksSortBy]);
+  }, [monitoredBooksRows, monitoredBooksSortBy, monitoredBooksSortAsc]);
 
   const upcomingMonitoredBooksForTable = useMemo(() => {
     return monitoredBooksForTable.filter((book) => isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
@@ -1029,11 +1059,11 @@ export const MonitoredPage = ({
   ]);
 
   const monitoredBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
-    return groupMonitoredBooks(filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy, 'All monitored books');
+    return groupMonitoredBooks(filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy, 'All monitored books', false);
   }, [filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy]);
 
   const upcomingBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
-    return groupMonitoredBooks(filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming books');
+    return groupMonitoredBooks(filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming books', true);
   }, [filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy]);
 
   useEffect(() => {
@@ -1076,11 +1106,13 @@ export const MonitoredPage = ({
       localStorage.setItem('monitoredAuthorViewMode', monitoredViewMode);
       localStorage.setItem('monitoredBooksViewMode', monitoredBooksViewMode);
       localStorage.setItem('monitoredBooksSortBy', monitoredBooksSortBy);
+      localStorage.setItem('monitoredBooksSortAsc', String(monitoredBooksSortAsc));
       localStorage.setItem('monitoredBooksGroupBy', monitoredBooksGroupBy);
       localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
       localStorage.setItem(MONITORED_UPCOMING_TIME_FILTER_KEY, upcomingTimeFilter);
       localStorage.setItem('monitoredLandingTab', landingTab);
       localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
+      localStorage.setItem('monitoredAuthorSortAsc', String(monitoredSortAsc));
       localStorage.setItem('monitoredCompactMinWidth', String(monitoredCompactMinWidth));
     } catch {
       // ignore
@@ -1090,11 +1122,13 @@ export const MonitoredPage = ({
     monitoredViewMode,
     monitoredBooksViewMode,
     monitoredBooksSortBy,
+    monitoredBooksSortAsc,
     monitoredBooksGroupBy,
     monitoredBooksAvailabilityFilter,
     upcomingTimeFilter,
     landingTab,
     monitoredSortBy,
+    monitoredSortAsc,
     monitoredCompactMinWidth,
   ]);
 
@@ -2982,33 +3016,35 @@ export const MonitoredPage = ({
                               <div>
                                 <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Sort</div>
                                 <div className="space-y-1" role="listbox" aria-label="Sort monitored authors">
-                                  <button
-                                    type="button"
-                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface ${monitoredSortBy === 'alphabetical' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                    onClick={() => setMonitoredSortBy('alphabetical')}
-                                    role="option"
-                                    aria-selected={monitoredSortBy === 'alphabetical'}
-                                  >
-                                    Alphabetical (A–Z)
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface ${monitoredSortBy === 'date_added' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                    onClick={() => setMonitoredSortBy('date_added')}
-                                    role="option"
-                                    aria-selected={monitoredSortBy === 'date_added'}
-                                  >
-                                    Date added
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface ${monitoredSortBy === 'books_count' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                    onClick={() => setMonitoredSortBy('books_count')}
-                                    role="option"
-                                    aria-selected={monitoredSortBy === 'books_count'}
-                                  >
-                                    Number of books
-                                  </button>
+                                  {([
+                                    { key: 'alphabetical' as const, label: 'Name' },
+                                    { key: 'date_added' as const, label: 'Date Added' },
+                                    { key: 'books_count' as const, label: 'Number of Books' },
+                                  ] as const).map(({ key, label }) => {
+                                    const active = monitoredSortBy === key;
+                                    return (
+                                      <button
+                                        key={key}
+                                        type="button"
+                                        className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                        onClick={() => {
+                                          if (active) {
+                                            setMonitoredSortAsc((prev) => !prev);
+                                          } else {
+                                            setMonitoredSortBy(key);
+                                            setMonitoredSortAsc(true);
+                                          }
+                                        }}
+                                        role="option"
+                                        aria-selected={active}
+                                      >
+                                        {label}
+                                        {active && (
+                                          <svg className={`w-3.5 h-3.5 shrink-0 transition-transform ${monitoredSortAsc ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
                               </div>
 
@@ -3138,24 +3174,36 @@ export const MonitoredPage = ({
                               <div>
                                 <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Sort</div>
                                 <div className="space-y-1" role="listbox" aria-label="Sort monitored books">
-                                  <button
-                                    type="button"
-                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface ${monitoredBooksSortBy === 'alphabetical' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                    onClick={() => setMonitoredBooksSortBy('alphabetical')}
-                                    role="option"
-                                    aria-selected={monitoredBooksSortBy === 'alphabetical'}
-                                  >
-                                    Alphabetical (A-Z)
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface ${monitoredBooksSortBy === 'year' ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
-                                    onClick={() => setMonitoredBooksSortBy('year')}
-                                    role="option"
-                                    aria-selected={monitoredBooksSortBy === 'year'}
-                                  >
-                                    Year (soonest first)
-                                  </button>
+                                  {([
+                                    { key: 'title' as const, label: 'Title' },
+                                    { key: 'date' as const, label: 'Date' },
+                                    { key: 'recently_added' as const, label: 'Recently Added' },
+                                    { key: 'popularity' as const, label: 'Popularity' },
+                                  ] as const).map(({ key, label }) => {
+                                    const active = monitoredBooksSortBy === key;
+                                    return (
+                                      <button
+                                        key={key}
+                                        type="button"
+                                        className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                        onClick={() => {
+                                          if (active) {
+                                            setMonitoredBooksSortAsc((prev) => !prev);
+                                          } else {
+                                            setMonitoredBooksSortBy(key);
+                                            setMonitoredBooksSortAsc(key !== 'popularity');
+                                          }
+                                        }}
+                                        role="option"
+                                        aria-selected={active}
+                                      >
+                                        {label}
+                                        {active && (
+                                          <svg className={`w-3.5 h-3.5 shrink-0 transition-transform ${monitoredBooksSortAsc ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
                               </div>
 

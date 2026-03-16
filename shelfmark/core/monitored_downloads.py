@@ -150,6 +150,58 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
     except Exception as e:
         logger.warning("Failed to record monitored download history for %s: %s", book_id, e)
 
+    _notify_download_terminal(status, task)
+
+
+def _is_monitored_download(task: DownloadTask) -> bool:
+    """Check if a download task originated from a monitored entity."""
+    history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    return isinstance(history_context, dict) and history_context.get("entity_id") is not None
+
+
+def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
+    """Send Apprise notification for monitored download completion/failure.
+
+    Only fires for monitored downloads — regular downloads are already
+    notified by the upstream hook in main.py.
+    """
+    if not _is_monitored_download(task):
+        return
+
+    from shelfmark.core.notifications import (
+        NotificationContext, NotificationEvent, notify_admin, notify_user,
+    )
+
+    if status == QueueStatus.COMPLETE:
+        event = NotificationEvent.DOWNLOAD_COMPLETE
+    elif status == QueueStatus.ERROR:
+        event = NotificationEvent.DOWNLOAD_FAILED
+    else:
+        return
+
+    context = NotificationContext(
+        event=event,
+        title=str(getattr(task, "title", "Unknown title") or "Unknown title"),
+        author=str(getattr(task, "author", "Unknown author") or "Unknown author"),
+        content_type=getattr(task, "content_type", None),
+        format=getattr(task, "format", None),
+        source=getattr(task, "source", None),
+        error_message=(
+            str(getattr(task, "status_message", "") or "")
+            if event == NotificationEvent.DOWNLOAD_FAILED else None
+        ),
+    )
+    try:
+        notify_admin(event, context)
+    except Exception:
+        logger.warning("Failed to send admin notification for monitored download: %s", task.id)
+    user_id = getattr(task, "user_id", None)
+    if user_id is not None:
+        try:
+            notify_user(int(user_id), event, context)
+        except Exception:
+            logger.warning("Failed to send user notification for monitored download: %s (user_id=%s)", task.id, user_id)
+
 
 def _record_download_history(task: DownloadTask) -> None:
     """Record successful download to monitored_book_download_history.

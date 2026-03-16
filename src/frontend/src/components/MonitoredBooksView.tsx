@@ -13,7 +13,15 @@ const formatUpcomingDate = (book: MonitoredBookListRow): string => {
   if (typeof book.release_date === 'string' && book.release_date.trim()) {
     const parsed = Date.parse(book.release_date);
     if (Number.isFinite(parsed)) {
-      return new Date(parsed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const dateStr = new Date(parsed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const days = Math.ceil((parsed - today.getTime()) / 86_400_000);
+      if (days <= 0) return `${dateStr} · Today`;
+      if (days === 1) return `${dateStr} · Tomorrow`;
+      if (days <= 90) return `${dateStr} · in ${days} days`;
+      const months = Math.round(days / 30.44);
+      if (months <= 12) return `${dateStr} · in ${months} month${months === 1 ? '' : 's'}`;
+      return dateStr;
     }
   }
   if (typeof book.publish_year === 'number') return String(book.publish_year);
