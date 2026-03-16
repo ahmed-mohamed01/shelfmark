@@ -145,8 +145,8 @@ def enrich_release_for_monitored(
     """Inject output overrides for monitored-entity downloads.
 
     Normalises the monitored_entity_id field and, when the download targets an
-    ebook from a monitored author, sets destination / template overrides so the
-    file lands in the correct author directory.
+    ebook or audiobook from a monitored author, sets destination / template
+    overrides so the file lands in the correct author directory.
     """
     monitored_entity_id = release_payload.get("monitored_entity_id")
     if monitored_entity_id is not None:
@@ -159,11 +159,12 @@ def enrich_release_for_monitored(
 
     try:
         monitored_entity_id_int = release_payload.get("monitored_entity_id")
+        ct = str(release_payload.get("content_type") or "").strip().lower()
         if (
             monitored_entity_id_int is not None
             and monitored_db is not None
             and db_user_id is not None
-            and str(release_payload.get("content_type") or "").strip().lower() == "ebook"
+            and ct in ("ebook", "audiobook")
         ):
             entity = monitored_db.get_monitored_entity(
                 user_id=int(db_user_id),
@@ -173,13 +174,18 @@ def enrich_release_for_monitored(
             if not isinstance(settings, dict):
                 settings = {}
 
-            ebook_author_dir = settings.get("ebook_author_dir")
-            if isinstance(ebook_author_dir, str) and ebook_author_dir.strip().startswith("/"):
-                release_payload = dict(release_payload)
-                release_payload["destination_override"] = ebook_author_dir.strip().rstrip("/")
-                release_payload["file_organization_override"] = "organize"
+            release_payload = dict(release_payload)
+            release_payload["file_organization_override"] = "organize"
+
+            dir_key = "audiobook_author_dir" if ct == "audiobook" else "ebook_author_dir"
+            author_dir = settings.get(dir_key)
+            if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
                 # Destination is already the author folder, so template starts at Series.
+                release_payload["destination_override"] = author_dir.strip().rstrip("/")
                 release_payload["template_override"] = "{Series}/{Title} - {Author} ({Year})"
+            else:
+                # No explicit author dir — use default destination with full path template.
+                release_payload["template_override"] = "{Author}/{Series}/{Title} ({Year})"
     except Exception:
         pass
 

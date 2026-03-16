@@ -739,6 +739,22 @@ def search_missing_books(
     if entity is None or entity.get("kind") != "author":
         raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
 
+    # Resolve output overrides from entity settings so auto-downloads land in
+    # the correct author/series folder — mirrors enrich_release_for_monitored().
+    settings = entity.get("settings") if isinstance(entity, dict) else None
+    if not isinstance(settings, dict):
+        settings = {}
+    dest_override: str | None = None
+    org_override: str | None = "organize"
+    tmpl_override: str | None = None
+    dir_key = "audiobook_author_dir" if content_type == "audiobook" else "ebook_author_dir"
+    author_dir = settings.get(dir_key)
+    if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
+        dest_override = author_dir.strip().rstrip("/")
+        tmpl_override = "{Series}/{Title} - {Author} ({Year})"
+    else:
+        tmpl_override = "{Author}/{Series}/{Title} ({Year})"
+
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
     monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
     has_file_key = "has_ebook_available" if content_type == "ebook" else "has_audiobook_available"
@@ -874,6 +890,9 @@ def search_missing_books(
                 provider_book_id=provider_book_id,
                 content_type=content_type,
                 min_match_score=min_match_score,
+                destination_override=dest_override,
+                file_organization_override=org_override,
+                template_override=tmpl_override,
             )
 
             if success:
