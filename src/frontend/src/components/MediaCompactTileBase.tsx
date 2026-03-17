@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import { type ReactNode } from 'react';
 
 interface MediaCompactTileBaseProps {
   title: string;
@@ -7,8 +7,10 @@ interface MediaCompactTileBaseProps {
   overflowMenu?: ReactNode;
   topLeftOverlay?: ReactNode;
   topRightOverlay?: ReactNode;
+  bottomRightOverlay?: ReactNode;
+  seriesLine?: string;
   subtitle?: string;
-  metaLine?: string;
+  metaLine?: ReactNode;
   footer?: ReactNode;
   tooltip?: string;
   isDimmed?: boolean;
@@ -21,19 +23,26 @@ export const MediaCompactTileBase = ({
   overflowMenu,
   topLeftOverlay,
   topRightOverlay,
+  bottomRightOverlay,
+  seriesLine,
   subtitle,
   metaLine,
   footer,
   tooltip,
   isDimmed = false,
 }: MediaCompactTileBaseProps) => {
-  const computedTooltip = tooltip || [title, subtitle, metaLine].filter(Boolean).join('\n');
+  const computedTooltip = tooltip || [title, seriesLine, subtitle, typeof metaLine === 'string' ? metaLine : undefined].filter(Boolean).join('\n');
   const mediaContent = (
-    <div className={`relative w-full overflow-hidden rounded-t-xl ${isDimmed ? 'opacity-50' : ''}`}>
+    <div className={`relative w-full overflow-hidden rounded-t-xl flex flex-col ${isDimmed ? 'opacity-50' : ''}`}>
       {media}
       {topRightOverlay ? (
-        <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1">
+        <div className="absolute right-1.5 top-1.5 z-20 flex flex-col items-end gap-1 leading-normal">
           {topRightOverlay}
+        </div>
+      ) : null}
+      {bottomRightOverlay ? (
+        <div className="absolute right-1.5 bottom-1.5 z-20 flex flex-col items-end gap-1 leading-normal">
+          {bottomRightOverlay}
         </div>
       ) : null}
     </div>
@@ -47,14 +56,14 @@ export const MediaCompactTileBase = ({
         </div>
       ) : null}
       {onOpen ? (
-        <button type="button" onClick={onOpen} className="block w-full text-left">
+        <button type="button" onClick={onOpen} className="block w-full text-left leading-[0]">
           {mediaContent}
         </button>
       ) : (
-        <div>{mediaContent}</div>
+        <div className="leading-[0]">{mediaContent}</div>
       )}
 
-      <div className="flex items-start gap-1 pl-2 pr-0.5 pt-1.5">
+      <div className="flex items-start gap-1 pl-2 pr-0.5 pt-1">
         {onOpen ? (
           <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
             <p className={`text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
@@ -63,21 +72,22 @@ export const MediaCompactTileBase = ({
           <p className={`min-w-0 flex-1 text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
         )}
         {overflowMenu ? (
-          <div className="flex-shrink-0 z-30">
+          <div className="flex-shrink-0 z-30 -my-1">
             {overflowMenu}
           </div>
         ) : null}
       </div>
 
-      {subtitle ? (
-        <p className={`px-2 text-[10px] leading-tight text-gray-600 dark:text-gray-300 truncate ${isDimmed ? 'opacity-50' : ''}`}>{subtitle}</p>
-      ) : null}
-      {metaLine ? (
-        <p className={`px-2 text-[10px] leading-tight text-gray-500 dark:text-gray-400 truncate ${isDimmed ? 'opacity-50' : ''}`}>{metaLine}</p>
+      {(seriesLine || subtitle || metaLine) ? (
+        <div className={`px-2 space-y-px ${isDimmed ? 'opacity-50' : ''}`}>
+          {subtitle ? <div className="text-[10px] leading-none font-medium text-gray-600 dark:text-gray-300 truncate">{subtitle}</div> : null}
+          {metaLine ? <div className="text-[10px] leading-none text-gray-500 dark:text-gray-400 truncate">{metaLine}</div> : null}
+          {seriesLine ? <div className="text-[9px] leading-none text-gray-400 dark:text-gray-500 truncate">{seriesLine}</div> : null}
+        </div>
       ) : null}
 
       {footer ? <div className={`px-2 ${isDimmed ? 'opacity-50' : ''}`}>{footer}</div> : null}
-      <div className="h-2" />
+      <div className="h-1.5" />
     </div>
   );
 };

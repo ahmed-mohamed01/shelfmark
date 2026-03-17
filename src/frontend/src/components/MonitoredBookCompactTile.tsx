@@ -1,6 +1,6 @@
-import { ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { MediaCompactTileBase } from './MediaCompactTileBase';
-import { FormatStatusBadge } from './FormatStatusBadge';
+import { FormatStatusBadge, CombinedFormatBadge } from './FormatStatusBadge';
 import type { FormatAvailabilityStatus } from '../utils/monitoredBookState';
 
 interface MonitoredBookCompactTileProps {
@@ -19,7 +19,7 @@ interface MonitoredBookCompactTileProps {
   showSeriesName?: boolean;
   /** Fallback subtitle when seriesLabel/showSeriesName is not used (e.g. author name in global view) */
   subtitle?: string;
-  metaLine?: string;
+  metaLine?: ReactNode;
   showMetaLine?: boolean;
   popularityLine?: string;
   showPopularityLine?: boolean;
@@ -64,17 +64,28 @@ export const MonitoredBookCompactTile = ({
     </button>
   ) : null;
 
-  const topRightOverlay = (
+  // Series position stays at top-right
+  const topRightOverlay = seriesPosition != null ? (
+    <span className="inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white bg-emerald-600 rounded" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
+      #{seriesPosition}{seriesCount != null ? `/${seriesCount}` : ''}
+    </span>
+  ) : null;
+
+  // Format badges at bottom of cover — consolidated when both share the same status
+  const hasBoth = ebookStatus && audiobookStatus;
+  const sameStatus = hasBoth && ebookStatus === audiobookStatus;
+  const bottomRightOverlay = (ebookStatus || audiobookStatus) ? (
     <>
-      {seriesPosition != null ? (
-        <span className="inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white bg-emerald-600 rounded" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
-          #{seriesPosition}{seriesCount != null ? `/${seriesCount}` : ''}
-        </span>
-      ) : null}
-      {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} compact /> : null}
-      {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} compact /> : null}
+      {sameStatus ? (
+        <CombinedFormatBadge status={ebookStatus} compact />
+      ) : (
+        <>
+          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} compact /> : null}
+          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} compact /> : null}
+        </>
+      )}
     </>
-  );
+  ) : null;
 
   const footer = showPopularityLine && popularityLine ? (
     <div className="mt-1.5 text-[10px] text-gray-500 dark:text-gray-400">{popularityLine}</div>
@@ -88,7 +99,9 @@ export const MonitoredBookCompactTile = ({
       overflowMenu={overflowMenu}
       topLeftOverlay={topLeftOverlay}
       topRightOverlay={topRightOverlay}
-      subtitle={showSeriesName ? seriesLabel : subtitle}
+      bottomRightOverlay={bottomRightOverlay}
+      seriesLine={showSeriesName ? seriesLabel : undefined}
+      subtitle={subtitle}
       metaLine={showMetaLine ? metaLine : undefined}
       footer={footer}
       isDimmed={isDimmed}

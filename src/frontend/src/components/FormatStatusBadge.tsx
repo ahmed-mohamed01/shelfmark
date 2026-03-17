@@ -14,13 +14,13 @@ const AudiobookIcon = ({ className }: { className?: string }) => (
 
 const STATUS_CLASSES: Record<FormatAvailabilityStatus, string> = {
   available: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
-  wanted:    'bg-sky-500/15 text-sky-700 dark:text-sky-300',
+  wanted:    'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   missing:   'bg-red-500/15 text-red-700 dark:text-red-300',
 };
 
 const STATUS_CLASSES_OPAQUE: Record<FormatAvailabilityStatus, string> = {
   available: 'bg-emerald-600/90 text-white',
-  wanted:    'bg-sky-600/90 text-white',
+  wanted:    'bg-amber-600/90 text-white',
   missing:   'bg-red-600/90 text-white',
 };
 
@@ -61,6 +61,36 @@ export const FormatStatusBadge = ({ format, status, compact = false }: FormatSta
       title={title}
     >
       <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+      {label}
+    </span>
+  );
+};
+
+/** Combined badge when both formats share the same status — shows both icons in one pill. */
+export const CombinedFormatBadge = ({ status, compact = false }: { status: FormatAvailabilityStatus; compact?: boolean }) => {
+  const label = STATUS_LABELS[status];
+  const title = `eBook & Audiobook: ${label}`;
+
+  if (compact) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded shadow ${STATUS_CLASSES_OPAQUE[status]}`}
+        title={title}
+      >
+        <EbookIcon className="w-3 h-4 flex-shrink-0" />
+        <AudiobookIcon className="w-3 h-4 flex-shrink-0" />
+        <span className="text-[11px] font-bold leading-none">{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold ${STATUS_CLASSES[status]}`}
+      title={title}
+    >
+      <EbookIcon className="w-3.5 h-3.5 flex-shrink-0" />
+      <AudiobookIcon className="w-3.5 h-3.5 flex-shrink-0" />
       {label}
     </span>
   );
