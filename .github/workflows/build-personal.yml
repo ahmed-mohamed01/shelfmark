@@ -1,0 +1,33 @@
+name: Build personal image
+on:
+  push:
+    branches: ['feat/monitor-authors']
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/shelfmark
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: shelfmark
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:monitor-authors
