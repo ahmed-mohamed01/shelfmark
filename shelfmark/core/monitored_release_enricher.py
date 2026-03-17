@@ -18,7 +18,7 @@ from shelfmark.core.monitored_db import MonitoredDB
 
 logger = setup_logger(__name__)
 
-_RECHECK_DAYS = 7
+_RECHECK_DAYS_DEFAULT = 7
 _TITLE_MATCH_THRESHOLD = 0.55
 
 
@@ -152,6 +152,7 @@ def enrich_release_dates(
     Caps lookups at *max_lookups* per call to stay within API quotas.
     """
     api_key = str(app_config.get("GOOGLEBOOKS_API_KEY", "") or "")
+    recheck_days = int(app_config.get("RELEASE_ENRICHMENT_RECHECK_DAYS", _RECHECK_DAYS_DEFAULT))
     now = datetime.now(timezone.utc)
     candidates: list[dict[str, Any]] = []
 
@@ -164,7 +165,7 @@ def enrich_release_dates(
         if checked_at:
             try:
                 last = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
-                if (now - last).days < _RECHECK_DAYS:
+                if (now - last).days < recheck_days:
                     continue
             except (ValueError, TypeError):
                 pass
@@ -208,7 +209,7 @@ def enrich_release_dates(
                     title, match["release_date"],
                 )
         else:
-            # No match — mark as checked so we don't retry for _RECHECK_DAYS
+            # No match — mark as checked so we don't retry until recheck interval
             db.mark_release_date_checked(
                 entity_id=entity_id,
                 provider=provider,

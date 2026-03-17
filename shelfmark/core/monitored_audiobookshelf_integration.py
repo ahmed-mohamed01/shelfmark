@@ -22,11 +22,9 @@ from shelfmark.core.monitored_integration_matching import (
     AUTHOR_SPLIT_RE as _AUTHOR_SPLIT_RE,
     COLON_SUBTITLE_RE as _COLON_SUBTITLE_RE,
     PAREN_SUFFIX_RE as _PAREN_SUFFIX_RE,
-    SERIES_NAME_MIN_RATIO as _SERIES_NAME_MIN_RATIO,
     SERIES_POS_RE as _SERIES_POS_RE,
-    SERIES_TITLE_MIN_RATIO as _SERIES_TITLE_MIN_RATIO,
-    TITLE_FUZZY_MIN as _TITLE_FUZZY_MIN,
     author_matches as _author_matches,
+    get_integration_thresholds as _get_integration_thresholds,
     norm as _norm,
     normalize_shelfmark_title as _normalize_shelfmark_title,
     parse_series_position as _parse_series_position,
@@ -288,6 +286,7 @@ def _match_abs_item_to_books(
     abs_item: dict[str, Any],
     books: list[dict[str, Any]],
     entity_name: str = "",
+    thresholds: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any] | None, float, str]:
     """Match an ABS library item to a monitored book.
 
@@ -297,6 +296,9 @@ def _match_abs_item_to_books(
 
     Returns (book, confidence, reason) or (None, 0.0, '') if no match.
     """
+    if thresholds is None:
+        thresholds = _get_integration_thresholds()
+
     meta = (abs_item.get("media") or {}).get("metadata") or {}
     abs_asin = (meta.get("asin") or "").strip()
     abs_title = (meta.get("title") or "").strip()
@@ -350,7 +352,7 @@ def _match_abs_item_to_books(
                 if abs(b_pos - abs_pos) > 0.01:
                     continue
                 sn_ratio = SequenceMatcher(None, norm_abs_sn, norm_b_series).ratio()
-                if sn_ratio < _SERIES_NAME_MIN_RATIO:
+                if sn_ratio < thresholds["series_name"]:
                     continue
                 # Also compare raw title and series name against shelfmark title.
                 # Fixes "Azarinth Healer: Book Four" (raw includes series prefix
@@ -364,7 +366,7 @@ def _match_abs_item_to_books(
                     SequenceMatcher(None, norm_abs_sn, norm_shelf_stripped).ratio(),
                     SequenceMatcher(None, norm_abs_sn, norm_shelf_full).ratio(),
                 )
-                if t_ratio >= _SERIES_TITLE_MIN_RATIO and t_ratio > p2_best_t:
+                if t_ratio >= thresholds["series_title"] and t_ratio > p2_best_t:
                     p2_best_t, p2_best_book = t_ratio, book
                     p2_best_sn, p2_best_pos = abs_sn, abs_pos
 
@@ -415,7 +417,7 @@ def _match_abs_item_to_books(
             SequenceMatcher(None, norm_abs_n, norm_shelf_paren).ratio(),
             SequenceMatcher(None, norm_abs_paren_n, norm_shelf_paren).ratio(),
         )
-        if t_ratio < _TITLE_FUZZY_MIN or t_ratio <= best_t_ratio:
+        if t_ratio < thresholds["title"] or t_ratio <= best_t_ratio:
             continue
         # Author confirmation — split on commas to handle narrators in ABS authorName.
         # Fall back to entity_name when book.authors is NULL (author entities always
@@ -433,7 +435,7 @@ def _match_abs_item_to_books(
                     book.get("title"),
                     t_ratio,
                 )
-        elif _author_matches(abs_author, book_author_str):
+        elif _author_matches(abs_author, book_author_str, threshold=thresholds["author"]):
             best_t_ratio, best_book = t_ratio, book
         else:
             logger.debug(
@@ -549,12 +551,13 @@ def sync_abs_availability_for_entity(
     matched = 0
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
+    thresholds = _get_integration_thresholds()
 
     for item in candidate_items:
         meta = (item.get("media") or {}).get("metadata") or {}
         abs_title = (meta.get("title") or item.get("path") or "?").strip()
 
-        book, conf, reason = _match_abs_item_to_books(item, books, entity_name=entity_name)
+        book, conf, reason = _match_abs_item_to_books(item, books, entity_name=entity_name, thresholds=thresholds)
         if not book:
             unmatched_titles.append(abs_title)
             continue

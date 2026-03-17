@@ -21,10 +21,8 @@ from shelfmark.core.monitored_integration_matching import (
     AUTHOR_SPLIT_RE as _AUTHOR_SPLIT_RE,
     COLON_SUBTITLE_RE as _COLON_SUBTITLE_RE,
     PAREN_SUFFIX_RE as _PAREN_SUFFIX_RE,
-    SERIES_NAME_MIN_RATIO as _SERIES_NAME_MIN_RATIO,
-    SERIES_TITLE_MIN_RATIO as _SERIES_TITLE_MIN_RATIO,
-    TITLE_FUZZY_MIN as _TITLE_FUZZY_MIN,
     author_matches as _author_matches,
+    get_integration_thresholds as _get_integration_thresholds,
     norm as _norm,
     normalize_shelfmark_title as _normalize_shelfmark_title,
     parse_series_position as _parse_series_position,
@@ -259,13 +257,19 @@ def _match_booklore_item_to_books(
     bl_item: dict[str, Any],
     books: list[dict[str, Any]],
     entity_name: str = "",
+    thresholds: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any] | None, float, str]:
     """Match a Booklore MobileBookSummary to a monitored book.
 
     ``entity_name`` is used as a fallback author when book.authors is NULL.
+    ``thresholds`` is the result of ``get_integration_thresholds()``; pass once
+    per batch to avoid repeated config lookups.
 
     Returns (book, confidence, reason) or (None, 0.0, '') if no match.
     """
+    if thresholds is None:
+        thresholds = _get_integration_thresholds()
+
     bl_title = (bl_item.get("title") or "").strip()
     bl_authors_list: list[str] = [a for a in (bl_item.get("authors") or []) if a]
     bl_author_str = ", ".join(bl_authors_list)
@@ -313,7 +317,7 @@ def _match_booklore_item_to_books(
                 if b_pos is None or abs(b_pos - bl_pos) > 0.01:
                     continue
                 norm_b_series = _norm(b_series)  # pre-computed once per book
-                if SequenceMatcher(None, norm_bl_sn, norm_b_series).ratio() < _SERIES_NAME_MIN_RATIO:
+                if SequenceMatcher(None, norm_bl_sn, norm_b_series).ratio() < thresholds["series_name"]:
                     continue
                 raw_shelf = book.get("title") or ""
                 norm_shelf_stripped = _norm(_normalize_shelfmark_title(raw_shelf))
@@ -326,7 +330,7 @@ def _match_booklore_item_to_books(
                     SequenceMatcher(None, norm_bl_sn, norm_shelf_stripped).ratio(),
                     SequenceMatcher(None, norm_bl_sn, norm_shelf_full).ratio(),
                 )
-                if t_ratio >= _SERIES_TITLE_MIN_RATIO and t_ratio > p2_best_t:
+                if t_ratio >= thresholds["series_title"] and t_ratio > p2_best_t:
                     p2_best_t, p2_best_book = t_ratio, book
 
             if p2_best_book is not None:
@@ -364,7 +368,7 @@ def _match_booklore_item_to_books(
             SequenceMatcher(None, norm_bl_n, norm_shelf_paren).ratio(),
             SequenceMatcher(None, norm_bl_paren_n, norm_shelf_paren).ratio(),
         )
-        if t_ratio < _TITLE_FUZZY_MIN or t_ratio <= best_t_ratio:
+        if t_ratio < thresholds["title"] or t_ratio <= best_t_ratio:
             continue
         # Author confirmation — fall back to entity_name when book.authors is NULL.
         # Allow title-only match if ratio is strong (≥ 0.88) and no BL author data.
@@ -377,7 +381,7 @@ def _match_booklore_item_to_books(
                     "Booklore title match %r → %r (t=%.2f) skipped: no BL author and t < 0.88",
                     bl_title, book.get("title"), t_ratio,
                 )
-        elif _author_matches(bl_author_str, book_author_str):
+        elif _author_matches(bl_author_str, book_author_str, threshold=thresholds["author"]):
             best_t_ratio, best_book = t_ratio, book
         else:
             logger.debug(
@@ -441,6 +445,7 @@ def sync_booklore_availability_for_entity(
     matched = 0
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
+    thresholds = _get_integration_thresholds()
 
     for item in bl_items:
         bl_id = item.get("id")
@@ -449,7 +454,7 @@ def sync_booklore_availability_for_entity(
             unmatched_titles.append(bl_title)
             continue
 
-        book, conf, reason = _match_booklore_item_to_books(item, books, entity_name=entity_name)
+        book, conf, reason = _match_booklore_item_to_books(item, books, entity_name=entity_name, thresholds=thresholds)
         if not book:
             unmatched_titles.append(bl_title)
             continue

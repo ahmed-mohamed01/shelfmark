@@ -176,6 +176,7 @@ export interface HeadingFieldConfig {
   linkText?: string;
   showWhen?: ShowWhen; // Conditional visibility based on another field's value
   universalOnly?: boolean; // Only show in Universal search mode (hide in Direct mode)
+  columns?: number; // If > 0, render subsequent fields in a CSS grid with this many columns
 }
 
 // Union type for all fields

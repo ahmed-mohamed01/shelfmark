@@ -175,6 +175,7 @@ class HeadingField:
     link_text: str = ""                   # Text for the link (defaults to URL if not provided)
     show_when: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or list of conditions
     universal_only: bool = False          # Only show in Universal search mode (hide in Direct mode)
+    columns: int = 0                      # If > 0, render subsequent fields in a CSS grid with this many columns
 
     def get_field_type(self) -> str:
         return "HeadingField"
@@ -870,6 +871,8 @@ def serialize_field(field: SettingsField, tab_name: str, include_value: bool = T
             result["showWhen"] = field.show_when
         if field.universal_only:
             result["universalOnly"] = True
+        if field.columns:
+            result["columns"] = field.columns
         return result
 
     result: Dict[str, Any] = {

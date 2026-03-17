@@ -10,13 +10,25 @@ import re
 from difflib import SequenceMatcher
 
 # ---------------------------------------------------------------------------
-# Matching thresholds
+# Matching thresholds (configurable via Settings > Monitoring > Release Scoring)
 # ---------------------------------------------------------------------------
 
-SERIES_NAME_MIN_RATIO = 0.75   # series name fuzzy threshold (phase 2)
-SERIES_TITLE_MIN_RATIO = 0.60  # title confirmation in phase 2
-TITLE_FUZZY_MIN = 0.70         # title ratio threshold for phase 3
-AUTHOR_FUZZY_MIN = 0.70        # author ratio threshold for phase 3
+def get_integration_thresholds() -> dict[str, float]:
+    """Return integration matching thresholds from user config.
+
+    Values are stored as integer percentages (0-100) in settings and
+    converted to 0.0-1.0 ratios here.  Call once per scan batch.
+    """
+    from shelfmark.core.config import config as app_config
+    return {
+        "series_name": app_config.get("INTEGRATION_SERIES_NAME_MATCH_MIN", 75) / 100,
+        "series_title": app_config.get("INTEGRATION_SERIES_TITLE_MATCH_MIN", 60) / 100,
+        "title": app_config.get("INTEGRATION_TITLE_MATCH_MIN", 70) / 100,
+        "author": app_config.get("INTEGRATION_AUTHOR_MATCH_MIN", 70) / 100,
+    }
+
+# Default author threshold used by author_matches() when no explicit threshold is passed
+AUTHOR_FUZZY_MIN = 0.70
 
 # ---------------------------------------------------------------------------
 # Compiled regexes
@@ -90,12 +102,14 @@ def parse_series_position(raw: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def author_matches(source_author: str, book_authors: str) -> bool:
+def author_matches(source_author: str, book_authors: str, *, threshold: float | None = None) -> bool:
     """Return True if any source author token fuzzy-matches any book author token.
 
     Splits on commas/semicolons before comparing so that narrators or
     co-authors listed in a single field don't drag down the overall ratio.
+    *threshold* overrides the module-level ``AUTHOR_FUZZY_MIN`` constant.
     """
+    min_ratio = threshold if threshold is not None else AUTHOR_FUZZY_MIN
     src_parts = [p.strip() for p in AUTHOR_SPLIT_RE.split(source_author) if p.strip()]
     bk_parts = [p.strip() for p in AUTHOR_SPLIT_RE.split(book_authors) if p.strip()]
     if not src_parts:
@@ -104,6 +118,6 @@ def author_matches(source_author: str, book_authors: str) -> bool:
         bk_parts = [book_authors]
     for a in src_parts:
         for b in bk_parts:
-            if SequenceMatcher(None, norm(a), norm(b)).ratio() >= AUTHOR_FUZZY_MIN:
+            if SequenceMatcher(None, norm(a), norm(b)).ratio() >= min_ratio:
                 return True
     return False

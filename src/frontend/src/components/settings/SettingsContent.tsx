@@ -389,63 +389,105 @@ export const SettingsContent = ({
     ? Boolean(customSaveBar?.hasChanges && customSaveBar?.onSave)
     : hasChanges;
 
-  const renderedFields = (
-    <div className="space-y-5">
-      {visibleFields.map((field) => {
-        const disabledState = getDisabledState(field, values);
-        const fieldOverrideSummary = overrideSummary?.[field.key];
+  const renderSingleField = (field: SettingsField) => {
+    const disabledState = getDisabledState(field, values);
+    const fieldOverrideSummary = overrideSummary?.[field.key];
 
-        const renderedField = field.type === 'CustomComponentField'
-          ? renderCustomSettingsField({
-              field: field as CustomComponentFieldConfig,
-              tab,
-              values,
-              onChange,
-              onAction,
-              uiState: customFieldUiState[field.key] || {},
-              onUiStateChange: (key, value) => updateCustomFieldUiState(field.key, key, value),
-              isDisabled: disabledState.disabled,
-              disabledReason: disabledState.reason,
-              authMode: customFieldContext?.authMode,
-              onShowToast: customFieldContext?.onShowToast,
-              onRefreshOverrideSummary: customFieldContext?.onRefreshOverrideSummary,
-              onRefreshAuth: customFieldContext?.onRefreshAuth,
-              onSettingsSaved: customFieldContext?.onSettingsSaved,
-            })
-          : renderField(
-              field,
-              values[field.key],
-              (v) => onChange(field.key, v),
-              () => onAction(field.key),
-              disabledState.disabled,
-              values,
-              customFieldContext?.authMode
-            );
-
-        const shouldWrapInFieldWrapper = !(
-          field.type === 'CustomComponentField' && !(field as CustomComponentFieldConfig).wrapInFieldWrapper
+    const renderedField = field.type === 'CustomComponentField'
+      ? renderCustomSettingsField({
+          field: field as CustomComponentFieldConfig,
+          tab,
+          values,
+          onChange,
+          onAction,
+          uiState: customFieldUiState[field.key] || {},
+          onUiStateChange: (key, value) => updateCustomFieldUiState(field.key, key, value),
+          isDisabled: disabledState.disabled,
+          disabledReason: disabledState.reason,
+          authMode: customFieldContext?.authMode,
+          onShowToast: customFieldContext?.onShowToast,
+          onRefreshOverrideSummary: customFieldContext?.onRefreshOverrideSummary,
+          onRefreshAuth: customFieldContext?.onRefreshAuth,
+          onSettingsSaved: customFieldContext?.onSettingsSaved,
+        })
+      : renderField(
+          field,
+          values[field.key],
+          (v) => onChange(field.key, v),
+          () => onAction(field.key),
+          disabledState.disabled,
+          values,
+          customFieldContext?.authMode
         );
 
-        if (!shouldWrapInFieldWrapper) {
+    const shouldWrapInFieldWrapper = !(
+      field.type === 'CustomComponentField' && !(field as CustomComponentFieldConfig).wrapInFieldWrapper
+    );
+
+    if (!shouldWrapInFieldWrapper) {
+      return (
+        <div key={`${tab.name}-${field.key}`}>
+          {renderedField}
+        </div>
+      );
+    }
+
+    return (
+      <FieldWrapper
+        key={`${tab.name}-${field.key}`}
+        field={field}
+        disabledOverride={disabledState.disabled}
+        disabledReasonOverride={disabledState.reason}
+        userOverrideCount={fieldOverrideSummary?.count}
+        userOverrideDetails={fieldOverrideSummary?.users}
+      >
+        {renderedField}
+      </FieldWrapper>
+    );
+  };
+
+  // Group fields into segments: plain fields render individually,
+  // fields following a HeadingField with columns > 0 render in a CSS grid.
+  const fieldSegments = useMemo(() => {
+    const segments: { columns: number; fields: SettingsField[] }[] = [];
+    let currentColumns = 0;
+
+    for (const field of visibleFields) {
+      if (field.type === 'HeadingField') {
+        const heading = field as HeadingFieldConfig;
+        // Heading always starts a new segment (rendered standalone)
+        segments.push({ columns: 0, fields: [field] });
+        currentColumns = heading.columns ?? 0;
+      } else if (currentColumns > 0) {
+        // Accumulate into a grid segment
+        const last = segments[segments.length - 1];
+        if (last && last.columns === currentColumns) {
+          last.fields.push(field);
+        } else {
+          segments.push({ columns: currentColumns, fields: [field] });
+        }
+      } else {
+        segments.push({ columns: 0, fields: [field] });
+      }
+    }
+    return segments;
+  }, [visibleFields]);
+
+  const renderedFields = (
+    <div className="space-y-5">
+      {fieldSegments.map((segment, idx) => {
+        if (segment.columns > 0) {
           return (
-            <div key={`${tab.name}-${field.key}`}>
-              {renderedField}
+            <div
+              key={`grid-${idx}`}
+              className="grid gap-5"
+              style={{ gridTemplateColumns: `repeat(${segment.columns}, minmax(0, 1fr))` }}
+            >
+              {segment.fields.map(renderSingleField)}
             </div>
           );
         }
-
-        return (
-          <FieldWrapper
-            key={`${tab.name}-${field.key}`}
-            field={field}
-            disabledOverride={disabledState.disabled}
-            disabledReasonOverride={disabledState.reason}
-            userOverrideCount={fieldOverrideSummary?.count}
-            userOverrideDetails={fieldOverrideSummary?.users}
-          >
-            {renderedField}
-          </FieldWrapper>
-        );
+        return segment.fields.map(renderSingleField);
       })}
     </div>
   );
