@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     ebook_last_search_at TIMESTAMP,
     audiobook_last_search_at TIMESTAMP,
     release_date_checked_at TIMESTAMP,
+    release_date_manual INTEGER NOT NULL DEFAULT 0,
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, provider, provider_book_id)
 );
@@ -263,6 +264,11 @@ class MonitoredDB:
                 # existing tables need ALTER TABLE (CREATE IF NOT EXISTS is a no-op).
                 try:
                     conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_checked_at TIMESTAMP")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_manual INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -681,7 +687,7 @@ class MonitoredDB:
                 if not exists:
                     return False
 
-                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP"]
+                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP", f"release_date_manual = {1 if release_date else 0}"]
                 params: list[Any] = [release_date, publish_year]
 
                 if audible_asin:
@@ -1172,8 +1178,14 @@ class MonitoredDB:
                     DO UPDATE SET
                         title=excluded.title,
                         authors=excluded.authors,
-                        publish_year=excluded.publish_year,
-                        release_date=excluded.release_date,
+                        publish_year=CASE
+                            WHEN monitored_books.release_date_manual = 1 AND monitored_books.publish_year IS NOT NULL THEN monitored_books.publish_year
+                            ELSE COALESCE(excluded.publish_year, monitored_books.publish_year)
+                        END,
+                        release_date=CASE
+                            WHEN monitored_books.release_date_manual = 1 AND monitored_books.release_date IS NOT NULL THEN monitored_books.release_date
+                            ELSE COALESCE(excluded.release_date, monitored_books.release_date)
+                        END,
                         description=COALESCE(excluded.description, monitored_books.description),
                         isbn_13=COALESCE(excluded.isbn_13, monitored_books.isbn_13),
                         isbn_10=COALESCE(excluded.isbn_10, monitored_books.isbn_10),

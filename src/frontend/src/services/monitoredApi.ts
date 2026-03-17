@@ -157,6 +157,7 @@ export interface MonitoredBookRow {
   additional_series?: Array<{ name: string; position?: number; count?: number }>;
   all_series?: string | null;
   no_release_date?: boolean;
+  release_date_manual?: number | boolean;
   state: string;
   first_seen_at: string;
 }
@@ -634,7 +635,7 @@ export interface ReleaseDateSearchResult {
   publish_year: number | null;
   cover_url: string | null;
   series_name: string | null;
-  source: 'audible' | 'google';
+  source: 'audible' | 'google' | 'hardcover';
 }
 
 export const searchReleaseDates = async (

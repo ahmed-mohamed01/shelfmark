@@ -1186,7 +1186,42 @@ def register_monitored_routes(
         except Exception:
             google_results = []
 
-        results = audimeta_results + google_results
+        hardcover_results: list[dict[str, Any]] = []
+        try:
+            from shelfmark.metadata_providers import get_configured_provider
+            from shelfmark.metadata_providers.hardcover import HardcoverProvider
+            provider = get_configured_provider()
+            if isinstance(provider, HardcoverProvider):
+                from shelfmark.metadata_providers.base import MetadataSearchOptions, SearchType, SortOrder
+                query = title or author
+                fields: dict[str, str] = {}
+                if title:
+                    fields["title"] = title
+                if author:
+                    fields["author"] = author
+                sr = provider.search(MetadataSearchOptions(
+                    query=query,
+                    search_type=SearchType.BOOK,
+                    sort=SortOrder.RELEVANCE,
+                    limit=10,
+                    page=1,
+                    fields=fields,
+                ))
+                for book in sr.books:
+                    hardcover_results.append({
+                        "asin": "",
+                        "title": book.title or "",
+                        "authors": list(book.authors) if book.authors else [],
+                        "release_date": book.release_date,
+                        "publish_year": book.publish_year,
+                        "cover_url": book.cover_url,
+                        "series_name": book.series_name,
+                        "source": "hardcover",
+                    })
+        except Exception:
+            pass
+
+        results = hardcover_results + audimeta_results + google_results
 
         return jsonify({"results": results})
 

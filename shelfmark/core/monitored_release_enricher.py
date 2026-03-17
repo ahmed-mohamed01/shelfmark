@@ -19,7 +19,7 @@ from shelfmark.core.monitored_db import MonitoredDB
 logger = setup_logger(__name__)
 
 _RECHECK_DAYS_DEFAULT = 7
-_TITLE_MATCH_THRESHOLD = 0.55
+_TITLE_MATCH_THRESHOLD = 0.70
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,12 @@ def search_google_books(title: str, author: str, *, api_key: str = "") -> list[d
         info = item.get("volumeInfo") or {}
         raw_date = info.get("publishedDate") or ""
         # publishedDate can be "YYYY-MM-DD", "YYYY-MM", or "YYYY"
-        release_date = raw_date if len(raw_date) >= 10 else None
+        if len(raw_date) >= 10:
+            release_date = raw_date[:10]
+        elif len(raw_date) == 7 and raw_date[4] == "-":
+            release_date = f"{raw_date}-01"  # YYYY-MM → first of month
+        else:
+            release_date = None
         pub_year = None
         if raw_date and len(raw_date) >= 4:
             try:

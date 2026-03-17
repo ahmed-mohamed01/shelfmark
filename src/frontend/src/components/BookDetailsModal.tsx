@@ -700,7 +700,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                   </div>
                 ) : null}
 
-                {(genresSummary || releaseDateSummary || (onSetReleaseDate && bookRow && !releaseDateSummary)) ? (
+                {(genresSummary || releaseDateSummary || (onSetReleaseDate && bookRow)) ? (
                   <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
                     {genresSummary ? (
                       <div className="min-w-0 truncate">
@@ -709,9 +709,19 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                       </div>
                     ) : null}
                     {releaseDateSummary ? (
-                      <div className="min-w-0 truncate">
+                      <div className="min-w-0 truncate flex items-center gap-1.5">
                         <span className="font-medium text-gray-600 dark:text-gray-300">Release date:</span>{' '}
                         <span>{releaseDateSummary}</span>
+                        {onSetReleaseDate && bookRow ? (
+                          <button
+                            type="button"
+                            onClick={() => onSetReleaseDate(bookRow)}
+                            className="inline-flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 ml-0.5"
+                            title="Search for release date"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                          </button>
+                        ) : null}
                       </div>
                     ) : onSetReleaseDate && bookRow ? (
                       <button
