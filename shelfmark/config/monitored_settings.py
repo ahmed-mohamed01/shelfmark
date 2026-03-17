@@ -1,18 +1,32 @@
-"""Settings tab for release scoring/matching — registered from monitored branch."""
+"""Settings tabs for the Monitoring feature — registered from monitored branch."""
 from __future__ import annotations
 
+import json
+import logging
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 from shelfmark.core.settings_registry import (
     register_settings,
+    register_group,
+    register_on_save,
     NumberField,
     CheckboxField,
     SelectField,
+    TextField,
     TagListField,
     OrderableListField,
     HeadingField,
 )
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Monitoring group (collapsible sidebar section)
+# ---------------------------------------------------------------------------
+
+register_group("monitoring", "Monitoring", icon="book", order=13)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +168,7 @@ def _get_audiobook_format_priority_options() -> list[dict[str, str]]:
 # Settings tab registration
 # ---------------------------------------------------------------------------
 
-@register_settings("release_scoring", "Release Scoring", icon="wrench", order=14)
+@register_settings("release_scoring", "Release Scoring", icon="wrench", order=14, group="monitoring")
 def release_scoring_settings():
     """Release matching and scoring behavior."""
     return [
@@ -162,40 +176,6 @@ def release_scoring_settings():
             key="release_scoring_heading",
             title="Release Scoring",
             description="Control how release matches are scored and rejected for universal-mode release searches.",
-        ),
-        CheckboxField(
-            key="SHOW_RELEASE_MATCH_SCORE",
-            label="Show Match Score in Release List",
-            description="Display the Match score badge in release rows.",
-            default=True,
-        ),
-        SelectField(
-            key="RELEASE_PRIMARY_DEFAULT_ACTION",
-            label="Default Download Button Action",
-            description="Set the default action for the main download button. Uses the same options as the action dropdown.",
-            options=[
-                {
-                    "value": "ebook_interactive_search",
-                    "label": "eBook — Interactive Search",
-                    "description": "Main button opens eBook interactive release picker.",
-                },
-                {
-                    "value": "ebook_auto_search_download",
-                    "label": "eBook — Auto Search + Download",
-                    "description": "Main button runs eBook auto search and downloads when match score passes cutoff.",
-                },
-                {
-                    "value": "audiobook_interactive_search",
-                    "label": "Audiobook — Interactive Search",
-                    "description": "Main button opens audiobook interactive release picker.",
-                },
-                {
-                    "value": "audiobook_auto_search_download",
-                    "label": "Audiobook — Auto Search + Download",
-                    "description": "Main button runs audiobook auto search and downloads when match score passes cutoff.",
-                },
-            ],
-            default="ebook_interactive_search",
         ),
         NumberField(
             key="AUTO_DOWNLOAD_MIN_MATCH_SCORE",
@@ -298,3 +278,169 @@ def validate_monitored_refresh_times(values: Dict[str, Any]) -> Dict[str, Any] |
 
     values["MONITORED_REFRESH_TIMES"] = ",".join(normalized_parts)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Monitoring → General tab
+# ---------------------------------------------------------------------------
+
+@register_settings("monitoring_general", "General", icon="settings", order=13, group="monitoring")
+def monitoring_general_settings():
+    """General monitoring preferences."""
+    return [
+        HeadingField(
+            key="monitoring_general_heading",
+            title="General",
+            description="General preferences for the monitored authors and books feature.",
+        ),
+        CheckboxField(
+            key="DEFAULT_TO_MONITORED_VIEW",
+            label="Open app on Monitored view",
+            description="Navigate to the Monitored page automatically when the app loads or the Shelfmark logo is clicked.",
+            default=False,
+        ),
+        CheckboxField(
+            key="SHOW_BOOKS_IN_MULTIPLE_SERIES",
+            label="Show Books in Multiple Series",
+            description="Display each book under all series it belongs to, not just the primary one.",
+            default=True,
+        ),
+        CheckboxField(
+            key="SHOW_RELEASE_MATCH_SCORE",
+            label="Show Match Score in Release List",
+            description="Display the Match score badge in release rows.",
+            default=True,
+        ),
+        SelectField(
+            key="RELEASE_PRIMARY_DEFAULT_ACTION",
+            label="Default Download Button Action",
+            description="Set the default action for the main download button. Uses the same options as the action dropdown.",
+            options=[
+                {
+                    "value": "ebook_interactive_search",
+                    "label": "eBook — Interactive Search",
+                    "description": "Main button opens eBook interactive release picker.",
+                },
+                {
+                    "value": "ebook_auto_search_download",
+                    "label": "eBook — Auto Search + Download",
+                    "description": "Main button runs eBook auto search and downloads when match score passes cutoff.",
+                },
+                {
+                    "value": "audiobook_interactive_search",
+                    "label": "Audiobook — Interactive Search",
+                    "description": "Main button opens audiobook interactive release picker.",
+                },
+                {
+                    "value": "audiobook_auto_search_download",
+                    "label": "Audiobook — Auto Search + Download",
+                    "description": "Main button runs audiobook auto search and downloads when match score passes cutoff.",
+                },
+            ],
+            default="ebook_interactive_search",
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Monitoring → Schedules tab
+# ---------------------------------------------------------------------------
+
+@register_settings("monitoring_schedules", "Schedules", icon="cog", order=15, group="monitoring")
+def monitoring_schedules_settings():
+    """Monitored author refresh scheduling."""
+    return [
+        HeadingField(
+            key="monitored_refresh_heading",
+            title="Monitored Author Refresh",
+            description="Refresh monitored authors on a schedule to keep books, series, popularity, and covers current without refreshing on every author open.",
+        ),
+        CheckboxField(
+            key="MONITORED_SCHEDULED_REFRESH_ENABLED",
+            label="Enable Scheduled Monitored Refresh",
+            description="Run monitored-author refresh jobs automatically at configured times.",
+            default=True,
+        ),
+        TextField(
+            key="MONITORED_REFRESH_TIMES",
+            label="Refresh Times (HH:MM)",
+            description="Comma-separated 24-hour local times. Example: 02:00,14:00",
+            default="02:00,14:00",
+            placeholder="02:00,14:00",
+            show_when={"field": "MONITORED_SCHEDULED_REFRESH_ENABLED", "value": True},
+        ),
+    ]
+
+
+def _on_save_schedules(values: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Validate monitored refresh times on save."""
+    return validate_monitored_refresh_times(values)
+
+
+register_on_save("monitoring_schedules", _on_save_schedules)
+
+
+# ---------------------------------------------------------------------------
+# One-time config migration: move monitoring fields from Advanced → new tabs
+# ---------------------------------------------------------------------------
+
+def _migrate_monitoring_settings() -> None:
+    """Move monitoring settings from old config files to new tab files."""
+    try:
+        from shelfmark.core.config import CONFIG_DIR
+    except Exception:
+        return
+
+    plugins_dir = Path(CONFIG_DIR) / "plugins"
+    if not plugins_dir.is_dir():
+        return
+
+    # Migrations: (source_file, keys_to_extract, destination_file)
+    migrations: list[tuple[str, set[str], str]] = [
+        ("advanced.json", {"DEFAULT_TO_MONITORED_VIEW"}, "monitoring_general.json"),
+        ("advanced.json", {"MONITORED_SCHEDULED_REFRESH_ENABLED", "MONITORED_REFRESH_TIMES"}, "monitoring_schedules.json"),
+        ("release_scoring.json", {"SHOW_RELEASE_MATCH_SCORE", "RELEASE_PRIMARY_DEFAULT_ACTION"}, "monitoring_general.json"),
+    ]
+
+    source_cache: dict[str, dict[str, Any]] = {}
+    sources_dirty: set[str] = set()
+    dest_additions: dict[str, dict[str, Any]] = {}
+
+    for src_name, keys, dest_name in migrations:
+        src_path = plugins_dir / src_name
+        if not src_path.is_file():
+            continue
+
+        if src_name not in source_cache:
+            try:
+                source_cache[src_name] = json.loads(src_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+        src_data = source_cache[src_name]
+        for key in keys:
+            if key in src_data:
+                dest_additions.setdefault(dest_name, {})[key] = src_data.pop(key)
+                sources_dirty.add(src_name)
+
+    if not dest_additions:
+        return
+
+    for dest_name, vals in dest_additions.items():
+        target = plugins_dir / dest_name
+        existing: dict[str, Any] = {}
+        if target.is_file():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        existing.update(vals)
+        target.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        log.info("Migrated monitoring settings to %s: %s", dest_name, list(vals.keys()))
+
+    for src_name in sources_dirty:
+        src_path = plugins_dir / src_name
+        src_path.write_text(json.dumps(source_cache[src_name], indent=2) + "\n", encoding="utf-8")
+
+
+_migrate_monitoring_settings()

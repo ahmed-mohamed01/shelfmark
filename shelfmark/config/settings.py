@@ -12,11 +12,6 @@ def _on_save_advanced(values: Dict[str, Any]) -> Dict[str, Any]:
 
     logger = setup_logger(__name__)
 
-    from shelfmark.config.monitored_settings import validate_monitored_refresh_times
-    err = validate_monitored_refresh_times(values)
-    if err is not None:
-        return err
-
     mappings = values.get("PROWLARR_REMOTE_PATH_MAPPINGS")
     if mappings is None:
         return {"error": False, "values": values}
@@ -1640,12 +1635,6 @@ def mirror_settings():
 def advanced_settings():
     """Advanced settings for power users."""
     return [
-        CheckboxField(
-            key="DEFAULT_TO_MONITORED_VIEW",
-            label="Open app on Monitored view",
-            description="Navigate to the Monitored page automatically when the app loads or the Shelfmark logo is clicked.",
-            default=False,
-        ),
         TextField(
             key="URL_BASE",
             label="Base Path",
@@ -1772,25 +1761,6 @@ def advanced_settings():
             description="Delete all cached cover images.",
             style="danger",
             callback=_clear_covers_cache,
-        ),
-        HeadingField(
-            key="monitored_refresh_heading",
-            title="Monitored Author Refresh",
-            description="Refresh monitored authors on a schedule to keep books, series, popularity, and covers current without refreshing on every author open.",
-        ),
-        CheckboxField(
-            key="MONITORED_SCHEDULED_REFRESH_ENABLED",
-            label="Enable Scheduled Monitored Refresh",
-            description="Run monitored-author refresh jobs automatically at configured times.",
-            default=True,
-        ),
-        TextField(
-            key="MONITORED_REFRESH_TIMES",
-            label="Refresh Times (HH:MM)",
-            description="Comma-separated 24-hour local times. Example: 02:00,14:00",
-            default="02:00,14:00",
-            placeholder="02:00,14:00",
-            show_when={"field": "MONITORED_SCHEDULED_REFRESH_ENABLED", "value": True},
         ),
         HeadingField(
             key="metadata_cache_heading",

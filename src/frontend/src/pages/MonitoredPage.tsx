@@ -155,6 +155,7 @@ interface MonitoredPageProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  showBooksInMultipleSeries?: boolean;
   metadataSortOptions?: SortOption[];
   status?: StatusData;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
@@ -286,6 +287,7 @@ export const MonitoredPage = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  showBooksInMultipleSeries,
   metadataSortOptions,
   status,
   renderEmbeddedSearch,
@@ -2547,6 +2549,7 @@ export const MonitoredPage = ({
               status={status}
               openEditOnMount={authorDetailsOpenEdit}
               renderEmbeddedSearch={renderEmbeddedSearch}
+              showBooksInMultipleSeries={showBooksInMultipleSeries}
             />
           ) : (
             <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">

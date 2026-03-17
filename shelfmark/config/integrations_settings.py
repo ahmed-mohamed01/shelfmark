@@ -99,7 +99,7 @@ def test_booklore_connection(current_values: dict[str, Any] | None = None) -> di
 # ---------------------------------------------------------------------------
 
 
-@register_settings("integrations", "Integrations", icon="plug", order=16)
+@register_settings("integrations", "Integrations", icon="plug", order=16, group="monitoring")
 def integrations_settings():
     """Third-party service integrations."""
     return [

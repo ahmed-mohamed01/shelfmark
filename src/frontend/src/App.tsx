@@ -2502,6 +2502,7 @@ function App() {
                 defaultReleaseActionEbook={config?.release_primary_action_ebook || 'interactive_search'}
                 defaultReleaseActionAudiobook={config?.release_primary_action_audiobook || 'interactive_search'}
                 metadataSortOptions={config?.metadata_sort_options}
+                showBooksInMultipleSeries={config?.show_books_in_multiple_series !== false}
                 status={currentStatus}
                 onShowToast={showToast}
                 onRemoveToast={removeToast}

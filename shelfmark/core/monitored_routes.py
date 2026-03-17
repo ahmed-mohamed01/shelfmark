@@ -244,6 +244,7 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
         ),
         "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
         "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
+        "show_books_in_multiple_series": app_config.get("SHOW_BOOKS_IN_MULTIPLE_SERIES", True),
     }, config_user_id
 
 

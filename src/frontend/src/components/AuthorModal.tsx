@@ -40,6 +40,7 @@ interface AuthorModalProps {
   onBooksSearchQueryChange?: (value: string) => void;
   openEditOnMount?: boolean;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  showBooksInMultipleSeries?: boolean;
   onMonitorBook?: (book: Book) => void;
 }
 
@@ -60,6 +61,7 @@ export const AuthorModal = ({
   onBooksSearchQueryChange,
   openEditOnMount = false,
   renderEmbeddedSearch,
+  showBooksInMultipleSeries,
   onMonitorBook,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
@@ -447,6 +449,7 @@ export const AuthorModal = ({
                 defaultReleaseActionEbook={defaultReleaseActionEbook}
                 defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
                 renderEmbeddedSearch={renderEmbeddedSearch}
+                showBooksInMultipleSeries={showBooksInMultipleSeries}
                 onFallbackPhotoChange={setFallbackAuthorPhoto}
                 onMonitorBook={onMonitorBook}
               />

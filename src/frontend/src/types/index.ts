@@ -301,6 +301,7 @@ export interface AppConfig {
   auto_open_downloads_sidebar: boolean;  // Auto-open sidebar when download is queued
   download_to_browser: boolean;  // Auto-download completed files to browser
   show_dual_get_buttons?: boolean;  // User preference to show Auto + Interactive Get buttons
+  show_books_in_multiple_series?: boolean;  // Display books in all series they belong to
   hardcover_auto_remove_on_download: boolean;  // Auto-remove from active Hardcover list on download
   download_to_browser_content_types: string[];  // Auto-download completed files to browser for selected content types
   settings_enabled: boolean;  // Whether config directory is mounted and writable

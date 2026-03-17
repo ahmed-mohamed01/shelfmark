@@ -325,6 +325,7 @@ export interface MonitoredAuthorBooksTabProps {
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  showBooksInMultipleSeries?: boolean;
   onFallbackPhotoChange?: (url: string | null) => void;
   onMonitorBook?: (book: Book) => void;
 }
@@ -347,6 +348,7 @@ export const MonitoredAuthorBooksTab = ({
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
   renderEmbeddedSearch,
+  showBooksInMultipleSeries = true,
   onFallbackPhotoChange,
   onMonitorBook,
 }: MonitoredAuthorBooksTabProps) => {
@@ -792,7 +794,7 @@ export const MonitoredAuthorBooksTab = ({
       const primarySeriesKey = (book.series_name || '').trim() || '__standalone__';
       const list = seriesMap.get(primarySeriesKey);
       if (list) list.push(book); else seriesMap.set(primarySeriesKey, [book]);
-      if (book.additional_series) {
+      if (showBooksInMultipleSeries && book.additional_series) {
         for (const alt of book.additional_series) {
           const altKey = (alt.name || '').trim();
           if (!altKey || altKey === primarySeriesKey) continue;
@@ -821,7 +823,7 @@ export const MonitoredAuthorBooksTab = ({
       groups.push({ key: '__standalone__', title: 'Standalone', books: standalone });
     }
     return groups;
-  }, [books, booksSort, booksSortAsc]);
+  }, [books, booksSort, booksSortAsc, showBooksInMultipleSeries]);
 
   const seriesFilterOptions = useMemo(() => {
     return groupedBooks
@@ -1121,7 +1123,7 @@ export const MonitoredAuthorBooksTab = ({
     const allSeriesKeys = new Set<string>();
     for (const b of books) {
       allSeriesKeys.add((b.series_name || '').trim() || '__standalone__');
-      if (b.additional_series) {
+      if (showBooksInMultipleSeries && b.additional_series) {
         for (const alt of b.additional_series) { const altKey = (alt.name || '').trim(); if (altKey) allSeriesKeys.add(altKey); }
       }
     }
@@ -1129,7 +1131,7 @@ export const MonitoredAuthorBooksTab = ({
     for (const key of allSeriesKeys) next[key] = key !== targetKey;
     setCollapsedGroups(next);
     pendingScrollToSeriesRef.current = targetKey;
-  }, [books]);
+  }, [books, showBooksInMultipleSeries]);
 
   const toggleBookSelection = useCallback((bookId: string) => {
     setSelectedBookIds((prev) => { const next = { ...prev }; if (next[bookId]) { delete next[bookId]; } else { next[bookId] = true; } return next; });
