@@ -90,19 +90,26 @@ def _abs_get(base_url: str, token: str, path: str, timeout: int = 10) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _get_abs_library_id(url: str, token: str) -> str | None:
-    """Return configured library ID, or the first audiobook library found."""
+def _get_abs_library_ids(url: str, token: str) -> list[str]:
+    """Return audiobook library IDs to scan.
+
+    If ``AUDIOBOOKSHELF_LIBRARY_ID`` is configured, only that library is
+    returned.  Otherwise *all* libraries with ``mediaType == "book"`` are
+    included so that items across multiple audiobook libraries are matched.
+    """
     configured = (app_config.get("AUDIOBOOKSHELF_LIBRARY_ID") or "").strip()
     if configured:
-        return configured
+        return [configured]
     try:
         data = _abs_get(url, token, "/api/libraries")
-        for lib in data.get("libraries") or []:
-            if lib.get("mediaType") == "book":
-                return str(lib["id"])
+        return [
+            str(lib["id"])
+            for lib in (data.get("libraries") or [])
+            if lib.get("mediaType") == "book"
+        ]
     except Exception as exc:
         logger.warning("ABS: failed to fetch libraries: %s", exc)
-    return None
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -527,11 +534,21 @@ def sync_abs_availability_for_entity(
         )
         return {"abs_skipped": True, "reason": "not_configured"}
 
-    library_id = _get_abs_library_id(cfg["url"], cfg["token"])
-    if not library_id:
+    library_ids = _get_abs_library_ids(cfg["url"], cfg["token"])
+    if not library_ids:
         return {"abs_skipped": True, "reason": "no_library"}
 
-    abs_items = _find_abs_author_items(cfg["url"], cfg["token"], library_id, entity_name)
+    # Gather items across all audiobook libraries, deduplicating by item ID
+    abs_items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for lib_id in library_ids:
+        for item in _find_abs_author_items(cfg["url"], cfg["token"], lib_id, entity_name):
+            item_id = str(item.get("id") or "")
+            if item_id and item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            abs_items.append(item)
+
     if not abs_items:
         monitored_db.prune_monitored_book_files(
             entity_id=entity_id, keep_paths=[], source="audiobookshelf"

@@ -132,7 +132,7 @@ def integrations_settings():
         TextField(
             key="AUDIOBOOKSHELF_LIBRARY_ID",
             label="Library ID (optional)",
-            description="Leave empty to use the first audiobook library automatically.",
+            description="Leave empty to scan all audiobook libraries. Set to restrict scanning to a single library.",
             default="",
             show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
