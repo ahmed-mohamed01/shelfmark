@@ -29,7 +29,7 @@ import {
   getStatus,
   getMetadataProviders,
   getMetadataSearchConfig,
-  createRequest,
+  createRequests,
   isApiResponseError,
   updateSelfUser,
   setBookTargetState,
@@ -83,6 +83,7 @@ import {
   getRequestSuccessMessage,
   toContentType,
 } from './utils/requestPayload';
+import { applyRequestNoteToPayload } from './utils/requestConfirmation';
 import { bookFromRequestData } from './utils/requestFulfil';
 import { emitBookTargetChange, onBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
@@ -96,16 +97,19 @@ import './styles.css';
 
 const CONTENT_TYPE_STORAGE_KEY = 'preferred-content-type';
 
-const getInitialContentType = (): ContentType => {
+const getInitialContentType = (): { contentType: ContentType; combinedMode: boolean } => {
   try {
     const saved = localStorage.getItem(CONTENT_TYPE_STORAGE_KEY);
+    if (saved === 'combined') {
+      return { contentType: 'ebook', combinedMode: true };
+    }
     if (saved === 'ebook' || saved === 'audiobook') {
-      return saved;
+      return { contentType: saved, combinedMode: false };
     }
   } catch {
     // localStorage may be unavailable in private browsing
   }
-  return 'ebook';
+  return { contentType: 'ebook', combinedMode: false };
 };
 
 const POLICY_GUARD_ERROR_CODES = new Set(['policy_requires_request', 'policy_blocked']);
@@ -147,6 +151,14 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 const CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE =
   'Download queued, but the proxy interrupted the response. Status will refresh shortly.';
 
+type CombinedSelectionState = {
+  phase: 'ebook' | 'audiobook';
+  ebookMode: RequestPolicyMode;
+  audiobookMode: RequestPolicyMode;
+  stagedEbook?: { book: Book; release: Release };
+  stagedAudiobook?: Release;
+};
+
 type PendingOnBehalfDownload =
   | {
       type: 'book';
@@ -158,6 +170,12 @@ type PendingOnBehalfDownload =
       book: Book;
       release: Release;
       releaseContentType: ContentType;
+      actingAsUser: ActingAsUserSelection;
+    }
+  | {
+      type: 'combined';
+      book: Book;
+      combinedState: CombinedSelectionState;
       actingAsUser: ActingAsUserSelection;
     };
 
@@ -220,15 +238,8 @@ function App() {
   }, [authChecked, isAuthenticated, authIsAdmin, username, fetchStatus]);
 
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
-  const [contentType, setContentType] = useState<ContentType>(() => getInitialContentType());
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(CONTENT_TYPE_STORAGE_KEY, contentType);
-    } catch {
-      // localStorage may be unavailable in private browsing
-    }
-  }, [contentType]);
+  const initialContentTypePref = useMemo(() => getInitialContentType(), []);
+  const [contentType, setContentType] = useState<ContentType>(initialContentTypePref.contentType);
 
   const {
     policy: requestPolicy,
@@ -262,6 +273,7 @@ function App() {
   useEffect(() => {
     if (allowedContentTypes.length > 0 && !allowedContentTypes.includes(contentType)) {
       setContentType(allowedContentTypes[0]);
+      setCombinedMode(false);
     }
   }, [allowedContentTypes, contentType]);
 
@@ -403,6 +415,7 @@ function App() {
   }, [setBooks]);
 
   const [pendingRequestPayload, setPendingRequestPayload] = useState<CreateRequestPayload | null>(null);
+  const [pendingRequestExtraPayloads, setPendingRequestExtraPayloads] = useState<CreateRequestPayload[]>([]);
   const [actingAsUser, setActingAsUser] = useState<ActingAsUserSelection | null>(null);
   const [pendingOnBehalfDownload, setPendingOnBehalfDownload] = useState<PendingOnBehalfDownload | null>(null);
   const [fulfillingRequest, setFulfillingRequest] = useState<{
@@ -418,6 +431,7 @@ function App() {
     clearTracking();
     setActiveQueryTarget('general');
     setPendingRequestPayload(null);
+    setPendingRequestExtraPayloads([]);
     setActingAsUser(null);
     setPendingOnBehalfDownload(null);
     setFulfillingRequest(null);
@@ -438,9 +452,32 @@ function App() {
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [releaseBook, setReleaseBook] = useState<Book | null>(null);
   const [releaseContentTypeOverride, setReleaseContentTypeOverride] = useState<ContentType | null>(null);
+
+  // Combined mode state (ebook + audiobook in one transaction)
+  const [combinedMode, setCombinedMode] = useState(initialContentTypePref.combinedMode);
+  const [combinedState, setCombinedState] = useState<CombinedSelectionState | null>(null);
+
+  // Persist content type + combined mode to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONTENT_TYPE_STORAGE_KEY, combinedMode ? 'combined' : contentType);
+    } catch {
+      // localStorage may be unavailable in private browsing
+    }
+  }, [contentType, combinedMode]);
+
+  // Clear combined state when combined mode is turned off
+  // (combinedModeAllowed guard is in a separate effect below, after effectiveSearchMode is declared)
+  useEffect(() => {
+    if (!combinedMode) {
+      setCombinedState(null);
+    }
+  }, [combinedMode]);
+
   const [metadataProviders, setMetadataProviders] = useState<MetadataProviderSummary[]>([]);
   const [configuredMetadataProvider, setConfiguredMetadataProvider] = useState<string | null>(null);
   const [configuredAudiobookMetadataProvider, setConfiguredAudiobookMetadataProvider] = useState<string | null>(null);
+  const [configuredCombinedMetadataProvider, setConfiguredCombinedMetadataProvider] = useState<string | null>(null);
   const [activeMetadataConfig, setActiveMetadataConfig] = useState<MetadataSearchConfig | null>(null);
   const [activeQueryTarget, setActiveQueryTarget] = useState<string>('general');
   const [activeResultsSort, setActiveResultsSort] = useState('');
@@ -629,11 +666,13 @@ function App() {
         getConfig(),
         getMetadataProviders(),
       ]);
-      const activeConfiguredProvider = getConfiguredMetadataProviderForContentType({
-        contentType,
-        configuredMetadataProvider: metadataProviderState.configured_provider,
-        configuredAudiobookMetadataProvider: metadataProviderState.configured_provider_audiobook,
-      });
+      const activeConfiguredProvider = combinedMode && metadataProviderState.configured_provider_combined
+        ? metadataProviderState.configured_provider_combined
+        : getConfiguredMetadataProviderForContentType({
+            contentType,
+            configuredMetadataProvider: metadataProviderState.configured_provider,
+            configuredAudiobookMetadataProvider: metadataProviderState.configured_provider_audiobook,
+          });
       let nextMetadataConfig: MetadataSearchConfig | null = null;
 
       if (cfg.search_mode === 'universal') {
@@ -669,6 +708,7 @@ function App() {
       setMetadataProviders(metadataProviderState.providers);
       setConfiguredMetadataProvider(metadataProviderState.configured_provider);
       setConfiguredAudiobookMetadataProvider(metadataProviderState.configured_provider_audiobook);
+      setConfiguredCombinedMetadataProvider(metadataProviderState.configured_provider_combined);
       setActiveMetadataConfig(nextMetadataConfig);
 
       // Show onboarding modal on first run (settings enabled but not completed yet)
@@ -705,7 +745,7 @@ function App() {
     } catch (error) {
       console.error('Failed to load config:', error);
     }
-  }, [clearTracking, contentType, navigate, setAdvancedFilters, setBooks]);
+  }, [clearTracking, combinedMode, contentType, navigate, setAdvancedFilters, setBooks]);
 
   // Fetch config when authenticated
   useEffect(() => {
@@ -715,11 +755,32 @@ function App() {
   }, [isAuthenticated, loadConfig]);
 
   const effectiveSearchMode: SearchMode = config?.search_mode ?? 'direct';
-  const defaultMetadataProviderForContentType = getConfiguredMetadataProviderForContentType({
-    contentType,
-    configuredMetadataProvider,
-    configuredAudiobookMetadataProvider,
-  });
+
+  // Combined mode requires universal mode, config enabled, and both content types accessible
+  const combinedModeAllowed = useMemo(() => {
+    if (effectiveSearchMode !== 'universal') return false;
+    if (config?.show_combined_selector === false) return false;
+    const ebookMode = getDefaultMode('ebook');
+    const audiobookMode = getDefaultMode('audiobook');
+    return ebookMode !== 'blocked' && audiobookMode !== 'blocked';
+  }, [effectiveSearchMode, config?.show_combined_selector, getDefaultMode]);
+
+  // Auto-disable combined mode if policy changes make it unavailable
+  // Skip while config is still loading to avoid resetting localStorage-restored state
+  useEffect(() => {
+    if (!config) return;
+    if (combinedMode && !combinedModeAllowed) {
+      setCombinedMode(false);
+    }
+  }, [config, combinedMode, combinedModeAllowed]);
+
+  const defaultMetadataProviderForContentType = combinedMode && configuredCombinedMetadataProvider
+    ? configuredCombinedMetadataProvider
+    : getConfiguredMetadataProviderForContentType({
+        contentType,
+        configuredMetadataProvider,
+        configuredAudiobookMetadataProvider,
+      });
   const effectiveMetadataProvider = effectiveSearchMode === 'universal'
     ? (defaultMetadataProviderForContentType || null)
     : null;
@@ -1022,10 +1083,10 @@ function App() {
     }
   };
 
-  const submitRequest = useCallback(
-    async (payload: CreateRequestPayload, successMessage: string): Promise<boolean> => {
+  const submitRequests = useCallback(
+    async (payloads: CreateRequestPayload[], successMessage: string): Promise<boolean> => {
       try {
-        await createRequest(payload);
+        await createRequests(payloads);
         await refreshActivitySnapshot();
         showToast(successMessage, 'success');
         await refreshRequestPolicy({ force: true });
@@ -1042,19 +1103,41 @@ function App() {
     [showToast, refreshRequestPolicy, refreshActivitySnapshot]
   );
 
-  const openRequestConfirmation = useCallback((payload: CreateRequestPayload) => {
-    setPendingRequestPayload(payload);
-  }, []);
+  const openRequestConfirmation = useCallback((
+    payload: CreateRequestPayload,
+    extraPayloads: CreateRequestPayload[] = [],
+    onBehalfOfUserId: number | undefined = actingAsUser?.id,
+  ) => {
+    const applyOnBehalf = (requestPayload: CreateRequestPayload): CreateRequestPayload => {
+      if (typeof onBehalfOfUserId !== 'number') {
+        return requestPayload;
+      }
+      return {
+        ...requestPayload,
+        on_behalf_of_user_id: onBehalfOfUserId,
+      };
+    };
+
+    setPendingRequestPayload(applyOnBehalf(payload));
+    setPendingRequestExtraPayloads(extraPayloads.map(applyOnBehalf));
+  }, [actingAsUser?.id]);
 
   const handleConfirmRequest = useCallback(
-    async (payload: CreateRequestPayload): Promise<boolean> => {
-      const success = await submitRequest(payload, getRequestSuccessMessage(payload));
-      if (success) {
-        setPendingRequestPayload(null);
-      }
-      return success;
+    async (payload: CreateRequestPayload, extraPayloads?: CreateRequestPayload[]): Promise<boolean> => {
+      const requestPayloads = [payload, ...(extraPayloads ?? pendingRequestExtraPayloads)].map((requestPayload) =>
+        applyRequestNoteToPayload(requestPayload, payload.note ?? '', allowRequestNotes)
+      );
+      const success = await submitRequests(
+        requestPayloads,
+        requestPayloads.length === 1 ? getRequestSuccessMessage(requestPayloads[0]) : 'Requests submitted',
+      );
+      if (!success) return false;
+
+      setPendingRequestPayload(null);
+      setPendingRequestExtraPayloads([]);
+      return true;
     },
-    [submitRequest]
+    [allowRequestNotes, pendingRequestExtraPayloads, submitRequests]
   );
 
   const getDirectPolicyMode = useCallback((book: Book): RequestPolicyMode => {
@@ -1064,6 +1147,20 @@ function App() {
   const getUniversalDefaultPolicyMode = useCallback((): RequestPolicyMode => {
     return getDefaultMode(contentType);
   }, [getDefaultMode, contentType]);
+
+  const getCombinedSelectionPhases = useCallback(
+    (state: Pick<CombinedSelectionState, 'ebookMode' | 'audiobookMode'>): ContentType[] => {
+      const phases: ContentType[] = [];
+      if (state.ebookMode !== 'request_book') {
+        phases.push('ebook');
+      }
+      if (state.audiobookMode !== 'request_book') {
+        phases.push('audiobook');
+      }
+      return phases;
+    },
+    []
+  );
 
   const buildReleaseDownloadPayload = useCallback(
     (book: Book, release: Release, releaseContentType: ContentType): DownloadReleasePayload => {
@@ -1154,7 +1251,7 @@ function App() {
             code: isApiResponseError(error) ? error.code : null,
           });
           if (requiredMode === 'request_release') {
-            openRequestConfirmation(buildDirectRequestPayload(book));
+            openRequestConfirmation(buildDirectRequestPayload(book), [], onBehalfOfUserId);
             await refreshRequestPolicy({ force: true });
             return;
           }
@@ -1226,7 +1323,7 @@ function App() {
                 content_type: normalizedContentType,
                 request_level: 'release',
               },
-            });
+            }, [], onBehalfOfUserId);
             await refreshRequestPolicy({ force: true });
             return;
           }
@@ -1240,7 +1337,7 @@ function App() {
                 content_type: normalizedContentType,
                 request_level: 'book',
               },
-            });
+            }, [], onBehalfOfUserId);
             await refreshRequestPolicy({ force: true });
             return;
           }
@@ -1266,6 +1363,69 @@ function App() {
     [buildReleaseDownloadPayload, fetchStatus, openRequestConfirmation, refreshRequestPolicy, removeBookFromActiveList, showToast, trackRelease]
   );
 
+  const executeCombinedAction = useCallback(
+    async (book: Book, selection: CombinedSelectionState, onBehalfOfUserId?: number): Promise<void> => {
+      const ebookRelease = selection.stagedEbook?.release;
+      const audiobookRelease = selection.stagedAudiobook;
+      const ebookMode = ebookRelease ? getSourceMode(ebookRelease.source, 'ebook') : selection.ebookMode;
+      const audiobookMode = audiobookRelease ? getSourceMode(audiobookRelease.source, 'audiobook') : selection.audiobookMode;
+
+      const buildRequestPayload = (
+        release: Release | undefined,
+        releaseContentType: ContentType,
+        mode: RequestPolicyMode,
+      ): CreateRequestPayload => {
+        const payload = mode === 'request_release'
+          ? {
+              book_data: buildMetadataBookRequestData(book, releaseContentType),
+              release_data: buildReleaseDataFromMetadataRelease(book, release!, releaseContentType),
+              context: {
+                source: release!.source,
+                content_type: releaseContentType,
+                request_level: 'release' as const,
+              },
+            }
+          : {
+              book_data: buildMetadataBookRequestData(book, releaseContentType),
+              release_data: null,
+              context: {
+                source: '*',
+                content_type: releaseContentType,
+                request_level: 'book' as const,
+              },
+            };
+
+        if (typeof onBehalfOfUserId !== 'number') {
+          return payload;
+        }
+
+        return {
+          ...payload,
+          on_behalf_of_user_id: onBehalfOfUserId,
+        };
+      };
+
+      const requestPayloads: CreateRequestPayload[] = [];
+
+      if (ebookMode === 'download') {
+        await executeReleaseDownload(book, ebookRelease!, 'ebook', onBehalfOfUserId);
+      } else {
+        requestPayloads.push(buildRequestPayload(ebookRelease, 'ebook', ebookMode));
+      }
+
+      if (audiobookMode === 'download') {
+        await executeReleaseDownload(book, audiobookRelease!, 'audiobook', onBehalfOfUserId);
+      } else {
+        requestPayloads.push(buildRequestPayload(audiobookRelease, 'audiobook', audiobookMode));
+      }
+
+      if (requestPayloads.length > 0) {
+        openRequestConfirmation(requestPayloads[0], requestPayloads.slice(1), onBehalfOfUserId);
+      }
+    },
+    [executeReleaseDownload, getSourceMode, openRequestConfirmation]
+  );
+
   const handleConfirmOnBehalfDownload = useCallback(async (): Promise<boolean> => {
     if (!pendingOnBehalfDownload) {
       return true;
@@ -1275,6 +1435,12 @@ function App() {
     try {
       if (pendingOnBehalfDownload.type === 'book') {
         await executeBookDownload(pendingOnBehalfDownload.book, onBehalfOfUserId);
+      } else if (pendingOnBehalfDownload.type === 'combined') {
+        await executeCombinedAction(
+          pendingOnBehalfDownload.book,
+          pendingOnBehalfDownload.combinedState,
+          onBehalfOfUserId
+        );
       } else {
         await executeReleaseDownload(
           pendingOnBehalfDownload.book,
@@ -1288,7 +1454,7 @@ function App() {
     } catch {
       return false;
     }
-  }, [executeBookDownload, executeReleaseDownload, pendingOnBehalfDownload]);
+  }, [executeBookDownload, executeCombinedAction, executeReleaseDownload, pendingOnBehalfDownload]);
 
   // Direct-mode action (download or release-level request based on policy).
   const handleDownload = async (book: Book): Promise<void> => {
@@ -1468,22 +1634,52 @@ function App() {
       return;
     }
 
-    if (mode === 'request_book') {
-      policyTrace('universal.get:request_modal', {
-        bookId: book.id,
-        requestLevel: 'book',
-        contentType: normalizedContentType,
+    // Combined mode is only available when both default content types are accessible.
+    if (combinedMode) {
+      const latestPolicy2 = await refreshRequestPolicy({ force: true }).catch(() => null);
+      const effectiveIsAdmin2 = latestPolicy2 ? Boolean(latestPolicy2.is_admin) : requestRoleIsAdmin;
+      const ebookMode = resolveDefaultModeFromPolicy(latestPolicy2, effectiveIsAdmin2, 'ebook');
+      const audiobookMode = resolveDefaultModeFromPolicy(latestPolicy2, effectiveIsAdmin2, 'audiobook');
+
+      if (ebookMode === 'request_book' && audiobookMode === 'request_book') {
+        const ebookPayload: CreateRequestPayload = {
+          book_data: buildMetadataBookRequestData(book, 'ebook'),
+          release_data: null,
+          context: { source: '*', content_type: 'ebook', request_level: 'book' },
+        };
+        const audiobookPayload: CreateRequestPayload = {
+          book_data: buildMetadataBookRequestData(book, 'audiobook'),
+          release_data: null,
+          context: { source: '*', content_type: 'audiobook', request_level: 'book' },
+        };
+        openRequestConfirmation(ebookPayload, [audiobookPayload]);
+        return;
+      }
+
+      const selectionPhases = getCombinedSelectionPhases({ ebookMode, audiobookMode });
+      setCombinedState({
+        phase: selectionPhases[0],
+        ebookMode,
+        audiobookMode,
       });
-      openRequestConfirmation({
-        book_data: buildMetadataBookRequestData(book, normalizedContentType),
-        release_data: null,
-        context: {
-          source: '*',
-          content_type: normalizedContentType,
-          request_level: 'book',
-        },
-      });
-      return;
+    } else {
+      if (mode === 'request_book') {
+        policyTrace('universal.get:request_modal', {
+          bookId: book.id,
+          requestLevel: 'book',
+          contentType: normalizedContentType,
+        });
+        openRequestConfirmation({
+          book_data: buildMetadataBookRequestData(book, normalizedContentType),
+          release_data: null,
+          context: {
+            source: '*',
+            content_type: normalizedContentType,
+            request_level: 'book',
+          },
+        });
+        return;
+      }
     }
 
     const configuredPrimaryAction = normalizedContentType === 'audiobook'
@@ -1581,6 +1777,53 @@ function App() {
   const handleReleaseModalPolicyRefresh = useCallback(() => {
     return refreshRequestPolicy({ force: true });
   }, [refreshRequestPolicy]);
+
+  // Combined mode callbacks
+  const handleCombinedNext = useCallback((release: Release) => {
+    if (!releaseBook || !combinedState) return;
+    const phases = getCombinedSelectionPhases(combinedState);
+    const nextPhase = phases[phases.indexOf(combinedState.phase) + 1];
+
+    setCombinedState({
+      ...combinedState,
+      phase: nextPhase,
+      stagedEbook: { book: releaseBook, release },
+    });
+  }, [combinedState, getCombinedSelectionPhases, releaseBook]);
+
+  const handleCombinedBack = useCallback((audiobookRelease: Release | null) => {
+    setCombinedState((prev) => prev ? { ...prev, phase: 'ebook', stagedAudiobook: audiobookRelease ?? undefined } : null);
+  }, []);
+
+  const handleCombinedDownload = useCallback(async (release: Release) => {
+    if (!combinedState || !releaseBook) return;
+
+    const nextCombinedState: CombinedSelectionState = combinedState.phase === 'ebook'
+      ? {
+          ...combinedState,
+          stagedEbook: { book: releaseBook, release },
+        }
+      : {
+          ...combinedState,
+          stagedAudiobook: release,
+        };
+
+    if (actingAsUser) {
+      setPendingOnBehalfDownload({
+        type: 'combined',
+        book: releaseBook,
+        combinedState: nextCombinedState,
+        actingAsUser,
+      });
+      setCombinedState(null);
+      setReleaseBook(null);
+      return;
+    }
+
+    await executeCombinedAction(releaseBook, nextCombinedState);
+    setCombinedState(null);
+    setReleaseBook(null);
+  }, [actingAsUser, combinedState, executeCombinedAction, releaseBook]);
 
   const handleRequestCancel = useCallback(
     async (requestId: number) => {
@@ -1863,22 +2106,29 @@ function App() {
 
   const handleSearchModeChange = useCallback((nextMode: SearchMode) => {
     setConfig((prev) => prev ? { ...prev, search_mode: nextMode } : prev);
+    if (nextMode !== 'universal') {
+      setCombinedMode(false);
+    }
     updateSelfUser({ settings: { SEARCH_MODE: nextMode } })
       .then(() => loadConfig('settings-saved'))
       .catch((err) => console.error('Failed to save search mode:', err));
   }, [loadConfig]);
 
   const handleMetadataProviderChange = useCallback((provider: string) => {
-    if (contentType === 'audiobook') {
+    if (combinedMode) {
+      setConfiguredCombinedMetadataProvider(provider);
+    } else if (contentType === 'audiobook') {
       setConfiguredAudiobookMetadataProvider(provider);
     } else {
       setConfiguredMetadataProvider(provider);
     }
-    const key = contentType === 'audiobook' ? 'METADATA_PROVIDER_AUDIOBOOK' : 'METADATA_PROVIDER';
+    const key = combinedMode
+      ? 'METADATA_PROVIDER_COMBINED'
+      : contentType === 'audiobook' ? 'METADATA_PROVIDER_AUDIOBOOK' : 'METADATA_PROVIDER';
     updateSelfUser({ settings: { [key]: provider } })
       .then(() => loadConfig('settings-saved'))
       .catch((err) => console.error('Failed to save metadata provider:', err));
-  }, [contentType, loadConfig]);
+  }, [combinedMode, contentType, loadConfig]);
 
   const buildCurrentSearchRequest = useCallback((sortOverride?: string) => {
     const appliedSort = effectiveSearchMode === 'universal'
@@ -2118,7 +2368,15 @@ function App() {
   );
 
   const activeReleaseBook = fulfillingRequest?.book ?? releaseBook;
-  const activeReleaseContentType = fulfillingRequest?.contentType ?? releaseContentTypeOverride ?? contentType;
+  const activeReleaseContentType = fulfillingRequest?.contentType ?? releaseContentTypeOverride ?? combinedState?.phase ?? contentType;
+  const combinedSelectionPhases = combinedState ? getCombinedSelectionPhases(combinedState) : [];
+  const combinedCurrentStep = combinedState ? combinedSelectionPhases.indexOf(combinedState.phase) + 1 : 0;
+  const combinedIsFinalStep = combinedState
+    ? combinedSelectionPhases[combinedSelectionPhases.length - 1] === combinedState.phase
+    : false;
+  const combinedHasPreviousStep = combinedState
+    ? combinedSelectionPhases.indexOf(combinedState.phase) > 0
+    : false;
   const usePinnedMainScrollContainer = sidebarPinnedOpen;
 
   const handleReleaseModalClose = useCallback(() => {
@@ -2126,6 +2384,7 @@ function App() {
       setFulfillingRequest(null);
       return;
     }
+    setCombinedState(null);
     setReleaseBook(null);
     setReleaseContentTypeOverride(null);
     setReleaseMonitoredEntityId(null);
@@ -2134,9 +2393,11 @@ function App() {
   const pendingOnBehalfTitle = pendingOnBehalfDownload
     ? pendingOnBehalfDownload.type === 'book'
       ? pendingOnBehalfDownload.book.title || 'Untitled'
-      : pendingOnBehalfDownload.release.title ||
-        pendingOnBehalfDownload.book.title ||
-        'Untitled'
+      : pendingOnBehalfDownload.type === 'combined'
+        ? pendingOnBehalfDownload.book.title || 'Untitled'
+        : pendingOnBehalfDownload.release.title ||
+          pendingOnBehalfDownload.book.title ||
+          'Untitled'
     : '';
   const pendingOnBehalfUserName = pendingOnBehalfDownload
     ? formatActingAsUserName(pendingOnBehalfDownload.actingAsUser)
@@ -2197,6 +2458,8 @@ function App() {
           contentType={contentType}
           onContentTypeChange={setContentType}
           allowedContentTypes={allowedContentTypes}
+          combinedMode={combinedMode}
+          onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           queryTargets={queryTargets}
           activeQueryTarget={activeQueryTarget}
           onQueryTargetChange={setActiveQueryTarget}
@@ -2235,6 +2498,7 @@ function App() {
           activeMetadataProvider={effectiveMetadataProvider}
           onMetadataProviderChange={handleMetadataProviderChange}
           contentType={contentType}
+          combinedMode={combinedMode}
           isAdmin={requestRoleIsAdmin}
           onClose={() => setShowAdvanced(false)}
         />
@@ -2273,6 +2537,8 @@ function App() {
           contentType={contentType}
           onContentTypeChange={setContentType}
           allowedContentTypes={allowedContentTypes}
+          combinedMode={combinedMode}
+          onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           activeQueryField={activeQueryField}
           searchMode={effectiveSearchMode}
           onSearchModeChange={handleSearchModeChange}
@@ -2368,14 +2634,25 @@ function App() {
             isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
             showReleaseSourceLinks={config?.show_release_source_links !== false}
             onShowToast={showToast}
+            combinedPhase={combinedState?.phase ?? null}
+            combinedCurrentStep={combinedCurrentStep}
+            combinedTotalSteps={combinedSelectionPhases.length}
+            combinedEbookMode={combinedState?.ebookMode ?? null}
+            combinedAudiobookMode={combinedState?.audiobookMode ?? null}
+            onCombinedNext={combinedState && !combinedIsFinalStep ? handleCombinedNext : undefined}
+            onCombinedBack={combinedState && combinedHasPreviousStep ? handleCombinedBack : undefined}
+            onCombinedDownload={combinedState && combinedIsFinalStep ? handleCombinedDownload : undefined}
+            stagedEbookRelease={combinedState?.stagedEbook?.release ?? null}
+            stagedAudiobookRelease={combinedState?.stagedAudiobook ?? null}
           />
         )}
         {pendingRequestPayload && (
           <RequestConfirmationModal
             payload={pendingRequestPayload}
+            extraPayloads={pendingRequestExtraPayloads}
             allowNotes={allowRequestNotes}
             onConfirm={handleConfirmRequest}
-            onClose={() => setPendingRequestPayload(null)}
+            onClose={() => { setPendingRequestPayload(null); setPendingRequestExtraPayloads([]); }}
           />
         )}
 
