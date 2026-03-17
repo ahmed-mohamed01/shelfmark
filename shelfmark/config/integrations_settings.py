@@ -8,6 +8,7 @@ from shelfmark.core.settings_registry import (
     HeadingField,
     TextField,
     PasswordField,
+    CheckboxField,
     ActionButton,
 )
 
@@ -108,23 +109,32 @@ def integrations_settings():
             title="AudioBookShelf",
             description="Match audiobooks from an AudioBookShelf instance during file scans.",
         ),
+        CheckboxField(
+            key="AUDIOBOOKSHELF_ENABLED",
+            label="Enable AudioBookShelf Integration",
+            description="Include AudioBookShelf library matching when scanning monitored authors.",
+            default=True,
+        ),
         TextField(
             key="AUDIOBOOKSHELF_URL",
             label="AudioBookShelf URL",
             description="Base URL of your AudioBookShelf instance (e.g. http://audiobookshelf:13378).",
             default="",
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
         PasswordField(
             key="AUDIOBOOKSHELF_TOKEN",
             label="API Token",
             description="API token from AudioBookShelf → Settings → Users → your user → API Token.",
             default="",
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
         TextField(
             key="AUDIOBOOKSHELF_LIBRARY_ID",
             label="Library ID (optional)",
             description="Leave empty to use the first audiobook library automatically.",
             default="",
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
         ActionButton(
             key="test_abs_connection",
@@ -132,29 +142,39 @@ def integrations_settings():
             description="Verify that shelfmark can reach your AudioBookShelf instance.",
             style="primary",
             callback=test_abs_connection,
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
         HeadingField(
             key="booklore_integration_heading",
             title="Booklore",
             description="Match ebooks from a Booklore instance during file scans.",
         ),
+        CheckboxField(
+            key="BOOKLORE_ENABLED",
+            label="Enable Booklore Integration",
+            description="Include Booklore library matching when scanning monitored authors.",
+            default=True,
+        ),
         TextField(
             key="BOOKLORE_URL",
             label="Booklore URL",
             description="Base URL of your Booklore instance (e.g. http://booklore:6060).",
             default="",
+            show_when={"field": "BOOKLORE_ENABLED", "value": True},
         ),
         TextField(
             key="BOOKLORE_USERNAME",
             label="Username",
             description="Booklore account username.",
             default="",
+            show_when={"field": "BOOKLORE_ENABLED", "value": True},
         ),
         PasswordField(
             key="BOOKLORE_PASSWORD",
             label="Password",
             description="Booklore account password.",
             default="",
+            show_when={"field": "BOOKLORE_ENABLED", "value": True},
         ),
         ActionButton(
             key="test_booklore_connection",
@@ -162,5 +182,6 @@ def integrations_settings():
             description="Verify that shelfmark can reach your Booklore instance.",
             style="primary",
             callback=test_booklore_connection,
+            show_when={"field": "BOOKLORE_ENABLED", "value": True},
         ),
     ]

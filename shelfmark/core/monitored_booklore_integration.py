@@ -37,7 +37,9 @@ logger = setup_logger(__name__)
 
 
 def get_booklore_config() -> dict[str, str] | None:
-    """Return Booklore connection config or None if not configured."""
+    """Return Booklore connection config or None if not configured/enabled."""
+    if not app_config.get("BOOKLORE_ENABLED", True):
+        return None
     url = (app_config.get("BOOKLORE_URL") or "").strip().rstrip("/")
     username = (app_config.get("BOOKLORE_USERNAME") or "").strip()
     password = (app_config.get("BOOKLORE_PASSWORD") or "").strip()
@@ -421,6 +423,10 @@ def sync_booklore_availability_for_entity(
     """
     cfg = get_booklore_config()
     if not cfg:
+        # Prune stale Booklore records when integration is disabled or not configured
+        monitored_db.prune_monitored_book_files(
+            entity_id=entity_id, keep_paths=[], source="booklore"
+        )
         return {"bl_skipped": True, "reason": "not_configured"}
 
     url = cfg["url"]

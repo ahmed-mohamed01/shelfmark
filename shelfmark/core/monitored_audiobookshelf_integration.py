@@ -50,7 +50,9 @@ _SERIES_SEGMENT_POS_RE = re.compile(r"^(.*?)\s+#\s*(\d+(?:[./]\d+)?)$")
 
 
 def get_abs_config() -> dict[str, str] | None:
-    """Return ABS connection config or None if not configured."""
+    """Return ABS connection config or None if not configured/enabled."""
+    if not app_config.get("AUDIOBOOKSHELF_ENABLED", True):
+        return None
     url = (app_config.get("AUDIOBOOKSHELF_URL") or "").strip().rstrip("/")
     token = (app_config.get("AUDIOBOOKSHELF_TOKEN") or "").strip()
     if url and token:
@@ -519,6 +521,10 @@ def sync_abs_availability_for_entity(
     """
     cfg = get_abs_config()
     if not cfg:
+        # Prune stale ABS records when integration is disabled or not configured
+        monitored_db.prune_monitored_book_files(
+            entity_id=entity_id, keep_paths=[], source="audiobookshelf"
+        )
         return {"abs_skipped": True, "reason": "not_configured"}
 
     library_id = _get_abs_library_id(cfg["url"], cfg["token"])
