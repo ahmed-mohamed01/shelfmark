@@ -374,9 +374,6 @@ export const MonitoredAuthorBooksTab = ({
     if (saved === 'compact' || saved === 'card') return 'compact';
     return 'table';
   });
-  const [showMultipleSeries, setShowMultipleSeries] = useState<boolean>(() => {
-    return localStorage.getItem('authorBooksShowMultipleSeries') === 'true';
-  });
   const [booksCompactMinWidth, setBooksCompactMinWidth] = useState<number>(() => {
     const raw = localStorage.getItem('authorBooksCompactMinWidth');
     const parsed = raw ? Number(raw) : Number.NaN;
@@ -543,7 +540,6 @@ export const MonitoredAuthorBooksTab = ({
   useEffect(() => { try { localStorage.setItem('authorBooksSort', booksSort); } catch { /* ignore */ } }, [booksSort]);
   useEffect(() => { try { localStorage.setItem('authorBooksSortAsc', String(booksSortAsc)); } catch { /* ignore */ } }, [booksSortAsc]);
   useEffect(() => { try { localStorage.setItem('authorBooksViewMode', booksViewMode); } catch { /* ignore */ } }, [booksViewMode]);
-  useEffect(() => { try { localStorage.setItem('authorBooksShowMultipleSeries', showMultipleSeries ? 'true' : 'false'); } catch { /* ignore */ } }, [showMultipleSeries]);
   useEffect(() => { try { localStorage.setItem('authorBooksCompactMinWidth', String(booksCompactMinWidth)); } catch { /* ignore */ } }, [booksCompactMinWidth]);
 
   // Reset books state when author clears
@@ -796,7 +792,7 @@ export const MonitoredAuthorBooksTab = ({
       const primarySeriesKey = (book.series_name || '').trim() || '__standalone__';
       const list = seriesMap.get(primarySeriesKey);
       if (list) list.push(book); else seriesMap.set(primarySeriesKey, [book]);
-      if (showMultipleSeries && book.additional_series) {
+      if (book.additional_series) {
         for (const alt of book.additional_series) {
           const altKey = (alt.name || '').trim();
           if (!altKey || altKey === primarySeriesKey) continue;
@@ -825,7 +821,7 @@ export const MonitoredAuthorBooksTab = ({
       groups.push({ key: '__standalone__', title: 'Standalone', books: standalone });
     }
     return groups;
-  }, [books, booksSort, booksSortAsc, showMultipleSeries]);
+  }, [books, booksSort, booksSortAsc]);
 
   const seriesFilterOptions = useMemo(() => {
     return groupedBooks
@@ -1125,7 +1121,7 @@ export const MonitoredAuthorBooksTab = ({
     const allSeriesKeys = new Set<string>();
     for (const b of books) {
       allSeriesKeys.add((b.series_name || '').trim() || '__standalone__');
-      if (showMultipleSeries && b.additional_series) {
+      if (b.additional_series) {
         for (const alt of b.additional_series) { const altKey = (alt.name || '').trim(); if (altKey) allSeriesKeys.add(altKey); }
       }
     }
@@ -1133,7 +1129,7 @@ export const MonitoredAuthorBooksTab = ({
     for (const key of allSeriesKeys) next[key] = key !== targetKey;
     setCollapsedGroups(next);
     pendingScrollToSeriesRef.current = targetKey;
-  }, [books, showMultipleSeries]);
+  }, [books]);
 
   const toggleBookSelection = useCallback((bookId: string) => {
     setSelectedBookIds((prev) => { const next = { ...prev }; if (next[bookId]) { delete next[bookId]; } else { next[bookId] = true; } return next; });
@@ -1579,9 +1575,6 @@ export const MonitoredAuthorBooksTab = ({
                   <div className="py-1">
                     <button type="button" onClick={toggleSelectAllVisibleBooks} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${allVisibleBooksSelected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}>
                       <span>{allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}</span>{allVisibleBooksSelected ? <span>✓</span> : null}
-                    </button>
-                    <button type="button" onClick={() => setShowMultipleSeries((prev) => !prev)} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${showMultipleSeries ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} title="Show all series a book belongs to, not just the primary one">
-                      <span>Show multiple series</span>{showMultipleSeries ? <span>✓</span> : null}
                     </button>
                     <div className="border-t border-[var(--border-muted)] my-1" />
                     <div className="px-3 py-2">
