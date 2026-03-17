@@ -24,6 +24,8 @@ interface MonitoredBookCompactTileProps {
   popularityLine?: string;
   showPopularityLine?: boolean;
   isDimmed?: boolean;
+  /** Show an upcoming/unreleased indicator on the cover */
+  isUpcoming?: boolean;
 }
 
 export const MonitoredBookCompactTile = ({
@@ -46,6 +48,7 @@ export const MonitoredBookCompactTile = ({
   popularityLine,
   showPopularityLine = false,
   isDimmed = false,
+  isUpcoming = false,
 }: MonitoredBookCompactTileProps) => {
   const topLeftOverlay = onToggleSelect ? (
     <button
@@ -64,11 +67,19 @@ export const MonitoredBookCompactTile = ({
     </button>
   ) : null;
 
-  // Series position stays at top-right
-  const topRightOverlay = seriesPosition != null ? (
+  // Series position + upcoming badge at top-right
+  const seriesBadge = seriesPosition != null ? (
     <span className="inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white bg-emerald-600 rounded" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
       #{seriesPosition}{seriesCount != null ? `/${seriesCount}` : ''}
     </span>
+  ) : null;
+  const upcomingBadge = isUpcoming ? (
+    <span className="inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white bg-amber-500 rounded" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
+      Upcoming
+    </span>
+  ) : null;
+  const topRightOverlay = (seriesBadge || upcomingBadge) ? (
+    <>{seriesBadge}{upcomingBadge}</>
   ) : null;
 
   // Format badges at bottom of cover — consolidated when both share the same status

@@ -40,6 +40,7 @@ import { MonitoredSearchView } from '../components/MonitoredSearchView';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 import {
   isEnabledMonitoredFlag,
+  isMonitoredBookUpcoming,
   monitoredBookHasAnyAvailable,
   monitoredBookTracksAudiobook,
   monitoredBookTracksEbook,
@@ -112,21 +113,6 @@ const groupMonitoredBooks = (
   return sortedGroups;
 };
 
-const isUpcomingMonitoredBook = (book: MonitoredBookListRow, todayStartMs: number, currentYear: number): boolean => {
-  if (typeof book.release_date === 'string' && book.release_date.trim()) {
-    const parsed = Date.parse(book.release_date);
-    if (Number.isFinite(parsed)) {
-      const releaseDay = new Date(parsed);
-      releaseDay.setHours(0, 0, 0, 0);
-      if (releaseDay.getTime() >= todayStartMs) return true;
-      // Has a known past release date — not upcoming
-      return false;
-    }
-  }
-  // Future or current year with no specific date, or explicitly no release date
-  if (typeof book.publish_year === 'number') return book.publish_year >= currentYear;
-  return book.no_release_date === true;
-};
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
@@ -997,7 +983,7 @@ export const MonitoredPage = ({
   }, [monitoredBooksRows, monitoredBooksSortBy, monitoredBooksSortAsc]);
 
   const upcomingMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
+    return monitoredBooksForTable.filter((book) => isMonitoredBookUpcoming(book, _todayStartMs, _currentYear));
   }, [monitoredBooksForTable]);
 
   const filteredUpcomingByTime = useMemo(() => {
@@ -1008,7 +994,7 @@ export const MonitoredPage = ({
   }, [upcomingMonitoredBooksForTable, upcomingTimeFilter]);
 
   const regularMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => !isUpcomingMonitoredBook(book, _todayStartMs, _currentYear));
+    return monitoredBooksForTable.filter((book) => !isMonitoredBookUpcoming(book, _todayStartMs, _currentYear));
   }, [monitoredBooksForTable]);
 
   const filteredRegularMonitoredBooksByAvailability = useMemo(() => {

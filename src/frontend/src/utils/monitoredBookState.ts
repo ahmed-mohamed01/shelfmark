@@ -74,6 +74,28 @@ const MISSING_SEARCH_STATUSES = new Set(['no_match', 'below_cutoff', 'download_f
  *   missing   — monitored, searched, all attempts failed (no_match / below_cutoff / download_failed / error)
  *   wanted    — monitored, not yet found (never searched, queued, or not yet released)
  */
+/**
+ * Whether a monitored book is upcoming (unreleased).
+ * True when release date is in the future, year is current/future, or no date is known (TBA).
+ */
+export const isMonitoredBookUpcoming = (
+  book: { release_date?: string | null; publish_year?: number | null; no_release_date?: boolean },
+  todayStartMs: number,
+  currentYear: number,
+): boolean => {
+  if (typeof book.release_date === 'string' && book.release_date.trim()) {
+    const parsed = Date.parse(book.release_date);
+    if (Number.isFinite(parsed)) {
+      const releaseDay = new Date(parsed);
+      releaseDay.setHours(0, 0, 0, 0);
+      if (releaseDay.getTime() >= todayStartMs) return true;
+      return false;
+    }
+  }
+  if (typeof book.publish_year === 'number') return book.publish_year >= currentYear;
+  return book.no_release_date === true;
+};
+
 export const getFormatStatus = (
   book: MonitoredBookStateLike,
   format: 'ebook' | 'audiobook',
