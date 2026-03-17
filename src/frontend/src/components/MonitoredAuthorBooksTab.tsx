@@ -57,7 +57,8 @@ const SEARCH_DROPDOWN_OPTIONS: Array<{
   { contentType: 'audiobook', action: 'auto_search_download', label: 'Audiobook — Auto Search' },
 ];
 
-type AuthorBooksSort = 'series' | 'title' | 'date' | 'popularity' | 'rating';
+type AuthorBooksGroup = 'series' | 'year' | 'none';
+type AuthorBooksSort = 'series_name' | 'series' | 'title' | 'date' | 'popularity' | 'rating';
 type AuthorBooksViewMode = 'table' | 'compact';
 
 const AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN = 112;
@@ -353,9 +354,14 @@ export const MonitoredAuthorBooksTab = ({
   onMonitorBook,
 }: MonitoredAuthorBooksTabProps) => {
   // --- state ---
+  const [booksGroup, setBooksGroup] = useState<AuthorBooksGroup>(() => {
+    const saved = localStorage.getItem('authorBooksGroup');
+    if (saved === 'series' || saved === 'year' || saved === 'none') return saved;
+    return 'series';
+  });
   const [booksSort, setBooksSort] = useState<AuthorBooksSort>(() => {
     const saved = localStorage.getItem('authorBooksSort');
-    if (saved === 'series' || saved === 'title' || saved === 'date' || saved === 'popularity' || saved === 'rating') return saved;
+    if (saved === 'series_name' || saved === 'series' || saved === 'title' || saved === 'date' || saved === 'popularity' || saved === 'rating') return saved;
     // migrate old values
     if (saved === 'series_asc' || saved === 'series_desc') return 'series';
     if (saved === 'title_asc') return 'title';
@@ -539,6 +545,7 @@ export const MonitoredAuthorBooksTab = ({
   }, [monitoredBookRows]);
 
   // localStorage persistence
+  useEffect(() => { try { localStorage.setItem('authorBooksGroup', booksGroup); } catch { /* ignore */ } }, [booksGroup]);
   useEffect(() => { try { localStorage.setItem('authorBooksSort', booksSort); } catch { /* ignore */ } }, [booksSort]);
   useEffect(() => { try { localStorage.setItem('authorBooksSortAsc', String(booksSortAsc)); } catch { /* ignore */ } }, [booksSortAsc]);
   useEffect(() => { try { localStorage.setItem('authorBooksViewMode', booksViewMode); } catch { /* ignore */ } }, [booksViewMode]);
@@ -738,7 +745,8 @@ export const MonitoredAuthorBooksTab = ({
         if (bR !== aR) return dir * (bR - aR);
         return (a.title || '').localeCompare(b.title || '');
       }
-      if (booksSort === 'series') {
+      if (booksSort === 'series_name') {
+        // Within-group: always by position ascending
         const aPos = a.series_position ?? Number.POSITIVE_INFINITY;
         const bPos = b.series_position ?? Number.POSITIVE_INFINITY;
         if (aPos !== bPos) return aPos - bPos;
@@ -746,6 +754,16 @@ export const MonitoredAuthorBooksTab = ({
         if (ay != null && by != null && ay !== by) return ay - by;
         return (a.title || '').localeCompare(b.title || '');
       }
+      if (booksSort === 'series') {
+        // Within-group: by position, direction toggleable
+        const aPos = a.series_position ?? Number.POSITIVE_INFINITY;
+        const bPos = b.series_position ?? Number.POSITIVE_INFINITY;
+        if (aPos !== bPos) return dir * (aPos - bPos);
+        const ay = parseYear(a.year); const by = parseYear(b.year);
+        if (ay != null && by != null && ay !== by) return dir * (ay - by);
+        return (a.title || '').localeCompare(b.title || '');
+      }
+      // date
       const ay = parseYear(a.year); const by = parseYear(b.year);
       if (ay == null && by == null) return (a.title || '').localeCompare(b.title || '');
       if (ay == null) return 1;
@@ -754,7 +772,7 @@ export const MonitoredAuthorBooksTab = ({
     };
     // Series-aware sort: uses getSeriesPos so position reflects the current group.
     const makeSeriesGroupSort = (groupKey: string) => (a: Book, b: Book) => {
-      if (booksSort === 'series') {
+      if (booksSort === 'series_name') {
         const aPos = getSeriesPos(a, groupKey);
         const bPos = getSeriesPos(b, groupKey);
         if (aPos !== bPos) return aPos - bPos;
@@ -762,10 +780,19 @@ export const MonitoredAuthorBooksTab = ({
         if (ay != null && by != null && ay !== by) return ay - by;
         return (a.title || '').localeCompare(b.title || '');
       }
+      if (booksSort === 'series') {
+        const aPos = getSeriesPos(a, groupKey);
+        const bPos = getSeriesPos(b, groupKey);
+        if (aPos !== bPos) return dir * (aPos - bPos);
+        const ay = parseYear(a.year); const by = parseYear(b.year);
+        if (ay != null && by != null && ay !== by) return dir * (ay - by);
+        return (a.title || '').localeCompare(b.title || '');
+      }
       return withinGroupSort(a, b);
     };
 
-    if (booksSort === 'date') {
+    // --- Grouping ---
+    if (booksGroup === 'year') {
       const yearMap = new Map<string, Book[]>();
       for (const b of books) {
         const year = parseYear(b.year);
@@ -775,7 +802,9 @@ export const MonitoredAuthorBooksTab = ({
       }
       const unknown = yearMap.get('__unknown__') ?? [];
       yearMap.delete('__unknown__');
-      const years = Array.from(yearMap.keys()).sort((a, b) => booksSortAsc ? Number(a) - Number(b) : Number(b) - Number(a));
+      // Year group order: only the "date" sort controls direction; other sorts keep newest-first.
+      const yearAsc = booksSort === 'date' ? booksSortAsc : false;
+      const years = Array.from(yearMap.keys()).sort((a, b) => yearAsc ? Number(a) - Number(b) : Number(b) - Number(a));
       const groups = years.map((year) => {
         const yearBooks = [...(yearMap.get(year) ?? [])];
         yearBooks.sort(withinGroupSort);
@@ -788,7 +817,12 @@ export const MonitoredAuthorBooksTab = ({
       return groups;
     }
 
-    // Group by series
+    if (booksGroup === 'none') {
+      const sorted = [...books].sort(withinGroupSort);
+      return [{ key: '__all__', title: '', books: sorted }];
+    }
+
+    // Group by series (default)
     const seriesMap = new Map<string, Book[]>();
     for (const book of books) {
       const primarySeriesKey = (book.series_name || '').trim() || '__standalone__';
@@ -807,12 +841,12 @@ export const MonitoredAuthorBooksTab = ({
     const standalone = seriesMap.get('__standalone__') ?? [];
     seriesMap.delete('__standalone__');
 
-    const seriesKeys = Array.from(seriesMap.keys());
-    const seriesSorted = (booksSort === 'series' && !booksSortAsc)
-      ? seriesKeys.sort((a, b) => b.localeCompare(a))
-      : seriesKeys.sort((a, b) => a.localeCompare(b));
+    // Series group order: "series_name" sort controls A→Z / Z→A; other sorts keep A→Z.
+    const seriesKeys = Array.from(seriesMap.keys()).sort((a, b) =>
+      booksSort === 'series_name' && !booksSortAsc ? b.localeCompare(a) : a.localeCompare(b)
+    );
 
-    const groups = seriesSorted.map((key) => {
+    const groups = seriesKeys.map((key) => {
       const gb = [...(seriesMap.get(key) ?? [])];
       gb.sort(makeSeriesGroupSort(key));
       return { key, title: key, books: gb };
@@ -823,7 +857,7 @@ export const MonitoredAuthorBooksTab = ({
       groups.push({ key: '__standalone__', title: 'Standalone', books: standalone });
     }
     return groups;
-  }, [books, booksSort, booksSortAsc, showBooksInMultipleSeries]);
+  }, [books, booksGroup, booksSort, booksSortAsc, showBooksInMultipleSeries]);
 
   const seriesFilterOptions = useMemo(() => {
     return groupedBooks
@@ -1539,15 +1573,32 @@ export const MonitoredAuthorBooksTab = ({
               </Dropdown>
               <Dropdown align="right" widthClassName="w-auto flex-shrink-0" panelClassName="w-48"
                 renderTrigger={({ isOpen, toggle }) => (
-                  <button type="button" onClick={toggle} className={`p-1.5 rounded-full transition-all duration-200 ${isOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`} aria-haspopup="listbox" aria-expanded={isOpen} title="Sort books">
+                  <button type="button" onClick={toggle} className={`p-1.5 rounded-full transition-all duration-200 ${isOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`} aria-haspopup="listbox" aria-expanded={isOpen} title="Sort & group books">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" /></svg>
                   </button>
                 )}
               >
                 {() => (
-                  <div role="listbox" aria-label="Sort books">
+                  <div>
+                    <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Group</div>
                     {([
-                      { key: 'series' as const, label: 'Series' },
+                      { key: 'series' as const, label: 'By Series' },
+                      { key: 'year' as const, label: 'By Year' },
+                      { key: 'none' as const, label: 'None' },
+                    ]).map(({ key, label }) => {
+                      const active = booksGroup === key;
+                      return (
+                        <button key={`group-${key}`} type="button" className={`w-full px-3 py-1.5 text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} onClick={() => setBooksGroup(key)}>
+                          <span>{label}</span>
+                          {active && <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                        </button>
+                      );
+                    })}
+                    <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                    <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Sort</div>
+                    {([
+                      { key: 'series_name' as const, label: 'Series Name' },
+                      { key: 'series' as const, label: 'Series Number' },
                       { key: 'title' as const, label: 'Title' },
                       { key: 'date' as const, label: 'Date' },
                       { key: 'popularity' as const, label: 'Popularity' },
@@ -1555,7 +1606,7 @@ export const MonitoredAuthorBooksTab = ({
                     ]).map(({ key, label }) => {
                       const active = booksSort === key;
                       return (
-                        <button key={key} type="button" className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} onClick={() => { if (active) { setBooksSortAsc((prev) => !prev); } else { setBooksSort(key); setBooksSortAsc(key !== 'popularity' && key !== 'rating'); } }} role="option" aria-selected={active}>
+                        <button key={`sort-${key}`} type="button" className={`w-full px-3 py-1.5 text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`} onClick={() => { if (active) { setBooksSortAsc((prev) => !prev); } else { setBooksSort(key); setBooksSortAsc(key !== 'popularity' && key !== 'rating'); } }} role="option" aria-selected={active}>
                           <span>{label}</span>
                           {active && (
                             <svg className={`w-3.5 h-3.5 transition-transform ${booksSortAsc ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
