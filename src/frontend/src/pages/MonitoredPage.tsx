@@ -1238,19 +1238,19 @@ export const MonitoredPage = ({
 
   const monitoredCompactGridStyle = useMemo(() => {
     if (monitoredViewMode !== 'compact') return undefined;
-    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.min(monitoredCompactMinWidth, 90);
+    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.max(80, monitoredCompactMinWidth - 30);
     return { gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` };
   }, [isDesktop, monitoredViewMode, monitoredCompactMinWidth]);
 
   const monitoredBooksGridStyle = useMemo(() => {
     if (monitoredBooksViewMode !== 'compact') return undefined;
-    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.min(monitoredCompactMinWidth, 90);
+    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.max(80, monitoredCompactMinWidth - 30);
     return { gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` };
   }, [isDesktop, monitoredBooksViewMode, monitoredCompactMinWidth]);
 
   const searchCompactGridStyle = useMemo(() => {
     if (authorViewMode !== 'compact') return undefined;
-    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.min(monitoredCompactMinWidth, 90);
+    const minWidth = isDesktop ? monitoredCompactMinWidth : Math.max(80, monitoredCompactMinWidth - 30);
     return { gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` };
   }, [isDesktop, authorViewMode, monitoredCompactMinWidth]);
 
