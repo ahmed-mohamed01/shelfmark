@@ -2548,6 +2548,7 @@ export const MonitoredPage = ({
               defaultReleaseContentType={authorDetailsEffectiveDefaultContentType}
               defaultReleaseActionEbook={authorDetailsEffectiveDefaultActionEbook}
               defaultReleaseActionAudiobook={authorDetailsEffectiveDefaultActionAudiobook}
+              releaseCombinedMode={releaseCombinedMode}
               initialBooksQuery={authorDetailsInitialBooksQuery || undefined}
               initialBookProvider={authorDetailsInitialBookProvider}
               initialBookProviderId={authorDetailsInitialBookProviderId}

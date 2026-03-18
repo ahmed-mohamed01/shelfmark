@@ -326,6 +326,7 @@ export interface MonitoredAuthorBooksTabProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  releaseCombinedMode?: boolean;
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
   showBooksInMultipleSeries?: boolean;
   onFallbackPhotoChange?: (url: string | null) => void;
@@ -349,6 +350,7 @@ export const MonitoredAuthorBooksTab = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  releaseCombinedMode = false,
   renderEmbeddedSearch,
   showBooksInMultipleSeries = true,
   onFallbackPhotoChange,
@@ -1402,15 +1404,25 @@ export const MonitoredAuthorBooksTab = ({
       <div className="inline-flex items-stretch rounded-lg border border-emerald-500/40">
         <button type="button" onClick={() => { if (!onGetReleases) { setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)); return; } void triggerReleaseSearch(book, defaultContentType, defaultAction); }} className="inline-flex items-center justify-center h-8 w-8 text-emerald-600 dark:text-emerald-400 hover-action" aria-label={`${primaryLabel} for ${book.title || 'this book'}`} title={primaryLabel}>
           <span className="relative inline-flex items-center justify-center">
-            {defaultContentType === 'audiobook' ? (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12a7.5 7.5 0 1 1 15 0v6a1.5 1.5 0 0 1-1.5 1.5h-.75A2.25 2.25 0 0 1 15 17.25v-3A2.25 2.25 0 0 1 17.25 12h2.25m-15 0H6.75A2.25 2.25 0 0 1 9 14.25v3A2.25 2.25 0 0 1 6.75 19.5H6A1.5 1.5 0 0 1 4.5 18v-6Z" /></svg>
+            {releaseCombinedMode ? (
+              /* Combined: open book with audio waves from top-right */
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                {/* Open book — full outline */}
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 8.5A7 7 0 0 0 5.3 7C4.5 7 3.7 7.13 3 7.38v11.5c.7-.25 1.5-.38 2.3-.38 1.8 0 3.4.67 4.7 1.8m0-11.8A7 7 0 0 1 14.7 7c.8 0 1.5.1 2.1.3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 8.5v11.8" />
+                {/* Audio waves */}
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.5 5.5a5.5 5.5 0 0 1 0 9" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20.5 3a10 10 0 0 1 0 14" />
+              </svg>
+            ) : defaultContentType === 'audiobook' ? (
+              <svg className="w-[1.125rem] h-[1.125rem]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" /></svg>
             ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75A2.25 2.25 0 0 1 6.75 4.5h4.5A2.25 2.25 0 0 1 13.5 6.75v12A2.25 2.25 0 0 0 11.25 16.5h-4.5A2.25 2.25 0 0 0 4.5 18.75v-12Zm9 0A2.25 2.25 0 0 1 15.75 4.5h1.5A2.25 2.25 0 0 1 19.5 6.75v12a2.25 2.25 0 0 0-2.25-2.25h-1.5A2.25 2.25 0 0 0 13.5 18.75v-12Z" /></svg>
+              <svg className="w-[1.125rem] h-[1.125rem]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
             )}
             {isAutoDefault ? (
-              <svg className="w-2.5 h-2.5 absolute -right-1 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v10.5m0 0 3-3m-3 3-3-3" /></svg>
+              <svg className="w-2.5 h-2.5 absolute -right-1.5 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
             ) : (
-              <svg className="w-2.5 h-2.5 absolute -right-1 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z" /></svg>
+              <svg className="w-2.5 h-2.5 absolute -right-1.5 -bottom-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z" /></svg>
             )}
           </span>
         </button>

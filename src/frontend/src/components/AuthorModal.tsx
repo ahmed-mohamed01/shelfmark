@@ -31,6 +31,7 @@ interface AuthorModalProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  releaseCombinedMode?: boolean;
   initialBooksQuery?: string;
   initialBookProvider?: string | null;
   initialBookProviderId?: string | null;
@@ -52,6 +53,7 @@ export const AuthorModal = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  releaseCombinedMode = false,
   initialBooksQuery,
   initialBookProvider,
   initialBookProviderId,
@@ -448,6 +450,7 @@ export const AuthorModal = ({
                 defaultReleaseContentType={defaultReleaseContentType}
                 defaultReleaseActionEbook={defaultReleaseActionEbook}
                 defaultReleaseActionAudiobook={defaultReleaseActionAudiobook}
+                releaseCombinedMode={releaseCombinedMode}
                 renderEmbeddedSearch={renderEmbeddedSearch}
                 showBooksInMultipleSeries={showBooksInMultipleSeries}
                 onFallbackPhotoChange={setFallbackAuthorPhoto}
