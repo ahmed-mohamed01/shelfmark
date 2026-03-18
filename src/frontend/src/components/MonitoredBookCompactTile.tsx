@@ -26,6 +26,8 @@ interface MonitoredBookCompactTileProps {
   isDimmed?: boolean;
   /** Show an upcoming/unreleased indicator on the cover */
   isUpcoming?: boolean;
+  onEbookSearch?: () => void;
+  onAudiobookSearch?: () => void;
 }
 
 export const MonitoredBookCompactTile = ({
@@ -49,6 +51,8 @@ export const MonitoredBookCompactTile = ({
   showPopularityLine = false,
   isDimmed = false,
   isUpcoming = false,
+  onEbookSearch,
+  onAudiobookSearch,
 }: MonitoredBookCompactTileProps) => {
   const topLeftOverlay = onToggleSelect ? (
     <button
@@ -88,11 +92,11 @@ export const MonitoredBookCompactTile = ({
   const bottomRightOverlay = (ebookStatus || audiobookStatus) ? (
     <>
       {sameStatus ? (
-        <CombinedFormatBadge status={ebookStatus} compact />
+        <CombinedFormatBadge status={ebookStatus} compact onEbookClick={onEbookSearch ? (e) => { e.stopPropagation(); onEbookSearch(); } : undefined} onAudiobookClick={onAudiobookSearch ? (e) => { e.stopPropagation(); onAudiobookSearch(); } : undefined} />
       ) : (
         <>
-          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} compact /> : null}
-          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} compact /> : null}
+          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} compact onClick={onEbookSearch ? (e) => { e.stopPropagation(); onEbookSearch(); } : undefined} /> : null}
+          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} compact onClick={onAudiobookSearch ? (e) => { e.stopPropagation(); onAudiobookSearch(); } : undefined} /> : null}
         </>
       )}
     </>

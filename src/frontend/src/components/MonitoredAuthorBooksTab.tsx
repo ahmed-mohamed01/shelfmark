@@ -1773,7 +1773,7 @@ export const MonitoredAuthorBooksTab = ({
                                 const isUpcoming = _bookRow ? isMonitoredBookUpcoming(_bookRow, _upcomingTodayMs, _upcomingCurrentYear) : false;
                                 return (
                                   <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms` }}>
-                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} isUpcoming={isUpcoming} />
+                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} isUpcoming={isUpcoming} onEbookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'ebook', 'interactive_search', { combined: false }); } : undefined} onAudiobookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'audiobook', 'interactive_search', { combined: false }); } : undefined} />
                                   </div>
                                 );
                               })}
@@ -1893,8 +1893,8 @@ export const MonitoredAuthorBooksTab = ({
                                       )}
                                       availabilitySlot={monitoredEntityId ? (
                                         <div className="flex items-center justify-center gap-1">
-                                          {tEbookStatus ? <FormatStatusBadge format="ebook" status={tEbookStatus} /> : null}
-                                          {tAudiobookStatus ? <FormatStatusBadge format="audiobook" status={tAudiobookStatus} /> : null}
+                                          {tEbookStatus ? <FormatStatusBadge format="ebook" status={tEbookStatus} onClick={onGetReleases ? () => { void triggerReleaseSearch(book, 'ebook', 'interactive_search', { combined: false }); } : undefined} /> : null}
+                                          {tAudiobookStatus ? <FormatStatusBadge format="audiobook" status={tAudiobookStatus} onClick={onGetReleases ? () => { void triggerReleaseSearch(book, 'audiobook', 'interactive_search', { combined: false }); } : undefined} /> : null}
                                         </div>
                                       ) : null}
                                       trailingSlot={monitoredEntityId ? (

@@ -12,6 +12,12 @@ const AudiobookIcon = ({ className, strokeWidth = 1.5 }: { className?: string; s
   </svg>
 );
 
+const DownloadIcon = ({ className, strokeWidth = 2 }: { className?: string; strokeWidth?: number }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={strokeWidth} stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+);
+
 const STATUS_CLASSES: Record<FormatAvailabilityStatus, string> = {
   available: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   wanted:    'bg-amber-500/15 text-amber-700 dark:text-amber-300',
@@ -35,22 +41,50 @@ interface FormatStatusBadgeProps {
   status: FormatAvailabilityStatus;
   /** Icon-only mode for compact tile overlays */
   compact?: boolean;
+  /** Click handler — triggers interactive search for this format */
+  onClick?: (e: React.MouseEvent) => void;
 }
 
-export const FormatStatusBadge = ({ format, status, compact = false }: FormatStatusBadgeProps) => {
+export const FormatStatusBadge = ({ format, status, compact = false, onClick }: FormatStatusBadgeProps) => {
   const Icon = format === 'ebook' ? EbookIcon : AudiobookIcon;
   const colorClass = STATUS_CLASSES[status];
   const label = STATUS_LABELS[status];
   const title = `${format === 'ebook' ? 'eBook' : 'Audiobook'}: ${label}`;
+  const clickable = Boolean(onClick);
 
   if (compact) {
     return (
-      <span
-        className={`inline-flex items-center justify-center p-1 rounded shadow ${STATUS_CLASSES_OPAQUE[status]}`}
-        title={title}
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!clickable}
+        className={`group/badge inline-flex items-center justify-center p-1 rounded shadow ${STATUS_CLASSES_OPAQUE[status]} ${clickable ? 'cursor-pointer hover:brightness-110 active:scale-95 transition-all' : ''}`}
+        title={clickable ? `Search ${format === 'ebook' ? 'eBook' : 'Audiobook'}` : title}
       >
-        <Icon className="w-4 h-4" strokeWidth={2.5} />
-      </span>
+        {clickable ? (
+          <>
+            <Icon className="w-4 h-4 block group-hover/badge:hidden" strokeWidth={2.5} />
+            <DownloadIcon className="w-4 h-4 hidden group-hover/badge:block" strokeWidth={2.5} />
+          </>
+        ) : (
+          <Icon className="w-4 h-4" strokeWidth={2.5} />
+        )}
+      </button>
+    );
+  }
+
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`group/badge inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold ${colorClass} hover:brightness-110 active:scale-95 transition-all cursor-pointer`}
+        title={`Search ${format === 'ebook' ? 'eBook' : 'Audiobook'}`}
+      >
+        <Icon className="w-3.5 h-3.5 flex-shrink-0 block group-hover/badge:hidden" />
+        <DownloadIcon className="w-3.5 h-3.5 flex-shrink-0 hidden group-hover/badge:block" />
+        {label}
+      </button>
     );
   }
 
@@ -65,31 +99,15 @@ export const FormatStatusBadge = ({ format, status, compact = false }: FormatSta
   );
 };
 
-/** Combined badge when both formats share the same status — shows both icons in one pill. */
-export const CombinedFormatBadge = ({ status, compact = false }: { status: FormatAvailabilityStatus; compact?: boolean }) => {
-  const label = STATUS_LABELS[status];
-  const title = `eBook & Audiobook: ${label}`;
-
-  if (compact) {
-    return (
-      <span
-        className={`inline-flex items-center gap-0.5 px-1 py-1 rounded shadow ${STATUS_CLASSES_OPAQUE[status]}`}
-        title={title}
-      >
-        <EbookIcon className="w-4 h-4" strokeWidth={2.5} />
-        <AudiobookIcon className="w-4 h-4" strokeWidth={2.5} />
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold ${STATUS_CLASSES[status]}`}
-      title={title}
-    >
-      <EbookIcon className="w-3.5 h-3.5 flex-shrink-0" />
-      <AudiobookIcon className="w-3.5 h-3.5 flex-shrink-0" />
-      {label}
-    </span>
-  );
-};
+/** Combined badge when both formats share the same status — renders two separate badges so each is independently clickable. */
+export const CombinedFormatBadge = ({ status, compact = false, onEbookClick, onAudiobookClick }: {
+  status: FormatAvailabilityStatus;
+  compact?: boolean;
+  onEbookClick?: (e: React.MouseEvent) => void;
+  onAudiobookClick?: (e: React.MouseEvent) => void;
+}) => (
+  <>
+    <FormatStatusBadge format="ebook" status={status} compact={compact} onClick={onEbookClick} />
+    <FormatStatusBadge format="audiobook" status={status} compact={compact} onClick={onAudiobookClick} />
+  </>
+);
