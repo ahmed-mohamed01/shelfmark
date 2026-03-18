@@ -45,28 +45,41 @@ def _resolve_global_monitor_user_id(user_db: UserDB) -> int:
     return int(created["id"])
 
 
-def _resolve_monitor_scope_user_id(
+def _resolve_visible_user_ids(
     user_db: UserDB,
     *,
     resolve_auth_mode: Callable[[], str],
-) -> tuple[int | None, tuple[Any, int] | None]:
+) -> tuple[int, int, list[int], tuple[Any, int] | None]:
+    """Resolve session user, global user, and the combined visible user_ids.
+
+    Returns (session_user_id, global_user_id, visible_user_ids, error_gate).
+    In auth-none mode session_user_id == global_user_id (single user).
+    """
     auth_mode = resolve_auth_mode()
+    global_user_id = _resolve_global_monitor_user_id(user_db)
+
     if auth_mode == "none":
         raw = session.get("db_user_id")
+        uid = None
         if raw is not None:
             try:
-                return int(raw), None
+                uid = int(raw)
             except (TypeError, ValueError):
                 pass
-        return _resolve_global_monitor_user_id(user_db), None
+        uid = uid or global_user_id
+        return uid, global_user_id, [uid] if uid == global_user_id else [uid, global_user_id], None
 
     raw = session.get("db_user_id")
     if raw is None:
-        return None, (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
+        return 0, global_user_id, [], (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
     try:
-        return int(raw), None
+        session_user_id = int(raw)
     except (TypeError, ValueError):
-        return None, (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
+        return 0, global_user_id, [], (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
+
+    if session_user_id == global_user_id:
+        return session_user_id, global_user_id, [session_user_id], None
+    return session_user_id, global_user_id, [session_user_id, global_user_id], None
 
 
 def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tuple[bool, str | None]:
@@ -141,6 +154,7 @@ def enrich_release_for_monitored(
     release_payload: dict[str, Any],
     monitored_db: MonitoredDB | None,
     db_user_id: int | None,
+    user_db: UserDB | None = None,
 ) -> dict[str, Any]:
     """Inject output overrides for monitored-entity downloads.
 
@@ -166,8 +180,17 @@ def enrich_release_for_monitored(
             and db_user_id is not None
             and ct in ("ebook", "audiobook")
         ):
+            # Build user_ids for lookup: session user + global user
+            lookup_ids = [int(db_user_id)]
+            if user_db is not None:
+                try:
+                    gid = _resolve_global_monitor_user_id(user_db)
+                    if gid != int(db_user_id):
+                        lookup_ids.append(gid)
+                except Exception:
+                    pass
             entity = monitored_db.get_monitored_entity(
-                user_id=int(db_user_id),
+                user_ids=lookup_ids,
                 entity_id=int(monitored_entity_id_int),
             )
             settings = entity.get("settings") if isinstance(entity, dict) else None
@@ -304,6 +327,43 @@ def register_monitored_routes(
     ws_manager: Any = None,
 ) -> None:
 
+    @app.before_request
+    def _ensure_auth_none_user():
+        """Auto-provision a db_user_id for auth-none mode (Sonarr-style single user).
+
+        Re-uses the same "global" user that _resolve_global_monitor_user_id
+        creates so that auth-none mode has exactly ONE user identity.
+        """
+        if resolve_auth_mode() != "none":
+            return None
+        if "db_user_id" in session:
+            return None
+        global_uid = _resolve_global_monitor_user_id(user_db)
+        session["user_id"] = "global"
+        session["db_user_id"] = global_uid
+        session["is_admin"] = True
+        return None
+
+    def _can_edit_entity(entity: dict, *, db_user_id: int, global_user_id: int) -> bool:
+        """Return True if the session user may edit/delete *entity*.
+
+        - Private entities (user_id == db_user_id) → owner can edit.
+        - Public entities (user_id == global_user_id) → creator OR admin can edit.
+        """
+        if int(entity["user_id"]) != global_user_id:
+            # Private entity — only the owner
+            return int(entity["user_id"]) == db_user_id
+        # Public entity — creator or admin
+        if session.get("is_admin"):
+            return True
+        created_by = (entity.get("settings") or {}).get("created_by")
+        if created_by is not None:
+            try:
+                return int(created_by) == db_user_id
+            except (TypeError, ValueError):
+                pass
+        return False
+
     _batch_sync_lock = threading.Lock()
 
     def _parse_schedule_times(raw_value: Any) -> list[str]:
@@ -334,7 +394,7 @@ def register_monitored_routes(
         if global_user and global_user.get("id") is not None:
             user_ids.add(int(global_user.get("id")))
         for uid in sorted(user_ids):
-            entities = monitored_db.list_monitored_entities(user_id=uid)
+            entities = monitored_db.list_monitored_entities(user_ids=[uid])
             for entity in entities:
                 if not bool(int(entity.get("enabled") or 0)):
                     continue
@@ -412,11 +472,11 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -424,7 +484,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["PATCH", "PUT"])
     def api_patch_monitored(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -432,9 +492,12 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
+
+        if not _can_edit_entity(entity, db_user_id=db_user_id, global_user_id=global_user_id):
+            return jsonify({"error": "You don't have permission to edit this author"}), 403
 
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -454,7 +517,7 @@ def register_monitored_routes(
 
         try:
             updated = monitored_db.create_monitored_entity(
-                user_id=db_user_id,
+                user_id=int(entity["user_id"]),
                 kind=str(entity.get("kind") or "author"),
                 provider=entity.get("provider"),
                 provider_id=entity.get("provider_id"),
@@ -473,8 +536,8 @@ def register_monitored_routes(
             )
         )
         if should_reapply_monitor_modes:
-            books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
-            existing_files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+            books = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
+            existing_files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
             if books and existing_files:
                 from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -484,7 +547,7 @@ def register_monitored_routes(
                 )
             apply_monitor_modes_for_books(
                 monitored_db,
-                db_user_id=db_user_id,
+                db_user_id=int(updated["user_id"]),
                 entity=updated,
                 books=books,
                 file_rows=existing_files,
@@ -497,11 +560,11 @@ def register_monitored_routes(
         import time as _time
         _t0 = _time.perf_counter()
 
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
-        rows = monitored_db.list_monitored_entities(user_id=db_user_id)
+        rows = monitored_db.list_monitored_entities(user_ids=visible_user_ids)
         _t_db = _time.perf_counter()
 
         # Enrich with cached author details (bio, source_url) if available
@@ -535,7 +598,7 @@ def register_monitored_routes(
             try:
                 from shelfmark.core.utils import transform_cover_url
                 cover_by_entity = monitored_db.get_best_book_cover_urls_batch(
-                    user_id=db_user_id, entity_ids=author_ids_needing_cover
+                    user_ids=visible_user_ids, entity_ids=author_ids_needing_cover
                 )
                 for row in rows:
                     entity_id = int(row.get("id", 0))
@@ -554,6 +617,10 @@ def register_monitored_routes(
             except Exception:
                 logger.warning("Failed to compute best book covers for fallback", exc_info=True)
         _t_covers = _time.perf_counter()
+
+        # Tag each entity with its visibility (public = global user, private = session user)
+        for row in rows:
+            row["visibility"] = "private" if row.get("user_id") == db_user_id and db_user_id != global_user_id else "public"
 
         resp = jsonify(rows)
         resp.headers["Server-Timing"] = (
@@ -583,7 +650,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/search/books", methods=["GET"])
     def api_search_monitored_author_books():
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -597,7 +664,7 @@ def register_monitored_routes(
         except (TypeError, ValueError):
             limit = 20
 
-        rows = monitored_db.search_monitored_author_books(user_id=db_user_id, query=query, limit=limit)
+        rows = monitored_db.search_monitored_author_books(user_ids=visible_user_ids, query=query, limit=limit)
         if rows:
             from shelfmark.core.monitored_files import (
                 expand_monitored_file_rows_for_equivalent_books,
@@ -614,7 +681,7 @@ def register_monitored_routes(
 
             availability_by_entity: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
             for entity_id, entity_rows in rows_by_entity.items():
-                files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+                files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
                 if not files:
                     availability_by_entity[entity_id] = {}
                     continue
@@ -658,7 +725,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored", methods=["POST"])
     def api_create_monitored():
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -692,9 +759,63 @@ def register_monitored_routes(
         if not isinstance(settings, dict):
             return jsonify({"error": "settings must be an object"}), 400
 
+        # Determine owner based on visibility toggle
+        visibility = str(data.get("visibility") or "public").strip().lower()
+        if visibility not in ("public", "private"):
+            visibility = "public"
+        # In auth-none mode, ignore visibility (single user)
+        if resolve_auth_mode() == "none":
+            owner_user_id = db_user_id
+            visibility = "public"
+        else:
+            owner_user_id = global_user_id if visibility == "public" else db_user_id
+
+        # Track who created a public entity so they retain edit rights
+        if visibility == "public" and db_user_id != global_user_id:
+            settings["created_by"] = db_user_id
+
+        # Auto-convert: if creating as public, check if any user has this as private.
+        # Preserve the original owner as created_by so they keep edit rights.
+        if visibility == "public" and provider and provider_id:
+            for uid_row in (user_db.list_users() or []):
+                uid_int = uid_row.get("id")
+                if uid_int is None or int(uid_int) == global_user_id:
+                    continue
+                try:
+                    existing_id = monitored_db.find_entity_id_by_provider(
+                        user_id=int(uid_int), kind=kind, provider=provider, provider_id=provider_id,
+                    )
+                    if existing_id is not None:
+                        monitored_db.reassign_entity_owner(
+                            entity_id=existing_id,
+                            old_user_id=int(uid_int),
+                            new_user_id=global_user_id,
+                        )
+                        # Stamp created_by onto the resulting global entity so
+                        # the original owner retains edit rights.
+                        target = monitored_db.find_entity_id_by_provider(
+                            user_id=global_user_id, kind=kind, provider=provider, provider_id=provider_id,
+                        )
+                        if target is not None:
+                            ent = monitored_db.get_monitored_entity(user_ids=[global_user_id], entity_id=target)
+                            if ent and not (ent.get("settings") or {}).get("created_by"):
+                                merged = dict(ent.get("settings") or {})
+                                merged["created_by"] = int(uid_int)
+                                monitored_db.create_monitored_entity(
+                                    user_id=global_user_id,
+                                    kind=kind,
+                                    provider=provider,
+                                    provider_id=provider_id,
+                                    name=ent["name"],
+                                    enabled=bool(int(ent.get("enabled") or 0)),
+                                    settings=merged,
+                                )
+                except Exception:
+                    pass
+
         try:
             row = monitored_db.create_monitored_entity(
-                user_id=db_user_id,
+                user_id=owner_user_id,
                 kind=kind,
                 provider=provider,
                 provider_id=provider_id,
@@ -705,18 +826,20 @@ def register_monitored_routes(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        row["visibility"] = visibility
+
         if kind == "book" and provider and provider_id:
             fetch_entity_metadata(
                 monitored_db,
                 entity=row,
-                user_id=db_user_id,
+                user_id=owner_user_id,
                 preferred_languages=_resolve_preferred_languages_for_user(user_db, db_user_id),
             )
         elif kind == "author":
             monitored_db.update_entity_sync_status(int(row["id"]), "syncing")
             start_author_background_sync(
                 int(row["id"]),
-                db_user_id,
+                owner_user_id,
                 monitored_db,
                 ws_manager=ws_manager,
                 user_db=user_db,
@@ -726,7 +849,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["DELETE"])
     def api_delete_monitored(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -734,25 +857,32 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        deleted = monitored_db.delete_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        # Check ownership: only admins can delete public (global) entities
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+        if not _can_edit_entity(entity, db_user_id=db_user_id, global_user_id=global_user_id):
+            return jsonify({"error": "You don't have permission to delete this author"}), 403
+
+        deleted = monitored_db.delete_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if not deleted:
             return jsonify({"error": "Not found"}), 404
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/books", methods=["GET"])
     def api_list_monitored_books(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
-        rows = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id)
+        rows = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
 
-        files = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id) or []
+        files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
         if rows and files:
             from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -788,7 +918,7 @@ def register_monitored_routes(
             pass  # Best-effort enrichment
 
         # Include sync_status and last_checked_at for the frontend
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         last_checked_at = entity.get("last_checked_at") if entity else None
         sync_status = entity.get("sync_status", "idle") if entity else "idle"
 
@@ -796,14 +926,14 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])
     def api_list_monitored_book_files(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
-        rows = monitored_db.list_monitored_book_files(user_id=db_user_id, entity_id=entity_id)
+        rows = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id)
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        books = monitored_db.list_monitored_books(user_id=db_user_id, entity_id=entity_id) or []
+        books = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
         if books and rows:
             from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
 
@@ -815,7 +945,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
     def api_list_monitored_book_history(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -831,7 +961,7 @@ def register_monitored_routes(
             limit = 50
 
         rows = monitored_db.list_monitored_book_download_history(
-            user_id=db_user_id,
+            user_ids=visible_user_ids,
             entity_id=entity_id,
             provider=provider,
             provider_book_id=provider_book_id,
@@ -840,7 +970,7 @@ def register_monitored_routes(
         if rows is None:
             return jsonify({"error": "Not found"}), 404
         attempt_rows = monitored_db.list_monitored_book_attempt_history(
-            user_id=db_user_id,
+            user_ids=visible_user_ids,
             entity_id=entity_id,
             provider=provider,
             provider_book_id=provider_book_id,
@@ -852,7 +982,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/auto-search-precheck", methods=["POST"])
     def api_monitored_auto_search_precheck(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -868,11 +998,15 @@ def register_monitored_routes(
         if not provider or not provider_book_id:
             return jsonify({"error": "provider and provider_book_id are required"}), 400
 
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
         try:
             skip, reason, detail = resolve_book_auto_search_precheck(
                 monitored_db,
                 entity_id=entity_id,
-                user_id=db_user_id,
+                user_id=int(entity["user_id"]),
                 provider=provider,
                 provider_book_id=provider_book_id,
                 content_type=content_type,
@@ -893,11 +1027,11 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/attempt", methods=["POST"])
     def api_record_monitored_book_attempt(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -931,7 +1065,7 @@ def register_monitored_routes(
                 match_score = None
 
         write_monitored_book_attempt(monitored_db,
-            user_id=db_user_id,
+            user_id=int(entity["user_id"]),
             entity_id=entity_id,
             provider=provider,
             provider_book_id=provider_book_id,
@@ -947,7 +1081,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -955,7 +1089,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
         if entity.get("kind") != "author":
@@ -970,6 +1104,8 @@ def register_monitored_routes(
         ebook_dir = str(settings.get("ebook_author_dir") or "").strip().rstrip("/")
         audiobook_dir = str(settings.get("audiobook_author_dir") or "").strip().rstrip("/")
 
+        entity_owner_id = int(entity["user_id"])
+
         # Filesystem scan — capture errors so ABS sync can still run afterwards
         _scan_result = None
         _scan_error_response: tuple[dict, int] | None = None
@@ -977,7 +1113,7 @@ def register_monitored_routes(
             _scan_result = update_file_availability(
                 monitored_db,
                 entity_id=entity_id,
-                user_id=db_user_id,
+                user_id=entity_owner_id,
                 allowed_roots=roots,
             )
         except MonitoredEntityNotFound:
@@ -996,7 +1132,7 @@ def register_monitored_routes(
                 _scan_error_response = ({"error": msg}, 400)
         except Exception as exc:
             logger.warning("Monitored scan failed entity_id=%s: %s", entity_id, exc)
-            record_scan_error(monitored_db, entity_id=entity_id, user_id=db_user_id, error=exc, ebook_dir=ebook_dir, audiobook_dir=audiobook_dir)
+            record_scan_error(monitored_db, entity_id=entity_id, user_id=entity_owner_id, error=exc, ebook_dir=ebook_dir, audiobook_dir=audiobook_dir)
             _scan_error_response = ({"error": "Scan failed"}, 500)
 
         # ABS sync — always runs as long as the entity exists, independent of FS scan
@@ -1006,7 +1142,7 @@ def register_monitored_routes(
                 monitored_db=monitored_db,
                 entity_id=entity_id,
                 entity_name=entity.get("name") or "",
-                user_id=db_user_id,
+                user_id=entity_owner_id,
             )
         except Exception as abs_exc:
             logger.warning("ABS sync failed entity_id=%s: %s", entity_id, abs_exc)
@@ -1020,7 +1156,7 @@ def register_monitored_routes(
                 monitored_db=monitored_db,
                 entity_id=entity_id,
                 entity_name=entity.get("name") or "",
-                user_id=db_user_id,
+                user_id=entity_owner_id,
             )
         except Exception as bl_exc:
             logger.warning("Booklore sync failed entity_id=%s: %s", entity_id, bl_exc)
@@ -1054,7 +1190,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])
     def api_update_monitored_books_monitor_flags(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1088,7 +1224,7 @@ def register_monitored_routes(
                 continue
 
             ok = monitored_db.set_monitored_book_monitor_flags(
-                user_id=db_user_id,
+                user_ids=visible_user_ids,
                 entity_id=entity_id,
                 provider=provider,
                 provider_book_id=provider_book_id,
@@ -1164,7 +1300,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/release-date-search")
     def api_release_date_search():
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1228,7 +1364,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/release-date", methods=["PATCH"])
     def api_set_release_date(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1242,7 +1378,7 @@ def register_monitored_routes(
             return jsonify({"error": "provider and provider_book_id required"}), 400
 
         ok = monitored_db.update_book_release_date(
-            user_id=db_user_id,
+            user_ids=visible_user_ids,
             entity_id=entity_id,
             provider=provider,
             provider_book_id=provider_book_id,
@@ -1256,7 +1392,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
     def api_search_monitored_entity(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1272,6 +1408,10 @@ def register_monitored_routes(
         if content_type not in {"ebook", "audiobook"}:
             return jsonify({"error": "content_type must be ebook or audiobook"}), 400
 
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
+        if entity is None:
+            return jsonify({"error": "Not found"}), 404
+
         from shelfmark.core.config import config as app_config
         threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
 
@@ -1279,7 +1419,7 @@ def register_monitored_routes(
             result = search_missing_books(
                 monitored_db,
                 entity_id=entity_id,
-                user_id=db_user_id,
+                user_id=int(entity["user_id"]),
                 content_type=content_type,
                 min_match_score=threshold / 100.0,
             )
@@ -1302,7 +1442,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
     def api_sync_monitored(entity_id: int):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1310,7 +1450,7 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
@@ -1319,7 +1459,7 @@ def register_monitored_routes(
                 return jsonify({"ok": True, "syncing": True, "already_syncing": True})
             monitored_db.update_entity_sync_status(entity_id, "syncing")
             start_author_background_sync(
-                entity_id, db_user_id, monitored_db, ws_manager=ws_manager, user_db=user_db
+                entity_id, int(entity["user_id"]), monitored_db, ws_manager=ws_manager, user_db=user_db
             )
             return jsonify({"ok": True, "syncing": True})
 
@@ -1331,7 +1471,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/<provider>/<provider_book_id>", methods=["DELETE"])
     def api_delete_monitored_book(entity_id: int, provider: str, provider_book_id: str):
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1339,9 +1479,12 @@ def register_monitored_routes(
         if not allowed:
             return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
 
-        entity = monitored_db.get_monitored_entity(user_id=db_user_id, entity_id=entity_id)
+        entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
             return jsonify({"error": "Not found"}), 404
+
+        if not _can_edit_entity(entity, db_user_id=db_user_id, global_user_id=global_user_id):
+            return jsonify({"error": "You don't have permission to modify this author"}), 403
 
         deleted = monitored_db.delete_monitored_book(
             entity_id=entity_id,
@@ -1356,7 +1499,7 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/sync-all", methods=["POST"])
     def api_sync_all_monitored():
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1618,7 +1761,7 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/search", methods=["GET"])
     def api_metadata_author_search():
         """Search for authors using the configured metadata provider."""
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1774,7 +1917,7 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/<provider>/<author_id>", methods=["GET"])
     def api_metadata_author(provider: str, author_id: str):
         """Get detailed author information from a metadata provider."""
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 
@@ -1899,7 +2042,7 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/<provider>/<author_id>/books", methods=["GET"])
     def api_metadata_author_books(provider: str, author_id: str):
         """Fetch an author's book list directly from a metadata provider (no DB writes)."""
-        db_user_id, gate = _resolve_monitor_scope_user_id(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
 

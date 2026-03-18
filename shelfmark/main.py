@@ -967,7 +967,7 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
 
         from shelfmark.core.monitored_routes import resolve_download_db_user_id, enrich_release_for_monitored
         db_user_id = resolve_download_db_user_id(session, get_auth_mode(), user_db)
-        release_payload = enrich_release_for_monitored(release_payload, monitored_db, db_user_id)
+        release_payload = enrich_release_for_monitored(release_payload, monitored_db, db_user_id, user_db=user_db)
 
         priority = data.get('priority', 0)
         # Per-user download overrides

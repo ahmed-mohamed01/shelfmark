@@ -73,7 +73,7 @@ def _sync_author_core(
     )
 
     # Re-load books after diff to pass accurate list to monitor modes
-    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
     # Enrich missing release dates via Google Books
     try:
@@ -83,11 +83,11 @@ def _sync_author_core(
             db, entity_id=entity_id, user_id=user_id, books=books,
         )
         if enriched_count:
-            books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+            books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
     except Exception as exc:
         logger.warning("Release date enrichment failed for entity %d: %s", entity_id, exc)
 
-    existing_files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+    existing_files = db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
 
     if books and existing_files:
         from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
@@ -121,7 +121,7 @@ def refresh_author(
         MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
         MonitoredProviderError: If the provider is unavailable.
     """
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None or entity.get("kind") != "author":
         raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
     return _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
@@ -175,7 +175,7 @@ def _run_author_sync(
     """Core sync routine — runs in background thread or called directly."""
     try:
         db.update_entity_sync_status(entity_id, "syncing")
-        entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+        entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
         if entity is None:
             db.update_entity_sync_status(entity_id, "error")
             return
@@ -238,7 +238,7 @@ def _run_author_sync(
                 img_cache = get_image_cache()
 
                 # Prefetch book covers
-                all_books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+                all_books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
                 for book in all_books:
                     cover_url = book.get("cover_url")
                     book_id = book.get("provider_book_id")
@@ -249,7 +249,7 @@ def _run_author_sync(
                             img_cache.fetch_and_cache(cache_id, cover_url)
 
                 # Prefetch the author's own photo if stored as a proxy URL
-                entity_row = db.get_monitored_entity(user_id=user_id, entity_id=entity_id) or {}
+                entity_row = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id) or {}
                 photo_proxy = (entity_row.get("settings") or {}).get("photo_url") or ""
                 if photo_proxy and "/api/covers/" in photo_proxy:
                     try:
@@ -266,7 +266,7 @@ def _run_author_sync(
         except Exception:
             pass
 
-        books_count = len(db.list_monitored_books(user_id=user_id, entity_id=entity_id) or [])
+        books_count = len(db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or [])
         db.update_entity_sync_status(entity_id, "idle")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
         complete_data: dict[str, Any] = {
@@ -464,8 +464,8 @@ def compute_book_availability(
         summarize_monitored_book_availability,
     )
 
-    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
-    files = db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+    books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
+    files = db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
 
     if books and files:
         files = expand_monitored_file_rows_for_equivalent_books(books=books, file_rows=files)
@@ -497,7 +497,7 @@ def _resolve_search_skip_reason(
     """
 
     history_rows = db.list_monitored_book_download_history(
-        user_id=user_id,
+        user_ids=[user_id],
         entity_id=entity_id,
         provider=provider,
         provider_book_id=provider_book_id,
@@ -545,7 +545,7 @@ def update_file_availability(
         scan_monitored_author_files,
     )
 
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None:
         raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
 
@@ -592,12 +592,12 @@ def update_file_availability(
 
     if ebook_path is None and audiobook_path is None:
         try:
-            clear_entity_matched_files(monitored_db=db, user_id=user_id, entity_id=entity_id)
+            clear_entity_matched_files(monitored_db=db, user_ids=[user_id], entity_id=entity_id)
         except Exception as exc:
             logger.warning("Failed clearing matched files entity_id=%s: %s", entity_id, exc)
         raise MonitoredPathError("directories_not_found")
 
-    books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
     scan_data = scan_monitored_author_files(
         monitored_db=db,
@@ -656,7 +656,7 @@ def record_scan_error(
     audiobook_dir: str,
 ) -> None:
     """Persist scan error to entity settings. Called from route on scan failure."""
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None:
         return
     settings = dict(entity.get("settings") or {})
@@ -708,7 +708,7 @@ def resolve_book_auto_search_precheck(
     if not normalized_provider or not normalized_provider_book_id:
         return False, None, None
 
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None:
         raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
 
@@ -748,7 +748,7 @@ def search_missing_books(
     from shelfmark.core.monitored_release_scoring import is_book_released
     from shelfmark.metadata_providers import BookMetadata
 
-    entity = db.get_monitored_entity(user_id=user_id, entity_id=entity_id)
+    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None or entity.get("kind") != "author":
         raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
 

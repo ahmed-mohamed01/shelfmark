@@ -277,6 +277,49 @@ class MonitoredDB:
                 conn.close()
 
     # =========================================================================
+    # Helpers
+    # =========================================================================
+
+    @staticmethod
+    def _user_id_clause(user_ids: list[int]) -> tuple[str, list[int]]:
+        """Build a ``user_id IN (?, …)`` fragment and matching params."""
+        if not user_ids:
+            return "1 = 0", []  # always-false — no user ids to match
+        if len(user_ids) == 1:
+            return "user_id = ?", list(user_ids)
+        placeholders = ",".join("?" * len(user_ids))
+        return f"user_id IN ({placeholders})", list(user_ids)
+
+    def _check_entity_access(
+        self,
+        conn: sqlite3.Connection,
+        entity_id: int,
+        user_ids: list[int],
+    ) -> dict | None:
+        """Return entity row if owned by any of *user_ids*, else None."""
+        clause, params = self._user_id_clause(user_ids)
+        row = conn.execute(
+            f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",
+            (entity_id, *params),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _entity_exists(
+        self,
+        conn: sqlite3.Connection,
+        entity_id: int,
+        user_ids: list[int],
+    ) -> bool:
+        """Return True if entity is owned by any of *user_ids*."""
+        clause, params = self._user_id_clause(user_ids)
+        return bool(
+            conn.execute(
+                f"SELECT 1 FROM monitored_entities WHERE id = ? AND {clause}",
+                (entity_id, *params),
+            ).fetchone()
+        )
+
+    # =========================================================================
     # Entity CRUD
     # =========================================================================
 
@@ -348,18 +391,19 @@ class MonitoredDB:
             finally:
                 conn.close()
 
-    def list_monitored_entities(self, *, user_id: int | None) -> List[Dict[str, Any]]:
-        """List monitored entities scoped to a user_id."""
+    def list_monitored_entities(self, *, user_ids: list[int]) -> List[Dict[str, Any]]:
+        """List monitored entities visible to any of *user_ids*."""
         conn = self._connect()
         try:
+            clause, params = self._user_id_clause(user_ids)
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM monitored_entities
-                WHERE user_id = ?
+                WHERE {clause}
                 ORDER BY created_at DESC, id DESC
                 """,
-                (user_id,),
+                params,
             ).fetchall()
             results: List[Dict[str, Any]] = []
             for row in rows:
@@ -378,13 +422,14 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def get_monitored_entity(self, *, user_id: int | None, entity_id: int) -> Optional[Dict[str, Any]]:
-        """Return a monitored entity by id (scoped to user_id)."""
+    def get_monitored_entity(self, *, user_ids: list[int], entity_id: int) -> Optional[Dict[str, Any]]:
+        """Return a monitored entity by id (visible to any of *user_ids*)."""
         conn = self._connect()
         try:
+            clause, params = self._user_id_clause(user_ids)
             row = conn.execute(
-                "SELECT * FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
+                f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",
+                (entity_id, *params),
             ).fetchone()
             if not row:
                 return None
@@ -484,14 +529,15 @@ class MonitoredDB:
             finally:
                 conn.close()
 
-    def delete_monitored_entity(self, *, user_id: int | None, entity_id: int) -> bool:
-        """Delete a monitored entity scoped to user_id."""
+    def delete_monitored_entity(self, *, user_ids: list[int], entity_id: int) -> bool:
+        """Delete a monitored entity owned by any of *user_ids*."""
         with self._lock:
             conn = self._connect()
             try:
+                clause, params = self._user_id_clause(user_ids)
                 cursor = conn.execute(
-                    "DELETE FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
+                    f"DELETE FROM monitored_entities WHERE id = ? AND {clause}",
+                    (entity_id, *params),
                 )
                 conn.commit()
                 return bool(cursor.rowcount)
@@ -528,19 +574,99 @@ class MonitoredDB:
             finally:
                 conn.close()
 
+    def find_entity_id_by_provider(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        provider: str | None,
+        provider_id: str | None,
+    ) -> int | None:
+        """Return the entity id for a given (user_id, kind, provider, provider_id), or None."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM monitored_entities WHERE user_id = ? AND kind = ? AND provider IS ? AND provider_id IS ?",
+                (user_id, kind, provider, provider_id),
+            ).fetchone()
+            return int(row["id"]) if row else None
+        finally:
+            conn.close()
+
+    def reassign_entity_owner(
+        self,
+        *,
+        entity_id: int,
+        old_user_id: int,
+        new_user_id: int,
+    ) -> bool:
+        """Move a monitored entity from *old_user_id* to *new_user_id*.
+
+        If *new_user_id* already owns the same (kind, provider, provider_id),
+        merges child rows into the existing entity and deletes the old one.
+        Returns True if the reassignment (or merge) succeeded.
+        """
+        if old_user_id == new_user_id:
+            return True
+        with self._lock:
+            conn = self._connect()
+            try:
+                src = conn.execute(
+                    "SELECT * FROM monitored_entities WHERE id = ? AND user_id = ?",
+                    (entity_id, old_user_id),
+                ).fetchone()
+                if not src:
+                    return False
+                src = dict(src)
+
+                # Check if new_user_id already owns the same entity
+                existing = conn.execute(
+                    "SELECT id FROM monitored_entities WHERE user_id = ? AND kind = ? AND provider IS ? AND provider_id IS ?",
+                    (new_user_id, src["kind"], src["provider"], src["provider_id"]),
+                ).fetchone()
+
+                if existing:
+                    # Merge: re-point child rows to existing entity, then delete old
+                    target_id = existing["id"]
+                    for table in (
+                        "monitored_books",
+                        "monitored_book_files",
+                        "monitored_book_download_history",
+                        "monitored_book_attempt_history",
+                    ):
+                        conn.execute(
+                            f"UPDATE OR IGNORE {table} SET entity_id = ? WHERE entity_id = ?",
+                            (target_id, entity_id),
+                        )
+                        # Delete any rows that conflicted (already exist under target)
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE entity_id = ?",
+                            (entity_id,),
+                        )
+                    conn.execute(
+                        "DELETE FROM monitored_entities WHERE id = ?",
+                        (entity_id,),
+                    )
+                else:
+                    # Simple reassign
+                    conn.execute(
+                        "UPDATE monitored_entities SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (new_user_id, entity_id),
+                    )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
     # =========================================================================
     # Book CRUD
     # =========================================================================
 
-    def list_monitored_books(self, *, user_id: int | None, entity_id: int) -> List[Dict[str, Any]] | None:
+    def list_monitored_books(self, *, user_ids: list[int], entity_id: int) -> List[Dict[str, Any]] | None:
         """List discovered books for a monitored entity (None if entity not found)."""
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return None
             rows = conn.execute(
                 """
@@ -555,18 +681,18 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def get_best_book_cover_url(self, *, user_id: int | None, entity_id: int) -> str | None:
+    def get_best_book_cover_url(self, *, user_ids: list[int], entity_id: int) -> str | None:
         """Return the cover_url of the most popular book for a monitored entity.
 
         Ranked by readers_count DESC, ratings_count DESC, rating DESC, title ASC.
         Returns None if the entity has no books with a cover_url.
         """
-        result = self.get_best_book_cover_urls_batch(user_id=user_id, entity_ids=[entity_id])
+        result = self.get_best_book_cover_urls_batch(user_ids=user_ids, entity_ids=[entity_id])
         entry = result.get(entity_id)
         return entry["cover_url"] if entry else None
 
     def get_best_book_cover_urls_batch(
-        self, *, user_id: int | None, entity_ids: list[int]  # noqa: ARG002
+        self, *, user_ids: list[int], entity_ids: list[int]  # noqa: ARG002
     ) -> dict[int, dict[str, str]]:
         """Return best cover_url (with provider info) for multiple entities in one query.
 
@@ -611,7 +737,7 @@ class MonitoredDB:
     def set_monitored_book_monitor_flags(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -634,11 +760,7 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     return False
 
                 params.extend([entity_id, provider, provider_book_id])
@@ -660,7 +782,7 @@ class MonitoredDB:
     def update_book_release_date(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -680,11 +802,7 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     return False
 
                 updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP", f"release_date_manual = {1 if release_date else 0}"]
@@ -734,7 +852,7 @@ class MonitoredDB:
     def set_monitored_book_search_status(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -753,11 +871,7 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     return False
 
                 cur = conn.execute(
@@ -779,7 +893,7 @@ class MonitoredDB:
     def insert_monitored_book_attempt_history(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -803,11 +917,8 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
+
                     return
 
                 conn.execute(
@@ -848,7 +959,7 @@ class MonitoredDB:
     def list_monitored_book_attempt_history(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -859,11 +970,7 @@ class MonitoredDB:
         safe_limit = max(1, min(int(limit or 50), 200))
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return None
 
             rows = conn.execute(
@@ -898,7 +1005,7 @@ class MonitoredDB:
     def list_monitored_failed_candidate_source_ids(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -912,11 +1019,7 @@ class MonitoredDB:
 
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return set()
 
             rows = conn.execute(
@@ -946,7 +1049,7 @@ class MonitoredDB:
     def search_monitored_author_books(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         query: str,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -960,10 +1063,18 @@ class MonitoredDB:
         like = f"%{normalized_query}%"
         prefix_like = f"{normalized_query}%"
 
+        if not user_ids:
+            return []
+
+        # Build user_id IN clause with named params for this named-param query
+        uid_names = [f":uid_{i}" for i in range(len(user_ids))]
+        uid_clause = f"me.user_id IN ({','.join(uid_names)})" if len(user_ids) > 1 else f"me.user_id = {uid_names[0]}"
+        uid_binds = {f"uid_{i}": uid for i, uid in enumerate(user_ids)}
+
         conn = self._connect()
         try:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     me.id AS entity_id,
                     me.name AS author_name,
@@ -982,7 +1093,7 @@ class MonitoredDB:
                 FROM monitored_entities me
                 JOIN monitored_books mb
                   ON mb.entity_id = me.id
-                WHERE me.user_id = :user_id
+                WHERE {uid_clause}
                   AND me.kind = 'author'
                   AND (
                     LOWER(mb.title) LIKE :like
@@ -1002,7 +1113,7 @@ class MonitoredDB:
                 LIMIT :limit
                 """,
                 {
-                    "user_id": user_id,
+                    **uid_binds,
                     "like": like,
                     "prefix_like": prefix_like,
                     "limit": safe_limit,
@@ -1015,7 +1126,7 @@ class MonitoredDB:
     def upsert_monitored_book(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str | None,
         provider_book_id: str | None,
@@ -1138,11 +1249,7 @@ class MonitoredDB:
             conn = self._connect()
             try:
                 # Ensure entity exists and is scoped correctly.
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     raise ValueError("Monitored entity not found")
 
                 conn.execute(
@@ -1334,7 +1441,7 @@ class MonitoredDB:
     def upsert_monitored_book_file(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str | None,
         provider_book_id: str | None,
@@ -1361,11 +1468,7 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     raise ValueError("Monitored entity not found")
 
                 if provider and provider_book_id and file_type:
@@ -1479,18 +1582,14 @@ class MonitoredDB:
     def list_monitored_book_files(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
     ) -> list[dict[str, Any]] | None:
         """List matched files for a monitored entity (None if entity not found)."""
 
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return None
 
             rows = conn.execute(
@@ -1549,7 +1648,7 @@ class MonitoredDB:
     def get_monitored_book_file_match(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -1558,11 +1657,7 @@ class MonitoredDB:
 
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return None
 
             row = conn.execute(
@@ -1588,7 +1683,7 @@ class MonitoredDB:
     def insert_monitored_book_download_history(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -1609,11 +1704,7 @@ class MonitoredDB:
         with self._lock:
             conn = self._connect()
             try:
-                exists = conn.execute(
-                    "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                    (entity_id, user_id),
-                ).fetchone()
-                if not exists:
+                if not self._entity_exists(conn, entity_id, user_ids):
                     return
 
                 conn.execute(
@@ -1654,7 +1745,7 @@ class MonitoredDB:
     def list_monitored_book_download_history(
         self,
         *,
-        user_id: int | None,
+        user_ids: list[int],
         entity_id: int,
         provider: str,
         provider_book_id: str,
@@ -1665,11 +1756,7 @@ class MonitoredDB:
         safe_limit = max(1, min(int(limit or 50), 200))
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM monitored_entities WHERE id = ? AND user_id = ?",
-                (entity_id, user_id),
-            ).fetchone()
-            if not exists:
+            if not self._entity_exists(conn, entity_id, user_ids):
                 return None
 
             rows = conn.execute(

@@ -212,7 +212,7 @@ def fetch_entity_metadata(
                 continue
 
             db.upsert_monitored_book(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=provider_name,
                 provider_book_id=book_id,
@@ -307,7 +307,7 @@ def fetch_entity_metadata(
 
     try:
         db.upsert_monitored_book(
-            user_id=user_id,
+            user_ids=[user_id],
             entity_id=entity_id,
             provider=provider_name,
             provider_book_id=entity_provider_id,
@@ -336,7 +336,7 @@ def fetch_entity_metadata(
         monitor_ebook = bool(settings.get("monitor_ebook", True))
         monitor_audiobook = bool(settings.get("monitor_audiobook", True))
         db.set_monitored_book_monitor_flags(
-            user_id=user_id,
+            user_ids=[user_id],
             entity_id=entity_id,
             provider=provider_name,
             provider_book_id=entity_provider_id,
@@ -378,7 +378,7 @@ def diff_sync_books(
     Returns:
         DiffResult with counts and titles of removed books.
     """
-    existing_books = db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    existing_books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
     result = DiffResult()
 
     # Collect books to flag as removed (single batch UPDATE instead of N queries)

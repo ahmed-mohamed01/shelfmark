@@ -446,7 +446,7 @@ def sync_booklore_availability_for_entity(
             )
         return {"bl_matched": 0, "bl_total": 0}
 
-    books = monitored_db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    books = monitored_db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
     matched = 0
     kept_paths: list[str] = []
@@ -499,7 +499,7 @@ def sync_booklore_availability_for_entity(
         file_type_raw = (item.get("primaryFileType") or "ebook").lower()
         try:
             monitored_db.upsert_monitored_book_file(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=book.get("provider"),
                 provider_book_id=book.get("provider_book_id"),

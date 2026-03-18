@@ -201,7 +201,7 @@ def enrich_release_dates(
 
         if match and match.get("release_date"):
             ok = db.update_book_release_date(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=provider,
                 provider_book_id=provider_book_id,

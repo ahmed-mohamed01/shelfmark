@@ -57,6 +57,7 @@ interface MonitoredAuthor {
   cached_bio?: string;
   cached_source_url?: string;
   last_error?: string | null;
+  visibility?: 'public' | 'private';
 }
 
 interface MonitoredBooksSourceEntity {
@@ -424,6 +425,7 @@ export const MonitoredPage = ({
     audiobookAuthorDir: string;
     monitorEbookMode: 'all' | 'missing' | 'upcoming';
     monitorAudiobookMode: 'all' | 'missing' | 'upcoming';
+    visibility: 'public' | 'private';
   }>(() => ({
     open: false,
     author: null,
@@ -431,6 +433,7 @@ export const MonitoredPage = ({
     audiobookAuthorDir: '',
     monitorEbookMode: 'missing',
     monitorAudiobookMode: 'missing',
+    visibility: 'public',
   }));
 
   const [bookMonitorModalState, setBookMonitorModalState] = useState<{
@@ -733,6 +736,7 @@ export const MonitoredPage = ({
         cached_bio: entity.cached_bio || undefined,
         cached_source_url: entity.cached_source_url || undefined,
         last_error: entity.last_error || undefined,
+        visibility: entity.visibility || 'public',
       };
     };
 
@@ -1862,6 +1866,7 @@ export const MonitoredPage = ({
       audiobookAuthorDir: audioSuggestion,
       monitorEbookMode: 'missing',
       monitorAudiobookMode: 'missing',
+      visibility: 'public',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
   }, [joinPath, monitoredAudiobookRoots, monitoredEbookRoots]);
@@ -1874,6 +1879,7 @@ export const MonitoredPage = ({
       audiobookAuthorDir: '',
       monitorEbookMode: 'missing',
       monitorAudiobookMode: 'missing',
+      visibility: 'public',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
   }, []);
@@ -1942,6 +1948,7 @@ export const MonitoredPage = ({
           monitor_ebook_mode: monitorModalState.monitorEbookMode,
           monitor_audiobook_mode: monitorModalState.monitorAudiobookMode,
         },
+        visibility: monitorModalState.visibility,
       });
 
       const learnedEbookRoot = ebookAuthorDir ? deriveRootFromAuthorDir(ebookAuthorDir) : '';
@@ -3654,6 +3661,34 @@ export const MonitoredPage = ({
                     </select>
                   </label>
                 </div>
+
+                {authRequired && (
+                  <label className="flex items-center gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMonitorModalState((prev) => ({
+                          ...prev,
+                          visibility: prev.visibility === 'public' ? 'private' : 'public',
+                        }))
+                      }
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                        monitorModalState.visibility === 'public'
+                          ? 'bg-emerald-500'
+                          : 'bg-gray-400 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
+                          monitorModalState.visibility === 'public' ? 'translate-x-4' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-xs text-gray-600 dark:text-gray-300">
+                      {monitorModalState.visibility === 'public' ? 'Shared with all users' : 'Private (only you)'}
+                    </span>
+                  </label>
+                )}
               </div>
 
               <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-muted)] px-5 py-4 bg-[var(--bg)] sm:bg-[var(--bg-soft)]">

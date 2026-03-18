@@ -178,7 +178,7 @@ def _record_scan_match(
         if prev is None or best_score > prev:
             best_by_book_and_type[match_key] = float(best_score)
             monitored_db.upsert_monitored_book_file(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=provider,
                 provider_book_id=provider_book_id,
@@ -780,7 +780,7 @@ def prune_stale_matched_files(
         return
 
     try:
-        existing_files = monitored_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+        existing_files = monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
         keep: list[str] = []
         for row in existing_files:
             path = row.get("path")
@@ -1033,7 +1033,7 @@ def scan_monitored_author_files(
         seen_paths=seen_paths,
     )
 
-    existing_files = monitored_db.list_monitored_book_files(user_id=user_id, entity_id=entity_id) or []
+    existing_files = monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
     expanded_existing_files = expand_monitored_file_rows_for_equivalent_books(
         books=books,
         file_rows=existing_files,
@@ -1161,7 +1161,7 @@ def apply_monitor_modes_for_books(
         monitor_audio = compute_monitor_flag(audio_mode, has_audio, explicit_release_date, today)
 
         monitored_db.set_monitored_book_monitor_flags(
-            user_id=db_user_id,
+            user_ids=[db_user_id],
             entity_id=entity_id,
             provider=provider,
             provider_book_id=provider_book_id,

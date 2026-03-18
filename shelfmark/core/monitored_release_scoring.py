@@ -865,7 +865,7 @@ def pre_process_releases(
     if user_db is not None:
         try:
             failed_source_pairs = user_db.list_monitored_failed_candidate_source_ids(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=provider,
                 provider_book_id=provider_book_id,

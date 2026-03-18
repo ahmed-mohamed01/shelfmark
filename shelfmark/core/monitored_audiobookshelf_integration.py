@@ -555,7 +555,7 @@ def sync_abs_availability_for_entity(
         )
         return {"abs_matched": 0, "abs_total": 0}
 
-    books = monitored_db.list_monitored_books(user_id=user_id, entity_id=entity_id) or []
+    books = monitored_db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
     # Filter out items ABS itself marks as unavailable — these are never matchable.
     # isInvalid: files present but ABS considers the metadata/files broken.
@@ -604,7 +604,7 @@ def sync_abs_availability_for_entity(
 
         try:
             monitored_db.upsert_monitored_book_file(
-                user_id=user_id,
+                user_ids=[user_id],
                 entity_id=entity_id,
                 provider=book.get("provider"),
                 provider_book_id=book.get("provider_book_id"),

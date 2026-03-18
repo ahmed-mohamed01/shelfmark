@@ -120,6 +120,7 @@ export interface MonitoredEntity {
   cached_bio?: string | null;
   cached_source_url?: string | null;
   best_book_cover_url?: string | null;
+  visibility?: 'public' | 'private';
 }
 
 export interface MonitoredBookRow {
@@ -172,6 +173,7 @@ export const createMonitoredEntity = async (payload: {
   provider?: string;
   provider_id?: string;
   settings?: Record<string, unknown>;
+  visibility?: 'public' | 'private';
 }): Promise<MonitoredEntity> => {
   return fetchJSON<MonitoredEntity>(`${API_BASE}/monitored`, {
     method: 'POST',

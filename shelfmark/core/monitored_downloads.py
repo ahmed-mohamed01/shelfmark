@@ -226,7 +226,7 @@ def _record_download_history(task: DownloadTask) -> None:
         return
 
     previous = _user_db.get_monitored_book_file_match(
-        user_id=int(user_id),
+        user_ids=[int(user_id)],
         entity_id=int(entity_id),
         provider=provider,
         provider_book_id=provider_book_id,
@@ -251,7 +251,7 @@ def _record_download_history(task: DownloadTask) -> None:
     downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
 
     kwargs: Dict[str, Any] = dict(
-        user_id=int(user_id),
+        user_ids=[int(user_id)],
         entity_id=int(entity_id),
         provider=provider,
         provider_book_id=provider_book_id,
@@ -317,7 +317,7 @@ def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] 
     failure_text = (error_message or task.status_message or "").strip() or None
 
     _user_db.insert_monitored_book_attempt_history(
-        user_id=int(user_id),
+        user_ids=[int(user_id)],
         entity_id=int(entity_id),
         provider=provider,
         provider_book_id=provider_book_id,
@@ -574,7 +574,7 @@ def write_monitored_book_attempt(
     """
     attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     user_db.set_monitored_book_search_status(
-        user_id=user_id,
+        user_ids=[user_id],
         entity_id=entity_id,
         provider=provider,
         provider_book_id=provider_book_id,
@@ -583,7 +583,7 @@ def write_monitored_book_attempt(
         searched_at=attempted_at_iso,
     )
     user_db.insert_monitored_book_attempt_history(
-        user_id=user_id,
+        user_ids=[user_id],
         entity_id=entity_id,
         provider=provider,
         provider_book_id=provider_book_id,
