@@ -953,6 +953,7 @@ export const MonitoredPage = ({
   const authorAvailabilityStats = useMemo(() => {
     const map = new Map<number, AuthorAvailabilityStats>();
     for (const book of monitoredBooksRows) {
+      if (isEnabledMonitoredFlag(book.hidden)) continue;
       let entry = map.get(book.author_entity_id);
       if (!entry) {
         entry = { ebookAvailable: 0, audiobookAvailable: 0, booksTotal: 0 };
@@ -967,9 +968,10 @@ export const MonitoredPage = ({
 
   const monitoredBooksForTable = useMemo(() => {
     const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
-      monitoredBookTracksEbook(book)
-      || monitoredBookTracksAudiobook(book)
-      || monitoredBookHasAnyAvailable(book)
+      !isEnabledMonitoredFlag(book.hidden)
+      && (monitoredBookTracksEbook(book)
+        || monitoredBookTracksAudiobook(book)
+        || monitoredBookHasAnyAvailable(book))
     ));
 
     const getReleaseSortKey = (book: MonitoredBookListRow): number => {
@@ -1235,6 +1237,16 @@ export const MonitoredPage = ({
       alive = false;
     };
   }, [monitoredBooksSources, monitoredBooksReloadTick]);
+
+  // Re-fetch books when navigating back from author page (hidden state may have changed)
+  const prevPathnameRef = useRef(location.pathname);
+  useEffect(() => {
+    const prev = prevPathnameRef.current;
+    prevPathnameRef.current = location.pathname;
+    if (prev !== location.pathname && location.pathname === '/monitored') {
+      setMonitoredBooksReloadTick((t) => t + 1);
+    }
+  }, [location.pathname]);
 
   const monitoredEntityIdByName = useMemo(() => {
     const map = new Map<string, number>();
@@ -1512,6 +1524,33 @@ export const MonitoredPage = ({
         )
       );
       console.error('Failed to update monitoring state:', e);
+    }
+  }, []);
+
+  const toggleSingleBookHidden = useCallback(async (book: MonitoredBookListRow) => {
+    const provider = (book.provider || '').trim();
+    const providerBookId = (book.provider_book_id || '').trim();
+    if (!provider || !providerBookId) return;
+    const wasHidden = isEnabledMonitoredFlag(book.hidden);
+    const newHidden = !wasHidden;
+    setMonitoredBooksRows((prev) =>
+      prev.map((r) =>
+        r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
+          ? { ...r, hidden: newHidden, ...(newHidden ? { monitor_ebook: 0, monitor_audiobook: 0 } : {}) }
+          : r
+      )
+    );
+    try {
+      await updateMonitoredBooksMonitorFlags(book.author_entity_id, { provider, provider_book_id: providerBookId, hidden: newHidden });
+    } catch (e) {
+      setMonitoredBooksRows((prev) =>
+        prev.map((r) =>
+          r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
+            ? { ...r, hidden: wasHidden, ...(newHidden ? { monitor_ebook: book.monitor_ebook, monitor_audiobook: book.monitor_audiobook } : {}) }
+            : r
+        )
+      );
+      console.error('Failed to update hidden state:', e);
     }
   }, []);
 
@@ -3755,6 +3794,8 @@ export const MonitoredPage = ({
           );
         }}
         onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
+        hidden={activeBookMonitorState.row ? isEnabledMonitoredFlag(activeBookMonitorState.row.hidden) : false}
+        onToggleHidden={activeBookMonitorState.row ? () => void toggleSingleBookHidden(activeBookMonitorState.row!) : undefined}
         onSetReleaseDate={activeBookEntityId != null && activeBookSourceRow ? (_row) => {
           setActiveBookEntityId(null);
           setActiveBookSourceRow(null);

@@ -29,9 +29,7 @@ export interface AuthorAvailabilityStats {
   booksTotal: number;
 }
 
-function getOverlayColor(available: number, total: number): string {
-  if (total === 0) return 'bg-gray-600/90 text-white';
-  if (available === total) return 'bg-emerald-600/90 text-white';
+function getOverlayColor(available: number): string {
   if (available > 0) return 'bg-emerald-600/90 text-white';
   return 'bg-gray-600/90 text-white';
 }
@@ -42,14 +40,14 @@ function AuthorFormatOverlay({ stats }: { stats: AuthorAvailabilityStats | undef
   return (
     <>
       <span
-        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(ebookAvailable, booksTotal)}`}
+        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(ebookAvailable)}`}
         title={`eBooks: ${ebookAvailable}/${booksTotal} available`}
       >
         <EbookIcon className="w-3 h-3" strokeWidth={2.5} />
         {ebookAvailable}/{booksTotal}
       </span>
       <span
-        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(audiobookAvailable, booksTotal)}`}
+        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(audiobookAvailable)}`}
         title={`Audiobooks: ${audiobookAvailable}/${booksTotal} available`}
       >
         <AudiobookIcon className="w-3 h-3" strokeWidth={2.5} />
@@ -94,8 +92,8 @@ export function MonitoredAuthorsView({
           const stats = typeof authorEntityId === 'number' ? authorAvailabilityStats.get(authorEntityId) : undefined;
           const parts: string[] = [];
           if (stats && stats.booksTotal > 0) {
-            parts.push(`📖 ${stats.ebookAvailable}/${stats.booksTotal}`);
-            parts.push(`🔊 ${stats.audiobookAvailable}/${stats.booksTotal}`);
+            parts.push(`eBook ${stats.ebookAvailable}/${stats.booksTotal}`);
+            parts.push(`Audiobook ${stats.audiobookAvailable}/${stats.booksTotal}`);
           } else {
             const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
             parts.push(booksCountLabel);

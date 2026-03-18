@@ -1215,13 +1215,16 @@ def register_monitored_routes(
 
             monitor_ebook = item.get("monitor_ebook") if "monitor_ebook" in item else None
             monitor_audiobook = item.get("monitor_audiobook") if "monitor_audiobook" in item else None
+            hidden = item.get("hidden") if "hidden" in item else None
 
             if monitor_ebook is not None:
                 monitor_ebook = bool(monitor_ebook)
             if monitor_audiobook is not None:
                 monitor_audiobook = bool(monitor_audiobook)
+            if hidden is not None:
+                hidden = bool(hidden)
 
-            if monitor_ebook is None and monitor_audiobook is None:
+            if monitor_ebook is None and monitor_audiobook is None and hidden is None:
                 continue
 
             ok = monitored_db.set_monitored_book_monitor_flags(
@@ -1231,6 +1234,7 @@ def register_monitored_routes(
                 provider_book_id=provider_book_id,
                 monitor_ebook=monitor_ebook,
                 monitor_audiobook=monitor_audiobook,
+                hidden=hidden,
             )
             if ok:
                 updated += 1

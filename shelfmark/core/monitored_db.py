@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     state TEXT NOT NULL DEFAULT 'discovered',
     monitor_ebook INTEGER NOT NULL DEFAULT 1,
     monitor_audiobook INTEGER NOT NULL DEFAULT 1,
+    hidden INTEGER NOT NULL DEFAULT 0,
     ebook_last_search_status TEXT,
     audiobook_last_search_status TEXT,
     ebook_last_search_at TIMESTAMP,
@@ -269,6 +270,11 @@ class MonitoredDB:
                     pass
                 try:
                     conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_manual INTEGER NOT NULL DEFAULT 0")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -743,11 +749,19 @@ class MonitoredDB:
         provider_book_id: str,
         monitor_ebook: bool | None = None,
         monitor_audiobook: bool | None = None,
+        hidden: bool | None = None,
     ) -> bool:
         """Update per-format monitor flags for a monitored book."""
 
         updates: list[str] = []
         params: list[Any] = []
+        if hidden is not None:
+            updates.append("hidden = ?")
+            params.append(1 if hidden else 0)
+            if hidden:
+                # Hiding a book automatically unmonitors it
+                monitor_ebook = False
+                monitor_audiobook = False
         if monitor_ebook is not None:
             updates.append("monitor_ebook = ?")
             params.append(1 if monitor_ebook else 0)

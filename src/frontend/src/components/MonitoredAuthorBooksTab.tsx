@@ -710,6 +710,18 @@ export const MonitoredAuthorBooksTab = ({
 
   // --- computed values ---
 
+  const hiddenBookKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of monitoredBookRows) {
+      if (isEnabledMonitoredFlag(row.hidden)) {
+        const provider = (row.provider || '').trim();
+        const providerId = (row.provider_book_id || '').trim();
+        if (provider && providerId) keys.add(`${provider}:${providerId}`);
+      }
+    }
+    return keys;
+  }, [monitoredBookRows]);
+
   const groupedBooks = useMemo(() => {
     const parseYear = (value?: string) => {
       const n = value ? Number.parseInt(value, 10) : Number.NaN;
@@ -794,10 +806,23 @@ export const MonitoredAuthorBooksTab = ({
       return withinGroupSort(a, b);
     };
 
+    // --- Split hidden books ---
+    const visibleBooks: Book[] = [];
+    const hiddenBooks: Book[] = [];
+    for (const b of books) {
+      const provider = (b.provider || '').trim();
+      const providerId = (b.provider_id || '').trim();
+      if (provider && providerId && hiddenBookKeys.has(`${provider}:${providerId}`)) {
+        hiddenBooks.push(b);
+      } else {
+        visibleBooks.push(b);
+      }
+    }
+
     // --- Grouping ---
     if (booksGroup === 'year') {
       const yearMap = new Map<string, Book[]>();
-      for (const b of books) {
+      for (const b of visibleBooks) {
         const year = parseYear(b.year);
         const key = year != null ? String(year) : '__unknown__';
         const list = yearMap.get(key);
@@ -817,17 +842,26 @@ export const MonitoredAuthorBooksTab = ({
         unknown.sort(withinGroupSort);
         groups.push({ key: '__unknown__', title: 'Unknown year', books: unknown });
       }
+      if (hiddenBooks.length > 0) {
+        hiddenBooks.sort(withinGroupSort);
+        groups.push({ key: '__hidden__', title: 'Hidden', books: hiddenBooks });
+      }
       return groups;
     }
 
     if (booksGroup === 'none') {
-      const sorted = [...books].sort(withinGroupSort);
-      return [{ key: '__all__', title: '', books: sorted }];
+      const sorted = [...visibleBooks].sort(withinGroupSort);
+      const groups = [{ key: '__all__', title: '', books: sorted }];
+      if (hiddenBooks.length > 0) {
+        hiddenBooks.sort(withinGroupSort);
+        groups.push({ key: '__hidden__', title: 'Hidden', books: hiddenBooks });
+      }
+      return groups;
     }
 
     // Group by series (default)
     const seriesMap = new Map<string, Book[]>();
-    for (const book of books) {
+    for (const book of visibleBooks) {
       const primarySeriesKey = (book.series_name || '').trim() || '__standalone__';
       const list = seriesMap.get(primarySeriesKey);
       if (list) list.push(book); else seriesMap.set(primarySeriesKey, [book]);
@@ -859,8 +893,12 @@ export const MonitoredAuthorBooksTab = ({
       standalone.sort(withinGroupSort);
       groups.push({ key: '__standalone__', title: 'Standalone', books: standalone });
     }
+    if (hiddenBooks.length > 0) {
+      hiddenBooks.sort(withinGroupSort);
+      groups.push({ key: '__hidden__', title: 'Hidden', books: hiddenBooks });
+    }
     return groups;
-  }, [books, booksGroup, booksSort, booksSortAsc, showBooksInMultipleSeries]);
+  }, [books, booksGroup, booksSort, booksSortAsc, showBooksInMultipleSeries, hiddenBookKeys]);
 
   const seriesFilterOptions = useMemo(() => {
     return groupedBooks
@@ -889,6 +927,12 @@ export const MonitoredAuthorBooksTab = ({
     }
     return map;
   }, [monitoredBookRows]);
+
+  const isBookHidden = useCallback((book: Book): boolean => {
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    return provider && providerId ? hiddenBookKeys.has(`${provider}:${providerId}`) : false;
+  }, [hiddenBookKeys]);
 
   const [_upcomingTodayMs, _upcomingCurrentYear] = useMemo(() => {
     const now = new Date();
@@ -1308,6 +1352,39 @@ export const MonitoredAuthorBooksTab = ({
       console.error('Failed to update monitoring state:', e);
     }
   }, [monitoredEntityId, getBookMonitorState]);
+
+  const toggleBookHidden = useCallback(async (book: Book) => {
+    if (!monitoredEntityId) return;
+    const provider = (book.provider || '').trim();
+    const providerId = (book.provider_id || '').trim();
+    if (!provider || !providerId) return;
+    // Snapshot current row state before optimistic update
+    let snapshot: Pick<MonitoredBookRow, 'hidden' | 'monitor_ebook' | 'monitor_audiobook'> | null = null;
+    let newHidden = false;
+    setMonitoredBookRows((prev) => {
+      const row = prev.find((r) => r.provider === provider && r.provider_book_id === providerId);
+      const wasHidden = row ? isEnabledMonitoredFlag(row.hidden) : false;
+      newHidden = !wasHidden;
+      if (row) snapshot = { hidden: row.hidden, monitor_ebook: row.monitor_ebook, monitor_audiobook: row.monitor_audiobook };
+      return prev.map((r) =>
+        r.provider === provider && r.provider_book_id === providerId
+          ? { ...r, hidden: newHidden, ...(newHidden ? { monitor_ebook: 0, monitor_audiobook: 0 } : {}) }
+          : r
+      );
+    });
+    try {
+      await updateMonitoredBooksMonitorFlags(monitoredEntityId, { provider, provider_book_id: providerId, hidden: newHidden });
+    } catch (e) {
+      setMonitoredBookRows((prev) =>
+        prev.map((r) =>
+          r.provider === provider && r.provider_book_id === providerId && snapshot
+            ? { ...r, hidden: snapshot.hidden, monitor_ebook: snapshot.monitor_ebook, monitor_audiobook: snapshot.monitor_audiobook }
+            : r
+        )
+      );
+      console.error('Failed to update hidden state:', e);
+    }
+  }, [monitoredEntityId]);
 
   const renderBookActionMenuContent = useCallback((
     book: Book,
@@ -1964,6 +2041,8 @@ export const MonitoredAuthorBooksTab = ({
         onMonitorBook={!monitoredEntityId ? onMonitorBook : undefined}
         onClose={() => setActiveBookDetails(null)}
         onToggleMonitor={activeBookDetails && monitoredEntityId ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
+        hidden={activeBookDetails ? isBookHidden(activeBookDetails) : false}
+        onToggleHidden={activeBookDetails && monitoredEntityId ? () => void toggleBookHidden(activeBookDetails) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
         onSetReleaseDate={monitoredEntityId ? (row) => { setActiveBookDetails(null); setReleaseDateBook(row); } : undefined}
         renderEmbeddedSearch={(book, contentType) => {

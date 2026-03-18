@@ -145,6 +145,7 @@ export interface MonitoredBookRow {
   readers_count?: number | null;
   monitor_ebook?: number | boolean;
   monitor_audiobook?: number | boolean;
+  hidden?: number | boolean;
   ebook_last_search_status?: string | null;
   audiobook_last_search_status?: string | null;
   ebook_last_search_at?: string | null;
@@ -524,6 +525,7 @@ export interface MonitoredBookMonitorFlagsPatch {
   provider_book_id: string;
   monitor_ebook?: boolean;
   monitor_audiobook?: boolean;
+  hidden?: boolean;
 }
 
 export const updateMonitoredBooksMonitorFlags = async (
