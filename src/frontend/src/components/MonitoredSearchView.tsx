@@ -127,9 +127,9 @@ export function MonitoredSearchView({
   );
 
   return (
-    <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl p-4">
+    <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100dvh - 8rem)' }}>
       {/* Single header row — tabs + controls, flex-wrap so controls fall below tabs on narrow screens */}
-      <div className="flex flex-wrap items-center mb-3 pb-2 border-b border-black/10 dark:border-white/10 gap-3 gap-y-2">
+      <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2 shrink-0 px-4 pt-4">
 
         {/* Left: back button + mobile label / desktop tab pills */}
         <div className="flex items-center gap-2 min-w-0">
@@ -243,7 +243,8 @@ export function MonitoredSearchView({
 
       </div>
 
-      {!authorQuery.trim() && !isSearching ? (
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4">
+        {!authorQuery.trim() && !isSearching ? (
         <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-4 py-8 text-center">
           <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Start a search from the top bar</div>
           <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">Use the header search input to find authors or books to monitor.</div>
@@ -367,6 +368,7 @@ export function MonitoredSearchView({
           </div>
         )
       )}
+      </div>
     </section>
   );
 }

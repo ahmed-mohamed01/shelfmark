@@ -2655,8 +2655,8 @@ export const MonitoredPage = ({
                 </div>
               </div>
             ) : (
-              <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl p-4">
-                <div className="flex flex-wrap items-center mb-3 pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2">
+              <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100dvh - 8rem)' }}>
+                <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2 shrink-0 px-4 pt-4">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
@@ -3278,38 +3278,40 @@ export const MonitoredPage = ({
                   </div>
                 </div>
 
-                {landingTab === 'authors' ? (
-                  <MonitoredAuthorsView
-                    viewMode={monitoredViewMode}
-                    authors={monitoredAuthorsForCards}
-                    entityIdByName={monitoredEntityIdByName}
-                    entityErrorById={monitoredEntityErrorById}
-                    selectedAuthorKeys={selectedMonitoredAuthorKeys}
-                    hasActiveSelection={hasActiveMonitoredAuthorSelection}
-                    compactGridStyle={monitoredCompactGridStyle}
-                    onNavigate={(author) => navigateToAuthorPage(author)}
-                    onEdit={(entityId, name) => void openEditAuthorModal(entityId, name)}
-                    onToggleSelect={toggleMonitoredAuthorSelection}
-                  />
-                ) : (
-                  <MonitoredBooksView
-                    isLoading={monitoredBooksLoading}
-                    isUpcomingTab={isUpcomingTab}
-                    activeBooksCount={activeBooksCount}
-                    viewMode={monitoredBooksViewMode}
-                    bookGroups={activeBookGroups}
-                    groupBy={monitoredBooksGroupBy}
-                    selectedBookKeys={selectedMonitoredBookKeys}
-                    booksGridStyle={monitoredBooksGridStyle}
-                    compactMinWidth={monitoredCompactMinWidth}
-                    loadError={monitoredBooksLoadError}
-                    showLoadError={landingTab === 'books' || landingTab === 'upcoming'}
-                    onOpenDetails={openMonitoredBookDetails}
-                    onToggleSelect={toggleMonitoredBookSelection}
-                    getSelectionKey={getMonitoredBookSelectionKey}
-                    renderBookActions={renderMonitoredBookActions}
-                  />
-                )}
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4">
+                  {landingTab === 'authors' ? (
+                    <MonitoredAuthorsView
+                      viewMode={monitoredViewMode}
+                      authors={monitoredAuthorsForCards}
+                      entityIdByName={monitoredEntityIdByName}
+                      entityErrorById={monitoredEntityErrorById}
+                      selectedAuthorKeys={selectedMonitoredAuthorKeys}
+                      hasActiveSelection={hasActiveMonitoredAuthorSelection}
+                      compactGridStyle={monitoredCompactGridStyle}
+                      onNavigate={(author) => navigateToAuthorPage(author)}
+                      onEdit={(entityId, name) => void openEditAuthorModal(entityId, name)}
+                      onToggleSelect={toggleMonitoredAuthorSelection}
+                    />
+                  ) : (
+                    <MonitoredBooksView
+                      isLoading={monitoredBooksLoading}
+                      isUpcomingTab={isUpcomingTab}
+                      activeBooksCount={activeBooksCount}
+                      viewMode={monitoredBooksViewMode}
+                      bookGroups={activeBookGroups}
+                      groupBy={monitoredBooksGroupBy}
+                      selectedBookKeys={selectedMonitoredBookKeys}
+                      booksGridStyle={monitoredBooksGridStyle}
+                      compactMinWidth={monitoredCompactMinWidth}
+                      loadError={monitoredBooksLoadError}
+                      showLoadError={landingTab === 'books' || landingTab === 'upcoming'}
+                      onOpenDetails={openMonitoredBookDetails}
+                      onToggleSelect={toggleMonitoredBookSelection}
+                      getSelectionKey={getMonitoredBookSelectionKey}
+                      renderBookActions={renderMonitoredBookActions}
+                    />
+                  )}
+                </div>
               </section>
             )
           ) : (
