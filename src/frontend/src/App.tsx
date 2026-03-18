@@ -716,9 +716,11 @@ function App() {
         setOnboardingOpen(true);
       }
 
-      // Navigate to Monitored view on initial load if configured
-      if (mode === 'initial' && cfg.default_to_monitored_view) {
-        navigate('/monitored');
+      // Cache the monitored-view preference for synchronous redirect on next load
+      if (cfg.default_to_monitored_view) {
+        localStorage.setItem('shelfmark_default_monitored', '1');
+      } else {
+        localStorage.removeItem('shelfmark_default_monitored');
       }
 
       // Determine the default sort based on search mode
@@ -2752,6 +2754,11 @@ function App() {
           )
         }
       />
+      <Route path="/" element={
+        localStorage.getItem('shelfmark_default_monitored') === '1'
+          ? <Navigate to="/monitored" replace />
+          : appElement
+      } />
       <Route path="/*" element={appElement} />
     </Routes>
 
