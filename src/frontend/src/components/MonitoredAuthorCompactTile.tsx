@@ -11,6 +11,7 @@ interface MonitoredAuthorCompactTileProps {
   subtitle?: string;
   metaLine?: string;
   footer?: ReactNode;
+  bottomRightOverlay?: ReactNode;
   onToggleSelect?: () => void;
   isSelected?: boolean;
   hasActiveSelection?: boolean;
@@ -26,6 +27,7 @@ export const MonitoredAuthorCompactTile = ({
   subtitle,
   metaLine,
   footer,
+  bottomRightOverlay,
   onToggleSelect,
   isSelected = false,
   hasActiveSelection = false,
@@ -72,6 +74,7 @@ export const MonitoredAuthorCompactTile = ({
       overflowMenu={overflowMenu}
       topLeftOverlay={topLeftOverlay}
       topRightOverlay={badge ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-semibold uppercase shadow">{badge}</span> : undefined}
+      bottomRightOverlay={bottomRightOverlay}
       subtitle={subtitle}
       metaLine={metaLine}
       footer={footer}

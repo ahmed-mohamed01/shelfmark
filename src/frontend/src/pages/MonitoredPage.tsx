@@ -32,7 +32,7 @@ import { BookDetailsModal } from '../components/BookDetailsModal';
 import ReleaseDateSearchModal from '../components/ReleaseDateSearchModal';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
-import { MonitoredAuthorsView } from '../components/MonitoredAuthorsView';
+import { MonitoredAuthorsView, type AuthorAvailabilityStats } from '../components/MonitoredAuthorsView';
 import { SlideSheet } from '../components/SlideSheet';
 import { withBasePath } from '../utils/basePath';
 import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
@@ -42,6 +42,7 @@ import {
   isEnabledMonitoredFlag,
   isMonitoredBookUpcoming,
   monitoredBookHasAnyAvailable,
+  monitoredBookHasFormatAvailable,
   monitoredBookTracksAudiobook,
   monitoredBookTracksEbook,
 } from '../utils/monitoredBookState';
@@ -948,6 +949,21 @@ export const MonitoredPage = ({
       },
     }));
   }, [monitored, monitoredSortBy, monitoredSortAsc]);
+
+  const authorAvailabilityStats = useMemo(() => {
+    const map = new Map<number, AuthorAvailabilityStats>();
+    for (const book of monitoredBooksRows) {
+      let entry = map.get(book.author_entity_id);
+      if (!entry) {
+        entry = { ebookAvailable: 0, audiobookAvailable: 0, booksTotal: 0 };
+        map.set(book.author_entity_id, entry);
+      }
+      entry.booksTotal++;
+      if (monitoredBookHasFormatAvailable(book, 'ebook')) entry.ebookAvailable++;
+      if (monitoredBookHasFormatAvailable(book, 'audiobook')) entry.audiobookAvailable++;
+    }
+    return map;
+  }, [monitoredBooksRows]);
 
   const monitoredBooksForTable = useMemo(() => {
     const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
@@ -3286,6 +3302,7 @@ export const MonitoredPage = ({
                       authors={monitoredAuthorsForCards}
                       entityIdByName={monitoredEntityIdByName}
                       entityErrorById={monitoredEntityErrorById}
+                      authorAvailabilityStats={authorAvailabilityStats}
                       selectedAuthorKeys={selectedMonitoredAuthorKeys}
                       hasActiveSelection={hasActiveMonitoredAuthorSelection}
                       compactGridStyle={monitoredCompactGridStyle}

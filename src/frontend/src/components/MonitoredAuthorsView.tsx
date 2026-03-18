@@ -3,6 +3,7 @@ import type { MetadataAuthor } from '../services/monitoredApi';
 import { MonitoredAuthorCompactTile } from './MonitoredAuthorCompactTile';
 import { MonitoredAuthorTableRow } from './AuthorTableRow';
 import { RowThumbnail } from './RowThumbnail';
+import { EbookIcon, AudiobookIcon } from './FormatStatusBadge';
 
 const ERROR_TYPE_LABELS: Record<string, string> = {
   network: 'Network Error',
@@ -22,11 +23,48 @@ function parseErrorDisplay(raw: string): { label: string; message: string } {
   return { label: 'Error', message: raw };
 }
 
+export interface AuthorAvailabilityStats {
+  ebookAvailable: number;
+  audiobookAvailable: number;
+  booksTotal: number;
+}
+
+function getOverlayColor(available: number, total: number): string {
+  if (total === 0) return 'bg-gray-600/90 text-white';
+  if (available === total) return 'bg-emerald-600/90 text-white';
+  if (available > 0) return 'bg-emerald-600/90 text-white';
+  return 'bg-gray-600/90 text-white';
+}
+
+function AuthorFormatOverlay({ stats }: { stats: AuthorAvailabilityStats | undefined }) {
+  if (!stats || stats.booksTotal === 0) return null;
+  const { ebookAvailable, audiobookAvailable, booksTotal } = stats;
+  return (
+    <>
+      <span
+        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(ebookAvailable, booksTotal)}`}
+        title={`eBooks: ${ebookAvailable}/${booksTotal} available`}
+      >
+        <EbookIcon className="w-3 h-3" strokeWidth={2.5} />
+        {ebookAvailable}/{booksTotal}
+      </span>
+      <span
+        className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded shadow text-[10px] font-semibold ${getOverlayColor(audiobookAvailable, booksTotal)}`}
+        title={`Audiobooks: ${audiobookAvailable}/${booksTotal} available`}
+      >
+        <AudiobookIcon className="w-3 h-3" strokeWidth={2.5} />
+        {audiobookAvailable}/{booksTotal}
+      </span>
+    </>
+  );
+}
+
 export interface MonitoredAuthorsViewProps {
   viewMode: 'table' | 'compact';
   authors: MetadataAuthor[];
   entityIdByName: Map<string, number>;
   entityErrorById: Map<number, string>;
+  authorAvailabilityStats: Map<number, AuthorAvailabilityStats>;
   selectedAuthorKeys: Record<string, boolean>;
   hasActiveSelection: boolean;
   compactGridStyle: CSSProperties | undefined;
@@ -40,6 +78,7 @@ export function MonitoredAuthorsView({
   authors,
   entityIdByName,
   entityErrorById,
+  authorAvailabilityStats,
   selectedAuthorKeys,
   hasActiveSelection,
   compactGridStyle,
@@ -51,9 +90,18 @@ export function MonitoredAuthorsView({
     return (
       <div key="table" className="flex flex-col gap-2">
         {authors.map((author, index) => {
-          const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
-          const subtitle = author.provider ? `${booksCountLabel} • ${author.provider}` : booksCountLabel;
           const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
+          const stats = typeof authorEntityId === 'number' ? authorAvailabilityStats.get(authorEntityId) : undefined;
+          const parts: string[] = [];
+          if (stats && stats.booksTotal > 0) {
+            parts.push(`📖 ${stats.ebookAvailable}/${stats.booksTotal}`);
+            parts.push(`🔊 ${stats.audiobookAvailable}/${stats.booksTotal}`);
+          } else {
+            const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
+            parts.push(booksCountLabel);
+          }
+          if (author.provider) parts.push(author.provider);
+          const subtitle = parts.join(' • ');
           const isSelected = typeof authorEntityId === 'number'
             ? Boolean(selectedAuthorKeys[String(authorEntityId)])
             : false;
@@ -100,9 +148,8 @@ export function MonitoredAuthorsView({
       style={compactGridStyle}
     >
       {authors.map((author, index) => {
-        const booksCountLabel = typeof author.stats?.books_count === 'number' ? `${author.stats.books_count} books` : 'Unknown';
-        const subtitle = booksCountLabel;
         const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
+        const stats = typeof authorEntityId === 'number' ? authorAvailabilityStats.get(authorEntityId) : undefined;
         const isSelected = typeof authorEntityId === 'number'
           ? Boolean(selectedAuthorKeys[String(authorEntityId)])
           : false;
@@ -117,7 +164,7 @@ export function MonitoredAuthorsView({
             <MonitoredAuthorCompactTile
               name={author.name || 'Unknown author'}
               thumbnail={<RowThumbnail url={author.photo_url} alt={author.name || 'Author photo'} kind="author" className="w-full aspect-[2/3]" />}
-              subtitle={subtitle}
+              bottomRightOverlay={<AuthorFormatOverlay stats={stats} />}
               metaLine={errorInfo ? `⚠ ${errorInfo.label}` : undefined}
               onOpenDetails={() => onNavigate({ ...author, monitoredEntityId: authorEntityId ?? null })}
               onEdit={typeof authorEntityId === 'number' ? () => onEdit(authorEntityId, author.name || 'Unknown author') : undefined}
