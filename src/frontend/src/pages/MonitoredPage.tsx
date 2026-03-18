@@ -1783,11 +1783,11 @@ export const MonitoredPage = ({
   }, []);
 
   // Wrap onGetReleases to inject combined flag from monitored settings.
-  // Skip for batch auto-downloads — those target a single content type.
+  // Skip when: batch auto-downloads, or caller explicitly set combined to false.
   const onGetReleasesWithCombined = useCallback(
     (book: Book, ct: ContentType, entityId?: number | null, action?: ReleasePrimaryAction, opts?: OpenReleasesOptions) => {
       if (!onGetReleases) return Promise.resolve();
-      const useCombined = releaseCombinedMode && !opts?.batchAutoDownload;
+      const useCombined = releaseCombinedMode && !opts?.batchAutoDownload && opts?.combined !== false;
       return onGetReleases(book, ct, entityId, action, useCombined ? { ...opts, combined: true } : opts);
     },
     [onGetReleases, releaseCombinedMode],

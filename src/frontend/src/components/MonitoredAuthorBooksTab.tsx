@@ -1323,7 +1323,7 @@ export const MonitoredAuthorBooksTab = ({
             {SEARCH_DROPDOWN_OPTIONS.map((option) => {
               const isDefault = option.contentType === defaultContentType && option.action === defaultAction;
               return (
-                <button type="button" key={`${option.contentType}:${option.action}`} onClick={() => { close(); void triggerReleaseSearch(book, option.contentType, option.action); }} className={`w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}>{option.label}</button>
+                <button type="button" key={`${option.contentType}:${option.action}`} onClick={() => { close(); void triggerReleaseSearch(book, option.contentType, option.action, { combined: false }); }} className={`w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap ${isDefault ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}>{option.label}</button>
               );
             })}
           </>
