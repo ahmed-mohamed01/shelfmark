@@ -207,6 +207,7 @@ export interface OpenReleasesOptions {
     contentType: ContentType;
   };
   suppressPerBookAutoSearchToasts?: boolean;
+  combined?: boolean;
 }
 
 export type RequestPolicyMode = 'download' | 'request_release' | 'request_book' | 'blocked';
@@ -215,7 +216,8 @@ export type ReleasePrimaryDefaultAction =
   | 'ebook_interactive_search'
   | 'ebook_auto_search_download'
   | 'audiobook_interactive_search'
-  | 'audiobook_auto_search_download';
+  | 'audiobook_auto_search_download'
+  | 'combined_interactive_search';
 
 export interface RequestPolicyDefaults {
   ebook: RequestPolicyMode;
@@ -291,6 +293,7 @@ export interface AppConfig {
   release_primary_content_type?: ContentType;
   release_primary_action_ebook?: ReleasePrimaryAction;
   release_primary_action_audiobook?: ReleasePrimaryAction;
+  release_combined_mode?: boolean;
   auto_download_min_match_score?: number;
   search_mode: SearchMode;
   metadata_sort_options: SortOption[];

@@ -212,6 +212,8 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
         "ebook_auto_search_download": ("ebook", "auto_search_download"),
         "audiobook_interactive_search": ("audiobook", "interactive_search"),
         "audiobook_auto_search_download": ("audiobook", "auto_search_download"),
+        "combined_interactive_search": ("combined", "interactive_search"),
+        "combined_auto_search_download": ("combined", "auto_search_download"),
     }
 
     default_content_type, default_action = default_action_map.get(default_action_raw, (None, None))  # type: ignore[assignment]
@@ -232,16 +234,15 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
         )
         default_content_type, default_action = fallback_content_type, fallback_action
 
+    is_combined = default_content_type == "combined"
+
     return {
         "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id),
         "release_primary_default_action": f"{default_content_type}_{default_action}",
-        "release_primary_content_type": default_content_type,
-        "release_primary_action_ebook": (
-            default_action if default_content_type == "ebook" else "interactive_search"
-        ),
-        "release_primary_action_audiobook": (
-            default_action if default_content_type == "audiobook" else "interactive_search"
-        ),
+        "release_primary_content_type": "ebook" if is_combined else default_content_type,
+        "release_combined_mode": is_combined,
+        "release_primary_action_ebook": default_action if is_combined or default_content_type == "ebook" else "interactive_search",
+        "release_primary_action_audiobook": default_action if is_combined or default_content_type == "audiobook" else "interactive_search",
         "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
         "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
         "show_books_in_multiple_series": app_config.get("SHOW_BOOKS_IN_MULTIPLE_SERIES", True),

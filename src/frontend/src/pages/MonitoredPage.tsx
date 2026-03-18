@@ -141,6 +141,7 @@ interface MonitoredPageProps {
   defaultReleaseContentType?: ContentType;
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
+  releaseCombinedMode?: boolean;
   showBooksInMultipleSeries?: boolean;
   metadataSortOptions?: SortOption[];
   status?: StatusData;
@@ -273,6 +274,7 @@ export const MonitoredPage = ({
   defaultReleaseContentType = 'ebook',
   defaultReleaseActionEbook = 'interactive_search',
   defaultReleaseActionAudiobook = 'interactive_search',
+  releaseCombinedMode = false,
   showBooksInMultipleSeries,
   metadataSortOptions,
   status,
@@ -1776,15 +1778,26 @@ export const MonitoredPage = ({
     setBookMonitorModalState({ book });
   }, []);
 
+  // Wrap onGetReleases to inject combined flag from monitored settings.
+  // Skip for batch auto-downloads — those target a single content type.
+  const onGetReleasesWithCombined = useCallback(
+    (book: Book, ct: ContentType, entityId?: number | null, action?: ReleasePrimaryAction, opts?: OpenReleasesOptions) => {
+      if (!onGetReleases) return Promise.resolve();
+      const useCombined = releaseCombinedMode && !opts?.batchAutoDownload;
+      return onGetReleases(book, ct, entityId, action, useCombined ? { ...opts, combined: true } : opts);
+    },
+    [onGetReleases, releaseCombinedMode],
+  );
+
   const runBookResultInteractiveSearch = useCallback((book: Book, contentType: ContentType) => {
-    if (!onGetReleases) {
+    if (!onGetReleasesWithCombined) {
       return;
     }
     const actionOverride = contentType === 'ebook'
       ? defaultReleaseActionEbook
       : defaultReleaseActionAudiobook;
-    void onGetReleases(book, contentType, null, actionOverride);
-  }, [defaultReleaseActionAudiobook, defaultReleaseActionEbook, onGetReleases]);
+    void onGetReleasesWithCombined(book, contentType, null, actionOverride);
+  }, [defaultReleaseActionAudiobook, defaultReleaseActionEbook, onGetReleasesWithCombined]);
 
   const isBookSearchResultMonitored = useCallback((book: Book): boolean => {
     const provider = (book.provider || '').trim().toLowerCase();
@@ -2524,7 +2537,7 @@ export const MonitoredPage = ({
               author={authorDetailsAuthor}
               displayMode="page"
               onClose={() => navigate('/monitored')}
-              onGetReleases={onGetReleases}
+              onGetReleases={onGetReleasesWithCombined}
               defaultReleaseContentType={authorDetailsEffectiveDefaultContentType}
               defaultReleaseActionEbook={authorDetailsEffectiveDefaultActionEbook}
               defaultReleaseActionAudiobook={authorDetailsEffectiveDefaultActionAudiobook}

@@ -374,6 +374,11 @@ def monitoring_general_settings():
                     "label": "Audiobook — Auto Search + Download",
                     "description": "Main button runs audiobook auto search and downloads when match score passes cutoff.",
                 },
+                {
+                    "value": "combined_interactive_search",
+                    "label": "Combined — Interactive Search",
+                    "description": "Main button opens a two-phase release picker: select an eBook release, then an audiobook release.",
+                },
             ],
             default="ebook_interactive_search",
         ),
