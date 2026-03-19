@@ -28,15 +28,18 @@ interface BookDetailsModalProps {
   onToggleHidden?: () => void;
 }
 
-type TabKey = 'files' | 'ebooks' | 'audiobooks';
+type TabKey = 'details' | 'files' | 'history' | 'ebooks' | 'audiobooks';
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
 export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate, hidden, onToggleHidden }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
-  const [tab, setTab] = useState<TabKey>('files');
+  const [tab, setTab] = useState<TabKey>('details');
+  const [showHeaderThumb, setShowHeaderThumb] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const coverSentinelRef = useRef<HTMLDivElement | null>(null);
+  const indicatorRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ left: 0, width: 0 });
 
   const [bookRow, setBookRow] = useState<MonitoredBookRow | null>(null);
   const [bookLoading, setBookLoading] = useState(false);
@@ -70,15 +73,20 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
     return () => document.removeEventListener('keydown', handleEscape);
   }, [handleClose]);
 
-  useEffect(() => {
+  const syncIndicator = useCallback(() => {
+    const el = indicatorRef.current;
     const activeButton = tabRefs.current[tab];
-    if (!activeButton) return;
+    if (!el || !activeButton) return;
     const containerRect = activeButton.parentElement?.getBoundingClientRect();
     const buttonRect = activeButton.getBoundingClientRect();
     if (containerRect) {
-      setTabIndicatorStyle({ left: buttonRect.left - containerRect.left, width: buttonRect.width });
+      el.style.left = `${buttonRect.left - containerRect.left}px`;
+      el.style.width = `${buttonRect.width}px`;
     }
   }, [tab]);
+
+  // Sync on tab change
+  useEffect(() => { syncIndicator(); }, [syncIndicator]);
 
   useEffect(() => {
     if (entityId != null && provider && providerBookId) {
@@ -202,9 +210,29 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
 
   useEffect(() => {
     if (entityId != null && provider && providerBookId) {
-      setTab('files');
+      setTab('details');
     }
   }, [entityId, provider, providerBookId]);
+
+  // Show cover thumb in header when Details tab cover scrolls out of view or on non-Details tabs
+  useEffect(() => {
+    if (tab !== 'details') {
+      setShowHeaderThumb(true);
+      return;
+    }
+    const sentinel = coverSentinelRef.current;
+    const container = scrollContainerRef.current;
+    if (!sentinel || !container) {
+      setShowHeaderThumb(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setShowHeaderThumb(!entry.isIntersecting),
+      { root: container, threshold: 0.1 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [tab]);
 
   useEffect(() => {
     setDescriptionExpanded(false);
@@ -566,10 +594,21 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
         aria-labelledby={titleId}
       >
         <div className="flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl">
-          <header className="flex items-start gap-3 border-b border-[var(--border-muted)] px-5 py-4">
-            <div className="flex-1 space-y-1 min-w-0">
+          {/* ── Header with animated cover thumbnail ── */}
+          <header className="flex items-center gap-3 border-b border-[var(--border-muted)] px-5 py-3">
+            <div
+              className="flex-shrink-0 overflow-hidden transition-all duration-200 ease-out"
+              style={{ width: showHeaderThumb ? 40 : 0, opacity: showHeaderThumb ? 1 : 0, marginRight: showHeaderThumb ? 0 : -12 }}
+            >
+              {embeddedSearchBook.preview ? (
+                <img src={embeddedSearchBook.preview} alt="" className="w-10 h-[56px] rounded-md object-cover object-top shadow-sm" />
+              ) : (
+                <div className="w-10 h-[56px] rounded-md border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[8px] text-gray-500">No cover</div>
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
               <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Book</p>
-              <h3 id={titleId} className="text-lg font-semibold leading-snug truncate">
+              <h3 id={titleId} className="text-base font-semibold leading-snug truncate">
                 {embeddedSearchBook.title || 'Untitled'}
               </h3>
               {bookRow?.state === 'removed_from_provider' && (
@@ -579,431 +618,246 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
               )}
               <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{embeddedSearchBook.author || 'Unknown author'}</p>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
-                aria-label="Close"
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="flex-shrink-0 rounded-full p-2 text-gray-500 transition-colors hover-action hover:text-gray-900 dark:hover:text-gray-100"
+              aria-label="Close"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </header>
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <div className="flex gap-4 px-5 py-4 border-b border-[var(--border-muted)]">
-              {embeddedSearchBook.preview ? (
-                <img
-                  src={embeddedSearchBook.preview}
-                  alt="Book cover"
-                  className="rounded-lg shadow-md object-cover object-top flex-shrink-0 w-20 h-[120px]"
-                />
-              ) : (
-                <div className="rounded-lg border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[10px] text-gray-500 flex-shrink-0 w-20 h-[120px]">
-                  No cover
-                </div>
-              )}
-
-              <div className="flex-1 min-w-0 space-y-2">
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
-                  {embeddedSearchBook.year ? <span>{embeddedSearchBook.year}</span> : null}
-                  {embeddedSearchBook.series_name ? (
-                    onNavigateToSeries ? (
-                      <button
-                        type="button"
-                        onClick={() => onNavigateToSeries(embeddedSearchBook.series_name!)}
-                        className="truncate text-emerald-600 dark:text-emerald-400 hover:underline text-left"
-                        title={`Go to ${embeddedSearchBook.series_name} series`}
-                      >
-                        {embeddedSearchBook.series_position != null ? (
-                          <>#{ embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>
-                        ) : (
-                          <>Part of {embeddedSearchBook.series_name}</>
-                        )}
-                      </button>
-                    ) : (
-                      <span className="truncate">
-                        {embeddedSearchBook.series_position != null ? (
-                          <>#{ embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>
-                        ) : (
-                          <>Part of {embeddedSearchBook.series_name}</>
-                        )}
-                      </span>
-                    )
-                  ) : null}
-                  {embeddedSearchBook.additional_series && embeddedSearchBook.additional_series.length > 0 ? (
-                    embeddedSearchBook.additional_series.map((s: { name: string; position?: number; count?: number }) => {
-                      const seriesKey = `${s.name}-${s.position ?? ''}`;
-                      const label = s.position != null ? (
-                        <>#{ s.position}{s.count != null ? `/${s.count}` : ''} in {s.name}</>
-                      ) : (
-                        <>Part of {s.name}</>
-                      );
-                      return onNavigateToSeries ? (
-                        <button
-                          key={seriesKey}
-                          type="button"
-                          onClick={() => onNavigateToSeries(s.name)}
-                          className="truncate text-sky-600 dark:text-sky-400 hover:underline text-left"
-                          title={`Go to ${s.name} series`}
-                        >
-                          {label}
-                        </button>
-                      ) : (
-                        <span key={seriesKey} className="truncate">{label}</span>
-                      );
-                    })
-                  ) : null}
-                  {matchedFileTypes.length > 0 ? (
-                    <span className="inline-flex items-center gap-1">
-                      {matchedFileTypes.slice(0, 3).map((t) => (
-                        <span
-                          key={t}
-                          className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}
-                        >
-                          {t.toUpperCase()}
-                        </span>
-                      ))}
-                    </span>
+          {/* ── Sticky monitoring strip ── */}
+          {entityId != null ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-2 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Available:</span>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${hasEbookFile ? 'bg-blue-500/20 text-blue-700 dark:text-blue-300' : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'}`}>
+                  {hasEbookFile ? (
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
                   ) : (
-                    <span className="text-gray-500 dark:text-gray-400">No matched files</span>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
                   )}
+                  eBook
+                </span>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${hasAudiobookFile ? 'bg-purple-500/20 text-purple-700 dark:text-purple-300' : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'}`}>
+                  {hasAudiobookFile ? (
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                  ) : (
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                  )}
+                  Audiobook
+                </span>
+              </div>
+              {onToggleMonitor ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
+                  <button type="button" onClick={() => { if (!ebookMonitorLocked) { setMonitorEbookUiState((prev) => !prev); onToggleMonitor('ebook'); } }} disabled={ebookMonitorLocked} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${ebookMonitorLocked ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80' : monitorEbookUiState ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30' : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'}`} title={ebookMonitorLocked ? 'eBook already available; monitoring auto-paused' : 'Toggle eBook monitoring'}>
+                    {ebookMonitorLocked ? (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" /><path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" /></svg>) : monitorEbookUiState ? (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>) : (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>)}
+                    eBook
+                  </button>
+                  <button type="button" onClick={() => { if (!audiobookMonitorLocked) { setMonitorAudiobookUiState((prev) => !prev); onToggleMonitor('audiobook'); } }} disabled={audiobookMonitorLocked} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${audiobookMonitorLocked ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80' : monitorAudiobookUiState ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30' : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'}`} title={audiobookMonitorLocked ? 'Audiobook already available; monitoring auto-paused' : 'Toggle audiobook monitoring'}>
+                    {audiobookMonitorLocked ? (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" /><path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" /></svg>) : monitorAudiobookUiState ? (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>) : (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>)}
+                    Audiobook
+                  </button>
                 </div>
+              ) : null}
+              {onToggleHidden ? (
+                <button type="button" onClick={onToggleHidden} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${hidden ? 'bg-gray-500/20 text-gray-600 dark:text-gray-300 hover:bg-gray-500/30' : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'}`} title={hidden ? 'Unhide this book' : 'Hide this book from counts and lists'}>
+                  {hidden ? (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>) : (<svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>)}
+                  {hidden ? 'Hidden' : 'Hide'}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
-                {embeddedSearchBook.description ? (
-                  <div className="text-sm text-gray-600 dark:text-gray-400">
-                    <p
-                      ref={(el) => setDescriptionEl(el)}
-                      className={descriptionExpanded ? '' : 'line-clamp-3'}
-                    >
-                      {embeddedSearchBook.description}
-                    </p>
-                    {descriptionOverflows ? (
-                      <button
-                        type="button"
-                        onClick={() => setDescriptionExpanded((v) => !v)}
-                        className="mt-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
-                      >
-                        {descriptionExpanded ? 'Show less' : 'Show more'}
-                        <svg
-                          className={`w-3 h-3 transition-transform duration-200 ${descriptionExpanded ? '-rotate-90' : 'rotate-90'}`}
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                          strokeWidth={2}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
+          {/* ── Tab bar (fixed by flex layout, above scroll container) ── */}
+          <div className="border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5">
+            <div className="relative flex gap-0.5 overflow-x-auto">
+              <div
+                ref={indicatorRef}
+                className="absolute bottom-0 h-0.5 bg-emerald-600 transition-all duration-300 ease-out"
+              />
+              {([['details', 'Details'], ['files', 'Files'], ['history', 'History'], ['ebooks', 'Search eBooks'], ['audiobooks', 'Search Audiobooks']] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  ref={(el) => { tabRefs.current[key] = el; if (el && key === tab) syncIndicator(); }}
+                  type="button"
+                  onClick={() => setTab(key)}
+                  className={`px-3 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
+                    tab === key
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-                {(genresSummary || releaseDateSummary || (onSetReleaseDate && bookRow)) ? (
-                  <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
-                    {genresSummary ? (
-                      <div className="min-w-0 truncate">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">Genres:</span>{' '}
-                        <span>{genresSummary}</span>
-                      </div>
-                    ) : null}
-                    {releaseDateSummary ? (
-                      <div className="min-w-0 truncate flex items-center gap-1.5">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">Release date:</span>{' '}
-                        <span>{releaseDateSummary}</span>
-                        {onSetReleaseDate && bookRow ? (
-                          <button
-                            type="button"
-                            onClick={() => onSetReleaseDate(bookRow)}
-                            className="inline-flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 ml-0.5"
-                            title="Search for release date"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-                          </button>
+          {/* ── Scrollable tab content ── */}
+          <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto">
+            <div className="px-5 py-4">
+              {/* ── Details tab ── */}
+              {tab === 'details' ? (
+                <div className="space-y-4">
+                  {/* Cover + metadata */}
+                  <div ref={coverSentinelRef} className="flex gap-4">
+                    {embeddedSearchBook.preview ? (
+                      <img src={embeddedSearchBook.preview} alt="Book cover" className="rounded-lg shadow-md object-cover object-top flex-shrink-0 w-24 h-[140px]" />
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-[var(--border-muted)] bg-[var(--bg)]/60 flex items-center justify-center text-[10px] text-gray-500 flex-shrink-0 w-24 h-[140px]">No cover</div>
+                    )}
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600 dark:text-gray-400">
+                        {embeddedSearchBook.year ? <span>{embeddedSearchBook.year}</span> : null}
+                        {embeddedSearchBook.series_name ? (
+                          onNavigateToSeries ? (
+                            <button type="button" onClick={() => onNavigateToSeries(embeddedSearchBook.series_name!)} className="truncate text-emerald-600 dark:text-emerald-400 hover:underline text-left" title={`Go to ${embeddedSearchBook.series_name} series`}>
+                              {embeddedSearchBook.series_position != null ? (<>#{embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>) : (<>Part of {embeddedSearchBook.series_name}</>)}
+                            </button>
+                          ) : (
+                            <span className="truncate">
+                              {embeddedSearchBook.series_position != null ? (<>#{embeddedSearchBook.series_position}{embeddedSearchBook.series_count != null ? `/${embeddedSearchBook.series_count}` : ''} in {embeddedSearchBook.series_name}</>) : (<>Part of {embeddedSearchBook.series_name}</>)}
+                            </span>
+                          )
+                        ) : null}
+                        {embeddedSearchBook.additional_series && embeddedSearchBook.additional_series.length > 0 ? (
+                          embeddedSearchBook.additional_series.map((s: { name: string; position?: number; count?: number }) => {
+                            const seriesKey = `${s.name}-${s.position ?? ''}`;
+                            const label = s.position != null ? (<>#{s.position}{s.count != null ? `/${s.count}` : ''} in {s.name}</>) : (<>Part of {s.name}</>);
+                            return onNavigateToSeries ? (
+                              <button key={seriesKey} type="button" onClick={() => onNavigateToSeries(s.name)} className="truncate text-sky-600 dark:text-sky-400 hover:underline text-left" title={`Go to ${s.name} series`}>{label}</button>
+                            ) : (
+                              <span key={seriesKey} className="truncate">{label}</span>
+                            );
+                          })
+                        ) : null}
+                        {matchedFileTypes.length > 0 ? (
+                          <span className="inline-flex items-center gap-1">
+                            {matchedFileTypes.slice(0, 3).map((t) => (
+                              <span key={t} className={`${getFormatColor(t).bg} ${getFormatColor(t).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase`}>{t.toUpperCase()}</span>
+                            ))}
+                          </span>
                         ) : null}
                       </div>
-                    ) : onSetReleaseDate && bookRow ? (
-                      <button
-                        type="button"
-                        onClick={() => onSetReleaseDate(bookRow)}
-                        className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-                        Set release date
-                      </button>
-                    ) : null}
+                      {displayFields.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                          {displayFields.slice(0, 8).map((field) => (
+                            <div key={`${field.label}:${field.value}`} className="min-w-0 truncate">
+                              <span className="font-medium text-gray-600 dark:text-gray-300">{field.label}:</span> <span>{field.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
-                ) : null}
 
-                {displayFields.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
-                    {displayFields.slice(0, 8).map((field) => (
-                      <div key={`${field.label}:${field.value}`} className="min-w-0 truncate">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">{field.label}:</span>{' '}
-                        <span>{field.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                {(foundEbookPath || foundAudiobookPath || latestDownloaderFinalPath) ? (
-                  <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
-                    <div className="font-medium text-gray-600 dark:text-gray-300">Paths</div>
-                    {foundEbookPath ? (
-                      <div className="min-w-0 break-all">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (eBook):</span>{' '}
-                        <span>{foundEbookPath}</span>
-                      </div>
-                    ) : null}
-                    {foundAudiobookPath ? (
-                      <div className="min-w-0 break-all">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (Audiobook):</span>{' '}
-                        <span>{foundAudiobookPath}</span>
-                      </div>
-                    ) : null}
-                    {latestDownloaderFinalPath ? (
-                      <div className="min-w-0 break-all">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">Downloader moved to:</span>{' '}
-                        <span>{latestDownloaderFinalPath}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                <div className="flex flex-wrap items-center gap-3 text-xs">
-                  {(embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10) ? (
-                    <span className="text-gray-500 dark:text-gray-400">ISBN: {embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10}</span>
+                  {/* Description */}
+                  {embeddedSearchBook.description ? (
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                      <p ref={(el) => setDescriptionEl(el)} className={descriptionExpanded ? '' : 'line-clamp-3'}>{embeddedSearchBook.description}</p>
+                      {descriptionOverflows ? (
+                        <button type="button" onClick={() => setDescriptionExpanded((v) => !v)} className="mt-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 hover:underline font-medium">
+                          {descriptionExpanded ? 'Show less' : 'Show more'}
+                          <svg className={`w-3 h-3 transition-transform duration-200 ${descriptionExpanded ? '-rotate-90' : 'rotate-90'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
-                  {embeddedSearchBook.source_url ? (
-                    <a
-                      href={embeddedSearchBook.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline"
-                    >
-                      View source
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
+
+                  {/* Genres & Release date */}
+                  {(genresSummary || releaseDateSummary || (onSetReleaseDate && bookRow)) ? (
+                    <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                      {genresSummary ? (
+                        <div className="min-w-0 truncate"><span className="font-medium text-gray-600 dark:text-gray-300">Genres:</span> <span>{genresSummary}</span></div>
+                      ) : null}
+                      {releaseDateSummary ? (
+                        <div className="min-w-0 truncate flex items-center gap-1.5">
+                          <span className="font-medium text-gray-600 dark:text-gray-300">Release date:</span> <span>{releaseDateSummary}</span>
+                          {onSetReleaseDate && bookRow ? (
+                            <button type="button" onClick={() => onSetReleaseDate(bookRow)} className="inline-flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 ml-0.5" title="Search for release date">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : onSetReleaseDate && bookRow ? (
+                        <button type="button" onClick={() => onSetReleaseDate(bookRow)} className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                          Set release date
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
+
+                  {/* Paths */}
+                  {(foundEbookPath || foundAudiobookPath || latestDownloaderFinalPath) ? (
+                    <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                      <div className="font-medium text-gray-600 dark:text-gray-300">Paths</div>
+                      {foundEbookPath ? (<div className="min-w-0 break-all"><span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (eBook):</span> <span>{foundEbookPath}</span></div>) : null}
+                      {foundAudiobookPath ? (<div className="min-w-0 break-all"><span className="font-medium text-gray-600 dark:text-gray-300">Found on disk (Audiobook):</span> <span>{foundAudiobookPath}</span></div>) : null}
+                      {latestDownloaderFinalPath ? (<div className="min-w-0 break-all"><span className="font-medium text-gray-600 dark:text-gray-300">Downloader moved to:</span> <span>{latestDownloaderFinalPath}</span></div>) : null}
+                    </div>
+                  ) : null}
+
+                  {/* ISBN & source link */}
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    {(embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10) ? (
+                      <span className="text-gray-500 dark:text-gray-400">ISBN: {embeddedSearchBook.isbn_13 || embeddedSearchBook.isbn_10}</span>
+                    ) : null}
+                    {embeddedSearchBook.source_url ? (
+                      <a href={embeddedSearchBook.source_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline">
+                        View source
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      </a>
+                    ) : null}
+                  </div>
                 </div>
 
-                {entityId != null ? (
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-[var(--border-muted)]">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Available:</span>
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
-                          hasEbookFile
-                            ? 'bg-blue-500/20 text-blue-700 dark:text-blue-300'
-                            : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'
-                        }`}
-                      >
-                        {hasEbookFile ? (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                          </svg>
-                        ) : (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                          </svg>
-                        )}
-                        eBook
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
-                          hasAudiobookFile
-                            ? 'bg-purple-500/20 text-purple-700 dark:text-purple-300'
-                            : 'bg-gray-500/10 text-gray-400 dark:text-gray-500'
-                        }`}
-                      >
-                        {hasAudiobookFile ? (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                          </svg>
-                        ) : (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                          </svg>
-                        )}
-                        Audiobook
-                      </span>
-                    </div>
-                    {onToggleMonitor ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Monitoring:</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!ebookMonitorLocked) {
-                              setMonitorEbookUiState((prev) => !prev);
-                              onToggleMonitor('ebook');
-                            }
-                          }}
-                          disabled={ebookMonitorLocked}
-                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                            ebookMonitorLocked
-                              ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
-                              : monitorEbookUiState
-                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
-                                : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
-                          }`}
-                          title={ebookMonitorLocked ? 'eBook already available; monitoring auto-paused' : 'Toggle eBook monitoring'}
-                        >
-                          {ebookMonitorLocked ? (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
-                            </svg>
-                          ) : monitorEbookUiState ? (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                            </svg>
-                          ) : (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                            </svg>
-                          )}
-                          eBook
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!audiobookMonitorLocked) {
-                              setMonitorAudiobookUiState((prev) => !prev);
-                              onToggleMonitor('audiobook');
-                            }
-                          }}
-                          disabled={audiobookMonitorLocked}
-                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                            audiobookMonitorLocked
-                              ? 'bg-gray-500/10 text-gray-500 dark:text-gray-400 cursor-not-allowed opacity-80'
-                              : monitorAudiobookUiState
-                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/30'
-                              : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
-                          }`}
-                          title={audiobookMonitorLocked ? 'Audiobook already available; monitoring auto-paused' : 'Toggle audiobook monitoring'}
-                        >
-                          {audiobookMonitorLocked ? (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m2.5 12.75 4 4 6-9" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m10.5 12.75 4 4 7-10" />
-                            </svg>
-                          ) : monitorAudiobookUiState ? (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                            </svg>
-                          ) : (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                            </svg>
-                          )}
-                          Audiobook
-                        </button>
-                      </div>
-                    ) : null}
-                    {onToggleHidden ? (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={onToggleHidden}
-                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                            hidden
-                              ? 'bg-gray-500/20 text-gray-600 dark:text-gray-300 hover:bg-gray-500/30'
-                              : 'bg-gray-500/10 text-gray-500 dark:text-gray-400 hover:bg-gray-500/20'
-                          }`}
-                          title={hidden ? 'Unhide this book' : 'Hide this book from counts and lists'}
-                        >
-                          {hidden ? (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
-                            </svg>
-                          ) : (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                            </svg>
-                          )}
-                          {hidden ? 'Hidden' : 'Hide'}
-                        </button>
-                      </div>
-                    ) : null}
+              ) : tab === 'files' ? (
+                /* ── Files tab ── */
+                <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
+                  <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
+                  <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                    {files.length === 0 ? (
+                      <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
+                    ) : (
+                      files.map((f) => {
+                        const isAbs = f.source === 'audiobookshelf';
+                        const isBooklore = f.source === 'booklore';
+                        const formatLabel = f.ext ? f.ext.toUpperCase() : f.file_type ? f.file_type.toUpperCase() : 'FILE';
+                        const badgeKey = f.ext || f.file_type || '';
+                        return (
+                          <div key={f.id} className="px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>{f.path}</div>
+                                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
+                                  {formatLabel}
+                                  {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
+                                  {isAbs ? ' · from AudioBookShelf' : isBooklore ? ' · from Booklore' : ''}
+                                </div>
+                              </div>
+                              {badgeKey ? (
+                                <span className={`${getFormatColor(badgeKey).bg} ${getFormatColor(badgeKey).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>{formatLabel}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
-                ) : null}
+                </div>
 
-              </div>
-            </div>
-
-            <div className="sticky top-0 z-10 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] px-5">
-              <div className="relative flex gap-1">
-                <div
-                  className="absolute bottom-0 h-0.5 bg-emerald-600 transition-all duration-300 ease-out"
-                  style={{ left: tabIndicatorStyle.left, width: tabIndicatorStyle.width }}
-                />
-                {([['files', 'Files'], ['ebooks', 'Search eBooks'], ['audiobooks', 'Search Audiobooks']] as const).map(([key, label]) => (
-                  <button
-                    key={key}
-                    ref={(el) => { tabRefs.current[key] = el; }}
-                    type="button"
-                    onClick={() => setTab(key)}
-                    className={`px-4 py-2.5 text-sm font-medium border-b-2 border-transparent transition-colors whitespace-nowrap ${
-                      tab === key
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="px-5 py-4">
-              {tab === 'files' ? (
+              ) : tab === 'history' ? (
+                /* ── History tab ── */
                 <div className="space-y-4">
                   <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Matched files</div>
-                    <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                      {files.length === 0 ? (
-                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No files matched to this book yet.</div>
-                      ) : (
-                        files.map((f) => {
-                          const isAbs = f.source === 'audiobookshelf';
-                          const isBooklore = f.source === 'booklore';
-                          const formatLabel = f.ext ? f.ext.toUpperCase() : f.file_type ? f.file_type.toUpperCase() : 'FILE';
-                          const badgeKey = f.ext || f.file_type || '';
-                          return (
-                            <div key={f.id} className="px-4 py-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>
-                                    {f.path}
-                                  </div>
-                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
-                                    {formatLabel}
-                                    {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                                    {isAbs ? ' · from AudioBookShelf' : isBooklore ? ' · from Booklore' : ''}
-                                  </div>
-                                </div>
-                                {badgeKey ? (
-                                  <span className={`${getFormatColor(badgeKey).bg} ${getFormatColor(badgeKey).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>
-                                    {formatLabel}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">History</div>
+                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Download history</div>
                     <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
                       {historyLoading ? (
                         <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading history…</div>
@@ -1020,37 +874,17 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                               {row.source_display_name ? ` (${row.source_display_name})` : row.source ? ` (${row.source})` : ''}
                               {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
                             </div>
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">
-                              renamed → {row.final_path || 'Unknown location'}
-                            </div>
-                            {row.overwritten_path ? (
-                              <div className="mt-1 text-xs text-amber-600 dark:text-amber-400 break-words">
-                                overwrote: {row.overwritten_path}
-                              </div>
-                            ) : null}
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">renamed → {row.final_path || 'Unknown location'}</div>
+                            {row.overwritten_path ? (<div className="mt-1 text-xs text-amber-600 dark:text-amber-400 break-words">overwrote: {row.overwritten_path}</div>) : null}
                           </div>
                         ))
                       )}
                     </div>
                   </div>
-
                   <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => setAttemptHistoryOpen((prev) => !prev)}
-                      className="w-full px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5 flex items-center justify-between hover-action"
-                      aria-expanded={attemptHistoryOpen}
-                    >
+                    <button type="button" onClick={() => setAttemptHistoryOpen((prev) => !prev)} className="w-full px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5 flex items-center justify-between hover-action" aria-expanded={attemptHistoryOpen}>
                       <span>Attempt history ({attemptHistoryRows.length})</span>
-                      <svg
-                        className={`w-3.5 h-3.5 transition-transform duration-200 ${attemptHistoryOpen ? 'rotate-90' : ''}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        strokeWidth={2}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
+                      <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${attemptHistoryOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                     </button>
                     {attemptHistoryOpen ? (
                       <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
@@ -1072,9 +906,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                                 {row.source ? ` (${row.source})` : ''}
                                 {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
                               </div>
-                              {row.error_message ? (
-                                <div className="mt-1 text-xs text-red-600 dark:text-red-300 break-words">{row.error_message}</div>
-                              ) : null}
+                              {row.error_message ? (<div className="mt-1 text-xs text-red-600 dark:text-red-300 break-words">{row.error_message}</div>) : null}
                             </div>
                           ))
                         )}
@@ -1082,6 +914,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                     ) : null}
                   </div>
                 </div>
+
               ) : tab === 'ebooks' ? (
                 renderEmbeddedSearch(embeddedSearchBook, 'ebook')
               ) : (
