@@ -48,6 +48,8 @@ class PendingDownload:
     destination_override: Optional[str] = None
     file_organization_override: Optional[str] = None
     template_override: Optional[str] = None
+    series_name: Optional[str] = None
+    series_position: Optional[float] = None
     current_source_id: Optional[str] = None
     attempts: int = 0
 
@@ -203,6 +205,43 @@ def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
             logger.warning("Failed to send user notification for monitored download: %s (user_id=%s)", task.id, user_id)
 
 
+def _upsert_file_match_from_history(
+    kwargs: Dict[str, Any],
+    final_path: str,
+    content_type: str | None = None,
+) -> None:
+    """Register a downloaded file in monitored_book_files for immediate availability."""
+    if _user_db is None or not final_path:
+        return
+    try:
+        from pathlib import Path as _Path
+        dl_path = _Path(final_path)
+        entity_id = kwargs.get("entity_id")
+        provider = kwargs.get("provider") or ""
+        provider_book_id = kwargs.get("provider_book_id") or ""
+        user_ids = kwargs.get("user_ids")
+        if not entity_id or not provider or not provider_book_id or not user_ids:
+            return
+        ct = _normalize_content_type(content_type) if content_type else None
+        file_type = "audiobook" if ct == "audiobook" else "ebook"
+        _user_db.upsert_monitored_book_file(
+            user_ids=user_ids,
+            entity_id=int(entity_id),
+            provider=provider,
+            provider_book_id=provider_book_id,
+            path=final_path,
+            ext=dl_path.suffix.lower().lstrip(".") if dl_path.suffix else None,
+            file_type=file_type,
+            size_bytes=None,
+            mtime=None,
+            confidence=1.0,
+            match_reason="download",
+            source="download",
+        )
+    except Exception as exc:
+        logger.warning("Failed to upsert file match after download: %s", exc)
+
+
 def _record_download_history(task: DownloadTask) -> None:
     """Record successful download to monitored_book_download_history.
 
@@ -265,8 +304,10 @@ def _record_download_history(task: DownloadTask) -> None:
     )
 
     if task.download_path:
-        kwargs["final_path"] = str(task.download_path).strip()
+        final_path = str(task.download_path).strip()
+        kwargs["final_path"] = final_path
         _user_db.insert_monitored_book_download_history(**kwargs)
+        _upsert_file_match_from_history(kwargs, final_path, content_type=task.content_type)
         logger.debug(
             "Recorded monitored download history: entity_id=%s provider=%s book_id=%s",
             entity_id, provider, provider_book_id,
@@ -287,8 +328,11 @@ def _flush_deferred_history(task_id: str, final_path: str) -> None:
         kwargs = _deferred_history.pop(task_id, None)
     if kwargs is None or _user_db is None:
         return
-    kwargs["final_path"] = str(final_path or "").strip()
+    clean_path = str(final_path or "").strip()
+    kwargs["final_path"] = clean_path
     _user_db.insert_monitored_book_download_history(**kwargs)
+    # Also register the file match (mirrors the immediate path in _record_download_history)
+    _upsert_file_match_from_history(kwargs, clean_path)
     logger.debug(
         "Flushed deferred monitored download history: task_id=%s path=%s",
         task_id, final_path,
@@ -354,6 +398,8 @@ def process_monitored_book(
     destination_override: Optional[str] = None,
     file_organization_override: Optional[str] = None,
     template_override: Optional[str] = None,
+    series_name: Optional[str] = None,
+    series_position: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """Process releases for a monitored book: pre-process, queue best, auto-retry on failure.
     
@@ -417,6 +463,8 @@ def process_monitored_book(
             destination_override=destination_override,
             file_organization_override=file_organization_override,
             template_override=template_override,
+            series_name=series_name,
+            series_position=series_position,
         )
     
     # Queue first release
@@ -445,6 +493,10 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
     release["file_organization_override"] = pending.file_organization_override
     release["template_override"] = pending.template_override
     release["content_type"] = pending.content_type
+    if pending.series_name:
+        release.setdefault("series_name", pending.series_name)
+    if pending.series_position is not None:
+        release.setdefault("series_position", pending.series_position)
     
     # Queue via orchestrator
     success, error_msg = download_orchestrator.queue_release(release, user_id=pending.user_id)

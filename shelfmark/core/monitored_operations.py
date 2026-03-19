@@ -199,8 +199,10 @@ def _run_author_sync(
             roots = resolve_allowed_roots(user_db, db_user_id=int(user_id or 0)) if user_db else []
             if roots:
                 update_file_availability(db, entity_id=entity_id, user_id=user_id, allowed_roots=roots)
-        except Exception:
-            pass
+            else:
+                logger.warning("File scan skipped for entity %s: no allowed roots resolved", entity_id)
+        except Exception as exc:
+            logger.warning("File scan failed for entity %s: %s", entity_id, exc)
 
         # ABS sync (best-effort — skipped if ABS not configured)
         try:
@@ -557,6 +559,35 @@ def update_file_availability(
     audiobook_dir_raw = settings.get("audiobook_author_dir")
     audiobook_dir = str(audiobook_dir_raw).strip().rstrip("/") if isinstance(audiobook_dir_raw, str) else ""
 
+    # Auto-derive scan paths from default library destinations when not explicitly set.
+    # Downloads without explicit author_dir use the template "{Author}/{Series}/{Title}"
+    # relative to the default destination, so we should scan there too.
+    if (not ebook_dir or not ebook_dir.startswith("/")) and author_name:
+        try:
+            from shelfmark.core.utils import get_destination
+            default_dest = str(get_destination(is_audiobook=False, user_id=user_id)).rstrip("/")
+            if default_dest and default_dest.startswith("/"):
+                candidate = f"{default_dest}/{author_name}"
+                logger.debug("Auto-derive ebook scan path: dest=%s candidate=%s exists=%s",
+                             default_dest, candidate, Path(candidate).is_dir())
+                if Path(candidate).is_dir():
+                    ebook_dir = candidate
+        except Exception as exc:
+            logger.debug("Auto-derive ebook scan path failed: %s", exc)
+
+    if (not audiobook_dir or not audiobook_dir.startswith("/")) and author_name:
+        try:
+            from shelfmark.core.utils import get_destination
+            default_dest = str(get_destination(is_audiobook=True, user_id=user_id)).rstrip("/")
+            if default_dest and default_dest.startswith("/"):
+                candidate = f"{default_dest}/{author_name}"
+                logger.debug("Auto-derive audiobook scan path: dest=%s candidate=%s exists=%s",
+                             default_dest, candidate, Path(candidate).is_dir())
+                if Path(candidate).is_dir():
+                    audiobook_dir = candidate
+        except Exception as exc:
+            logger.debug("Auto-derive audiobook scan path failed: %s", exc)
+
     if (not ebook_dir or not ebook_dir.startswith("/")) and (
         not audiobook_dir or not audiobook_dir.startswith("/")
     ):
@@ -881,9 +912,16 @@ def search_missing_books(
 
             release_dicts = fetch_book_releases(book, content_type=content_type)
 
-            # Attach release_date from DB row so process_monitored_book can check unreleased
+            # Attach book metadata from DB row so downloads use correct naming
+            book_author = authors_list[0] if authors_list else None
             for rd in release_dicts:
                 rd["release_date"] = row.get("release_date")
+                if book_author:
+                    rd.setdefault("author", book_author)
+                if row.get("series_name"):
+                    rd.setdefault("series_name", row.get("series_name"))
+                if row.get("series_position") is not None:
+                    rd.setdefault("series_position", row.get("series_position"))
 
             if not release_dicts:
                 summary.no_match += 1
@@ -906,6 +944,8 @@ def search_missing_books(
                 destination_override=dest_override,
                 file_organization_override=org_override,
                 template_override=tmpl_override,
+                series_name=row.get("series_name") or None,
+                series_position=row.get("series_position"),
             )
 
             if success:

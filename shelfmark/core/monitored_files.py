@@ -100,21 +100,25 @@ def normalize_candidate_title(raw: str, author_name: str) -> str:
         flags=re.IGNORECASE,
     )
     a = (author_name or "").strip()
-    if a:
+    # Normalize the author name the same way as the filename: dots→spaces, collapse whitespace
+    a_normalized = re.sub(r"\s+", " ", a.replace(".", " ")).strip()
+    if a_normalized:
+        # Build regex that matches both the original and dot-normalized author name
+        a_pattern = re.escape(a_normalized).replace(r"\ ", r"\s+")
         # Exact match: "Title - Author" (end)
-        s_stripped = re.sub(rf"\s*[-–—:]\s*{re.escape(a)}\s*$", " ", s, flags=re.IGNORECASE)
+        s_stripped = re.sub(rf"\s*[-–—:]\s*{a_pattern}\s*$", " ", s, flags=re.IGNORECASE)
         if s_stripped == s:
             # Multi-author fallback: "Title - Author1, Author2" where author appears anywhere
             # in a dash-delimited block at the end (e.g. different author order)
             s_stripped = re.sub(
-                rf"\s*[-–—]\s*[^-–—]*{re.escape(a)}[^-–—]*$",
+                rf"\s*[-–—]\s*[^-–—]*{a_pattern}[^-–—]*$",
                 " ",
                 s,
                 flags=re.IGNORECASE,
             )
         s = s_stripped
         # "Author - Title" (start)
-        s = re.sub(rf"^\s*{re.escape(a)}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
+        s = re.sub(rf"^\s*{a_pattern}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
