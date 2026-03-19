@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Book, ContentType } from '../types';
+import { useSwipe } from '../hooks/useSwipe';
 import {
   listMonitoredBookDownloadHistory,
   listMonitoredBookFiles,
@@ -29,6 +30,7 @@ interface BookDetailsModalProps {
 }
 
 type TabKey = 'details' | 'files' | 'history' | 'ebooks' | 'audiobooks';
+const TAB_ORDER: readonly TabKey[] = ['details', 'files', 'history', 'ebooks', 'audiobooks'];
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
@@ -87,6 +89,10 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
 
   // Sync on tab change
   useEffect(() => { syncIndicator(); }, [syncIndicator]);
+
+  const goNextTab = useCallback(() => setTab((prev) => { const i = TAB_ORDER.indexOf(prev); return i < TAB_ORDER.length - 1 ? TAB_ORDER[i + 1] : prev; }), []);
+  const goPrevTab = useCallback(() => setTab((prev) => { const i = TAB_ORDER.indexOf(prev); return i > 0 ? TAB_ORDER[i - 1] : prev; }), []);
+  const swipeHandlers = useSwipe({ onSwipeLeft: goNextTab, onSwipeRight: goPrevTab });
 
   useEffect(() => {
     if (entityId != null && provider && providerBookId) {
@@ -700,7 +706,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
           </div>
 
           {/* ── Scrollable tab content ── */}
-          <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto">
+          <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto" {...swipeHandlers}>
             <div className="px-5 py-4">
               {/* ── Details tab ── */}
               {tab === 'details' ? (
