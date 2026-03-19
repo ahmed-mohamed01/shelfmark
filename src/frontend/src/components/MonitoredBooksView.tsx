@@ -265,8 +265,8 @@ export function MonitoredBooksView({
                       metaRow={metaRow}
                       availabilitySlot={(
                         <div className="flex items-center justify-center gap-1">
-                          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} /> : null}
-                          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} /> : null}
+                          {ebookStatus ? <FormatStatusBadge format="ebook" status={ebookStatus} onClick={() => onOpenDetails(book)} /> : null}
+                          {audiobookStatus ? <FormatStatusBadge format="audiobook" status={audiobookStatus} onClick={() => onOpenDetails(book)} /> : null}
                         </div>
                       )}
                       trailingSlot={renderBookActions(book)}
@@ -356,6 +356,8 @@ export function MonitoredBooksView({
                         showPopularityLine={showPopularity}
                         ebookStatus={ebookStatus}
                         audiobookStatus={audiobookStatus}
+                        onEbookSearch={() => onOpenDetails(book)}
+                        onAudiobookSearch={() => onOpenDetails(book)}
                         overflowMenu={renderBookActions(book, true)}
                         isDimmed={isDormant}
                       />
