@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSwipe } from '../hooks/useSwipe';
 import { useSocket } from '../contexts/SocketContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
@@ -33,8 +34,6 @@ import ReleaseDateSearchModal from '../components/ReleaseDateSearchModal';
 import { AuthorModal, AuthorModalAuthor } from '../components/AuthorModal';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
 import { MonitoredAuthorsView, type AuthorAvailabilityStats } from '../components/MonitoredAuthorsView';
-import { SlideSheet } from '../components/SlideSheet';
-import { withBasePath } from '../utils/basePath';
 import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
@@ -115,6 +114,8 @@ const groupMonitoredBooks = (
   return sortedGroups;
 };
 
+
+const LANDING_TAB_ORDER: readonly ('authors' | 'books' | 'upcoming')[] = ['authors', 'books', 'upcoming'];
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
@@ -282,15 +283,13 @@ export const MonitoredPage = ({
   status,
   renderEmbeddedSearch,
   onShowToast,
-  onRemoveToast,
+  onRemoveToast: _onRemoveToast,
   setTransientActivityItems,
 }: MonitoredPageProps) => {
   const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
     return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
   });
-  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
-  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [view, setView] = useState<'landing' | 'search'>('landing');
   const [searchScope, setSearchScope] = useState<'authors' | 'books'>('authors');
   const [authorQuery, setAuthorQuery] = useState('');
@@ -1740,7 +1739,7 @@ export const MonitoredPage = ({
 
     setIsSearching(true);
     setLandingTab('search');
-    setView('search');
+    setView('landing');
     try {
       if (searchScope === 'books') {
         const result = await searchMetadata(q, 40, bookSearchSortValue, {}, 1, defaultReleaseContentType);
@@ -1814,20 +1813,15 @@ export const MonitoredPage = ({
 
   const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search') => {
     setLandingTab(tab);
-    if (tab === 'search') {
-      setView('search');
-      if (!authorQuery.trim()) {
-        window.setTimeout(() => {
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }, 0);
-      }
-    } else {
-      setView('landing');
-    }
+    setView('landing');
     if (location.pathname === '/monitored/author') {
       navigate('/monitored');
     }
-  }, [authorQuery, location.pathname, navigate]);
+  }, [location.pathname, navigate]);
+
+  const goNextLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i >= 0 && i < LANDING_TAB_ORDER.length - 1 ? LANDING_TAB_ORDER[i + 1] : prev; }), []);
+  const goPrevLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i > 0 ? LANDING_TAB_ORDER[i - 1] : prev; }), []);
+  const landingSwipeHandlers = useSwipe({ onSwipeLeft: goNextLandingTab, onSwipeRight: goPrevLandingTab });
 
   const closeBookMonitorModal = useCallback(() => {
     setBookMonitorModalState({ book: null });
@@ -2317,8 +2311,8 @@ export const MonitoredPage = ({
     setAuthorCards([]);
     setBookSearchResults([]);
     setSearchError(null);
-    setView(landingTab === 'search' ? 'search' : 'landing');
-  }, [landingTab]);
+    setView('landing');
+  }, []);
 
   const handleHeaderAuthorSearchChange = useCallback((value: string | number | boolean) => {
     const strValue = String(value);
@@ -2361,10 +2355,9 @@ export const MonitoredPage = ({
       username={username}
       displayName={displayName}
       onLogout={onLogout}
-      onMobileMenuClick={() => setIsMobileNavOpen(true)}
       showMobileSearchToggle={!isDesktop}
-      mobileSearchOpen={isMobileSearchOpen}
-      onMobileSearchToggle={() => setIsMobileSearchOpen((prev) => !prev)}
+      mobileSearchOpen={false}
+      onMobileSearchToggle={() => openMonitoredTab('search')}
       mobileSearchPlaceholder="Search authors..."
     />
   );
@@ -2427,164 +2420,6 @@ export const MonitoredPage = ({
     ? authorDetailsInitialActionOverride
     : defaultReleaseActionAudiobook;
 
-  const mobileNavSheet = (
-    <SlideSheet isOpen={isMobileNavOpen} onClose={() => setIsMobileNavOpen(false)} label="Navigation">
-      {/* Sheet header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: 'var(--border-muted)' }}>
-        <span className="text-sm font-semibold">Navigation</span>
-        <button
-          type="button"
-          onClick={() => setIsMobileNavOpen(false)}
-          className="p-1.5 rounded-full hover-action text-gray-500 hover:text-gray-900 dark:hover:text-gray-100"
-          aria-label="Close navigation"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Navigation */}
-      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-2">
-        {/* Search Books — navigates to main search page */}
-        <button
-          type="button"
-          onClick={() => { setIsMobileNavOpen(false); navigate('/'); }}
-          className="w-full text-left px-4 py-3 flex items-center gap-3 text-sm transition-colors text-gray-700 dark:text-gray-200 hover-surface"
-        >
-          <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-          </svg>
-          <span>Search Books</span>
-        </button>
-
-        {/* Monitored Books parent */}
-        <div className="px-4 pt-3 pb-1">
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Monitored Books</span>
-        </div>
-
-        {/* Sub-items: Authors, Books, Upcoming */}
-        {(['authors', 'books', 'upcoming'] as const).map((tab) => {
-          const count = tab === 'authors' ? displayAuthorsCount : tab === 'books' ? displayBooksCount : displayUpcomingCount;
-          const label = tab === 'authors' ? 'Authors' : tab === 'books' ? 'Books' : 'Upcoming';
-          const isActive = landingTab === tab;
-          return (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => { openMonitoredTab(tab); setIsMobileNavOpen(false); }}
-              className={`w-full text-left pl-8 pr-4 py-2.5 flex items-center justify-between text-sm transition-colors ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-50/60 dark:bg-emerald-500/10' : 'text-gray-700 dark:text-gray-200 hover-surface'}`}
-              aria-pressed={isActive}
-            >
-              <span>{label}</span>
-              <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>
-            </button>
-          );
-        })}
-        {hasStartedSearch && (
-          <button
-            type="button"
-            onClick={() => { openMonitoredTab('search'); setIsMobileNavOpen(false); }}
-            className={`w-full text-left pl-8 pr-4 py-2.5 flex items-center justify-between text-sm transition-colors ${landingTab === 'search' ? 'text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-50/60 dark:bg-emerald-500/10' : 'text-gray-700 dark:text-gray-200 hover-surface'}`}
-          >
-            <span>Search results</span>
-            <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem]">{displaySearchCount}</span>
-          </button>
-        )}
-
-      </div>
-
-      {/* Settings / app actions */}
-      <div className="border-t py-2" style={{ borderColor: 'var(--border-muted)' }}>
-        <a
-          href="https://github.com/calibrain/shelfmark/issues"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full text-left px-4 py-3 hover-surface transition-colors flex items-center gap-3 text-slate-700 dark:text-slate-200 text-sm"
-        >
-          <svg className="w-5 h-5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v1.5M3 21v-6m0 0 2.77-.693a9 9 0 0 1 6.208.682l.108.054a9 9 0 0 0 6.086.71l3.114-.732a48.524 48.524 0 0 1-.005-10.499l-3.11.732a9 9 0 0 1-6.085-.711l-.108-.054a9 9 0 0 0-6.208-.682L3 4.5M3 15V4.5" />
-          </svg>
-          <span>Report a Bug</span>
-        </a>
-        {onSettingsClick && (
-          <button
-            type="button"
-            onClick={() => { setIsMobileNavOpen(false); onSettingsClick(); }}
-            disabled={!(canAccessSettings ?? isAdmin)}
-            className={`w-full text-left px-4 py-3 transition-colors flex items-center gap-3 text-sm ${(canAccessSettings ?? isAdmin) ? 'hover-surface text-slate-700 dark:text-slate-200' : 'opacity-40 cursor-not-allowed text-slate-700 dark:text-slate-200'}`}
-          >
-            <svg className="w-5 h-5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <span>Settings</span>
-          </button>
-        )}
-        {debug && (
-          <>
-            <button
-              type="button"
-              className="w-full text-left px-4 py-3 hover-surface transition-colors flex items-center gap-3 text-orange-600 dark:text-orange-400 text-sm"
-              onClick={async () => {
-                setIsMobileNavOpen(false);
-                const loadingId = onShowToast?.('Gathering debug logs…', 'info', true);
-                try {
-                  const res = await fetch(withBasePath('/api/debug'), { method: 'GET', credentials: 'include' });
-                  if (loadingId) onRemoveToast?.(loadingId);
-                  if (!res.ok) { onShowToast?.('Debug download failed', 'error'); return; }
-                  const cd = res.headers.get('Content-Disposition');
-                  const fn = cd?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)?.[1]?.replace(/['"]/g, '') ?? 'debug.zip';
-                  const url = window.URL.createObjectURL(await res.blob());
-                  const a = document.createElement('a'); a.href = url; a.download = fn;
-                  document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); a.remove();
-                  onShowToast?.('Debug logs downloaded', 'success');
-                } catch { if (loadingId) onRemoveToast?.(loadingId); onShowToast?.('Debug download failed', 'error'); }
-              }}
-            >
-              <svg className="w-5 h-5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 12.75c1.148 0 2.278.08 3.383.237 1.037.146 1.866.966 1.866 2.013 0 3.728-2.35 6.75-5.25 6.75S6.75 18.728 6.75 15c0-1.046.83-1.867 1.866-2.013A24.204 24.204 0 0112 12.75zm0 0c2.883 0 5.647.508 8.207 1.44a23.91 23.91 0 01-1.152 6.06M12 12.75c-2.883 0-5.647.508-8.208 1.44.125 2.104.52 4.136 1.153 6.06M12 12.75a2.25 2.25 0 002.248-2.354M12 12.75a2.25 2.25 0 01-2.248-2.354M12 8.25c.995 0 1.971-.08 2.922-.236.403-.066.74-.358.795-.762a3.778 3.778 0 00-.399-2.25M12 8.25c-.995 0-1.97-.08-2.922-.236-.402-.066-.74-.358-.795-.762a3.734 3.734 0 01.4-2.253M12 8.25a2.25 2.25 0 00-2.248 2.146M12 8.25a2.25 2.25 0 012.248 2.146M8.683 5a6.032 6.032 0 01-1.155-1.002c.07-.63.27-1.222.574-1.747m.581 2.749A3.75 3.75 0 0115.318 5m0 0c.427-.283.815-.62 1.155-.999a4.471 4.471 0 00-.575-1.752M4.921 6a24.048 24.048 0 00-.392 3.314c1.668.546 3.416.914 5.223 1.082M19.08 6c.205 1.08.337 2.187.392 3.314a23.882 23.882 0 01-5.223 1.082" />
-              </svg>
-              <span>Debug</span>
-            </button>
-            <form action={withBasePath('/api/restart')} method="get" className="w-full">
-              <button type="submit" className="w-full text-left px-4 py-3 hover-surface transition-colors flex items-center gap-3 text-orange-600 dark:text-orange-400 text-sm">
-                <svg className="w-5 h-5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                </svg>
-                <span>Restart</span>
-              </button>
-            </form>
-          </>
-        )}
-      </div>
-
-      {/* User footer */}
-      {authRequired && isAuthenticated && username && (
-        <div className="border-t px-4 py-3 flex items-center gap-2.5" style={{ borderColor: 'var(--border-muted)' }}>
-          <span
-            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 uppercase"
-            style={{ backgroundColor: 'var(--hover-surface)', color: 'var(--text)' }}
-          >
-            {(displayName || username).slice(0, 2)}
-          </span>
-          <div className="flex-1 min-w-0 truncate text-sm font-medium">{displayName || username}</div>
-          {onLogout && (
-            <button
-              type="button"
-              onClick={() => { setIsMobileNavOpen(false); onLogout?.(); }}
-              className="shrink-0 p-2 rounded-full hover-action transition-colors text-red-600 dark:text-red-400"
-              title="Sign Out"
-            >
-              <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-              </svg>
-            </button>
-          )}
-        </div>
-      )}
-    </SlideSheet>
-  );
 
   if (isAuthorDetailsRoute) {
     return (
@@ -2626,19 +2461,18 @@ export const MonitoredPage = ({
             </section>
           )}
         </main>
-        {mobileNavSheet}
       </div>
     );
   }
 
   return (
     <div className="min-h-screen overflow-x-clip" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
-      <div className="fixed top-0 left-0 right-0 z-40">
+      <div className="relative sm:fixed sm:top-0 sm:left-0 sm:right-0 z-40">
         {monitoredHeader}
       </div>
 
-      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-6 pt-20 sm:pt-24">
-        <div className="flex flex-col gap-6">
+      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 sm:py-6 pt-0 sm:pt-24">
+        <div className="flex flex-col gap-2 sm:gap-6">
           {searchError || monitoredError || rootsError ? (
             <div className="flex flex-col gap-3">
               {searchError && (
@@ -2677,7 +2511,7 @@ export const MonitoredPage = ({
         }}
       />
 
-          {(view === 'landing' && landingTab !== 'search') ? (
+          {view === 'landing' ? (
             (!monitoredLoaded && monitored.length === 0) ? (
               <div className="rounded-2xl bg-white/0 dark:bg-white/0 py-10">
                 <div className="mx-auto max-w-md text-center">
@@ -2711,8 +2545,8 @@ export const MonitoredPage = ({
                 </div>
               </div>
             ) : (
-              <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100dvh - 8rem)' }}>
-                <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2 shrink-0 px-4 pt-4">
+              <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col max-h-none sm:max-h-[calc(100dvh-8rem)]">
+                <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-2 sm:gap-3 gap-y-1 sm:gap-y-2 shrink-0 px-3 sm:px-4 pt-2 sm:pt-4 sticky top-0 bg-[var(--background-color)] sm:static sm:bg-transparent">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
@@ -2731,14 +2565,39 @@ export const MonitoredPage = ({
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.5 7.5 12 15 4.5" />
                       </svg>
                     </button>
-                    {/* Mobile: compact active-tab label */}
-                    <div className="sm:hidden flex items-center gap-2">
-                      <span className="text-base font-bold text-gray-900 dark:text-gray-100">
-                        {landingTab === 'authors' ? 'Authors' : landingTab === 'books' ? 'Books' : landingTab === 'upcoming' ? 'Upcoming' : 'Search'}
-                      </span>
-                      <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-2 py-0.5 min-w-[1.5rem] leading-none">
-                        {landingTab === 'authors' ? displayAuthorsCount : landingTab === 'books' ? displayBooksCount : landingTab === 'upcoming' ? displayUpcomingCount : displaySearchCount}
-                      </span>
+                    {/* Mobile: horizontal scrollable tab bar */}
+                    <div className="sm:hidden flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
+                      {(['authors', 'books', 'upcoming'] as const).map((key) => {
+                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : 'Upcoming';
+                        const count = key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount;
+                        const isActive = landingTab === key;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => openMonitoredTab(key)}
+                            className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
+                            aria-pressed={isActive}
+                          >
+                            <span className="flex items-center gap-1.5">
+                              {label}
+                              <span className={`inline-flex items-center justify-center rounded-full text-[10px] font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>
+                            </span>
+                            {isActive && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-emerald-600 rounded-full" />}
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => openMonitoredTab('search')}
+                        className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${landingTab === 'search' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
+                        aria-pressed={landingTab === 'search'}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          Search
+                        </span>
+                        {landingTab === 'search' && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-emerald-600 rounded-full" />}
+                      </button>
                     </div>
                     {/* Desktop: full tab pills */}
                     <div className="hidden sm:inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
@@ -2782,7 +2641,7 @@ export const MonitoredPage = ({
                       ) : null}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap justify-end ml-auto">
+                  <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' ? 'hidden' : ''}`}>
                     {landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Select all */}
@@ -3334,8 +3193,102 @@ export const MonitoredPage = ({
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4">
-                  {landingTab === 'authors' ? (
+                <div className="flex-1 min-h-0 overflow-visible sm:overflow-y-auto px-4 pt-3 pb-4" {...landingSwipeHandlers}>
+                  {landingTab === 'search' ? (
+                    <>
+                    {/* Inline search bar with scope dropdown */}
+                    <form className="flex items-center gap-2 mb-3" onSubmit={(e) => { e.preventDefault(); void runAuthorSearch(); }}>
+                      <div className="flex-1 min-w-0 flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg)] focus-within:ring-2 focus-within:ring-emerald-500/50">
+                        <Dropdown
+                          align="left"
+                          widthClassName=""
+                          usePortal
+                          panelClassName="min-w-[140px]"
+                          renderTrigger={({ isOpen, toggle }) => (
+                            <button
+                              type="button"
+                              onClick={toggle}
+                              className="shrink-0 flex items-center gap-1 pl-3 pr-2 py-2.5 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors border-r border-[var(--border-muted)]"
+                              aria-expanded={isOpen}
+                              aria-label="Search scope"
+                            >
+                              {searchScope === 'authors' ? (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
+                              ) : (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
+                              )}
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                            </button>
+                          )}
+                        >
+                          {({ close }) => (
+                            <div className="py-1">
+                              <button type="button" onClick={() => { setSearchScope('authors'); close(); }} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center gap-2 ${searchScope === 'authors' ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
+                                Authors
+                              </button>
+                              <button type="button" onClick={() => { setSearchScope('books'); close(); }} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center gap-2 ${searchScope === 'books' ? 'text-emerald-600 dark:text-emerald-400 font-medium' : ''}`}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
+                                Books
+                              </button>
+                            </div>
+                          )}
+                        </Dropdown>
+                        <input
+                          type="text"
+                          value={authorQuery}
+                          onChange={(e) => setAuthorQuery(e.target.value)}
+                          placeholder={searchScope === 'authors' ? 'Search Authors' : 'Search Books'}
+                          className="flex-1 px-3 py-2.5 text-sm bg-transparent text-[var(--text)] placeholder-gray-400 focus:outline-none min-w-0"
+                          style={{ textAlign: 'left' }}
+                          autoFocus
+                        />
+                      </div>
+                      <button type="submit" className="shrink-0 p-3 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 transition-colors" aria-label="Search">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                        </svg>
+                      </button>
+                    </form>
+                    <MonitoredSearchView
+                      hideHeader
+                      searchScope={searchScope}
+                      authorViewMode={authorViewMode}
+                      bookSearchViewMode={bookSearchViewMode}
+                      authorSearchViewOptions={authorSearchViewOptions}
+                      bookSearchViewOptions={bookSearchViewOptions}
+                      onAuthorViewModeChange={(next) => setAuthorViewMode(next as 'compact' | 'list')}
+                      onBookSearchViewModeChange={(next) => setBookSearchViewMode(next as 'compact' | 'list')}
+                      authorQuery={authorQuery}
+                      isSearching={isSearching}
+                      bookSearchResults={bookSearchResults}
+                      authorSearchSortValue={authorSearchSortValue}
+                      onAuthorSortChange={setAuthorSearchSortValue}
+                      onScopeChange={setSearchScope}
+                      bookSearchSortValue={bookSearchSortValue}
+                      monitoredSearchSortOptions={monitoredSearchSortOptions}
+                      onBookSortChange={setBookSearchSortValue}
+                      authorResults={authorResults}
+                      authorCards={authorCards}
+                      monitoredNames={monitoredNames}
+                      onAuthorNavigate={navigateToAuthorPage}
+                      onMonitorAuthor={openMonitorModal}
+                      onBookDetails={handleBookSearchResultDetails}
+                      onBookGet={handleBookSearchResultGet}
+                      onBookMonitorAction={handleBookSearchResultMonitorAction}
+                      isBookMonitored={isBookSearchResultMonitored}
+                      getMonitorResultButtonState={getMonitorResultButtonState}
+                      noopDownload={noopDownload}
+                      compactGridStyle={searchCompactGridStyle}
+                      onTabChange={openMonitoredTab}
+                      onBack={() => openMonitoredTab('authors')}
+                      displayAuthorsCount={displayAuthorsCount}
+                      displayBooksCount={displayBooksCount}
+                      displayUpcomingCount={displayUpcomingCount}
+                      displaySearchCount={displaySearchCount}
+                    />
+                    </>
+                  ) : landingTab === 'authors' ? (
                     <MonitoredAuthorsView
                       viewMode={monitoredViewMode}
                       authors={monitoredAuthorsForCards}
@@ -3371,44 +3324,7 @@ export const MonitoredPage = ({
                 </div>
               </section>
             )
-          ) : (
-            <MonitoredSearchView
-              searchScope={searchScope}
-              authorViewMode={authorViewMode}
-              bookSearchViewMode={bookSearchViewMode}
-              authorSearchViewOptions={authorSearchViewOptions}
-              bookSearchViewOptions={bookSearchViewOptions}
-              onAuthorViewModeChange={(next) => setAuthorViewMode(next as 'compact' | 'list')}
-              onBookSearchViewModeChange={(next) => setBookSearchViewMode(next as 'compact' | 'list')}
-              authorQuery={authorQuery}
-              isSearching={isSearching}
-              bookSearchResults={bookSearchResults}
-              authorSearchSortValue={authorSearchSortValue}
-              onAuthorSortChange={setAuthorSearchSortValue}
-              onScopeChange={setSearchScope}
-              bookSearchSortValue={bookSearchSortValue}
-              monitoredSearchSortOptions={monitoredSearchSortOptions}
-              onBookSortChange={setBookSearchSortValue}
-              authorResults={authorResults}
-              authorCards={authorCards}
-              monitoredNames={monitoredNames}
-              onAuthorNavigate={navigateToAuthorPage}
-              onMonitorAuthor={openMonitorModal}
-              onBookDetails={handleBookSearchResultDetails}
-              onBookGet={handleBookSearchResultGet}
-              onBookMonitorAction={handleBookSearchResultMonitorAction}
-              isBookMonitored={isBookSearchResultMonitored}
-              getMonitorResultButtonState={getMonitorResultButtonState}
-              noopDownload={noopDownload}
-              compactGridStyle={searchCompactGridStyle}
-              onTabChange={openMonitoredTab}
-              onBack={() => { if (onBack) { onBack(); } else { navigate('/'); } }}
-              displayAuthorsCount={displayAuthorsCount}
-              displayBooksCount={displayBooksCount}
-              displayUpcomingCount={displayUpcomingCount}
-              displaySearchCount={displaySearchCount}
-            />
-          )}
+          ) : null}
         </div>
       </main>
 
@@ -3852,7 +3768,6 @@ export const MonitoredPage = ({
         onSaved={handleEditAuthorSaved}
       />
 
-      {mobileNavSheet}
     </div>
   );
 };

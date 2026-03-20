@@ -49,6 +49,8 @@ export interface MonitoredSearchViewProps {
   displayBooksCount: number | string;
   displayUpcomingCount: number | string;
   displaySearchCount: number | string;
+  /** Hide the built-in header (tabs + scope toggle) when rendered inside a parent that provides its own */
+  hideHeader?: boolean;
 }
 
 export function MonitoredSearchView({
@@ -86,6 +88,7 @@ export function MonitoredSearchView({
   displayBooksCount,
   displayUpcomingCount,
   displaySearchCount,
+  hideHeader = false,
 }: MonitoredSearchViewProps) {
   // Prefer enriched author cards; fall back to plain name-only stubs from text search
   const displayedAuthors: MetadataAuthor[] = authorCards.length > 0
@@ -129,7 +132,7 @@ export function MonitoredSearchView({
   return (
     <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100dvh - 8rem)' }}>
       {/* Single header row — tabs + controls, flex-wrap so controls fall below tabs on narrow screens */}
-      <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2 shrink-0 px-4 pt-4">
+      <div className={`flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-3 gap-y-2 shrink-0 px-4 pt-4 ${hideHeader ? 'hidden' : ''}`}>
 
         {/* Left: back button + mobile label / desktop tab pills */}
         <div className="flex items-center gap-2 min-w-0">
