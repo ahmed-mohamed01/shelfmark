@@ -272,6 +272,28 @@
     }
 }
 
+@keyframes tab-slide-in-left {
+    from {
+        opacity: 0;
+        transform: translateX(-30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes tab-slide-in-right {
+    from {
+        opacity: 0;
+        transform: translateX(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
 @keyframes shimmer {
     0% {
         background-position: -200% 0;
@@ -370,6 +392,14 @@
     .animate-slide-in-right {
         animation: slide-in-right 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
         will-change: transform;
+    }
+
+    .animate-tab-slide-left {
+        animation: tab-slide-in-left 0.2s ease-out both;
+    }
+
+    .animate-tab-slide-right {
+        animation: tab-slide-in-right 0.2s ease-out both;
     }
 
     /* Button spinner styles */

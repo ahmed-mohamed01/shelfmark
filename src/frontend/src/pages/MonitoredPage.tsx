@@ -115,7 +115,7 @@ const groupMonitoredBooks = (
 };
 
 
-const LANDING_TAB_ORDER: readonly ('authors' | 'books' | 'upcoming')[] = ['authors', 'books', 'upcoming'];
+const LANDING_TAB_ORDER: readonly ('authors' | 'books' | 'upcoming' | 'search')[] = ['authors', 'books', 'upcoming', 'search'];
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
@@ -291,6 +291,20 @@ export const MonitoredPage = ({
     return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
   });
   const [view, setView] = useState<'landing' | 'search'>('landing');
+  const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
+  const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab));
+
+  // Track tab change direction for animation
+  useEffect(() => {
+    const newIndex = LANDING_TAB_ORDER.indexOf(landingTab);
+    const oldIndex = prevTabIndexRef.current;
+    if (newIndex !== oldIndex && newIndex >= 0) {
+      setSwipeDirection(newIndex > oldIndex ? 'left' : 'right');
+      prevTabIndexRef.current = newIndex;
+      const timer = setTimeout(() => setSwipeDirection(null), 250);
+      return () => clearTimeout(timer);
+    }
+  }, [landingTab]);
   const [searchScope, setSearchScope] = useState<'authors' | 'books'>('authors');
   const [authorQuery, setAuthorQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -1819,8 +1833,8 @@ export const MonitoredPage = ({
     }
   }, [location.pathname, navigate]);
 
-  const goNextLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i >= 0 && i < LANDING_TAB_ORDER.length - 1 ? LANDING_TAB_ORDER[i + 1] : prev; }), []);
-  const goPrevLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i > 0 ? LANDING_TAB_ORDER[i - 1] : prev; }), []);
+  const goNextLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev); return i >= 0 && i < LANDING_TAB_ORDER.length - 1 ? LANDING_TAB_ORDER[i + 1] : prev; }), []);
+  const goPrevLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev); return i > 0 ? LANDING_TAB_ORDER[i - 1] : prev; }), []);
   const landingSwipeHandlers = useSwipe({ onSwipeLeft: goNextLandingTab, onSwipeRight: goPrevLandingTab });
 
   const closeBookMonitorModal = useCallback(() => {
@@ -2471,7 +2485,7 @@ export const MonitoredPage = ({
         {monitoredHeader}
       </div>
 
-      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 sm:py-6 pt-0 sm:pt-24">
+      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 sm:py-6 pt-0 sm:pt-24 min-h-screen" {...landingSwipeHandlers}>
         <div className="flex flex-col gap-2 sm:gap-6">
           {searchError || monitoredError || rootsError ? (
             <div className="flex flex-col gap-3">
@@ -3193,7 +3207,7 @@ export const MonitoredPage = ({
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-visible sm:overflow-y-auto px-4 pt-3 pb-4" {...landingSwipeHandlers}>
+                <div className={`flex-1 min-h-0 overflow-visible sm:overflow-y-auto px-4 pt-3 pb-4 ${swipeDirection === 'left' ? 'animate-tab-slide-right' : swipeDirection === 'right' ? 'animate-tab-slide-left' : ''}`}>
                   {landingTab === 'search' ? (
                     <>
                     {/* Inline search bar with scope dropdown */}
