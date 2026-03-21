@@ -2493,8 +2493,8 @@ export const MonitoredPage = ({
         {monitoredHeader}
       </div>
 
-      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 sm:py-6 pt-0 sm:pt-24 min-h-screen" {...landingSwipeHandlers}>
-        <div className="flex flex-col gap-2 sm:gap-6">
+      <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 sm:py-2 pt-0 sm:pt-20 min-h-screen" {...landingSwipeHandlers}>
+        <div className="flex flex-col gap-2">
           {searchError || monitoredError || rootsError ? (
             <div className="flex flex-col gap-3">
               {searchError && (
