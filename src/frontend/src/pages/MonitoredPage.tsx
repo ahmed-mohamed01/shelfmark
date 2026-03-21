@@ -293,6 +293,27 @@ export const MonitoredPage = ({
   const [view, setView] = useState<'landing' | 'search'>('landing');
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
   const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab));
+  const mobileTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const mobileTabIndicatorRef = useRef<HTMLDivElement | null>(null);
+
+  const syncMobileTabIndicator = useCallback(() => {
+    const el = mobileTabIndicatorRef.current;
+    const btn = mobileTabRefs.current[landingTab];
+    if (!el || !btn) return;
+    const container = btn.parentElement;
+    if (!container) return;
+    // Scroll the active tab into view
+    btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    // Position indicator after scroll settles
+    requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const btnRect = btn.getBoundingClientRect();
+      el.style.left = `${btnRect.left - containerRect.left + container.scrollLeft + 8}px`;
+      el.style.width = `${btnRect.width - 16}px`;
+    });
+  }, [landingTab]);
+
+  useEffect(() => { syncMobileTabIndicator(); }, [syncMobileTabIndicator]);
 
   // Track tab change direction for animation
   useEffect(() => {
@@ -2579,15 +2600,17 @@ export const MonitoredPage = ({
                         <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.5 7.5 12 15 4.5" />
                       </svg>
                     </button>
-                    {/* Mobile: horizontal scrollable tab bar */}
-                    <div className="sm:hidden flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
-                      {(['authors', 'books', 'upcoming'] as const).map((key) => {
-                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : 'Upcoming';
-                        const count = key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount;
+                    {/* Mobile: horizontal scrollable tab bar with sliding indicator */}
+                    <div className="sm:hidden relative flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
+                      <div ref={mobileTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
+                      {(['authors', 'books', 'upcoming', 'search'] as const).map((key) => {
+                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Upcoming' : 'Search';
+                        const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
                         return (
                           <button
                             key={key}
+                            ref={(el) => { mobileTabRefs.current[key] = el; if (el && isActive) syncMobileTabIndicator(); }}
                             type="button"
                             onClick={() => openMonitoredTab(key)}
                             className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
@@ -2595,23 +2618,11 @@ export const MonitoredPage = ({
                           >
                             <span className="flex items-center gap-1.5">
                               {label}
-                              <span className={`inline-flex items-center justify-center rounded-full text-[10px] font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>
+                              {count != null && <span className={`inline-flex items-center justify-center rounded-full text-[10px] font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>}
                             </span>
-                            {isActive && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-emerald-600 rounded-full" />}
                           </button>
                         );
                       })}
-                      <button
-                        type="button"
-                        onClick={() => openMonitoredTab('search')}
-                        className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${landingTab === 'search' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
-                        aria-pressed={landingTab === 'search'}
-                      >
-                        <span className="flex items-center gap-1.5">
-                          Search
-                        </span>
-                        {landingTab === 'search' && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-emerald-600 rounded-full" />}
-                      </button>
                     </div>
                     {/* Desktop: full tab pills */}
                     <div className="hidden sm:inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
