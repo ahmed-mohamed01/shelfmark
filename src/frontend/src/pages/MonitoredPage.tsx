@@ -261,7 +261,7 @@ export const MonitoredPage = ({
   onActivityClick,
   isActivityOpen = false,
   onBack,
-  onMonitoredClick,
+  onMonitoredClick: _onMonitoredClick,
   logoUrl,
   debug,
   onSettingsClick,
@@ -2379,7 +2379,7 @@ export const MonitoredPage = ({
       isActivityOpen={isActivityOpen}
       onLogoClick={onBack}
       debug={debug}
-      onMonitoredClick={onMonitoredClick}
+      onMonitoredClick={() => navigate('/search')}
       activeTopNav="monitoring"
       onSettingsClick={onSettingsClick}
       statusCounts={statusCounts}
