@@ -3446,7 +3446,6 @@ export const MonitoredPage = ({
                     {(() => {
                       const authorName = monitorModalState.author?.name || '';
                       const rootValue = stripTrailingAuthorName(monitorModalState.ebookAuthorDir, authorName);
-                      const suffix = authorName ? `/${authorName}` : '';
                       return (
                         <>
                           <div className="flex items-center gap-2">
@@ -3468,27 +3467,20 @@ export const MonitoredPage = ({
                           <div className="relative">
                             <div className="flex items-stretch rounded-xl border border-black/10 dark:border-white/10 overflow-hidden bg-white/80 dark:bg-white/10">
                               <input
-                                value={rootValue}
+                                value={monitorModalState.ebookAuthorDir}
                                 onChange={(e) => {
-                                  const value = e.target.value;
-                                  const nextFull = authorName ? joinPath(value, authorName) : value;
-                                  setMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: nextFull }));
-                                  void refreshPathSuggestions('ebook', value);
+                                  setMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: e.target.value }));
+                                  void refreshPathSuggestions('ebook', e.target.value);
                                 }}
-                                onFocus={() => void refreshPathSuggestions('ebook', rootValue)}
+                                onFocus={() => void refreshPathSuggestions('ebook', monitorModalState.ebookAuthorDir)}
                                 onBlur={() => {
                                   window.setTimeout(() => {
                                     setPathSuggestState((prev) => ({ ...prev, open: false }));
                                   }, 150);
                                 }}
-                                placeholder="/books/ebooks"
+                                placeholder={authorName ? `/books/ebooks/fiction/${authorName}` : '/books/ebooks'}
                                 className="flex-1 min-w-0 px-3 py-2 text-sm bg-transparent outline-none"
                               />
-                              {suffix ? (
-                                <div className="flex items-center px-2 text-sm text-gray-400 dark:text-gray-500 border-l border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 select-none whitespace-nowrap">
-                                  {suffix}
-                                </div>
-                              ) : null}
                             </div>
                             {pathSuggestState.open && pathSuggestState.kind === 'ebook' ? (
                               <div className="absolute z-10 mt-1 w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-lg overflow-hidden">
@@ -3506,8 +3498,7 @@ export const MonitoredPage = ({
                                         type="button"
                                         onMouseDown={(e) => e.preventDefault()}
                                         onClick={() => {
-                                          const nextFull = authorName ? joinPath(entry.path, authorName) : entry.path;
-                                          setMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: nextFull }));
+                                          setMonitorModalState((prev) => ({ ...prev, ebookAuthorDir: entry.path }));
                                           setPathSuggestState((prev) => ({ ...prev, open: false }));
                                         }}
                                         className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/10"
@@ -3532,7 +3523,6 @@ export const MonitoredPage = ({
                     {(() => {
                       const authorName = monitorModalState.author?.name || '';
                       const rootValue = stripTrailingAuthorName(monitorModalState.audiobookAuthorDir, authorName);
-                      const suffix = authorName ? `/${authorName}` : '';
                       return (
                         <>
                           <div className="flex items-center gap-2">
@@ -3554,27 +3544,20 @@ export const MonitoredPage = ({
                           <div className="relative">
                             <div className="flex items-stretch rounded-xl border border-black/10 dark:border-white/10 overflow-hidden bg-white/80 dark:bg-white/10">
                               <input
-                                value={rootValue}
+                                value={monitorModalState.audiobookAuthorDir}
                                 onChange={(e) => {
-                                  const value = e.target.value;
-                                  const nextFull = authorName ? joinPath(value, authorName) : value;
-                                  setMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: nextFull }));
-                                  void refreshPathSuggestions('audiobook', value);
+                                  setMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: e.target.value }));
+                                  void refreshPathSuggestions('audiobook', e.target.value);
                                 }}
-                                onFocus={() => void refreshPathSuggestions('audiobook', rootValue)}
+                                onFocus={() => void refreshPathSuggestions('audiobook', monitorModalState.audiobookAuthorDir)}
                                 onBlur={() => {
                                   window.setTimeout(() => {
                                     setPathSuggestState((prev) => ({ ...prev, open: false }));
                                   }, 150);
                                 }}
-                                placeholder="/books/audiobooks"
+                                placeholder={authorName ? `/books/audiobooks/Fiction/${authorName}` : '/books/audiobooks'}
                                 className="flex-1 min-w-0 px-3 py-2 text-sm bg-transparent outline-none"
                               />
-                              {suffix ? (
-                                <div className="flex items-center px-2 text-sm text-gray-400 dark:text-gray-500 border-l border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 select-none whitespace-nowrap">
-                                  {suffix}
-                                </div>
-                              ) : null}
                             </div>
                             {pathSuggestState.open && pathSuggestState.kind === 'audiobook' ? (
                               <div className="absolute z-10 mt-1 w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg)] shadow-lg overflow-hidden">
@@ -3592,8 +3575,7 @@ export const MonitoredPage = ({
                                         type="button"
                                         onMouseDown={(e) => e.preventDefault()}
                                         onClick={() => {
-                                          const nextFull = authorName ? joinPath(entry.path, authorName) : entry.path;
-                                          setMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: nextFull }));
+                                          setMonitorModalState((prev) => ({ ...prev, audiobookAuthorDir: entry.path }));
                                           setPathSuggestState((prev) => ({ ...prev, open: false }));
                                         }}
                                         className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/10"
@@ -3752,8 +3734,11 @@ export const MonitoredPage = ({
         overlayZIndex={1300}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
-          const authorName = monitorModalState.author?.name;
-          const suggested = authorName ? joinPath(path, authorName) : path;
+          const authorName = monitorModalState.author?.name || '';
+          const normalizedPath = normalizeAbsolutePath(path);
+          // If the selected folder already ends with the author name, use it directly
+          const alreadyHasAuthor = authorName && normalizedPath.endsWith(`/${authorName}`);
+          const suggested = alreadyHasAuthor ? normalizedPath : (authorName ? joinPath(path, authorName) : path);
           if (folderBrowserState.kind === 'audiobook') {
             setMonitorModalState((prev) => ({
               ...prev,
