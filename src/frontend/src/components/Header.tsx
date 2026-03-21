@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { SearchBar, SearchBarHandle } from './SearchBar';
 import { DropdownList } from './DropdownList';
@@ -62,6 +62,8 @@ interface HeaderProps {
   onMobileSearchToggle?: () => void;
   /** Placeholder text for the mobile search input */
   mobileSearchPlaceholder?: string;
+  /** Extra content rendered between the logo and icon buttons in non-search mode */
+  headerExtra?: ReactNode;
 }
 
 export const Header = forwardRef<HeaderHandle, HeaderProps>(({
@@ -109,6 +111,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
   mobileSearchOpen = false,
   onMobileSearchToggle,
   mobileSearchPlaceholder = 'Search authors...',
+  headerExtra,
 }, ref) => {
   const activityBadge = getActivityBadgeState(statusCounts, isAdmin);
   const settingsEnabled = canAccessSettings ?? isAdmin;
@@ -791,6 +794,7 @@ export const Header = forwardRef<HeaderHandle, HeaderProps>(({
                 )}
                 <span className="text-base font-semibold tracking-tight" style={{ color: 'var(--text)' }}>Shelfmark</span>
               </div>
+              {headerExtra && <div className="flex-1 flex justify-end min-w-0">{headerExtra}</div>}
               {iconButtons}
             </div>
             {/* Mobile expandable author search bar */}

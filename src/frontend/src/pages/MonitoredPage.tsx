@@ -1329,12 +1329,6 @@ export const MonitoredPage = ({
   const monitoredSearchSortOptions = (metadataSortOptions && metadataSortOptions.length > 0)
     ? metadataSortOptions
     : [{ value: 'relevance', label: 'Most relevant' }];
-  const hasStartedSearch = isSearching
-    || Boolean(searchError)
-    || authorResults.length > 0
-    || authorCards.length > 0
-    || bookSearchResults.length > 0
-    || view === 'search';
   const authorSearchViewOptions = useMemo<ViewModeToggleOption[]>(() => ([
     { value: 'compact', label: 'Compact view', icon: SEARCH_VIEW_ICON_GRID },
     { value: 'list', label: 'List view', icon: SEARCH_VIEW_ICON_LIST },
@@ -2340,41 +2334,13 @@ export const MonitoredPage = ({
     );
   }, [openMonitoredBookDetails, openMonitoredBookInAuthorPage, toggleSingleBookMonitor]);
 
-  const clearSearchAndReturn = useCallback(() => {
-    setAuthorQuery('');
-    setAuthorResults([]);
-    setAuthorCards([]);
-    setBookSearchResults([]);
-    setSearchError(null);
-    setView('landing');
-  }, []);
-
-  const handleHeaderAuthorSearchChange = useCallback((value: string | number | boolean) => {
-    const strValue = String(value);
-    setAuthorQuery(strValue);
-    setSearchScope('authors');
-    if (!strValue.trim()) {
-      clearSearchAndReturn();
-    }
-  }, [clearSearchAndReturn, setSearchScope]);
-
   const isAuthorDetailsRoute = location.pathname === '/monitored/author';
   const authorDetailsSearchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const handleMonitoredHeaderSearch = useCallback(() => {
-    if (isAuthorDetailsRoute) {
-      navigate('/monitored');
-    }
-    void runAuthorSearch();
-  }, [isAuthorDetailsRoute, navigate, runAuthorSearch]);
 
   const monitoredHeader = (
     <Header
-      showSearch={isDesktop}
+      showSearch={false}
       logoUrl={logoUrl}
-      searchInput={authorQuery}
-      onSearchChange={handleHeaderAuthorSearchChange}
-      onSearch={handleMonitoredHeaderSearch}
-      isLoading={isSearching}
       onDownloadsClick={onActivityClick}
       isActivityOpen={isActivityOpen}
       onLogoClick={onBack}
@@ -2394,6 +2360,27 @@ export const MonitoredPage = ({
       mobileSearchOpen={false}
       onMobileSearchToggle={() => openMonitoredTab('search')}
       mobileSearchPlaceholder="Search authors..."
+      headerExtra={isDesktop ? (
+        <form
+          className="hidden sm:flex items-center rounded-full border border-[var(--border-muted)] mr-2"
+          style={{ background: 'var(--surface)' }}
+          onSubmit={(e) => { e.preventDefault(); openMonitoredTab('search'); void runAuthorSearch(); }}
+        >
+          <input
+            type="text"
+            value={authorQuery}
+            onChange={(e) => setAuthorQuery(e.target.value)}
+            placeholder="Search..."
+            className="w-32 focus:w-52 transition-all duration-200 px-4 py-1.5 text-sm bg-transparent text-[var(--text)] placeholder-gray-400 focus:outline-none rounded-l-full"
+            style={{ textAlign: 'left' }}
+          />
+          <button type="submit" className="shrink-0 px-3 py-1.5 text-gray-400 hover:text-emerald-600 transition-colors rounded-r-full">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+            </svg>
+          </button>
+        </form>
+      ) : undefined}
     />
   );
 
@@ -2653,17 +2640,14 @@ export const MonitoredPage = ({
                         Upcoming
                         <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'upcoming' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayUpcomingCount}</span>
                       </button>
-                      {hasStartedSearch ? (
-                        <button
-                          type="button"
-                          onClick={() => openMonitoredTab('search')}
-                          className="px-3.5 py-2 rounded-full text-sm font-medium transition-colors text-gray-700 dark:text-gray-200 hover-action flex items-center gap-1.5"
-                          aria-pressed={false}
-                        >
-                          Search
-                          <span className="inline-flex items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem]">{displaySearchCount}</span>
-                        </button>
-                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => openMonitoredTab('search')}
+                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'search' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
+                        aria-pressed={landingTab === 'search'}
+                      >
+                        Search
+                      </button>
                     </div>
                   </div>
                   <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' ? 'hidden' : ''}`}>
