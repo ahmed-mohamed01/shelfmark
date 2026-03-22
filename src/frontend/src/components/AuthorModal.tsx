@@ -3,11 +3,11 @@ import { Book, ContentType, OpenReleasesOptions, ReleasePrimaryAction, StatusDat
 import { getMetadataAuthorInfo, MetadataAuthor, MetadataAuthorDetailsResult } from '../services/monitoredApi';
 import { withBasePath } from '../utils/basePath';
 import { EditAuthorModal } from './EditAuthorModal';
+import { MonitoredAuthorBooksTab, type AuthorBooksTabControls } from './MonitoredAuthorBooksTab';
 
 // Module-level cache so re-opening the same author shows the bio immediately
 // rather than flashing null while the fetch runs.
 const authorDetailsCache = new Map<string, MetadataAuthor>();
-import { MonitoredAuthorBooksTab } from './MonitoredAuthorBooksTab';
 
 export interface AuthorModalAuthor {
   name: string;
@@ -43,6 +43,10 @@ interface AuthorModalProps {
   renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
   showBooksInMultipleSeries?: boolean;
   onMonitorBook?: (book: Book) => void;
+  /** When true, suppress the modal/page header (breadcrumb, search, edit) — used when embedded in a tab */
+  hideHeader?: boolean;
+  /** Callback to expose MonitoredAuthorBooksTab internal controls to the parent */
+  onBooksControlsReady?: (controls: AuthorBooksTabControls) => void;
 }
 
 export const AuthorModal = ({
@@ -65,6 +69,8 @@ export const AuthorModal = ({
   renderEmbeddedSearch,
   showBooksInMultipleSeries,
   onMonitorBook,
+  hideHeader = false,
+  onBooksControlsReady,
 }: AuthorModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [details, setDetails] = useState<MetadataAuthor | null>(null);
@@ -220,9 +226,11 @@ export const AuthorModal = ({
           aria-labelledby={titleId}
         >
           <div className={isPageMode
-            ? 'flex flex-col overflow-visible rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 text-[var(--text)] sm:shadow-xl'
+            ? hideHeader
+              ? 'flex flex-col overflow-visible text-[var(--text)]'
+              : 'flex flex-col overflow-visible rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 text-[var(--text)] sm:shadow-xl'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
-            <header className={`flex items-start gap-4 px-5 ${isPageMode ? 'py-2 border-b border-black/10 dark:border-white/10 bg-transparent' : 'py-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
+            {!hideHeader && <header className={`flex items-start gap-4 px-5 ${isPageMode ? 'py-2 border-b border-black/10 dark:border-white/10 bg-transparent' : 'py-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">
                 {isPageMode ? (
                   <div className="flex items-center gap-2 min-w-0">
@@ -309,9 +317,9 @@ export const AuthorModal = ({
                   </button>
                 )}
               </div>
-            </header>
+            </header>}
 
-            <div className="px-3 pb-3 sm:px-4 sm:pb-4">
+            <div className={hideHeader ? 'pb-3' : 'px-3 pb-3 sm:px-4 sm:pb-4'}>
               <div className="mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] p-4">
                 <div className="flex items-start gap-4">
                   <div className="flex-shrink-0">
@@ -340,7 +348,7 @@ export const AuthorModal = ({
                       </div>
 
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        {monitoredEntityId && !isPageMode ? (
+                        {monitoredEntityId && (!isPageMode || hideHeader) ? (
                           <button
                             type="button"
                             onClick={() => setIsEditModalOpen(true)}
@@ -453,6 +461,8 @@ export const AuthorModal = ({
                 releaseCombinedMode={releaseCombinedMode}
                 renderEmbeddedSearch={renderEmbeddedSearch}
                 showBooksInMultipleSeries={showBooksInMultipleSeries}
+                compactToolbar={hideHeader}
+                onControlsReady={onBooksControlsReady}
                 onFallbackPhotoChange={setFallbackAuthorPhoto}
                 onMonitorBook={onMonitorBook}
               />

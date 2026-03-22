@@ -286,17 +286,28 @@ export const MonitoredPage = ({
   onRemoveToast: _onRemoveToast,
   setTransientActivityItems,
 }: MonitoredPageProps) => {
-  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search'>(() => {
+  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search' | 'author-detail'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
     return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
   });
   const [view, setView] = useState<'landing' | 'search'>('landing');
+  const [activeAuthorDetail, setActiveAuthorDetail] = useState<{
+    author: AuthorModalAuthor;
+    monitoredEntityId: number | null;
+    initialBooksQuery?: string;
+    initialBookProvider?: string | null;
+    initialBookProviderId?: string | null;
+    openEdit?: boolean;
+  } | null>(null);
+  const [authorDetailBooksQuery, setAuthorDetailBooksQuery] = useState('');
+  const [authorBooksControls, setAuthorBooksControls] = useState<import('../components/MonitoredAuthorBooksTab').AuthorBooksTabControls | null>(null);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
-  const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab));
+  const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab as typeof LANDING_TAB_ORDER[number]));
   const mobileTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const mobileTabIndicatorRef = useRef<HTMLDivElement | null>(null);
   const desktopTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const desktopTabIndicatorRef = useRef<HTMLDivElement | null>(null);
+  const skipIndicatorTransition = useRef(false);
 
   const syncMobileTabIndicator = useCallback(() => {
     const el = mobileTabIndicatorRef.current;
@@ -304,14 +315,15 @@ export const MonitoredPage = ({
     if (!el || !btn) return;
     const container = btn.parentElement;
     if (!container) return;
-    // Scroll the active tab into view
-    btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-    // Position indicator after scroll settles
+    const shouldSkip = skipIndicatorTransition.current;
+    if (shouldSkip) { el.style.transition = 'none'; el.style.opacity = '0'; }
+    btn.scrollIntoView({ behavior: shouldSkip ? 'instant' : 'smooth', block: 'nearest', inline: 'center' });
     requestAnimationFrame(() => {
       const containerRect = container.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       el.style.left = `${btnRect.left - containerRect.left + container.scrollLeft + 8}px`;
       el.style.width = `${btnRect.width - 16}px`;
+      if (shouldSkip) { el.style.opacity = '1'; requestAnimationFrame(() => { el.style.transition = ''; skipIndicatorTransition.current = false; }); }
     });
   }, [landingTab]);
 
@@ -321,16 +333,26 @@ export const MonitoredPage = ({
     if (!el || !btn) return;
     const container = btn.parentElement;
     if (!container) return;
+    const shouldSkip = skipIndicatorTransition.current;
+    if (shouldSkip) { el.style.transition = 'none'; el.style.opacity = '0'; }
     requestAnimationFrame(() => {
       const containerRect = container.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       el.style.left = `${btnRect.left - containerRect.left + 12}px`;
       el.style.width = `${btnRect.width - 24}px`;
+      if (shouldSkip) { el.style.opacity = '1'; requestAnimationFrame(() => { el.style.transition = ''; skipIndicatorTransition.current = false; }); }
     });
   }, [landingTab]);
 
   useEffect(() => { syncMobileTabIndicator(); }, [syncMobileTabIndicator]);
   useEffect(() => { syncDesktopTabIndicator(); }, [syncDesktopTabIndicator]);
+
+  // When the tab set composition changes (author opens/closes), skip indicator animation
+  const prevActiveAuthorDetail = useRef(activeAuthorDetail);
+  if (prevActiveAuthorDetail.current !== activeAuthorDetail) {
+    prevActiveAuthorDetail.current = activeAuthorDetail;
+    skipIndicatorTransition.current = true;
+  }
 
   // Re-sync tab indicators on window resize
   useEffect(() => {
@@ -341,7 +363,7 @@ export const MonitoredPage = ({
 
   // Track tab change direction for animation
   useEffect(() => {
-    const newIndex = LANDING_TAB_ORDER.indexOf(landingTab);
+    const newIndex = LANDING_TAB_ORDER.indexOf(landingTab as typeof LANDING_TAB_ORDER[number]);
     const oldIndex = prevTabIndexRef.current;
     if (newIndex !== oldIndex && newIndex >= 0) {
       setSwipeDirection(newIndex > oldIndex ? 'left' : 'right');
@@ -623,6 +645,8 @@ export const MonitoredPage = ({
       socket.off('monitored_sync_progress', onProgress);
       socket.off('monitored_sync_complete', onComplete);
       socket.off('monitored_sync_error', onError);
+      for (const tid of syncActivityTimeoutsRef.current.values()) clearTimeout(tid);
+      syncActivityTimeoutsRef.current.clear();
     };
   }, [socket, setTransientActivityItems, onShowToast]);
 
@@ -1060,7 +1084,7 @@ export const MonitoredPage = ({
 
       const titleCompare = (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
       if (titleCompare !== 0) return titleCompare * dir;
-      return (a.author_name || '').localeCompare(b.author_name || '', undefined, { sensitivity: 'base' });
+      return (a.author_name || '').localeCompare(b.author_name || '', undefined, { sensitivity: 'base' }) * dir;
     });
   }, [monitoredBooksRows, monitoredBooksSortBy, monitoredBooksSortAsc]);
 
@@ -1168,7 +1192,7 @@ export const MonitoredPage = ({
     } catch {
       // ignore
     }
-  }, [monitoredLoaded, monitored.length, regularMonitoredBooksForTable.length, upcomingMonitoredBooksForTable.length]);
+  }, [monitoredLoaded, monitoredAuthorsForCards.length, filteredRegularMonitoredBooksForTable.length, filteredUpcomingMonitoredBooksForTable.length, searchScope, bookSearchResults.length, authorResults.length]);
 
   useEffect(() => {
     try {
@@ -1180,7 +1204,7 @@ export const MonitoredPage = ({
       localStorage.setItem('monitoredBooksGroupBy', monitoredBooksGroupBy);
       localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
       localStorage.setItem(MONITORED_UPCOMING_TIME_FILTER_KEY, upcomingTimeFilter);
-      localStorage.setItem('monitoredLandingTab', landingTab);
+      if (landingTab !== 'author-detail') localStorage.setItem('monitoredLandingTab', landingTab);
       localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
       localStorage.setItem('monitoredAuthorSortAsc', String(monitoredSortAsc));
       localStorage.setItem('monitoredCompactMinWidth', String(monitoredCompactMinWidth));
@@ -1864,16 +1888,30 @@ export const MonitoredPage = ({
     void runAuthorSearch();
   }, [authorSearchSortValue, runAuthorSearch, searchScope, authorQuery]);
 
-  const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search') => {
+  const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search' | 'author-detail') => {
+    if (tab !== 'author-detail') {
+      // Close author tab when switching to any other tab
+      setActiveAuthorDetail(null);
+      setAuthorBooksControls(null);
+      if (location.pathname === '/monitored/author') {
+        navigate('/monitored');
+      }
+    }
     setLandingTab(tab);
     setView('landing');
+  }, [location.pathname, navigate]);
+
+  const closeAuthorDetailTab = useCallback(() => {
+    setActiveAuthorDetail(null);
+    setAuthorBooksControls(null);
+    setLandingTab('authors');
     if (location.pathname === '/monitored/author') {
       navigate('/monitored');
     }
   }, [location.pathname, navigate]);
 
-  const goNextLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev); return i >= 0 && i < LANDING_TAB_ORDER.length - 1 ? LANDING_TAB_ORDER[i + 1] : prev; }), []);
-  const goPrevLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev); return i > 0 ? LANDING_TAB_ORDER[i - 1] : prev; }), []);
+  const goNextLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i >= 0 && i < LANDING_TAB_ORDER.length - 1 ? LANDING_TAB_ORDER[i + 1] : prev; }), []);
+  const goPrevLandingTab = useCallback(() => setLandingTab((prev) => { const i = LANDING_TAB_ORDER.indexOf(prev as typeof LANDING_TAB_ORDER[number]); return i > 0 ? LANDING_TAB_ORDER[i - 1] : prev; }), []);
   const landingSwipeHandlers = useSwipe({ onSwipeLeft: goNextLandingTab, onSwipeRight: goPrevLandingTab });
 
   const closeBookMonitorModal = useCallback(() => {
@@ -2132,6 +2170,24 @@ export const MonitoredPage = ({
     if (payload.initialContentType) params.set('initial_content_type', payload.initialContentType);
     if (payload.initialAction) params.set('initial_action', payload.initialAction);
     if (payload.openEdit) params.set('open_edit', '1');
+
+    // Set component state for the author-detail tab
+    setActiveAuthorDetail({
+      author: {
+        name: normalized,
+        provider: payload.provider || null,
+        provider_id: payload.provider_id || null,
+        source_url: payload.source_url || null,
+        photo_url: payload.photo_url || null,
+      },
+      monitoredEntityId: typeof payload.monitoredEntityId === 'number' && Number.isFinite(payload.monitoredEntityId) ? payload.monitoredEntityId : null,
+      initialBooksQuery: initialBookQuery || undefined,
+      initialBookProvider: initialBookProvider || null,
+      initialBookProviderId: initialBookProviderId || null,
+      openEdit: payload.openEdit,
+    });
+    setAuthorDetailBooksQuery(initialBookQuery);
+    setLandingTab('author-detail');
 
     navigate(`/monitored/author?${params.toString()}`);
   }, [navigate]);
@@ -2467,49 +2523,35 @@ export const MonitoredPage = ({
     : defaultReleaseActionAudiobook;
 
 
-  if (isAuthorDetailsRoute) {
-    return (
-      <div className="min-h-screen overflow-x-clip" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
-        <div className="fixed top-0 left-0 right-0 z-50">
-          {monitoredHeader}
-        </div>
+  // Deep-link support: when page loads at /monitored/author, populate activeAuthorDetail from URL
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (isAuthorDetailsRoute && !activeAuthorDetail && authorDetailsAuthor) {
+      setActiveAuthorDetail({
+        author: authorDetailsAuthor,
+        monitoredEntityId: authorDetailsMonitoredEntityId,
+        initialBooksQuery: authorDetailsInitialBooksQuery || undefined,
+        initialBookProvider: authorDetailsInitialBookProvider || null,
+        initialBookProviderId: authorDetailsInitialBookProviderId || null,
+        openEdit: authorDetailsOpenEdit,
+      });
+      setAuthorDetailBooksQuery(authorDetailsInitialBooksQuery);
+      setLandingTab('author-detail');
+    }
+  }, [isAuthorDetailsRoute]); // intentionally narrow deps — only run on route entry
 
-        <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 pt-20">
-          {authorDetailsAuthor ? (
-            <AuthorModal
-              author={authorDetailsAuthor}
-              displayMode="page"
-              onClose={() => navigate('/monitored')}
-              onGetReleases={onGetReleasesWithCombined}
-              defaultReleaseContentType={authorDetailsEffectiveDefaultContentType}
-              defaultReleaseActionEbook={authorDetailsEffectiveDefaultActionEbook}
-              defaultReleaseActionAudiobook={authorDetailsEffectiveDefaultActionAudiobook}
-              releaseCombinedMode={releaseCombinedMode}
-              initialBooksQuery={authorDetailsInitialBooksQuery || undefined}
-              initialBookProvider={authorDetailsInitialBookProvider}
-              initialBookProviderId={authorDetailsInitialBookProviderId}
-              monitoredEntityId={authorDetailsMonitoredEntityId}
-              status={status}
-              openEditOnMount={authorDetailsOpenEdit}
-              renderEmbeddedSearch={renderEmbeddedSearch}
-              showBooksInMultipleSeries={showBooksInMultipleSeries}
-            />
-          ) : (
-            <section className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-5">
-              <div className="text-sm text-gray-600 dark:text-gray-300">Missing author details in URL.</div>
-              <button
-                type="button"
-                onClick={() => navigate('/monitored')}
-                className="mt-3 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium"
-              >
-                Back to Monitored
-              </button>
-            </section>
-          )}
-        </main>
-      </div>
-    );
-  }
+  // Handle browser back/forward: if URL leaves /monitored/author while on author-detail tab, clear state
+  // Only react to isAuthorDetailsRoute changes (not landingTab) to avoid race with navigate()
+  const prevIsAuthorDetailsRoute = useRef(isAuthorDetailsRoute);
+  useEffect(() => {
+    // Only trigger when route actually changes from author to non-author (browser back)
+    if (prevIsAuthorDetailsRoute.current && !isAuthorDetailsRoute && landingTab === 'author-detail') {
+      setActiveAuthorDetail(null);
+      setAuthorBooksControls(null);
+      setLandingTab('authors');
+    }
+    prevIsAuthorDetailsRoute.current = isAuthorDetailsRoute;
+  }, [isAuthorDetailsRoute, landingTab]);
 
   return (
     <div className="min-h-screen overflow-x-clip" style={{ backgroundColor: 'var(--background-color)', color: 'var(--text-color)' }}>
@@ -2614,7 +2656,7 @@ export const MonitoredPage = ({
                     {/* Mobile: horizontal scrollable tab bar with sliding indicator */}
                     <div className="sm:hidden relative flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
                       <div ref={mobileTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
-                      {(['authors', 'books', 'upcoming', 'search'] as const).map((key) => {
+                      {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
                         const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Upcoming' : 'Search';
                         const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
@@ -2634,11 +2676,31 @@ export const MonitoredPage = ({
                           </button>
                         );
                       })}
+                      {activeAuthorDetail && (
+                        <div
+                          key="author-detail"
+                          ref={(el) => { mobileTabRefs.current['author-detail'] = el as unknown as HTMLButtonElement; if (el && landingTab === 'author-detail') syncMobileTabIndicator(); }}
+                          className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors flex items-center gap-1.5 ${landingTab === 'author-detail' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
+                          role="tab"
+                          aria-selected={landingTab === 'author-detail'}
+                          onClick={() => openMonitoredTab('author-detail')}
+                        >
+                          {activeAuthorDetail.author.name.length > 16 ? `${activeAuthorDetail.author.name.slice(0, 14)}…` : activeAuthorDetail.author.name}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); closeAuthorDetailTab(); }}
+                            className="p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10"
+                            aria-label="Close author tab"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                     {/* Desktop: text tabs with sliding underline (matches mobile style) */}
                     <div className="hidden sm:flex relative items-center gap-0">
                       <div ref={desktopTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
-                      {(['authors', 'books', 'upcoming', 'search'] as const).map((key) => {
+                      {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
                         const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Upcoming' : 'Search';
                         const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
@@ -2658,10 +2720,47 @@ export const MonitoredPage = ({
                           </button>
                         );
                       })}
+                      {activeAuthorDetail && (
+                        <div
+                          key="author-detail"
+                          ref={(el) => { desktopTabRefs.current['author-detail'] = el as unknown as HTMLButtonElement; if (el && landingTab === 'author-detail') syncDesktopTabIndicator(); }}
+                          className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${landingTab === 'author-detail' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover-action'}`}
+                          role="tab"
+                          aria-selected={landingTab === 'author-detail'}
+                          onClick={() => openMonitoredTab('author-detail')}
+                        >
+                          {activeAuthorDetail.author.name.length > 20 ? `${activeAuthorDetail.author.name.slice(0, 18)}…` : activeAuthorDetail.author.name}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); closeAuthorDetailTab(); }}
+                            className="p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10"
+                            aria-label="Close author tab"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' ? 'hidden' : ''}`}>
-                    {landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
+                    {landingTab === 'author-detail' && activeAuthorDetail ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Sync this author */}
+                        {activeAuthorDetail.monitoredEntityId ? (
+                          <button
+                            type="button"
+                            onClick={() => void syncMonitoredEntity(activeAuthorDetail.monitoredEntityId!)}
+                            className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
+                            title="Sync this author"
+                            aria-label="Sync this author"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Select all */}
                         <button
@@ -2755,7 +2854,7 @@ export const MonitoredPage = ({
                               setMonitoredBooksSearchOpen(Boolean(monitoredBooksSearchQuery.trim()));
                             }
                           }}
-                          className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${(monitoredBooksSearchQuery.trim() || monitoredBooksSearchExpanded) ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
+                          className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${(monitoredBooksSearchQuery.trim() || (landingTab === 'author-detail' && authorDetailBooksQuery.trim()) || monitoredBooksSearchExpanded) ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
                           title="Search monitored books"
                           aria-label="Search monitored books"
                         >
@@ -2794,11 +2893,15 @@ export const MonitoredPage = ({
                               </svg>
                               <input
                                 ref={monitoredBooksSearchInputRef}
-                                value={monitoredBooksSearchQuery}
+                                value={landingTab === 'author-detail' ? authorDetailBooksQuery : monitoredBooksSearchQuery}
                                 onChange={(e) => {
-                                  setMonitoredBooksSearchQuery(e.target.value);
-                                  if (landingTab === 'authors') {
-                                    setMonitoredBooksSearchOpen(true);
+                                  if (landingTab === 'author-detail') {
+                                    setAuthorDetailBooksQuery(e.target.value);
+                                  } else {
+                                    setMonitoredBooksSearchQuery(e.target.value);
+                                    if (landingTab === 'authors') {
+                                      setMonitoredBooksSearchOpen(true);
+                                    }
                                   }
                                 }}
                                 onFocus={() => {
@@ -2817,16 +2920,20 @@ export const MonitoredPage = ({
                                     handleMonitoredBookResultSelect(scopedMonitoredBooksSearchResults[0]);
                                   }
                                 }}
-                                placeholder={landingTab === 'authors' ? 'Search monitored books' : 'Filter visible books'}
+                                placeholder={landingTab === 'author-detail' ? 'Filter books' : landingTab === 'authors' ? 'Search monitored books' : 'Filter visible books'}
                                 className="w-full bg-transparent outline-none text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-500"
                                 aria-label="Search monitored books"
                                 autoFocus
                               />
-                              {monitoredBooksSearchQuery ? (
+                              {(landingTab === 'author-detail' ? authorDetailBooksQuery : monitoredBooksSearchQuery) ? (
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setMonitoredBooksSearchQuery('');
+                                    if (landingTab === 'author-detail') {
+                                      setAuthorDetailBooksQuery('');
+                                    } else {
+                                      setMonitoredBooksSearchQuery('');
+                                    }
                                     setMonitoredBooksSearchOpen(false);
                                   }}
                                   className="p-0.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action flex-shrink-0"
@@ -2907,7 +3014,118 @@ export const MonitoredPage = ({
                           </div>
                         ) : null}
                       </div>
-                    {landingTab === 'authors' ? (
+                    {landingTab === 'author-detail' && authorBooksControls ? (
+                      <>
+                        <ViewModeToggle
+                          value={authorBooksControls.booksViewMode}
+                          onChange={(next) => authorBooksControls.setBooksViewMode(next as 'table' | 'compact')}
+                          options={[
+                            {
+                              value: 'table',
+                              label: 'Table view',
+                              icon: (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" />
+                                </svg>
+                              ),
+                            },
+                            {
+                              value: 'compact',
+                              label: 'Compact view',
+                              icon: (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" />
+                                </svg>
+                              ),
+                            },
+                          ]}
+                        />
+                        <Dropdown
+                          align="right"
+                          widthClassName="w-auto"
+                          panelClassName="z-[2200] min-w-[220px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+                          renderTrigger={({ isOpen, toggle }) => (
+                            <button
+                              type="button"
+                              onClick={toggle}
+                              className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${isOpen ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
+                              title="Books view settings"
+                              aria-label="Books view settings"
+                              aria-expanded={isOpen}
+                            >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                                <circle cx="12" cy="5" r="1.5" />
+                                <circle cx="12" cy="12" r="1.5" />
+                                <circle cx="12" cy="19" r="1.5" />
+                              </svg>
+                            </button>
+                          )}
+                        >
+                          {() => (
+                            <div className="px-3 py-3 space-y-3">
+                              <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">Group</div>
+                                <div className="space-y-0.5">
+                                  {([
+                                    { key: 'series' as const, label: 'By Series' },
+                                    { key: 'year' as const, label: 'By Year' },
+                                    { key: 'none' as const, label: 'None' },
+                                  ]).map(({ key, label }) => {
+                                    const active = authorBooksControls.booksGroup === key;
+                                    return (
+                                      <button
+                                        key={key}
+                                        type="button"
+                                        className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                        onClick={() => authorBooksControls.setBooksGroup(key)}
+                                      >
+                                        {label}
+                                        {active && <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">Sort</div>
+                                <div className="space-y-0.5">
+                                  {([
+                                    { key: 'series_name' as const, label: 'Series Name' },
+                                    { key: 'series' as const, label: 'Series Number' },
+                                    { key: 'title' as const, label: 'Title' },
+                                    { key: 'date' as const, label: 'Date' },
+                                    { key: 'popularity' as const, label: 'Popularity' },
+                                    { key: 'rating' as const, label: 'Rating' },
+                                  ]).map(({ key, label }) => {
+                                    const active = authorBooksControls.booksSort === key;
+                                    return (
+                                      <button
+                                        key={key}
+                                        type="button"
+                                        className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface flex items-center justify-between ${active ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                        onClick={() => {
+                                          if (active) {
+                                            authorBooksControls.setBooksSortAsc((prev: boolean) => !prev);
+                                          } else {
+                                            authorBooksControls.setBooksSort(key);
+                                            authorBooksControls.setBooksSortAsc(key !== 'popularity' && key !== 'rating');
+                                          }
+                                        }}
+                                      >
+                                        {label}
+                                        {active && (
+                                          <svg className={`w-3.5 h-3.5 shrink-0 transition-transform ${authorBooksControls.booksSortAsc ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </Dropdown>
+                      </>
+                    ) : landingTab === 'authors' ? (
                       <>
                         <ViewModeToggle
                           value={monitoredViewMode}
@@ -3213,7 +3431,31 @@ export const MonitoredPage = ({
                 </div>
 
                 <div className={`flex-1 min-h-0 overflow-visible sm:overflow-y-auto px-4 pt-3 pb-4 ${swipeDirection === 'left' ? 'animate-tab-slide-right' : swipeDirection === 'right' ? 'animate-tab-slide-left' : ''}`}>
-                  {landingTab === 'search' ? (
+                  {landingTab === 'author-detail' && activeAuthorDetail ? (
+                    <AuthorModal
+                      author={activeAuthorDetail.author}
+                      displayMode="page"
+                      hideHeader
+                      onBooksControlsReady={setAuthorBooksControls}
+                      onClose={closeAuthorDetailTab}
+                      onGetReleases={onGetReleasesWithCombined}
+                      defaultReleaseContentType={authorDetailsEffectiveDefaultContentType}
+                      defaultReleaseActionEbook={authorDetailsEffectiveDefaultActionEbook}
+                      defaultReleaseActionAudiobook={authorDetailsEffectiveDefaultActionAudiobook}
+                      releaseCombinedMode={releaseCombinedMode}
+                      booksSearchQuery={authorDetailBooksQuery}
+                      onBooksSearchQueryChange={setAuthorDetailBooksQuery}
+                      initialBooksQuery={activeAuthorDetail.initialBooksQuery}
+                      initialBookProvider={activeAuthorDetail.initialBookProvider}
+                      initialBookProviderId={activeAuthorDetail.initialBookProviderId}
+                      monitoredEntityId={activeAuthorDetail.monitoredEntityId}
+                      status={status}
+                      openEditOnMount={activeAuthorDetail.openEdit}
+                      renderEmbeddedSearch={renderEmbeddedSearch}
+                      showBooksInMultipleSeries={showBooksInMultipleSeries}
+                      onMonitorBook={openBookMonitorModal}
+                    />
+                  ) : landingTab === 'search' ? (
                     <>
                     {/* Inline search bar with scope dropdown */}
                     <form className="flex items-center gap-2 mb-3" onSubmit={(e) => { e.preventDefault(); void runAuthorSearch(); }}>

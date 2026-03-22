@@ -332,6 +332,21 @@ export interface MonitoredAuthorBooksTabProps {
   showBooksInMultipleSeries?: boolean;
   onFallbackPhotoChange?: (url: string | null) => void;
   onMonitorBook?: (book: Book) => void;
+  /** When true, strip toolbar of refresh/view-toggle/search-ebooks buttons and disable sticky (used when embedded in a tab with its own header) */
+  compactToolbar?: boolean;
+  /** Callback to expose internal state controls to the parent (for wiring to an external overflow menu) */
+  onControlsReady?: (controls: AuthorBooksTabControls) => void;
+}
+
+export interface AuthorBooksTabControls {
+  booksGroup: AuthorBooksGroup;
+  setBooksGroup: (g: AuthorBooksGroup) => void;
+  booksSort: AuthorBooksSort;
+  setBooksSort: (s: AuthorBooksSort) => void;
+  booksSortAsc: boolean;
+  setBooksSortAsc: (asc: boolean | ((prev: boolean) => boolean)) => void;
+  booksViewMode: AuthorBooksViewMode;
+  setBooksViewMode: (m: AuthorBooksViewMode) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +371,8 @@ export const MonitoredAuthorBooksTab = ({
   showBooksInMultipleSeries = true,
   onFallbackPhotoChange,
   onMonitorBook,
+  compactToolbar = false,
+  onControlsReady,
 }: MonitoredAuthorBooksTabProps) => {
   // --- state ---
   const [booksGroup, setBooksGroup] = useState<AuthorBooksGroup>(() => {
@@ -392,6 +409,13 @@ export const MonitoredAuthorBooksTab = ({
     if (!Number.isFinite(parsed)) return AUTHOR_BOOKS_COMPACT_MIN_WIDTH_DEFAULT;
     return Math.max(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN, Math.min(AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX, parsed));
   });
+  // Expose internal controls to parent when requested
+  useEffect(() => {
+    if (onControlsReady) {
+      onControlsReady({ booksGroup, setBooksGroup, booksSort, setBooksSort, booksSortAsc, setBooksSortAsc, booksViewMode, setBooksViewMode });
+    }
+  }, [onControlsReady, booksGroup, booksSort, booksSortAsc, booksViewMode]);
+
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 640);
@@ -1523,7 +1547,7 @@ export const MonitoredAuthorBooksTab = ({
       <div className="mt-4">
         <div
           ref={booksToolbarRef}
-          className={`sticky bg-[var(--bg)] ${isPageMode ? 'z-[45] top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
+          className={`${compactToolbar ? '' : 'sticky'} bg-[var(--bg)] ${compactToolbar ? 'z-10 top-0' : isPageMode ? 'z-[45] top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned && !compactToolbar ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
         >
           <div className="flex flex-wrap items-center gap-2 gap-y-1.5 px-4 py-2">
             <div className="flex items-center gap-2 min-w-0">
@@ -1667,7 +1691,7 @@ export const MonitoredAuthorBooksTab = ({
                   </div>
                 )}
               </Dropdown>
-              <Dropdown align="right" widthClassName="w-auto flex-shrink-0" panelClassName="w-48"
+              {!compactToolbar && <Dropdown align="right" widthClassName="w-auto flex-shrink-0" panelClassName="w-48"
                 renderTrigger={({ isOpen, toggle }) => (
                   <button type="button" onClick={toggle} className={`p-1.5 rounded-full transition-all duration-200 ${isOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`} aria-haspopup="listbox" aria-expanded={isOpen} title="Sort & group books">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M6 12h12M10 18h4" /></svg>
@@ -1712,7 +1736,7 @@ export const MonitoredAuthorBooksTab = ({
                     })}
                   </div>
                 )}
-              </Dropdown>
+              </Dropdown>}
               <Dropdown align="right" widthClassName="w-auto flex-shrink-0" panelClassName="w-56"
                 renderTrigger={({ isOpen, toggle }) => (
                   <button type="button" onClick={toggle} className={`p-1.5 rounded-full transition-all duration-200 ${isOpen ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action'}`} aria-label="Compact tile size" title="Compact tile size">
@@ -1735,14 +1759,18 @@ export const MonitoredAuthorBooksTab = ({
                   </div>
                 )}
               </Dropdown>
-              <ViewModeToggle value={booksViewMode} onChange={(next) => setBooksViewMode(next as AuthorBooksViewMode)} options={[
-                { value: 'table', label: 'Table view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" /></svg> },
-                { value: 'compact', label: 'Compact view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" /></svg> },
-              ]} />
-              <button type="button" onClick={() => void handleRefreshAndScan()} disabled={isLoadingBooks || isRefreshing} className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0" aria-label={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'} title={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'}>
-                <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" /></svg>
-              </button>
-              {monitoredEntityId ? (
+              {!compactToolbar && (
+                <ViewModeToggle value={booksViewMode} onChange={(next) => setBooksViewMode(next as AuthorBooksViewMode)} options={[
+                  { value: 'table', label: 'Table view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 6.75h15m-15 5.25h15m-15 5.25h15" /></svg> },
+                  { value: 'compact', label: 'Compact view', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5h6.75v6.75H4.5V4.5Zm8.25 0h6.75v6.75h-6.75V4.5ZM4.5 12.75h6.75v6.75H4.5v-6.75Zm8.25 0h6.75v6.75h-6.75v-6.75Z" /></svg> },
+                ]} />
+              )}
+              {!compactToolbar && (
+                <button type="button" onClick={() => void handleRefreshAndScan()} disabled={isLoadingBooks || isRefreshing} className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0" aria-label={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'} title={monitoredEntityId ? 'Refresh & scan files' : 'Refresh books from provider'}>
+                  <svg className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.356v4.992" /></svg>
+                </button>
+              )}
+              {!compactToolbar && monitoredEntityId ? (
                 <>
                   <button type="button" onClick={() => void handleRunMonitoredSearch('ebook')} disabled={bulkDownloadRunningByType.ebook || bulkDownloadRunningByType.audiobook} className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover-action disabled:opacity-40 whitespace-nowrap" title="Search monitored ebook candidates">
                     {bulkDownloadRunningByType.ebook ? 'Searching…' : <><span className="hidden sm:inline">Search </span>eBooks</>}
