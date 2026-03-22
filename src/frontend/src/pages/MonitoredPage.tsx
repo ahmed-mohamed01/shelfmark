@@ -303,9 +303,9 @@ export const MonitoredPage = ({
   const [authorBooksControls, setAuthorBooksControls] = useState<import('../components/MonitoredAuthorBooksTab').AuthorBooksTabControls | null>(null);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
   const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab as typeof LANDING_TAB_ORDER[number]));
-  const mobileTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const mobileTabRefs = useRef<Record<string, HTMLElement | null>>({});
   const mobileTabIndicatorRef = useRef<HTMLDivElement | null>(null);
-  const desktopTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const desktopTabRefs = useRef<Record<string, HTMLElement | null>>({});
   const desktopTabIndicatorRef = useRef<HTMLDivElement | null>(null);
   const skipIndicatorTransition = useRef(false);
 
@@ -315,15 +315,26 @@ export const MonitoredPage = ({
     if (!el || !btn) return;
     const container = btn.parentElement;
     if (!container) return;
-    const shouldSkip = skipIndicatorTransition.current;
-    if (shouldSkip) { el.style.transition = 'none'; el.style.opacity = '0'; }
-    btn.scrollIntoView({ behavior: shouldSkip ? 'instant' : 'smooth', block: 'nearest', inline: 'center' });
+    const shouldAnchored = skipIndicatorTransition.current;
+    if (shouldAnchored) {
+      // Anchor the indicator at the "authors" tab position instantly, then slide to target
+      const anchorBtn = mobileTabRefs.current['authors'];
+      if (anchorBtn) {
+        el.style.transition = 'none';
+        const cr = container.getBoundingClientRect();
+        const ar = anchorBtn.getBoundingClientRect();
+        el.style.left = `${ar.left - cr.left + container.scrollLeft + 8}px`;
+        el.style.width = `${ar.width - 16}px`;
+      }
+      skipIndicatorTransition.current = false;
+    }
+    btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     requestAnimationFrame(() => {
+      if (shouldAnchored) el.style.transition = '';
       const containerRect = container.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       el.style.left = `${btnRect.left - containerRect.left + container.scrollLeft + 8}px`;
       el.style.width = `${btnRect.width - 16}px`;
-      if (shouldSkip) { el.style.opacity = '1'; requestAnimationFrame(() => { el.style.transition = ''; skipIndicatorTransition.current = false; }); }
     });
   }, [landingTab]);
 
@@ -333,14 +344,25 @@ export const MonitoredPage = ({
     if (!el || !btn) return;
     const container = btn.parentElement;
     if (!container) return;
-    const shouldSkip = skipIndicatorTransition.current;
-    if (shouldSkip) { el.style.transition = 'none'; el.style.opacity = '0'; }
+    const shouldAnchored = skipIndicatorTransition.current;
+    if (shouldAnchored) {
+      // Anchor the indicator at the "authors" tab position instantly, then slide to target
+      const anchorBtn = desktopTabRefs.current['authors'];
+      if (anchorBtn) {
+        el.style.transition = 'none';
+        const cr = container.getBoundingClientRect();
+        const ar = anchorBtn.getBoundingClientRect();
+        el.style.left = `${ar.left - cr.left + 12}px`;
+        el.style.width = `${ar.width - 24}px`;
+      }
+      skipIndicatorTransition.current = false;
+    }
     requestAnimationFrame(() => {
+      if (shouldAnchored) el.style.transition = '';
       const containerRect = container.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       el.style.left = `${btnRect.left - containerRect.left + 12}px`;
       el.style.width = `${btnRect.width - 24}px`;
-      if (shouldSkip) { el.style.opacity = '1'; requestAnimationFrame(() => { el.style.transition = ''; skipIndicatorTransition.current = false; }); }
     });
   }, [landingTab]);
 
@@ -1888,23 +1910,36 @@ export const MonitoredPage = ({
     void runAuthorSearch();
   }, [authorSearchSortValue, runAuthorSearch, searchScope, authorQuery]);
 
+  const deferredAuthorCleanupRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (deferredAuthorCleanupRef.current) clearTimeout(deferredAuthorCleanupRef.current); }, []);
+
   const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search' | 'author-detail') => {
-    if (tab !== 'author-detail') {
-      // Close author tab when switching to any other tab
-      setActiveAuthorDetail(null);
-      setAuthorBooksControls(null);
+    if (tab !== 'author-detail' && activeAuthorDetail) {
+      // Animate indicator to target tab first, then remove the author tab after animation
+      setLandingTab(tab);
+      if (deferredAuthorCleanupRef.current) clearTimeout(deferredAuthorCleanupRef.current);
+      deferredAuthorCleanupRef.current = setTimeout(() => {
+        setActiveAuthorDetail(null);
+        setAuthorBooksControls(null);
+        deferredAuthorCleanupRef.current = null;
+      }, 320);
       if (location.pathname === '/monitored/author') {
         navigate('/monitored');
       }
+    } else {
+      setLandingTab(tab);
     }
-    setLandingTab(tab);
     setView('landing');
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, activeAuthorDetail]);
 
   const closeAuthorDetailTab = useCallback(() => {
-    setActiveAuthorDetail(null);
-    setAuthorBooksControls(null);
     setLandingTab('authors');
+    if (deferredAuthorCleanupRef.current) clearTimeout(deferredAuthorCleanupRef.current);
+    deferredAuthorCleanupRef.current = setTimeout(() => {
+      setActiveAuthorDetail(null);
+      setAuthorBooksControls(null);
+      deferredAuthorCleanupRef.current = null;
+    }, 320);
     if (location.pathname === '/monitored/author') {
       navigate('/monitored');
     }
@@ -2170,6 +2205,9 @@ export const MonitoredPage = ({
     if (payload.initialContentType) params.set('initial_content_type', payload.initialContentType);
     if (payload.initialAction) params.set('initial_action', payload.initialAction);
     if (payload.openEdit) params.set('open_edit', '1');
+
+    // Cancel any pending cleanup from a previous author close animation
+    if (deferredAuthorCleanupRef.current) { clearTimeout(deferredAuthorCleanupRef.current); deferredAuthorCleanupRef.current = null; }
 
     // Set component state for the author-detail tab
     setActiveAuthorDetail({
@@ -2679,7 +2717,7 @@ export const MonitoredPage = ({
                       {activeAuthorDetail && (
                         <div
                           key="author-detail"
-                          ref={(el) => { mobileTabRefs.current['author-detail'] = el as unknown as HTMLButtonElement; if (el && landingTab === 'author-detail') syncMobileTabIndicator(); }}
+                          ref={(el) => { mobileTabRefs.current['author-detail'] = el ; if (el && landingTab === 'author-detail') syncMobileTabIndicator(); }}
                           className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors flex items-center gap-1.5 ${landingTab === 'author-detail' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}
                           role="tab"
                           aria-selected={landingTab === 'author-detail'}
@@ -2723,7 +2761,7 @@ export const MonitoredPage = ({
                       {activeAuthorDetail && (
                         <div
                           key="author-detail"
-                          ref={(el) => { desktopTabRefs.current['author-detail'] = el as unknown as HTMLButtonElement; if (el && landingTab === 'author-detail') syncDesktopTabIndicator(); }}
+                          ref={(el) => { desktopTabRefs.current['author-detail'] = el ; if (el && landingTab === 'author-detail') syncDesktopTabIndicator(); }}
                           className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${landingTab === 'author-detail' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover-action'}`}
                           role="tab"
                           aria-selected={landingTab === 'author-detail'}
