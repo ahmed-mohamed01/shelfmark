@@ -5,32 +5,10 @@ import {
   getFormatStatus,
   isMonitoredBookDormantState,
 } from '../utils/monitoredBookState';
+import { getUpcomingCountdown, formatUpcomingDate } from '../utils/upcomingDate';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
 import { FormatStatusBadge } from './FormatStatusBadge';
-
-const formatUpcomingDate = (book: MonitoredBookListRow): ReactNode => {
-  if (typeof book.release_date === 'string' && book.release_date.trim()) {
-    const parsed = Date.parse(book.release_date);
-    if (Number.isFinite(parsed)) {
-      const dateStr = new Date(parsed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const today = new Date(); today.setHours(0, 0, 0, 0);
-      const days = Math.ceil((parsed - today.getTime()) / 86_400_000);
-      let countdown: string | null = null;
-      if (days <= 0) countdown = 'Today';
-      else if (days === 1) countdown = 'Tomorrow';
-      else if (days <= 90) countdown = `in ${days} days`;
-      else {
-        const months = Math.round(days / 30.44);
-        if (months <= 12) countdown = `in ${months} month${months === 1 ? '' : 's'}`;
-      }
-      if (!countdown) return dateStr;
-      return <>{dateStr} · <span className="text-amber-600 dark:text-amber-400 font-medium">{countdown}</span></>;
-    }
-  }
-  if (typeof book.publish_year === 'number') return String(book.publish_year);
-  return <span className="text-gray-400 dark:text-gray-500 italic">TBA</span>;
-};
 
 // Augmented type: MonitoredBookRow joined with its author entity fields.
 // Must stay structurally in sync with the same-named interface in MonitoredPage.tsx.
@@ -172,10 +150,11 @@ export function MonitoredBooksView({
                     ? `${book.ratings_count.toLocaleString()} ratings`
                     : null;
                 const popularityLine = [ratingLabel, popularityLabel].filter(Boolean).join(' • ');
-                const releaseDatePart = isUpcomingTab ? formatUpcomingDate(book) : (book.publish_year ? String(book.publish_year) : null);
+                const releaseDatePart = isUpcomingTab ? (formatUpcomingDate(book) ?? 'TBA') : (book.publish_year ? String(book.publish_year) : null);
+                const tableCountdown = isUpcomingTab ? getUpcomingCountdown(book) : null;
                 const subtitleRow = (
                   <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                    {authorName}{releaseDatePart ? <> · {releaseDatePart}</> : null}
+                    {authorName}{releaseDatePart ? <> · {releaseDatePart}</> : null}{tableCountdown ? <> · <span className="text-amber-600 dark:text-amber-400 font-medium">{tableCountdown}</span></> : null}
                   </div>
                 );
                 const titleRow = (
@@ -331,8 +310,9 @@ export function MonitoredBooksView({
                   const showPopularity = compactMinWidth >= 194 && Boolean(popularityLine);
                   // In upcoming tab: always show release date; otherwise just year (series is shown via seriesLine)
                   const metaLine = isUpcomingTab
-                    ? formatUpcomingDate(book)
+                    ? (formatUpcomingDate(book) ?? 'TBA')
                     : (book.publish_year ? String(book.publish_year) : undefined);
+                  const countdown = isUpcomingTab ? getUpcomingCountdown(book) : null;
 
                   return (
                     <div
@@ -354,6 +334,7 @@ export function MonitoredBooksView({
                         showMetaLine={Boolean(metaLine)}
                         popularityLine={popularityLine}
                         showPopularityLine={showPopularity}
+                        countdownTag={countdown}
                         ebookStatus={ebookStatus}
                         audiobookStatus={audiobookStatus}
                         onEbookSearch={() => onOpenDetails(book)}
