@@ -1165,6 +1165,7 @@ class MonitoredDB:
         ratings_count: int | None = None,
         readers_count: int | None = None,
         state: str = "discovered",
+        hidden: bool | None = None,
     ) -> None:
         """Upsert a monitored book snapshot."""
         normalized_title = (title or "").strip()
@@ -1292,9 +1293,10 @@ class MonitoredDB:
                         rating,
                         ratings_count,
                         readers_count,
-                        state
+                        state,
+                        hidden
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(entity_id, provider, provider_book_id)
                     DO UPDATE SET
                         title=excluded.title,
@@ -1355,6 +1357,7 @@ class MonitoredDB:
                         ratings_count_value,
                         readers_count_value,
                         normalized_state,
+                        1 if hidden else 0,
                     ),
                 )
                 conn.commit()

@@ -109,11 +109,17 @@ class MonitoredHardcoverProvider(HardcoverProvider):
     ) -> list[dict]:
         """Fetch books for an author via the direct books GraphQL query.
 
-        Filters compilations at API level. Returns full data per book:
+        Filters compilations and books with <=4 users at API level.
+        Post-processing filters in the sync pipeline further narrow results
+        via hybrid threshold, title patterns, language heuristic, and
+        contributor count.
+
+        Returns full data per book:
         - All series memberships with positions
         - Preferred-language ISBNs (preferred_isbns) and ASINs (preferred_asins)
         - Language detection via lang_editions (distinct per language_id)
-        - Pages, tags, rating, readers count, cover, release date
+        - Pages, tags, rating, readers/users count, cover, release date
+        - Contributor count via contributions_aggregate
         """
         codes = lang_codes or _DEFAULT_LANG_CODES
         query = """
@@ -122,15 +128,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 where: {
                     contributions: { author: { id: { _eq: $authorId } } }
                     compilation: { _eq: false }
-                    users_count: { _gt: 10 }
-                    _or: [
-                        { editions: { asin: { _is_null: false }, language_id: { _eq: 1 } } }
-                        { default_physical_edition: { _or: [
-                            { isbn_13: { _is_null: false } }
-                            { isbn_10: { _is_null: false } }
-                        ] } }
-                        { users_read_count: { _eq: 0 } }
-                    ]
+                    users_count: { _gt: 4 }
                 }
                 limit: $limit
                 offset: $offset
@@ -141,6 +139,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 description
                 rating
                 reviews_count
+                users_count
                 users_read_count
                 release_date
                 cached_tags
@@ -176,6 +175,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 ) {
                     language { code2 }
                 }
+                contributions_aggregate { aggregate { count } }
             }
         }
         """

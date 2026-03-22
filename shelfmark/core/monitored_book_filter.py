@@ -1,7 +1,11 @@
-"""Filter non-canonical split/partial books from a monitored author's book list.
+"""Filter non-canonical and noise books from a monitored author's book list.
 
 Split books are partial editions (e.g., "The Way of Kings, Part 1") that should
 be excluded when the canonical full edition ("The Way of Kings") is present.
+
+Noise books are translations, anthologies, boxed sets, graphic novel adaptations,
+magazine issues, and other non-primary editions detected via title patterns,
+language heuristics, and contributor count.
 """
 from __future__ import annotations
 
@@ -193,3 +197,142 @@ def filter_split_books(
         )
 
     return canonical, filtered_out
+
+
+# ---------------------------------------------------------------------------
+# Noise filter — title patterns, language heuristic
+# ---------------------------------------------------------------------------
+
+# Title patterns that indicate non-primary editions / noise entries.
+_NOISE_TITLE_PATTERNS = [
+    re.compile(r"\(\d+ of \d+\)", re.IGNORECASE),                    # "(1 of 5)" dramatized splits
+    re.compile(r"Boxed Set|Box Set|\d-Book Bundle", re.IGNORECASE),  # boxed sets
+    re.compile(r"Sneak Peek|Free Preview", re.IGNORECASE),           # previews
+    re.compile(r"Chapters[\s-]\d", re.IGNORECASE),                   # "Chapters-1-7" samples
+    re.compile(r"Annotations$", re.IGNORECASE),                      # annotations
+    re.compile(r":\s*The Play$", re.IGNORECASE),                     # stage plays
+    re.compile(r"Dramatized Adaptation", re.IGNORECASE),             # dramatized adaptations
+    re.compile(r"Graphic Novel", re.IGNORECASE),                     # graphic novel adaptations
+    re.compile(r"Diary \d{4}", re.IGNORECASE),                       # diaries "Diary 1999"
+    re.compile(r"Yearbook", re.IGNORECASE),                          # yearbooks
+    re.compile(r"Handbook \d{4}", re.IGNORECASE),                    # handbooks
+    re.compile(r"Colou?ring Book", re.IGNORECASE),                   # colouring books
+    re.compile(r"Quizbook", re.IGNORECASE),                          # quiz books
+    re.compile(r"\bGURPS\b", re.IGNORECASE),                         # RPG sourcebooks
+    re.compile(r"Magazine Issue|Magazine,", re.IGNORECASE),           # magazine issues
+]
+
+# Non-Latin script characters (Cyrillic, CJK, Arabic, Thai) — strong translation signal.
+_NON_LATIN_RE = re.compile(
+    r"[\u0400-\u04FF\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\u0600-\u06FF\u0E00-\u0E7F]"
+)
+
+# Contributor count threshold for auto-hide (anthologies with many contributors).
+ANTHOLOGY_CONTRIBUTOR_THRESHOLD = 10
+
+
+def _get_contrib_count(book: dict[str, Any]) -> int:
+    """Extract contributor count from GraphQL or parsed shape."""
+    # GraphQL shape: contributions_aggregate.aggregate.count
+    agg = book.get("contributions_aggregate")
+    if isinstance(agg, dict):
+        return (agg.get("aggregate") or {}).get("count", 0)
+    # Already parsed (flat key)
+    val = book.get("contrib_count")
+    if val is not None:
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def _get_lang_codes(book: dict[str, Any]) -> list[str]:
+    """Extract language codes from GraphQL shape."""
+    # GraphQL shape: lang_editions -> [{language: {code2: "en"}}]
+    raw = book.get("lang_editions")
+    if isinstance(raw, list):
+        codes = []
+        for e in raw:
+            lang = e.get("language") if isinstance(e, dict) else None
+            if isinstance(lang, dict) and lang.get("code2"):
+                codes.append(lang["code2"])
+        return codes
+    return []
+
+
+def classify_noise(
+    book: dict[str, Any],
+    *,
+    lang_codes: list[str] | None = None,
+) -> str | None:
+    """Classify a book as noise and return the reason, or None if it should be kept.
+
+    Returns a short string describing the noise category, or None.
+    """
+    title = (book.get("title") or "").strip()
+    users_read = _get_readers_count(book) or 0
+    preferred = lang_codes or ["en"]
+
+    # Title pattern match
+    for pattern in _NOISE_TITLE_PATTERNS:
+        if pattern.search(title):
+            return f"title:{pattern.pattern}"
+
+    # Language: no preferred-language edition + has readers (released non-English)
+    book_langs = _get_lang_codes(book)
+    if book_langs and not any(lc in preferred for lc in book_langs) and users_read > 0:
+        return f"lang:{','.join(book_langs[:3])}"
+
+    # Non-Latin title characters (Cyrillic, CJK, etc.) + has readers
+    if _NON_LATIN_RE.search(title) and users_read > 0:
+        return "non_latin_title"
+
+    return None
+
+
+def filter_noise_books(
+    books: list[dict[str, Any]],
+    *,
+    lang_codes: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate books into kept, noise (discard), and auto-hide (anthologies).
+
+    Returns ``(kept, noise_filtered, auto_hide)``.
+
+    - *noise_filtered*: books matched by title patterns or language heuristic — discard.
+    - *auto_hide*: books with contributor count > threshold — upsert with ``hidden=1``.
+    """
+    kept: list[dict[str, Any]] = []
+    noise: list[dict[str, Any]] = []
+    auto_hide: list[dict[str, Any]] = []
+
+    noise_reasons: list[tuple[str, str]] = []
+    for book in books:
+        reason = classify_noise(book, lang_codes=lang_codes)
+        if reason:
+            noise.append(book)
+            noise_reasons.append((book.get("title", ""), reason))
+            continue
+
+        cc = _get_contrib_count(book)
+        if cc > ANTHOLOGY_CONTRIBUTOR_THRESHOLD:
+            auto_hide.append(book)
+            continue
+
+        kept.append(book)
+
+    if noise:
+        logger.debug(
+            "Noise-filtered %d books: %s",
+            len(noise),
+            noise_reasons[:10],
+        )
+    if auto_hide:
+        logger.debug(
+            "Auto-hiding %d anthology books (contributor count > %d)",
+            len(auto_hide),
+            ANTHOLOGY_CONTRIBUTOR_THRESHOLD,
+        )
+
+    return kept, noise, auto_hide

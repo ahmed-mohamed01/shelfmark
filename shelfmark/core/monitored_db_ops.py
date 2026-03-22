@@ -91,13 +91,21 @@ def _parse_book_fields(book: dict, *, lang_codes: list[str]) -> dict:
         {"asin": e["asin"]} for e in (book.get("preferred_asins") or []) if e.get("asin")
     ] or None
 
-    # Language: first lang_editions entry ordered by language_id asc (English first if present)
+    # Language: prefer a preferred-language edition, fall back to first available.
+    # The API orders by language_id asc but this isn't reliable (some books
+    # have non-English editions with lower IDs), so explicitly check.
     language = None
-    for ed in (book.get("lang_editions") or []):
-        lang_code = (ed.get("language") or {}).get("code2")
-        if lang_code:
-            language = normalize_language_code(lang_code)
+    _all_lang_codes = [
+        normalize_language_code((ed.get("language") or {}).get("code2") or "")
+        for ed in (book.get("lang_editions") or [])
+        if (ed.get("language") or {}).get("code2")
+    ]
+    for lc in _all_lang_codes:
+        if lc in lang_codes:
+            language = lc
             break
+    if language is None and _all_lang_codes:
+        language = _all_lang_codes[0]
 
     return {
         "title": book.get("title") or "",
@@ -191,7 +199,7 @@ def fetch_entity_metadata(
                 break  # last page
 
         # Filter non-canonical split editions (e.g. "Part 1", "Part 2")
-        from shelfmark.core.monitored_book_filter import filter_split_books
+        from shelfmark.core.monitored_book_filter import filter_noise_books, filter_split_books
 
         canonical_books, filtered_books = filter_split_books(all_books)
         if filtered_books:
@@ -200,14 +208,51 @@ def fetch_entity_metadata(
                 entity_id, len(filtered_books), len(all_books),
             )
 
+        # Hybrid threshold: GT>10 for released books, GT>4 for upcoming/unknown.
+        # Use the same release_date resolution as _parse_book_fields (physical
+        # edition date takes priority over book-level date).
+        from datetime import date as _date
+
+        today_iso = _date.today().isoformat()
+        threshold_passed: list[dict] = []
+        for b in canonical_books:
+            uc = b.get("users_count") or 0
+            rd = (b.get("default_physical_edition") or {}).get("release_date") or b.get("release_date")
+            if uc > 10:
+                threshold_passed.append(b)
+            elif not rd or rd > today_iso:
+                # Upcoming or unknown release date — keep at lower threshold (GT>4)
+                threshold_passed.append(b)
+            # else: released with u<=10 — discard (mostly duplicates/noise)
+        if len(threshold_passed) < len(canonical_books):
+            logger.debug(
+                "entity_id=%s: hybrid threshold filtered %d released low-user books",
+                entity_id, len(canonical_books) - len(threshold_passed),
+            )
+        canonical_books = threshold_passed
+
+        # Noise filter: title patterns, language heuristic, contributor count
+        canonical_books, noise_books, auto_hide_books = filter_noise_books(
+            canonical_books, lang_codes=lang_codes,
+        )
+        if noise_books:
+            logger.debug(
+                "entity_id=%s: noise-filtered %d books",
+                entity_id, len(noise_books),
+            )
+
         discovered_ids: set[str] = set()
-        for book in canonical_books:
+        author_name = str(entity.get("name") or "").strip() or None
+        auto_hide_ids = {b["id"] for b in auto_hide_books}
+
+        # Upsert all books: auto-hide anthologies get hidden=True, rest get hidden=None
+        for book in (*auto_hide_books, *canonical_books):
             book_id = str(book["id"])
             discovered_ids.add(f"{provider_name}:{book_id}")
 
             fields = _parse_book_fields(book, lang_codes=lang_codes)
 
-            # Skip books in non-preferred languages (filter at upsert time, not post-hoc)
+            # Skip books in non-preferred languages
             if preferred_languages and fields.get("language") and fields["language"] not in preferred_languages:
                 continue
 
@@ -216,9 +261,10 @@ def fetch_entity_metadata(
                 entity_id=entity_id,
                 provider=provider_name,
                 provider_book_id=book_id,
-                authors=str(entity.get("name") or "").strip() or None,
+                authors=author_name,
                 ratings_count=book.get("reviews_count"),
                 state="discovered",
+                hidden=True if book["id"] in auto_hide_ids else None,
                 **fields,
             )
 
