@@ -623,7 +623,7 @@ def update_file_availability(
 
     if ebook_path is None and audiobook_path is None:
         try:
-            clear_entity_matched_files(monitored_db=db, user_ids=[user_id], entity_id=entity_id)
+            clear_entity_matched_files(monitored_db=db, user_id=user_id, entity_id=entity_id)
         except Exception as exc:
             logger.warning("Failed clearing matched files entity_id=%s: %s", entity_id, exc)
         raise MonitoredPathError("directories_not_found")
@@ -795,9 +795,9 @@ def search_missing_books(
     author_dir = settings.get(dir_key)
     if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
         dest_override = author_dir.strip().rstrip("/")
-        tmpl_override = "{Series}/{Title} - {Author} ({Year})"
+        tmpl_override = "{Series}/{Title}/{Title} - {Author} ({Year})"
     else:
-        tmpl_override = "{Author}/{Series}/{Title} ({Year})"
+        tmpl_override = "{Author}/{Series}/{Title}/{Title} ({Year})"
 
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
     monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"

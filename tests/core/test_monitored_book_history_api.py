@@ -45,7 +45,7 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
     provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
 
     main_module.monitored_db.insert_monitored_book_download_history(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,
@@ -59,7 +59,7 @@ def test_monitored_book_history_endpoint_returns_rows(main_module, client):
         overwritten_path="/books/ebooks/fiction/Alastair Reynolds/Harvest of Time - Alastair Reynolds (2013)_1.epub",
     )
     main_module.monitored_db.insert_monitored_book_attempt_history(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,
@@ -131,7 +131,7 @@ def test_record_monitored_book_attempt_endpoint_persists_and_is_returned(main_mo
     provider = "hardcover"
     provider_book_id = f"book-{uuid.uuid4().hex[:8]}"
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,

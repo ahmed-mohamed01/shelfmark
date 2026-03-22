@@ -81,7 +81,10 @@ def _parse_book_fields(book: dict, *, lang_codes: list[str]) -> dict:
     pages = phys.get("pages") or None
     # Physical edition release_date takes priority over book-level date
     release_date = phys.get("release_date") or book.get("release_date") or None
-    publish_year = int(release_date[:4]) if release_date else None
+    try:
+        publish_year = int(release_date[:4]) if release_date else None
+    except (ValueError, TypeError):
+        publish_year = None
 
     # Preferred-language ISBNs and ASINs (aliased edition subfields)
     isbns: list | None = [

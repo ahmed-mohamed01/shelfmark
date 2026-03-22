@@ -573,7 +573,7 @@ class MonitoredDB:
             conn = self._connect()
             try:
                 conn.execute(
-                    "UPDATE monitored_entities SET sync_status=? WHERE id=?",
+                    "UPDATE monitored_entities SET sync_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     (status, entity_id),
                 )
                 conn.commit()
@@ -698,19 +698,33 @@ class MonitoredDB:
         return entry["cover_url"] if entry else None
 
     def get_best_book_cover_urls_batch(
-        self, *, user_ids: list[int], entity_ids: list[int]  # noqa: ARG002
+        self, *, user_ids: list[int], entity_ids: list[int]
     ) -> dict[int, dict[str, str]]:
         """Return best cover_url (with provider info) for multiple entities in one query.
 
         Uses a window function to pick the most popular book per entity.
         Returns a dict mapping entity_id → {cover_url, provider, provider_book_id}.
         Omits entities that have no books with a cover_url.
+        Only returns results for entities owned by the given user_ids.
         """
         if not entity_ids:
             return {}
-        placeholders = ",".join("?" * len(entity_ids))
+        uid_clause, uid_params = self._user_id_clause(user_ids)
+        entity_placeholders = ",".join("?" * len(entity_ids))
         conn = self._connect()
         try:
+            # Filter entity_ids to only those owned by the user
+            owned_rows = conn.execute(
+                f"""
+                SELECT id FROM monitored_entities
+                WHERE id IN ({entity_placeholders}) AND {uid_clause}
+                """,
+                [*entity_ids, *uid_params],
+            ).fetchall()
+            owned_ids = [r["id"] for r in owned_rows]
+            if not owned_ids:
+                return {}
+            placeholders = ",".join("?" * len(owned_ids))
             rows = conn.execute(
                 f"""
                 SELECT entity_id, cover_url, provider, provider_book_id FROM (
@@ -727,7 +741,7 @@ class MonitoredDB:
                       AND cover_url IS NOT NULL AND cover_url != ''
                 ) WHERE rn = 1
                 """,
-                entity_ids,
+                owned_ids,
             ).fetchall()
             return {
                 row["entity_id"]: {
@@ -819,8 +833,8 @@ class MonitoredDB:
                 if not self._entity_exists(conn, entity_id, user_ids):
                     return False
 
-                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP", f"release_date_manual = {1 if release_date else 0}"]
-                params: list[Any] = [release_date, publish_year]
+                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP", "release_date_manual = ?"]
+                params: list[Any] = [release_date, publish_year, 1 if release_date else 0]
 
                 if audible_asin:
                     updates.append("asins = ?")
@@ -1074,8 +1088,10 @@ class MonitoredDB:
             return []
 
         safe_limit = max(1, min(int(limit or 20), 100))
-        like = f"%{normalized_query}%"
-        prefix_like = f"{normalized_query}%"
+        # Escape LIKE wildcard characters in user input
+        escaped_query = normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped_query}%"
+        prefix_like = f"{escaped_query}%"
 
         if not user_ids:
             return []
@@ -1110,18 +1126,18 @@ class MonitoredDB:
                 WHERE {uid_clause}
                   AND me.kind = 'author'
                   AND (
-                    LOWER(mb.title) LIKE :like
-                    OR LOWER(COALESCE(mb.authors, '')) LIKE :like
-                    OR LOWER(COALESCE(mb.series_name, '')) LIKE :like
-                    OR LOWER(me.name) LIKE :like
+                    LOWER(mb.title) LIKE :like ESCAPE '\'
+                    OR LOWER(COALESCE(mb.authors, '')) LIKE :like ESCAPE '\'
+                    OR LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\'
+                    OR LOWER(me.name) LIKE :like ESCAPE '\'
                   )
                 ORDER BY
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN 0 ELSE 1 END,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN LOWER(COALESCE(mb.series_name, '')) END ASC,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN CASE WHEN mb.series_position IS NULL THEN 1 ELSE 0 END END ASC,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like THEN mb.series_position END ASC,
-                    CASE WHEN LOWER(mb.title) LIKE :prefix_like THEN 0 ELSE 1 END,
-                    CASE WHEN LOWER(me.name) LIKE :prefix_like THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN LOWER(COALESCE(mb.series_name, '')) END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN CASE WHEN mb.series_position IS NULL THEN 1 ELSE 0 END END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN mb.series_position END ASC,
+                    CASE WHEN LOWER(mb.title) LIKE :prefix_like ESCAPE '\' THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(me.name) LIKE :prefix_like ESCAPE '\' THEN 0 ELSE 1 END,
                     mb.first_seen_at DESC,
                     mb.id DESC
                 LIMIT :limit
@@ -1325,6 +1341,10 @@ class MonitoredDB:
                         rating=excluded.rating,
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
+                        hidden=CASE
+                            WHEN excluded.hidden = 1 THEN 1
+                            ELSE monitored_books.hidden
+                        END,
                         state=CASE
                             WHEN monitored_books.state = 'ignored' THEN 'ignored'
                             WHEN monitored_books.state = 'removed_from_provider'
@@ -1438,7 +1458,7 @@ class MonitoredDB:
                     cursor = conn.execute(
                         f"""
                         UPDATE monitored_books
-                        SET state = ?, updated_at = CURRENT_TIMESTAMP
+                        SET state = ?
                         WHERE entity_id = ?
                           AND ({or_clauses})
                           AND state != ?
@@ -1618,49 +1638,54 @@ class MonitoredDB:
                 """,
                 (entity_id,),
             ).fetchall()
-
-            stale_ids: list[int] = []
-            existing_rows: list[dict[str, Any]] = []
-
-            for row in rows:
-                row_dict = dict(row)
-                path = row_dict.get("path")
-                file_id = row_dict.get("id")
-                row_source = row_dict.get("source") or "filesystem"
-
-                # Non-filesystem records (e.g. audiobookshelf) have remote paths
-                # that won't exist locally — always treat them as present.
-                if row_source != "filesystem":
-                    existing_rows.append(row_dict)
-                    continue
-
-                path_exists = False
-                if isinstance(path, str) and path.strip():
-                    try:
-                        path_exists = Path(path).exists()
-                    except Exception:
-                        path_exists = False
-
-                if path_exists:
-                    existing_rows.append(row_dict)
-                elif isinstance(file_id, int):
-                    stale_ids.append(file_id)
-
-            if stale_ids:
-                placeholders = ",".join(["?"] * len(stale_ids))
-                conn.execute(
-                    f"""
-                    DELETE FROM monitored_book_files
-                    WHERE entity_id = ?
-                      AND id IN ({placeholders})
-                    """,
-                    (entity_id, *stale_ids),
-                )
-                conn.commit()
-
-            return existing_rows
         finally:
             conn.close()
+
+        stale_ids: list[int] = []
+        existing_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            row_dict = dict(row)
+            path = row_dict.get("path")
+            file_id = row_dict.get("id")
+            row_source = row_dict.get("source") or "filesystem"
+
+            # Non-filesystem records (e.g. audiobookshelf) have remote paths
+            # that won't exist locally — always treat them as present.
+            if row_source != "filesystem":
+                existing_rows.append(row_dict)
+                continue
+
+            path_exists = False
+            if isinstance(path, str) and path.strip():
+                try:
+                    path_exists = Path(path).exists()
+                except Exception:
+                    path_exists = False
+
+            if path_exists:
+                existing_rows.append(row_dict)
+            elif isinstance(file_id, int):
+                stale_ids.append(file_id)
+
+        if stale_ids:
+            with self._lock:
+                cleanup_conn = self._connect()
+                try:
+                    placeholders = ",".join(["?"] * len(stale_ids))
+                    cleanup_conn.execute(
+                        f"""
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND id IN ({placeholders})
+                        """,
+                        (entity_id, *stale_ids),
+                    )
+                    cleanup_conn.commit()
+                finally:
+                    cleanup_conn.close()
+
+        return existing_rows
 
     def get_monitored_book_file_match(
         self,

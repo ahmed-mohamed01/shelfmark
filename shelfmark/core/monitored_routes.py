@@ -14,7 +14,6 @@ from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
     apply_monitor_modes_for_books,
-    expand_monitored_file_rows_for_equivalent_books,
     path_within_allowed_roots,
     resolve_allowed_roots,
 )
@@ -205,12 +204,12 @@ def enrich_release_for_monitored(
             if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
                 # Destination is already the author folder, so template starts at Series.
                 release_payload["destination_override"] = author_dir.strip().rstrip("/")
-                release_payload["template_override"] = "{Series}/{Title} - {Author} ({Year})"
+                release_payload["template_override"] = "{Series}/{Title}/{Title} - {Author} ({Year})"
             else:
                 # No explicit author dir — use default destination with full path template.
-                release_payload["template_override"] = "{Author}/{Series}/{Title} ({Year})"
+                release_payload["template_override"] = "{Author}/{Series}/{Title}/{Title} ({Year})"
     except Exception:
-        pass
+        logger.warning("Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True)
 
     return release_payload
 

@@ -65,7 +65,7 @@ export function useMonitoredState({ dismissedActivityKeys, currentStatus, activi
     const filteredComplete = Object.fromEntries(
       Object.entries(mergedComplete).filter(([taskId]) => !dismissedDownloadTaskIds.has(taskId))
     ) as Record<string, Book>;
-    return { ...currentStatus, ...activityStatus, complete: filteredComplete };
+    return { ...activityStatus, ...currentStatus, complete: filteredComplete };
   }, [currentStatus, activityStatus, dismissedDownloadTaskIds]);
 
   const transientOngoingCount = useMemo(() => {

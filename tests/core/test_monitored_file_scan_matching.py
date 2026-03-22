@@ -54,7 +54,7 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
     subtitle_book_id = f"sub-{uuid.uuid4().hex[:8]}"
 
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id=plain_book_id,
@@ -63,7 +63,7 @@ def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_modu
         publish_year=2024,
     )
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id=subtitle_book_id,
@@ -120,7 +120,7 @@ def test_scan_files_skips_unreadable_paths_instead_of_failing(main_module, clien
     )
 
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id=f"book-{uuid.uuid4().hex[:8]}",

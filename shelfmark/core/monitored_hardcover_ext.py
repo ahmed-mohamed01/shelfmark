@@ -268,6 +268,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 description
                 rating
                 reviews_count
+                users_count
                 users_read_count
                 release_date
                 cached_tags
@@ -292,6 +293,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 ) {
                     language { code2 }
                 }
+                contributions_aggregate { aggregate { count } }
             }
         }
         """

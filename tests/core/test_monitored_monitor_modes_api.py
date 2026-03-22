@@ -63,7 +63,7 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
     future_date = (date.today() + timedelta(days=20)).isoformat()
 
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id="book-future",
@@ -72,7 +72,7 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
         release_date=future_date,
     )
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id="book-nodate",
@@ -129,7 +129,7 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
     )
 
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id="book-has-ebook",
@@ -138,7 +138,7 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
         release_date="2025-01-01",
     )
     main_module.monitored_db.upsert_monitored_book_file(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider="hardcover",
         provider_book_id="book-has-ebook",
@@ -195,7 +195,7 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
     provider_book_id = "book-future-guard"
     future_year = date.today().year + 1
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,
@@ -204,7 +204,7 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
         release_date=str(future_year),
     )
     main_module.monitored_db.set_monitored_book_monitor_flags(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,
@@ -255,7 +255,7 @@ def test_monitored_search_skips_when_history_final_path_exists(main_module, clie
     provider = "hardcover"
     provider_book_id = "book-history-final-path"
     main_module.monitored_db.upsert_monitored_book(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,
@@ -267,7 +267,7 @@ def test_monitored_search_skips_when_history_final_path_exists(main_module, clie
     final_path = tmp_path / "History Final Path Book.epub"
     final_path.write_text("test", encoding="utf-8")
     main_module.monitored_db.insert_monitored_book_download_history(
-        user_id=user["id"],
+        user_ids=[user["id"]],
         entity_id=entity["id"],
         provider=provider,
         provider_book_id=provider_book_id,

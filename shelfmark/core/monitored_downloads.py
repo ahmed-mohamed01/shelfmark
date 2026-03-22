@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, QueueStatus
-from shelfmark.core.monitored_release_scoring import is_book_released, parse_release_date, pre_process_releases
+from shelfmark.core.monitored_release_scoring import pre_process_releases
 from shelfmark.core.monitored_utils import normalize_content_type as _normalize_content_type, parse_float_safe as _parse_float_safe
 from shelfmark.core.queue import book_queue
 from shelfmark.release_sources import get_source_display_name
@@ -152,7 +152,10 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
     except Exception as e:
         logger.warning("Failed to record monitored download history for %s: %s", book_id, e)
 
-    _notify_download_terminal(status, task)
+    try:
+        _notify_download_terminal(status, task)
+    except Exception as e:
+        logger.warning("Failed to send monitored download notification for %s: %s", book_id, e)
 
 
 def _is_monitored_download(task: DownloadTask) -> bool:
@@ -181,6 +184,13 @@ def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
     else:
         return
 
+    # Admin notifications are already sent by the upstream hook in main.py
+    # (_record_download_terminal_snapshot → _notify_admin_for_terminal_download_status).
+    # This hook only adds the per-user notification for monitored downloads.
+    user_id = getattr(task, "user_id", None)
+    if user_id is None:
+        return
+
     context = NotificationContext(
         event=event,
         title=str(getattr(task, "title", "Unknown title") or "Unknown title"),
@@ -194,15 +204,9 @@ def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
         ),
     )
     try:
-        notify_admin(event, context)
+        notify_user(int(user_id), event, context)
     except Exception:
-        logger.warning("Failed to send admin notification for monitored download: %s", task.id)
-    user_id = getattr(task, "user_id", None)
-    if user_id is not None:
-        try:
-            notify_user(int(user_id), event, context)
-        except Exception:
-            logger.warning("Failed to send user notification for monitored download: %s (user_id=%s)", task.id, user_id)
+        logger.warning("Failed to send user notification for monitored download: %s (user_id=%s)", task.task_id, user_id)
 
 
 def _upsert_file_match_from_history(
@@ -313,6 +317,8 @@ def _record_download_history(task: DownloadTask) -> None:
             entity_id, provider, provider_book_id,
         )
     else:
+        # Store content_type so the deferred flush path can use it
+        kwargs["_content_type"] = task.content_type
         # Path not yet available; defer until update_download_path is called
         with _deferred_lock:
             _deferred_history[task.task_id] = kwargs
@@ -329,10 +335,11 @@ def _flush_deferred_history(task_id: str, final_path: str) -> None:
     if kwargs is None or _user_db is None:
         return
     clean_path = str(final_path or "").strip()
+    content_type = kwargs.pop("_content_type", None)
     kwargs["final_path"] = clean_path
     _user_db.insert_monitored_book_download_history(**kwargs)
     # Also register the file match (mirrors the immediate path in _record_download_history)
-    _upsert_file_match_from_history(kwargs, clean_path)
+    _upsert_file_match_from_history(kwargs, clean_path, content_type=content_type)
     logger.debug(
         "Flushed deferred monitored download history: task_id=%s path=%s",
         task_id, final_path,
@@ -429,12 +436,14 @@ def process_monitored_book(
         Tuple of (queued, message). queued=True means first release was queued.
         Returns (False, "Already in queue") if book is already being processed.
     """
+    # Normalize content_type to match the key format used by _get_pending_key_from_task
+    content_type = _normalize_content_type(content_type)
     # Check if already pending/in-queue
     key = _pending_key(entity_id, provider, provider_book_id, content_type)
     with _pending_lock:
         if key in _pending_releases:
             return False, "Already in queue"
-    
+
     # Pre-process releases
     valid_releases, error = pre_process_releases(
         releases,
@@ -446,13 +455,14 @@ def process_monitored_book(
         content_type=content_type,
         min_match_score=min_match_score,
     )
-    
+
     if error or not valid_releases:
         return False, error or "No valid releases"
-    
-    # Store pending releases for retry
-    key = _pending_key(entity_id, provider, provider_book_id, content_type)
+
+    # Store pending releases for retry (re-check under lock to prevent TOCTOU race)
     with _pending_lock:
+        if key in _pending_releases:
+            return False, "Already in queue"
         _pending_releases[key] = PendingDownload(
             releases=valid_releases,
             user_id=user_id,
@@ -472,44 +482,61 @@ def process_monitored_book(
 
 
 def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
-    """Queue the next release from pending list. Returns (success, message)."""
+    """Queue the next release from pending list. Returns (success, message).
+
+    Iterates through remaining releases until one is successfully queued
+    or the list is exhausted.
+    """
     from shelfmark.download import orchestrator as download_orchestrator
-    
-    with _pending_lock:
-        pending = _pending_releases.get(key)
-        if not pending or not pending.releases:
-            return False, "No more releases to try"
-        
-        # Take next release
-        release = pending.releases.pop(0)
-        pending.current_source_id = str(release.get("source_id", ""))
-        pending.attempts += 1
-    
-    # Enrich with monitored context
-    release["monitored_entity_id"] = pending.entity_id
-    release["monitored_book_provider"] = pending.provider
-    release["monitored_book_provider_id"] = pending.provider_book_id
-    release["destination_override"] = pending.destination_override
-    release["file_organization_override"] = pending.file_organization_override
-    release["template_override"] = pending.template_override
-    release["content_type"] = pending.content_type
-    if pending.series_name:
-        release.setdefault("series_name", pending.series_name)
-    if pending.series_position is not None:
-        release.setdefault("series_position", pending.series_position)
-    
-    # Queue via orchestrator
-    success, error_msg = download_orchestrator.queue_release(release, user_id=pending.user_id)
-    
-    if success:
-        title = release.get("title") or release.get("display_title") or "Unknown"
-        score = release.get("_match_score", 0)
-        remaining = len(pending.releases)
-        return True, f"Queued: {title} (score: {score:.0%}, {remaining} fallbacks)"
-    else:
-        # Immediate queue failure - try next
-        logger.warning("Queue failed for %s: %s, trying next", pending.current_source_id, error_msg)
-        return _queue_next_from_pending(key)
+
+    while True:
+        with _pending_lock:
+            pending = _pending_releases.get(key)
+            if not pending or not pending.releases:
+                _pending_releases.pop(key, None)
+                return False, "No more releases to try"
+
+            # Take next release
+            release = pending.releases.pop(0)
+            pending.current_source_id = str(release.get("source_id", ""))
+            pending.attempts += 1
+
+            # Snapshot fields we need outside the lock
+            entity_id = pending.entity_id
+            provider = pending.provider
+            provider_book_id = pending.provider_book_id
+            destination_override = pending.destination_override
+            file_organization_override = pending.file_organization_override
+            template_override = pending.template_override
+            content_type = pending.content_type
+            series_name = pending.series_name
+            series_position = pending.series_position
+            user_id = pending.user_id
+            remaining = len(pending.releases)
+
+        # Enrich with monitored context
+        release["monitored_entity_id"] = entity_id
+        release["monitored_book_provider"] = provider
+        release["monitored_book_provider_id"] = provider_book_id
+        release["destination_override"] = destination_override
+        release["file_organization_override"] = file_organization_override
+        release["template_override"] = template_override
+        release["content_type"] = content_type
+        if series_name:
+            release.setdefault("series_name", series_name)
+        if series_position is not None:
+            release.setdefault("series_position", series_position)
+
+        # Queue via orchestrator
+        success, error_msg = download_orchestrator.queue_release(release, user_id=user_id)
+
+        if success:
+            title = release.get("title") or release.get("display_title") or "Unknown"
+            score = release.get("_match_score", 0)
+            return True, f"Queued: {title} (score: {score:.0%}, {remaining} fallbacks)"
+
+        # Immediate queue failure — loop to try next release
+        logger.warning("Queue failed for %s: %s, trying next", release.get("source_id", ""), error_msg)
 
 
 def _get_pending_key_from_task(task: DownloadTask) -> Optional[str]:
@@ -553,8 +580,9 @@ def _try_next_release(task: DownloadTask) -> None:
             _pending_releases.pop(key, None)
             logger.info("No more fallback releases for %s after %d attempts", key, pending.attempts if pending else 0)
             return
-    
-    logger.info("Download failed, trying next release for %s (%d remaining)", key, len(pending.releases))
+        remaining = len(pending.releases)
+
+    logger.info("Download failed, trying next release for %s (%d remaining)", key, remaining)
     success, msg = _queue_next_from_pending(key)
     if success:
         logger.info("Queued fallback: %s", msg)
@@ -625,8 +653,9 @@ def write_monitored_book_attempt(
         The ISO timestamp used for this attempt.
     """
     attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    safe_user_ids = [user_id] if user_id is not None else []
     user_db.set_monitored_book_search_status(
-        user_ids=[user_id],
+        user_ids=safe_user_ids,
         entity_id=entity_id,
         provider=provider,
         provider_book_id=provider_book_id,
@@ -635,7 +664,7 @@ def write_monitored_book_attempt(
         searched_at=attempted_at_iso,
     )
     user_db.insert_monitored_book_attempt_history(
-        user_ids=[user_id],
+        user_ids=safe_user_ids,
         entity_id=entity_id,
         provider=provider,
         provider_book_id=provider_book_id,

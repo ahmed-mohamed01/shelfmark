@@ -582,8 +582,14 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
     if not forbidden_words:
         forbidden_words = set(_FORBIDDEN_WORDS)
 
-    min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
-    min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
+    try:
+        min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
+    except (ValueError, TypeError):
+        min_title_score = 24
+    try:
+        min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
+    except (ValueError, TypeError):
+        min_author_score = 8
     prefer_freeleech_or_direct = bool(app_config.get("RELEASE_PREFER_FREELEECH_OR_DIRECT", False))
 
     ebook_release_priority = _build_release_priority_map(app_config.get("EBOOK_RELEASE_PRIORITY", []))
@@ -855,7 +861,10 @@ def pre_process_releases(
         return [], "No releases found"
 
     if min_match_score is None:
-        min_match_score = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 0.7, user_id=user_id))
+        try:
+            min_match_score = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=user_id))
+        except (ValueError, TypeError):
+            min_match_score = 75.0
 
     valid_releases: List[Dict[str, Any]] = []
     unreleased_count = 0
@@ -908,7 +917,7 @@ def pre_process_releases(
         if unreleased_count > 0 and below_cutoff_count == 0:
             return [], "Book is unreleased"
         elif below_cutoff_count > 0:
-            return [], f"No releases meet minimum match score ({min_match_score:.0%})"
+            return [], f"No releases meet minimum match score ({min_match_score:.0f})"
         else:
             return [], "No valid releases found"
 
