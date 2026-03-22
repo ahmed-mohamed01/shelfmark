@@ -79,6 +79,8 @@ export const MonitoredAuthorCompactTile = ({
       metaLine={metaLine}
       footer={footer}
       isSelected={isSelected}
+      hasActiveSelection={hasActiveSelection}
+      onToggleSelect={onToggleSelect}
     />
   );
 };

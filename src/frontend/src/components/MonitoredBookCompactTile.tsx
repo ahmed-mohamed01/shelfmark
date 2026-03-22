@@ -124,6 +124,8 @@ export const MonitoredBookCompactTile = ({
       footer={footer}
       isDimmed={isDimmed}
       isSelected={isSelected}
+      hasActiveSelection={hasActiveSelection}
+      onToggleSelect={onToggleSelect}
     />
   );
 };

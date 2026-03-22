@@ -12,6 +12,7 @@ interface MonitoredBookTableRowProps {
   trailingSlot: ReactNode;
   isDimmed?: boolean;
   hasActiveSelection?: boolean;
+  onToggleSelect?: () => void;
 }
 
 export const MonitoredBookTableRow = ({
@@ -25,12 +26,14 @@ export const MonitoredBookTableRow = ({
   trailingSlot,
   isDimmed = false,
   hasActiveSelection = false,
+  onToggleSelect,
 }: MonitoredBookTableRowProps) => {
-  const mainSlot = onOpen ? (
+  const effectiveMainClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onOpen;
+  const mainSlot = effectiveMainClick ? (
     <button
       type="button"
       className="w-full min-w-0 flex flex-col justify-center sm:pl-3 text-left"
-      onClick={onOpen}
+      onClick={effectiveMainClick}
     >
       {titleRow}
       {subtitleRow}
@@ -60,6 +63,8 @@ export const MonitoredBookTableRow = ({
       middleClassName="hidden md:flex w-full items-center justify-center gap-1"
       rightSlot={trailingSlot}
       isDimmed={isDimmed}
+      hasActiveSelection={hasActiveSelection}
+      onToggleSelect={onToggleSelect}
     />
   );
 };

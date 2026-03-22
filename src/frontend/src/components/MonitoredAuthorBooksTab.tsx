@@ -1952,6 +1952,7 @@ export const MonitoredAuthorBooksTab = ({
                                       })() : null}
                                       thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} />}
                                       onOpen={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined}
+                                      onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined}
                                       titleRow={(
                                         <div className="flex items-center gap-1.5 min-w-0">
                                           <h3 className="font-semibold text-sm leading-tight truncate min-w-0" title={book.title || 'Untitled'}>{book.title || 'Untitled'}</h3>

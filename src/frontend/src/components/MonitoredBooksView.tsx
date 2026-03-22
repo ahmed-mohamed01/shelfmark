@@ -250,6 +250,8 @@ export function MonitoredBooksView({
                       )}
                       trailingSlot={renderBookActions(book)}
                       isDimmed={isDormant}
+                      hasActiveSelection={hasAnySelection}
+                      onToggleSelect={() => onToggleSelect(book)}
                     />
                   </div>
                 );

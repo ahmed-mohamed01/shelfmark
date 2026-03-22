@@ -84,6 +84,8 @@ export const MonitoredAuthorTableRow = ({
       mainSlot={mainSlot}
       rightSlot={trailingAction}
       onRowClick={onOpen}
+      hasActiveSelection={hasActiveSelection}
+      onToggleSelect={onToggleSelect}
     />
   );
 };

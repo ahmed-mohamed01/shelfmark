@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useCallback, useRef, type ReactNode } from 'react';
 
 interface MediaCompactTileBaseProps {
   title: string;
@@ -15,6 +15,9 @@ interface MediaCompactTileBaseProps {
   tooltip?: string;
   isDimmed?: boolean;
   isSelected?: boolean;
+  /** When true and onToggleSelect is provided, clicking the tile body toggles selection instead of opening */
+  hasActiveSelection?: boolean;
+  onToggleSelect?: () => void;
 }
 
 export const MediaCompactTileBase = ({
@@ -32,7 +35,43 @@ export const MediaCompactTileBase = ({
   tooltip,
   isDimmed = false,
   isSelected = false,
+  hasActiveSelection = false,
+  onToggleSelect,
 }: MediaCompactTileBaseProps) => {
+  const handleTileClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onOpen;
+
+  // Long-press to enter selection mode
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPress = useRef(false);
+
+  const onPointerDown = useCallback(() => {
+    if (!onToggleSelect) return;
+    didLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      onToggleSelect();
+    }, 500);
+  }, [onToggleSelect]);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+  }, []);
+
+  const handleClick = useCallback((handler?: () => void) => {
+    if (didLongPress.current) { didLongPress.current = false; return; }
+    handler?.();
+  }, []);
+
+  const preventContext = useCallback((e: React.MouseEvent) => e.preventDefault(), []);
+
+  const longPressProps = onToggleSelect ? {
+    onPointerDown,
+    onPointerUp: clearLongPress,
+    onPointerCancel: clearLongPress,
+    onPointerLeave: clearLongPress,
+    onContextMenu: preventContext,
+    style: { WebkitTouchCallout: 'none', userSelect: 'none' } as React.CSSProperties,
+  } : {};
   const computedTooltip = tooltip || [title, seriesLine, subtitle, typeof metaLine === 'string' ? metaLine : undefined].filter(Boolean).join('\n');
   const mediaContent = (
     <div className={`relative w-full overflow-hidden rounded-t-xl flex flex-col ${isDimmed ? 'opacity-50' : ''}`}>
@@ -51,14 +90,14 @@ export const MediaCompactTileBase = ({
   );
 
   return (
-    <div className={`group relative self-start h-fit rounded-xl bg-[var(--bg)] ${isSelected ? 'ring-2 ring-emerald-500 dark:ring-emerald-400' : 'border border-[var(--border-muted)]'}`} title={computedTooltip}>
+    <div className={`group relative self-start h-fit rounded-xl bg-[var(--bg)] transition-all duration-200 hover:shadow-[0_4px_20px_rgba(0,0,0,0.15)] dark:hover:shadow-[0_4px_20px_rgba(0,0,0,0.4)] active:scale-[0.97] ${isSelected ? 'ring-2 ring-emerald-500 dark:ring-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.25)]' : 'border border-[var(--border-muted)]'}`} title={computedTooltip}>
       {topLeftOverlay ? (
         <div className={`absolute left-2 top-2 z-20 ${isDimmed ? 'opacity-50' : ''}`}>
           {topLeftOverlay}
         </div>
       ) : null}
-      {onOpen ? (
-        <button type="button" onClick={onOpen} className="block w-full text-left leading-[0]">
+      {handleTileClick ? (
+        <button type="button" onClick={() => handleClick(handleTileClick)} {...longPressProps} className="block w-full text-left leading-[0]">
           {mediaContent}
         </button>
       ) : (
@@ -66,8 +105,8 @@ export const MediaCompactTileBase = ({
       )}
 
       <div className="flex items-start gap-1 pl-2 pr-0.5 pt-1">
-        {onOpen ? (
-          <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        {handleTileClick ? (
+          <button type="button" onClick={() => handleClick(handleTileClick)} {...longPressProps} className="min-w-0 flex-1 text-left">
             <p className={`text-xs font-semibold leading-snug truncate ${isDimmed ? 'opacity-50' : ''}`}>{title || 'Untitled'}</p>
           </button>
         ) : (

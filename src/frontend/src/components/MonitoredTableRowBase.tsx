@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import { ReactNode, useCallback, useRef } from 'react';
 
 interface MonitoredTableRowBaseProps {
   gridClassName: string;
@@ -15,6 +15,9 @@ interface MonitoredTableRowBaseProps {
   rowClassName?: string;
   onRowClick?: () => void;
   isDimmed?: boolean;
+  /** When true and onToggleSelect is provided, clicking the row toggles selection instead of onRowClick */
+  hasActiveSelection?: boolean;
+  onToggleSelect?: () => void;
 }
 
 export const MonitoredTableRowBase = ({
@@ -32,7 +35,28 @@ export const MonitoredTableRowBase = ({
   rowClassName = 'group px-1.5 sm:px-2 py-1.5 sm:py-2 transition-colors duration-200 hover-row w-full',
   onRowClick,
   isDimmed = false,
+  hasActiveSelection = false,
+  onToggleSelect,
 }: MonitoredTableRowBaseProps) => {
+  const effectiveRowClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onRowClick;
+
+  // Long-press to enter selection mode
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPress = useRef(false);
+
+  const onPointerDown = useCallback(() => {
+    if (!onToggleSelect) return;
+    didLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      onToggleSelect();
+    }, 500);
+  }, [onToggleSelect]);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+  }, []);
+
   const shouldIgnoreRowClick = (target: EventTarget | null, rowElement: HTMLDivElement): boolean => {
     if (!(target instanceof Element)) return false;
     const interactiveAncestor = target.closest('button,a,input,select,textarea,[role="button"],[role="checkbox"],[role="switch"]');
@@ -41,25 +65,32 @@ export const MonitoredTableRowBase = ({
   };
 
   const handleRowClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!onRowClick || shouldIgnoreRowClick(event.target, event.currentTarget)) return;
-    onRowClick();
+    if (didLongPress.current) { didLongPress.current = false; return; }
+    if (!effectiveRowClick || shouldIgnoreRowClick(event.target, event.currentTarget)) return;
+    effectiveRowClick();
   };
 
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!onRowClick) return;
+    if (!effectiveRowClick) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     if (shouldIgnoreRowClick(event.target, event.currentTarget)) return;
     event.preventDefault();
-    onRowClick();
+    effectiveRowClick();
   };
 
   return (
     <div
-      className={`${rowClassName}${onRowClick ? ' cursor-pointer' : ''}${isDimmed ? ' opacity-50' : ''}`}
+      className={`${rowClassName}${effectiveRowClick ? ' cursor-pointer' : ''}${isDimmed ? ' opacity-50' : ''}`}
+      style={onToggleSelect ? { WebkitTouchCallout: 'none', userSelect: 'none' } as React.CSSProperties : undefined}
       onClick={handleRowClick}
       onKeyDown={handleRowKeyDown}
-      role={onRowClick ? 'button' : undefined}
-      tabIndex={onRowClick ? 0 : undefined}
+      onContextMenu={onToggleSelect ? (e) => e.preventDefault() : undefined}
+      onPointerDown={onToggleSelect ? onPointerDown : undefined}
+      onPointerUp={onToggleSelect ? clearLongPress : undefined}
+      onPointerCancel={onToggleSelect ? clearLongPress : undefined}
+      onPointerLeave={onToggleSelect ? clearLongPress : undefined}
+      role={effectiveRowClick ? 'button' : undefined}
+      tabIndex={effectiveRowClick ? 0 : undefined}
     >
       <div className={`grid items-center gap-2 sm:gap-y-1 sm:gap-x-2 w-full ${gridClassName}`}>
         <div className={leftClassName}>{leftSlot}</div>

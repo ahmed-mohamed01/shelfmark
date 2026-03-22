@@ -135,7 +135,7 @@ export function FloatingSelectionBar({ count, actions, onSelectAll, allSelected,
         {onSelectAll ? (
           <button
             type="button"
-            onClick={onSelectAll}
+            onClick={() => onSelectAll!()}
             className={`w-9 h-9 rounded-lg border ${borderColorMap.emerald} ${baseBtnClass} ${allSelected ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'text-gray-600 dark:text-gray-300'}`}
             title={allSelected ? 'Deselect all' : 'Select all visible'}
             aria-label={allSelected ? 'Deselect all' : 'Select all visible'}
