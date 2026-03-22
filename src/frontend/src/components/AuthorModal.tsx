@@ -222,7 +222,7 @@ export const AuthorModal = ({
           <div className={isPageMode
             ? 'flex flex-col overflow-visible rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 text-[var(--text)] sm:shadow-xl'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
-            <header className={`flex items-start gap-4 px-5 py-4 ${isPageMode ? 'border-b border-black/10 dark:border-white/10 bg-transparent' : 'border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
+            <header className={`flex items-start gap-4 px-5 ${isPageMode ? 'py-2 border-b border-black/10 dark:border-white/10 bg-transparent' : 'py-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">
                 {isPageMode ? (
                   <div className="flex items-center gap-2 min-w-0">

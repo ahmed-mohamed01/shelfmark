@@ -295,6 +295,8 @@ export const MonitoredPage = ({
   const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab));
   const mobileTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const mobileTabIndicatorRef = useRef<HTMLDivElement | null>(null);
+  const desktopTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const desktopTabIndicatorRef = useRef<HTMLDivElement | null>(null);
 
   const syncMobileTabIndicator = useCallback(() => {
     const el = mobileTabIndicatorRef.current;
@@ -313,7 +315,29 @@ export const MonitoredPage = ({
     });
   }, [landingTab]);
 
+  const syncDesktopTabIndicator = useCallback(() => {
+    const el = desktopTabIndicatorRef.current;
+    const btn = desktopTabRefs.current[landingTab];
+    if (!el || !btn) return;
+    const container = btn.parentElement;
+    if (!container) return;
+    requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const btnRect = btn.getBoundingClientRect();
+      el.style.left = `${btnRect.left - containerRect.left + 12}px`;
+      el.style.width = `${btnRect.width - 24}px`;
+    });
+  }, [landingTab]);
+
   useEffect(() => { syncMobileTabIndicator(); }, [syncMobileTabIndicator]);
+  useEffect(() => { syncDesktopTabIndicator(); }, [syncDesktopTabIndicator]);
+
+  // Re-sync tab indicators on window resize
+  useEffect(() => {
+    const onResize = () => { syncMobileTabIndicator(); syncDesktopTabIndicator(); };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [syncMobileTabIndicator, syncDesktopTabIndicator]);
 
   // Track tab change direction for animation
   useEffect(() => {
@@ -2450,7 +2474,7 @@ export const MonitoredPage = ({
           {monitoredHeader}
         </div>
 
-        <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-6 pt-24">
+        <main className="relative w-full max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 py-2 pt-20">
           {authorDetailsAuthor ? (
             <AuthorModal
               author={authorDetailsAuthor}
@@ -2568,7 +2592,7 @@ export const MonitoredPage = ({
               </div>
             ) : (
               <section className="rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 sm:shadow-xl sm:overflow-hidden flex flex-col max-h-none sm:max-h-[calc(100dvh-8rem)]">
-                <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-2 sm:gap-3 gap-y-1 sm:gap-y-2 shrink-0 px-3 sm:px-4 pt-2 sm:pt-4 sticky top-0 bg-[var(--background-color)] sm:static sm:bg-transparent">
+                <div className="flex flex-wrap items-center pb-2 border-b border-black/10 dark:border-white/10 relative z-10 gap-2 sm:gap-3 gap-y-1 sm:gap-y-2 shrink-0 px-3 sm:px-4 pt-2 sticky top-0 bg-[var(--background-color)] sm:static sm:bg-transparent">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
@@ -2611,43 +2635,29 @@ export const MonitoredPage = ({
                         );
                       })}
                     </div>
-                    {/* Desktop: full tab pills */}
-                    <div className="hidden sm:inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent">
-                      <button
-                        type="button"
-                        onClick={() => openMonitoredTab('authors')}
-                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'authors' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                        aria-pressed={landingTab === 'authors'}
-                      >
-                        <span className="hidden sm:inline">Monitored </span>Authors
-                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'authors' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayAuthorsCount}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openMonitoredTab('books')}
-                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'books' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                        aria-pressed={landingTab === 'books'}
-                      >
-                        <span className="hidden sm:inline">Monitored </span>Books
-                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'books' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayBooksCount}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openMonitoredTab('upcoming')}
-                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'upcoming' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                        aria-pressed={landingTab === 'upcoming'}
-                      >
-                        Upcoming
-                        <span className={`inline-flex items-center justify-center rounded-full text-xs font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${landingTab === 'upcoming' ? 'bg-white/25 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{displayUpcomingCount}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openMonitoredTab('search')}
-                        className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5 ${landingTab === 'search' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-700 dark:text-gray-200 hover-action'}`}
-                        aria-pressed={landingTab === 'search'}
-                      >
-                        Search
-                      </button>
+                    {/* Desktop: text tabs with sliding underline (matches mobile style) */}
+                    <div className="hidden sm:flex relative items-center gap-0">
+                      <div ref={desktopTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
+                      {(['authors', 'books', 'upcoming', 'search'] as const).map((key) => {
+                        const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Upcoming' : 'Search';
+                        const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
+                        const isActive = landingTab === key;
+                        return (
+                          <button
+                            key={key}
+                            ref={(el) => { desktopTabRefs.current[key] = el; if (el && isActive) syncDesktopTabIndicator(); }}
+                            type="button"
+                            onClick={() => openMonitoredTab(key)}
+                            className={`relative px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400 hover-action'}`}
+                            aria-pressed={isActive}
+                          >
+                            <span className="flex items-center gap-1.5">
+                              {label}
+                              {count != null && <span className={`inline-flex items-center justify-center rounded-full text-[10px] font-semibold px-1.5 py-0.5 leading-none min-w-[1.25rem] ${isActive ? 'bg-emerald-600 text-white' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>{count}</span>}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                   <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' ? 'hidden' : ''}`}>
