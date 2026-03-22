@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import { hapticTap } from '../utils/haptics';
 import { MonitoredTableRowBase } from './MonitoredTableRowBase';
 
 interface MonitoredAuthorTableRowProps {
@@ -40,7 +41,7 @@ export const MonitoredAuthorTableRow = ({
       {onToggleSelect ? (
         <button
           type="button"
-          onClick={onToggleSelect}
+          onClick={() => { hapticTap(); onToggleSelect?.(); }}
           className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400 opacity-100' : hasActiveSelection ? 'text-gray-500 dark:text-gray-300 opacity-100' : 'text-gray-500 dark:text-gray-300 opacity-0 group-hover:opacity-100'} transition-opacity hover-action rounded-full p-0.5`}
           role="checkbox"
           aria-checked={isSelected}

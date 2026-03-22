@@ -32,6 +32,7 @@ import { RowThumbnail } from './RowThumbnail';
 import ReleaseDateSearchModal from './ReleaseDateSearchModal';
 import { FloatingSelectionBar, type FloatingSelectionBarAction } from './FloatingSelectionBar';
 import { getUpcomingCountdown } from '../utils/upcomingDate';
+import { hapticTap } from '../utils/haptics';
 
 const BookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
@@ -1845,7 +1846,7 @@ export const MonitoredAuthorBooksTab = ({
                       <div key={group.key} data-series-key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
                         <div className={`w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3 ${isDormantGroup ? 'opacity-60' : ''}`}>
                           {monitoredEntityId ? (
-                            <button type="button" onClick={() => toggleSelectAllInGroup(group.books)} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
+                            <button type="button" onClick={() => { hapticTap(); toggleSelectAllInGroup(group.books); }} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
                               {allSelectedInGroup ? (
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /><path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" /></svg>
                               ) : (
@@ -1941,7 +1942,7 @@ export const MonitoredAuthorBooksTab = ({
                                       leadingControl={monitoredEntityId ? (() => {
                                         const isSelected = Boolean(selectedBookIds[book.id]);
                                         return (
-                                          <button type="button" onClick={() => toggleBookSelection(book.id)} className={`transition-opacity ${isSelected || hasActiveBookSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`} role="checkbox" aria-checked={isSelected} aria-label={`Select ${book.title || 'book'}`} title={isSelected ? 'Unselect book' : 'Select book'}>
+                                          <button type="button" onClick={() => { hapticTap(); toggleBookSelection(book.id); }} className={`transition-opacity ${isSelected || hasActiveBookSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} ${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`} role="checkbox" aria-checked={isSelected} aria-label={`Select ${book.title || 'book'}`} title={isSelected ? 'Unselect book' : 'Select book'}>
                                             {isSelected ? (
                                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><rect x="4" y="4" width="16" height="16" rx="3" /><path strokeLinecap="round" strokeLinejoin="round" d="m8 12 2.5 2.5L16 9" /></svg>
                                             ) : (

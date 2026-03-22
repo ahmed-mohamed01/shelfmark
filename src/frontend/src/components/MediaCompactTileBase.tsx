@@ -1,4 +1,5 @@
 import { useCallback, useRef, type ReactNode } from 'react';
+import { hapticTap } from '../utils/haptics';
 
 interface MediaCompactTileBaseProps {
   title: string;
@@ -38,7 +39,13 @@ export const MediaCompactTileBase = ({
   hasActiveSelection = false,
   onToggleSelect,
 }: MediaCompactTileBaseProps) => {
-  const handleTileClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onOpen;
+  const toggleSelectWithHaptic = useCallback(() => {
+    if (!onToggleSelect) return;
+    hapticTap();
+    onToggleSelect();
+  }, [onToggleSelect]);
+
+  const handleTileClick = hasActiveSelection && onToggleSelect ? toggleSelectWithHaptic : onOpen;
 
   // Long-press to enter selection mode
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,9 +56,9 @@ export const MediaCompactTileBase = ({
     didLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       didLongPress.current = true;
-      onToggleSelect();
+      toggleSelectWithHaptic();
     }, 500);
-  }, [onToggleSelect]);
+  }, [onToggleSelect, toggleSelectWithHaptic]);
 
   const clearLongPress = useCallback(() => {
     if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }

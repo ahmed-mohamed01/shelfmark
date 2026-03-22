@@ -37,6 +37,7 @@ import { MonitoredAuthorsView, type AuthorAvailabilityStats } from '../component
 import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
 import { FloatingSelectionBar, type FloatingSelectionBarAction } from '../components/FloatingSelectionBar';
+import { hapticTap } from '../utils/haptics';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 import {
   isEnabledMonitoredFlag,
@@ -1250,10 +1251,13 @@ export const MonitoredPage = ({
     monitoredCompactMinWidth,
   ]);
 
-  // Clear selections when switching tabs
+  // Clear selections and haptic feedback when switching tabs
+  const hasTabSwitched = useRef(false);
   useEffect(() => {
     setSelectedMonitoredAuthorKeys({});
     setSelectedMonitoredBookKeys({});
+    if (hasTabSwitched.current) hapticTap();
+    hasTabSwitched.current = true;
   }, [landingTab]);
 
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);

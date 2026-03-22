@@ -1,4 +1,5 @@
 import { type ReactNode } from 'react';
+import { hapticTap } from '../utils/haptics';
 import { Dropdown } from './Dropdown';
 
 export interface FloatingSelectionBarMenuItem {
@@ -54,7 +55,7 @@ function SplitButton({ action }: { action: FloatingSelectionBarAction }) {
           {/* Main action area */}
           <button
             type="button"
-            onClick={action.onClick}
+            onClick={() => { hapticTap(); action.onClick(); }}
             disabled={action.disabled}
             className={`h-9 w-8 ${baseBtnClass} ${stateClass}`}
             title={action.title}
@@ -83,7 +84,7 @@ function SplitButton({ action }: { action: FloatingSelectionBarAction }) {
             <button
               key={item.label}
               type="button"
-              onClick={() => { item.onClick(); close(); }}
+              onClick={() => { hapticTap(); item.onClick(); close(); }}
               className="w-full px-3 py-2 text-left text-sm hover-surface whitespace-nowrap"
             >
               {item.label}
@@ -116,7 +117,7 @@ export function FloatingSelectionBar({ count, actions, onSelectAll, allSelected,
             ) : (
               <button
                 type="button"
-                onClick={action.onClick}
+                onClick={() => { hapticTap(); action.onClick(); }}
                 disabled={action.disabled}
                 className={`w-9 h-9 rounded-lg border ${borderColorMap[action.borderColor]} ${baseBtnClass} ${action.active ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-500' : 'text-gray-600 dark:text-gray-300'}`}
                 title={action.title}
@@ -135,7 +136,7 @@ export function FloatingSelectionBar({ count, actions, onSelectAll, allSelected,
         {onSelectAll ? (
           <button
             type="button"
-            onClick={() => onSelectAll!()}
+            onClick={() => { hapticTap(); onSelectAll!(); }}
             className={`w-9 h-9 rounded-lg border ${borderColorMap.emerald} ${baseBtnClass} ${allSelected ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'text-gray-600 dark:text-gray-300'}`}
             title={allSelected ? 'Deselect all' : 'Select all visible'}
             aria-label={allSelected ? 'Deselect all' : 'Select all visible'}
@@ -147,7 +148,7 @@ export function FloatingSelectionBar({ count, actions, onSelectAll, allSelected,
         {/* Deselect all */}
         <button
           type="button"
-          onClick={onDeselectAll}
+          onClick={() => { hapticTap(); onDeselectAll(); }}
           className={`w-9 h-9 rounded-lg border ${borderColorMap.orange} ${baseBtnClass} text-gray-600 dark:text-gray-300`}
           title="Deselect all"
           aria-label="Deselect all"

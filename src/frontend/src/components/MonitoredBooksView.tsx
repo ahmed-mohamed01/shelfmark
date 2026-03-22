@@ -1,4 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useMemo, useState } from 'react';
+import { hapticTap } from '../utils/haptics';
 import type { MonitoredBookRow } from '../services/monitoredApi';
 import { RowThumbnail } from './RowThumbnail';
 import {
@@ -218,7 +219,7 @@ export function MonitoredBooksView({
                       leadingControl={(
                         <button
                           type="button"
-                          onClick={() => onToggleSelect(book)}
+                          onClick={() => { hapticTap(); onToggleSelect(book); }}
                           className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'} ${isSelected || hasAnySelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'} transition-opacity`}
                           role="checkbox"
                           aria-checked={isSelected}

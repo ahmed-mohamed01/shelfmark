@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useRef } from 'react';
+import { hapticTap } from '../utils/haptics';
 
 interface MonitoredTableRowBaseProps {
   gridClassName: string;
@@ -38,7 +39,13 @@ export const MonitoredTableRowBase = ({
   hasActiveSelection = false,
   onToggleSelect,
 }: MonitoredTableRowBaseProps) => {
-  const effectiveRowClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onRowClick;
+  const toggleSelectWithHaptic = useCallback(() => {
+    if (!onToggleSelect) return;
+    hapticTap();
+    onToggleSelect();
+  }, [onToggleSelect]);
+
+  const effectiveRowClick = hasActiveSelection && onToggleSelect ? toggleSelectWithHaptic : onRowClick;
 
   // Long-press to enter selection mode
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,9 +56,9 @@ export const MonitoredTableRowBase = ({
     didLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       didLongPress.current = true;
-      onToggleSelect();
+      toggleSelectWithHaptic();
     }, 500);
-  }, [onToggleSelect]);
+  }, [onToggleSelect, toggleSelectWithHaptic]);
 
   const clearLongPress = useCallback(() => {
     if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
