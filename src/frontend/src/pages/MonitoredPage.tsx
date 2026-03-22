@@ -1625,9 +1625,8 @@ export const MonitoredPage = ({
       for (let idx = 0; idx < selectedMonitoredBooks.length; idx += 1) {
         const row = selectedMonitoredBooks[idx];
         const book = monitoredBookToBook(row);
-        const action = contentType === 'ebook' ? defaultReleaseActionEbook : defaultReleaseActionAudiobook;
-        await onGetReleases(book, contentType, row.author_entity_id, action, {
-          combined: releaseCombinedMode || false,
+        await onGetReleases(book, contentType, row.author_entity_id, 'auto_search_download', {
+          combined: false,
           suppressPerBookAutoSearchToasts: true,
           batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
         });
@@ -1635,7 +1634,7 @@ export const MonitoredPage = ({
     } finally {
       setBulkBookDownloadRunning((prev) => ({ ...prev, [contentType]: false }));
     }
-  }, [onGetReleases, selectedMonitoredBooks, bulkBookDownloadRunning, monitoredBookToBook, defaultReleaseActionEbook, defaultReleaseActionAudiobook, releaseCombinedMode]);
+  }, [onGetReleases, selectedMonitoredBooks, bulkBookDownloadRunning, monitoredBookToBook]);
 
   const runBulkInteractiveSearchForMonitoredBooks = useCallback(async (contentType: ContentType) => {
     if (!onGetReleases || selectedMonitoredBooks.length === 0) return;
