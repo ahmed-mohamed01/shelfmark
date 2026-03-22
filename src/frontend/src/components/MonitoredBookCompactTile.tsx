@@ -123,6 +123,7 @@ export const MonitoredBookCompactTile = ({
       metaLine={showMetaLine ? metaLine : undefined}
       footer={footer}
       isDimmed={isDimmed}
+      isSelected={isSelected}
     />
   );
 };

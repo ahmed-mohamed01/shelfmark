@@ -14,6 +14,7 @@ interface MediaCompactTileBaseProps {
   footer?: ReactNode;
   tooltip?: string;
   isDimmed?: boolean;
+  isSelected?: boolean;
 }
 
 export const MediaCompactTileBase = ({
@@ -30,6 +31,7 @@ export const MediaCompactTileBase = ({
   footer,
   tooltip,
   isDimmed = false,
+  isSelected = false,
 }: MediaCompactTileBaseProps) => {
   const computedTooltip = tooltip || [title, seriesLine, subtitle, typeof metaLine === 'string' ? metaLine : undefined].filter(Boolean).join('\n');
   const mediaContent = (
@@ -49,7 +51,7 @@ export const MediaCompactTileBase = ({
   );
 
   return (
-    <div className="group relative self-start h-fit rounded-xl border border-[var(--border-muted)] bg-[var(--bg)]" title={computedTooltip}>
+    <div className={`group relative self-start h-fit rounded-xl bg-[var(--bg)] ${isSelected ? 'ring-2 ring-emerald-500 dark:ring-emerald-400' : 'border border-[var(--border-muted)]'}`} title={computedTooltip}>
       {topLeftOverlay ? (
         <div className={`absolute left-2 top-2 z-20 ${isDimmed ? 'opacity-50' : ''}`}>
           {topLeftOverlay}
