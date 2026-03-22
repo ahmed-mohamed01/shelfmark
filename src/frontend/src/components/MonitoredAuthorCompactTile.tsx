@@ -78,6 +78,7 @@ export const MonitoredAuthorCompactTile = ({
       subtitle={subtitle}
       metaLine={metaLine}
       footer={footer}
+      isSelected={isSelected}
     />
   );
 };

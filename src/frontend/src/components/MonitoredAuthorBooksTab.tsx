@@ -30,6 +30,7 @@ import {
 import type { AuthorModalAuthor } from './AuthorModal';
 import { RowThumbnail } from './RowThumbnail';
 import ReleaseDateSearchModal from './ReleaseDateSearchModal';
+import { FloatingSelectionBar, type FloatingSelectionBarAction } from './FloatingSelectionBar';
 import { getUpcomingCountdown } from '../utils/upcomingDate';
 
 const BookIcon = ({ className = 'w-4 h-4 sm:w-5 sm:h-5' }: { className?: string }) => (
@@ -1282,7 +1283,14 @@ export const MonitoredAuthorBooksTab = ({
     return runBulkDownloadForBooks(selectedBooks, contentType);
   }, [selectedBooks, runBulkDownloadForBooks]);
 
-  // Uses same batch path as "Download selected" but for all monitored+missing books
+  const runBulkInteractiveSearchForSelection = useCallback(async (contentType: ContentType) => {
+    if (!onGetReleases || selectedBooks.length === 0) return;
+    for (const book of selectedBooks) {
+      await triggerReleaseSearch(book, contentType, 'interactive_search', { combined: false });
+    }
+  }, [onGetReleases, selectedBooks, triggerReleaseSearch]);
+
+  // Uses same batch path as bulk download but for all monitored+missing books
   const handleRunMonitoredSearch = useCallback(async (contentType: ContentType) => {
     if (!onGetReleases || !monitoredEntityId) return;
     const wantedBooks = books.filter((book) => {
@@ -1410,6 +1418,19 @@ export const MonitoredAuthorBooksTab = ({
       console.error('Failed to update hidden state:', e);
     }
   }, [monitoredEntityId]);
+
+  const bulkToggleMonitorForSelection = useCallback(async () => {
+    if (selectedBooks.length === 0) return;
+    await Promise.allSettled(selectedBooks.map((book) => toggleBookMonitor(book, 'both')));
+  }, [selectedBooks, toggleBookMonitor]);
+
+  const bulkHideSelectedBooks = useCallback(async () => {
+    if (selectedBooks.length === 0) return;
+    await Promise.allSettled(selectedBooks.map((book) => toggleBookHidden(book)));
+    setSelectedBookIds({});
+  }, [selectedBooks, toggleBookHidden]);
+
+  const clearSelection = useCallback(() => setSelectedBookIds({}), []);
 
   const renderBookActionMenuContent = useCallback((
     book: Book,
@@ -1572,16 +1593,6 @@ export const MonitoredAuthorBooksTab = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-              {onGetReleases && selectedBooks.length > 0 ? (
-                <>
-                  <button type="button" onClick={() => void runBulkDownloadForSelection('ebook')} disabled={selectedBooks.length === 0 || bulkDownloadRunningByType.ebook} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 hover-action disabled:opacity-40 disabled:cursor-not-allowed" title="Automatically search/download eBooks for selected books">
-                    <BookIcon className="w-3.5 h-3.5" />Download selected
-                  </button>
-                  <button type="button" onClick={() => void runBulkDownloadForSelection('audiobook')} disabled={selectedBooks.length === 0 || bulkDownloadRunningByType.audiobook} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--border-muted)] bg-white/70 dark:bg-white/10 hover-action disabled:opacity-40 disabled:cursor-not-allowed" title="Automatically search/download audiobooks for selected books">
-                    <AudiobookIcon className="w-3.5 h-3.5" />Download selected
-                  </button>
-                </>
-              ) : null}
               {!isPageMode ? (
                 <div className="hidden sm:flex items-center gap-2 rounded-full px-2.5 py-1.5 border border-[var(--border-muted)]" style={{ background: 'var(--bg-soft)' }}>
                   <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.35-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></svg>
@@ -1746,10 +1757,6 @@ export const MonitoredAuthorBooksTab = ({
               >
                 {() => (
                   <div className="py-1">
-                    <button type="button" onClick={toggleSelectAllVisibleBooks} className={`w-full px-3 py-2 text-left text-sm hover-surface flex items-center justify-between ${allVisibleBooksSelected ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}>
-                      <span>{allVisibleBooksSelected ? 'Unselect all books' : 'Select all books'}</span>{allVisibleBooksSelected ? <span>✓</span> : null}
-                    </button>
-                    <div className="border-t border-[var(--border-muted)] my-1" />
                     <div className="px-3 py-2">
                       <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Compact tile size</div>
                       <input type="range" min={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MIN} max={AUTHOR_BOOKS_COMPACT_MIN_WIDTH_MAX} step={4} value={booksCompactMinWidth} onChange={(e) => setBooksCompactMinWidth(Number(e.target.value))} className="w-full accent-emerald-600" aria-label="Books compact tile size" title="Books compact tile size" disabled={booksViewMode !== 'compact'} />
@@ -2088,6 +2095,35 @@ export const MonitoredAuthorBooksTab = ({
           );
         }}
       />
+
+      {/* ── Floating selection action bar ── */}
+      {hasActiveBookSelection ? (
+        <FloatingSelectionBar
+          count={selectedBooks.length}
+          actions={[
+            ...(onGetReleases ? [
+              { key: 'dl-ebook', icon: <BookIcon className="w-4 h-4" />, title: 'eBooks', onClick: () => void runBulkDownloadForSelection('ebook'), disabled: bulkDownloadRunningByType.ebook, borderColor: 'teal' as const, menuItems: [
+                { label: 'Auto download eBooks', onClick: () => void runBulkDownloadForSelection('ebook') },
+                { label: 'Interactive search eBooks', onClick: () => void runBulkInteractiveSearchForSelection('ebook') },
+              ] },
+              { key: 'dl-audiobook', icon: <AudiobookIcon className="w-4 h-4" />, title: 'Audiobooks', onClick: () => void runBulkDownloadForSelection('audiobook'), disabled: bulkDownloadRunningByType.audiobook, borderColor: 'teal' as const, menuItems: [
+                { label: 'Auto download audiobooks', onClick: () => void runBulkDownloadForSelection('audiobook') },
+                { label: 'Interactive search audiobooks', onClick: () => void runBulkInteractiveSearchForSelection('audiobook') },
+              ] },
+            ] : []),
+            { key: 'monitor', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>, title: 'Monitoring', onClick: () => void bulkToggleMonitorForSelection(), borderColor: 'teal' as const, menuItems: [
+              { label: 'Monitor eBook', onClick: () => void Promise.allSettled(selectedBooks.map((b) => toggleBookMonitor(b, 'ebook', true))) },
+              { label: 'Monitor audiobook', onClick: () => void Promise.allSettled(selectedBooks.map((b) => toggleBookMonitor(b, 'audiobook', true))) },
+              { label: 'Unmonitor eBook', onClick: () => void Promise.allSettled(selectedBooks.map((b) => toggleBookMonitor(b, 'ebook', false))) },
+              { label: 'Unmonitor audiobook', onClick: () => void Promise.allSettled(selectedBooks.map((b) => toggleBookMonitor(b, 'audiobook', false))) },
+            ] },
+            { key: 'hide', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>, title: 'Move selected to hidden', onClick: () => void bulkHideSelectedBooks(), borderColor: 'red' as const, dividerBefore: true },
+          ] satisfies FloatingSelectionBarAction[]}
+          onSelectAll={toggleSelectAllVisibleBooks}
+          allSelected={allVisibleBooksSelected}
+          onDeselectAll={clearSelection}
+        />
+      ) : null}
     </>
   );
 };

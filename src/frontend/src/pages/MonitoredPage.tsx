@@ -36,6 +36,7 @@ import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewMod
 import { MonitoredAuthorsView, type AuthorAvailabilityStats } from '../components/MonitoredAuthorsView';
 import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
+import { FloatingSelectionBar, type FloatingSelectionBarAction } from '../components/FloatingSelectionBar';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 import {
   isEnabledMonitoredFlag,
@@ -506,6 +507,7 @@ export const MonitoredPage = ({
   const [selectedMonitoredBookKeys, setSelectedMonitoredBookKeys] = useState<Record<string, boolean>>({});
   const [selectedMonitoredAuthorKeys, setSelectedMonitoredAuthorKeys] = useState<Record<string, boolean>>({});
   const [bulkUnmonitorRunning, setBulkUnmonitorRunning] = useState(false);
+  const [bulkBookDownloadRunning, setBulkBookDownloadRunning] = useState<Record<ContentType, boolean>>({ ebook: false, audiobook: false });
   const [bulkDeleteAuthorsRunning, setBulkDeleteAuthorsRunning] = useState(false);
   const [bulkDeleteAuthorsConfirmOpen, setBulkDeleteAuthorsConfirmOpen] = useState(false);
   const [bulkSyncAuthorsRunning, setBulkSyncAuthorsRunning] = useState(false);
@@ -1248,6 +1250,12 @@ export const MonitoredPage = ({
     monitoredCompactMinWidth,
   ]);
 
+  // Clear selections when switching tabs
+  useEffect(() => {
+    setSelectedMonitoredAuthorKeys({});
+    setSelectedMonitoredBookKeys({});
+  }, [landingTab]);
+
   const monitoredNames = useMemo(() => new Set(monitored.map((a) => a.name.toLowerCase())), [monitored]);
 
   const monitoredSingleBookKeySet = useMemo(() => {
@@ -1516,6 +1524,20 @@ export const MonitoredPage = ({
     }));
   }, [getMonitoredBookSelectionKey]);
 
+  const selectAllVisibleMonitoredBooks = useCallback(() => {
+    const visibleBooks = activeBookGroups.flatMap((g) => g.rows);
+    const all: Record<string, boolean> = {};
+    for (const book of visibleBooks) all[getMonitoredBookSelectionKey(book)] = true;
+    setSelectedMonitoredBookKeys(all);
+  }, [activeBookGroups, getMonitoredBookSelectionKey]);
+
+  const clearMonitoredBookSelection = useCallback(() => setSelectedMonitoredBookKeys({}), []);
+
+  const allVisibleMonitoredBooksSelected = useMemo(() => {
+    const visibleBooks = activeBookGroups.flatMap((g) => g.rows);
+    return visibleBooks.length > 0 && visibleBooks.every((book) => Boolean(selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]));
+  }, [activeBookGroups, selectedMonitoredBookKeys, getMonitoredBookSelectionKey]);
+
   const toggleMonitoredAuthorSelection = useCallback((authorId: number) => {
     const key = String(authorId);
     setSelectedMonitoredAuthorKeys((prev) => ({
@@ -1571,9 +1593,58 @@ export const MonitoredPage = ({
     }
   }, [bulkUnmonitorRunning, monitoredBooksRows, selectedMonitoredBookKeys, getMonitoredBookSelectionKey]);
 
+  const monitoredBookToBook = useCallback((row: MonitoredBookListRow): Book => ({
+    id: String(row.id),
+    title: row.title,
+    author: row.authors || row.author_name || '',
+    year: row.publish_year ? String(row.publish_year) : undefined,
+    provider: row.provider || undefined,
+    provider_id: row.provider_book_id || undefined,
+    description: row.description || undefined,
+    isbn_13: row.isbn_13 || undefined,
+    preview: row.cover_url || undefined,
+    language: row.language || undefined,
+    release_date: row.release_date || undefined,
+  }), []);
+
+  const selectedMonitoredBooks = useMemo(
+    () => monitoredBooksRows.filter((book) => selectedMonitoredBookKeys[getMonitoredBookSelectionKey(book)]),
+    [monitoredBooksRows, selectedMonitoredBookKeys, getMonitoredBookSelectionKey],
+  );
+
+  const runBulkDownloadForMonitoredBooks = useCallback(async (contentType: ContentType) => {
+    if (!onGetReleases || selectedMonitoredBooks.length === 0 || bulkBookDownloadRunning[contentType]) return;
+    const batchId = `${contentType}:${Date.now()}`;
+    const batchTotal = selectedMonitoredBooks.length;
+    setBulkBookDownloadRunning((prev) => ({ ...prev, [contentType]: true }));
+    try {
+      for (let idx = 0; idx < selectedMonitoredBooks.length; idx += 1) {
+        const row = selectedMonitoredBooks[idx];
+        const book = monitoredBookToBook(row);
+        const action = contentType === 'ebook' ? defaultReleaseActionEbook : defaultReleaseActionAudiobook;
+        await onGetReleases(book, contentType, row.author_entity_id, action, {
+          combined: releaseCombinedMode || false,
+          suppressPerBookAutoSearchToasts: true,
+          batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
+        });
+      }
+    } finally {
+      setBulkBookDownloadRunning((prev) => ({ ...prev, [contentType]: false }));
+    }
+  }, [onGetReleases, selectedMonitoredBooks, bulkBookDownloadRunning, monitoredBookToBook, defaultReleaseActionEbook, defaultReleaseActionAudiobook, releaseCombinedMode]);
+
+  const runBulkInteractiveSearchForMonitoredBooks = useCallback(async (contentType: ContentType) => {
+    if (!onGetReleases || selectedMonitoredBooks.length === 0) return;
+    for (const row of selectedMonitoredBooks) {
+      const book = monitoredBookToBook(row);
+      await onGetReleases(book, contentType, row.author_entity_id, 'interactive_search', { combined: false });
+    }
+  }, [onGetReleases, selectedMonitoredBooks, monitoredBookToBook]);
+
   const toggleSingleBookMonitor = useCallback(async (
     book: MonitoredBookListRow,
-    type: 'ebook' | 'audiobook' | 'both'
+    type: 'ebook' | 'audiobook' | 'both',
+    newValue?: boolean,
   ) => {
     const provider = (book.provider || '').trim();
     const providerBookId = (book.provider_book_id || '').trim();
@@ -1588,11 +1659,11 @@ export const MonitoredPage = ({
     };
 
     if (type === 'ebook') {
-      patch.monitor_ebook = !currentEbook;
+      patch.monitor_ebook = newValue !== undefined ? newValue : !currentEbook;
     } else if (type === 'audiobook') {
-      patch.monitor_audiobook = !currentAudiobook;
+      patch.monitor_audiobook = newValue !== undefined ? newValue : !currentAudiobook;
     } else {
-      const targetValue = !(currentEbook && currentAudiobook);
+      const targetValue = newValue !== undefined ? newValue : !(currentEbook && currentAudiobook);
       patch.monitor_ebook = targetValue;
       patch.monitor_audiobook = targetValue;
     }
@@ -1651,6 +1722,17 @@ export const MonitoredPage = ({
       console.error('Failed to update hidden state:', e);
     }
   }, []);
+
+  const bulkToggleMonitorForMonitoredBooks = useCallback(async () => {
+    if (selectedMonitoredBooks.length === 0) return;
+    await Promise.allSettled(selectedMonitoredBooks.map((book) => toggleSingleBookMonitor(book, 'both')));
+  }, [selectedMonitoredBooks, toggleSingleBookMonitor]);
+
+  const bulkHideMonitoredBooks = useCallback(async () => {
+    if (selectedMonitoredBooks.length === 0) return;
+    await Promise.allSettled(selectedMonitoredBooks.map((book) => toggleSingleBookHidden(book)));
+    setSelectedMonitoredBookKeys({});
+  }, [selectedMonitoredBooks, toggleSingleBookHidden]);
 
   const runBulkDeleteSelectedAuthors = useCallback(async () => {
     if (bulkDeleteAuthorsRunning) return;
@@ -2798,71 +2880,6 @@ export const MonitoredPage = ({
                           </button>
                         ) : null}
                       </div>
-                    ) : landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
-                      <div className="flex items-center gap-1 shrink-0">
-                        {/* Select all */}
-                        <button
-                          type="button"
-                          onClick={allMonitoredAuthorsSelected ? clearMonitoredAuthorSelection : selectAllMonitoredAuthors}
-                          className="relative flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
-                          title={allMonitoredAuthorsSelected ? 'Deselect all authors' : `Select all authors (${monitored.length})`}
-                          aria-label={allMonitoredAuthorsSelected ? 'Deselect all authors' : `Select all authors (${monitored.length})`}
-                        >
-                          {allMonitoredAuthorsSelected ? (
-                            /* check-square (all selected) */
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
-                              <rect x="3" y="3" width="18" height="18" rx="3" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m7.5 12 3 3 6-6" />
-                            </svg>
-                          ) : (
-                            /* minus-square (partial) */
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
-                              <rect x="3" y="3" width="18" height="18" rx="3" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h8" />
-                            </svg>
-                          )}
-                        </button>
-                        {/* Deselect all */}
-                        <button
-                          type="button"
-                          onClick={clearMonitoredAuthorSelection}
-                          className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
-                          title="Deselect all"
-                          aria-label="Deselect all"
-                        >
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                        {/* Refresh selected */}
-                        <button
-                          type="button"
-                          onClick={runBulkSyncSelectedAuthors}
-                          disabled={bulkSyncAuthorsRunning}
-                          className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300 disabled:opacity-50"
-                          title={`Refresh selected authors (${selectedMonitoredAuthorCount})`}
-                          aria-label={`Refresh selected authors (${selectedMonitoredAuthorCount})`}
-                        >
-                          <svg className={`w-5 h-5${bulkSyncAuthorsRunning ? ' animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-                          </svg>
-                        </button>
-                        {/* Delete selected */}
-                        <button
-                          type="button"
-                          onClick={() => setBulkDeleteAuthorsConfirmOpen(true)}
-                          className="relative flex items-center justify-center h-8 w-8 rounded-full border border-red-500/40 text-red-600 dark:text-red-400 hover-action"
-                          title={`Delete selected authors (${selectedMonitoredAuthorCount})`}
-                          aria-label={`Delete selected authors (${selectedMonitoredAuthorCount})`}
-                        >
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M9 3.75A1.5 1.5 0 0 1 10.5 2.25h3A1.5 1.5 0 0 1 15 3.75v.75h3.75a.75.75 0 0 1 0 1.5h-.53l-.64 11.32A2.25 2.25 0 0 1 15.34 19.5H8.66a2.25 2.25 0 0 1-2.24-2.18L5.78 6h-.53a.75.75 0 0 1 0-1.5H9v-.75Zm2.25 0v.75h1.5v-.75h-1.5Zm-.7 5.18a.75.75 0 0 0-1.06 1.06L10.94 12l-1.45 2.01a.75.75 0 1 0 1.22.88L12 13.06l1.29 1.83a.75.75 0 0 0 1.22-.88L13.06 12l1.45-2.01a.75.75 0 1 0-1.22-.88L12 10.94l-1.45-2.01Z" />
-                          </svg>
-                          <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white leading-none">
-                            {selectedMonitoredAuthorCount}
-                          </span>
-                        </button>
-                      </div>
                     ) : landingTab === 'authors' && monitored.length > 0 ? (
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Sync All */}
@@ -3274,23 +3291,7 @@ export const MonitoredPage = ({
                       </>
                     ) : (
                       <>
-                        {selectedMonitoredBookCount > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => void runBulkUnmonitorSelected()}
-                            disabled={bulkUnmonitorRunning}
-                            className="relative p-2 rounded-full border border-red-500/40 text-red-600 dark:text-red-400 hover-action disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={bulkUnmonitorRunning ? 'Unmonitoring selected books' : `Unmonitor selected books (${selectedMonitoredBookCount})`}
-                            aria-label={bulkUnmonitorRunning ? 'Unmonitoring selected books' : `Unmonitor selected books (${selectedMonitoredBookCount})`}
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 7.5h12m-1.5 0-.8 11.2a2.25 2.25 0 0 1-2.24 2.09H10.54A2.25 2.25 0 0 1 8.3 18.7L7.5 7.5m3-3h3a1.5 1.5 0 0 1 1.5 1.5V7.5h-6V6a1.5 1.5 0 0 1 1.5-1.5Z" />
-                            </svg>
-                            <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white leading-none">
-                              {selectedMonitoredBookCount}
-                            </span>
-                          </button>
-                        ) : null}
+                        {/* Unmonitor button moved to floating selection bar */}
                         {landingTab === 'books' ? (
                           <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent p-0.5">
                             <button
@@ -4051,6 +4052,49 @@ export const MonitoredPage = ({
         onDeleted={handleEditAuthorDeleted}
         onSaved={handleEditAuthorSaved}
       />
+
+      {/* ── Floating selection bars ── */}
+      {landingTab === 'authors' && hasActiveMonitoredAuthorSelection ? (
+        <FloatingSelectionBar
+          count={selectedMonitoredAuthorCount}
+          actions={[
+            { key: 'sync', icon: <svg className={`w-4 h-4${bulkSyncAuthorsRunning ? ' animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>, title: `Refresh selected (${selectedMonitoredAuthorCount})`, onClick: () => void runBulkSyncSelectedAuthors(), disabled: bulkSyncAuthorsRunning, borderColor: 'teal' as const },
+            { key: 'delete', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>, title: `Delete selected (${selectedMonitoredAuthorCount})`, onClick: () => setBulkDeleteAuthorsConfirmOpen(true), borderColor: 'red' as const, dividerBefore: true },
+          ] satisfies FloatingSelectionBarAction[]}
+          onSelectAll={allMonitoredAuthorsSelected ? clearMonitoredAuthorSelection : selectAllMonitoredAuthors}
+          allSelected={allMonitoredAuthorsSelected}
+          onDeselectAll={clearMonitoredAuthorSelection}
+        />
+      ) : null}
+
+      {(landingTab === 'books' || landingTab === 'upcoming') && selectedMonitoredBookCount > 0 ? (
+        <FloatingSelectionBar
+          count={selectedMonitoredBookCount}
+          actions={[
+            ...(onGetReleases ? [
+              { key: 'dl-ebook', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>, title: 'eBooks', onClick: () => void runBulkDownloadForMonitoredBooks('ebook'), disabled: bulkBookDownloadRunning.ebook, borderColor: 'teal' as const, menuItems: [
+                { label: 'Auto download eBooks', onClick: () => void runBulkDownloadForMonitoredBooks('ebook') },
+                { label: 'Interactive search eBooks', onClick: () => void runBulkInteractiveSearchForMonitoredBooks('ebook') },
+              ] },
+              { key: 'dl-audiobook', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" /></svg>, title: 'Audiobooks', onClick: () => void runBulkDownloadForMonitoredBooks('audiobook'), disabled: bulkBookDownloadRunning.audiobook, borderColor: 'teal' as const, menuItems: [
+                { label: 'Auto download audiobooks', onClick: () => void runBulkDownloadForMonitoredBooks('audiobook') },
+                { label: 'Interactive search audiobooks', onClick: () => void runBulkInteractiveSearchForMonitoredBooks('audiobook') },
+              ] },
+            ] : []),
+            { key: 'monitor', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>, title: 'Monitoring', onClick: () => void bulkToggleMonitorForMonitoredBooks(), borderColor: 'teal' as const, menuItems: [
+              { label: 'Monitor eBook', onClick: () => void Promise.allSettled(selectedMonitoredBooks.map((b) => toggleSingleBookMonitor(b, 'ebook', true))) },
+              { label: 'Monitor audiobook', onClick: () => void Promise.allSettled(selectedMonitoredBooks.map((b) => toggleSingleBookMonitor(b, 'audiobook', true))) },
+              { label: 'Unmonitor eBook', onClick: () => void Promise.allSettled(selectedMonitoredBooks.map((b) => toggleSingleBookMonitor(b, 'ebook', false))) },
+              { label: 'Unmonitor audiobook', onClick: () => void Promise.allSettled(selectedMonitoredBooks.map((b) => toggleSingleBookMonitor(b, 'audiobook', false))) },
+            ] },
+            { key: 'hide', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>, title: 'Hide selected', onClick: () => void bulkHideMonitoredBooks(), borderColor: 'teal' as const },
+            { key: 'unmonitor', icon: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>, title: 'Unmonitor selected', onClick: () => void runBulkUnmonitorSelected(), disabled: bulkUnmonitorRunning, borderColor: 'red' as const, dividerBefore: true },
+          ] satisfies FloatingSelectionBarAction[]}
+          onSelectAll={selectAllVisibleMonitoredBooks}
+          allSelected={allVisibleMonitoredBooksSelected}
+          onDeselectAll={clearMonitoredBookSelection}
+        />
+      ) : null}
 
     </div>
   );
