@@ -1270,6 +1270,7 @@ export const MonitoredAuthorBooksTab = ({
       for (let idx = 0; idx < booksToDownload.length; idx += 1) {
         const book = booksToDownload[idx];
         await triggerReleaseSearch(book, contentType, 'auto_search_download', {
+          combined: false,
           suppressPerBookAutoSearchToasts: true,
           batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
         });

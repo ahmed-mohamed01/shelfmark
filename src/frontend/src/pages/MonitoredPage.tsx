@@ -2048,7 +2048,7 @@ export const MonitoredPage = ({
     (book: Book, ct: ContentType, entityId?: number | null, action?: ReleasePrimaryAction, opts?: OpenReleasesOptions) => {
       if (!onGetReleases) return Promise.resolve();
       const useCombined = releaseCombinedMode && !opts?.batchAutoDownload && opts?.combined !== false;
-      return onGetReleases(book, ct, entityId, action, useCombined ? { ...opts, combined: true } : opts);
+      return onGetReleases(book, ct, entityId, action, useCombined ? { ...opts, combined: true } : { ...opts, combined: opts?.combined ?? false });
     },
     [onGetReleases, releaseCombinedMode],
   );

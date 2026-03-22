@@ -1637,7 +1637,8 @@ function App() {
     }
 
     // Combined mode is only available when both default content types are accessible.
-    const effectiveCombined = combinedMode || options?.combined;
+    // An explicit combined:false in options overrides the global setting.
+    const effectiveCombined = options?.combined !== undefined ? options.combined : combinedMode;
     if (effectiveCombined) {
       const latestPolicy2 = await refreshRequestPolicy({ force: true }).catch(() => null);
       const effectiveIsAdmin2 = latestPolicy2 ? Boolean(latestPolicy2.is_admin) : requestRoleIsAdmin;

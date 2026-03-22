@@ -322,7 +322,17 @@ export function useMonitoredAutoSearch({
         normalizedContentType,
       );
 
-      const bestRelease = [...(response.releases || [])].sort((a, b) => {
+      // Filter releases to match the requested content type before ranking.
+      // Prowlarr can return mismatched results (e.g., ebooks in audiobook search).
+      const contentTypeMatches = (release: Release): boolean => {
+        const ct = (release.content_type || '').toLowerCase();
+        if (!ct) return true; // no type info — allow
+        if (normalizedContentType === 'audiobook') return ct === 'audiobook';
+        return ct !== 'audiobook'; // ebook search: accept 'book', 'ebook', etc.
+      };
+      const matchingReleases = (response.releases || []).filter(contentTypeMatches);
+
+      const bestRelease = [...matchingReleases].sort((a, b) => {
         return (getReleaseMatchScore(b) || 0) - (getReleaseMatchScore(a) || 0);
       })[0];
 
