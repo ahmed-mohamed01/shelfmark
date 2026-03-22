@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import { hapticTap } from '../utils/haptics';
 import { MonitoredTableRowBase } from './MonitoredTableRowBase';
 
 interface MonitoredBookTableRowProps {
@@ -28,7 +29,7 @@ export const MonitoredBookTableRow = ({
   hasActiveSelection = false,
   onToggleSelect,
 }: MonitoredBookTableRowProps) => {
-  const effectiveMainClick = hasActiveSelection && onToggleSelect ? onToggleSelect : onOpen;
+  const effectiveMainClick = hasActiveSelection && onToggleSelect ? () => { hapticTap(); onToggleSelect(); } : onOpen;
   const mainSlot = effectiveMainClick ? (
     <button
       type="button"

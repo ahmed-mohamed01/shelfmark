@@ -61,7 +61,7 @@ export const MonitoredBookCompactTile = ({
   const topLeftOverlay = onToggleSelect ? (
     <button
       type="button"
-      onClick={() => { hapticTap(); onToggleSelect?.(); }}
+      onClick={() => { hapticTap(); onToggleSelect!(); }}
       className={`${isSelected ? 'text-emerald-500 dark:text-emerald-400' : 'text-white/80'} ${isSelected || hasActiveSelection ? 'opacity-100' : 'opacity-0 group-hover:opacity-65'} hover-action rounded-full p-0.5 bg-black/30 backdrop-blur-[1px] transition-opacity`}
       role="checkbox"
       aria-checked={isSelected}
