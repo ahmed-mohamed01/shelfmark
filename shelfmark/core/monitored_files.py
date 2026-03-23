@@ -1151,6 +1151,10 @@ def apply_monitor_modes_for_books(
     from shelfmark.core.monitored_release_scoring import parse_release_date
 
     for row in books:
+        # Hidden books should keep monitor flags at 0 — skip recomputation
+        if row.get("hidden"):
+            continue
+
         provider = str(row.get("provider") or "").strip()
         provider_book_id = str(row.get("provider_book_id") or "").strip()
         if not provider or not provider_book_id:
