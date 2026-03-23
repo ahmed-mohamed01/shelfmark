@@ -1838,11 +1838,24 @@ export const MonitoredAuthorBooksTab = ({
                     const isCollapsed = collapsedGroups[group.key] ?? false;
                     const isDormantGroup = Boolean((group as any).isDormantGroup);
                     const allSelectedInGroup = monitoredEntityId ? (group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]))) : false;
-                    const booksInSeries = monitoredEntityId ? group.books.length : 0;
-                    const booksOnDisk = monitoredEntityId ? group.books.reduce((count, book) => {
-                      const availability = getMonitoredAvailabilityForBook(book);
-                      return count + (availability.hasEbook || availability.hasAudiobook ? 1 : 0);
-                    }, 0) : 0;
+                    let booksInSeries = 0;
+                    let booksOnDisk = 0;
+                    let upcomingInGroup = 0;
+                    let hiddenInGroup = 0;
+                    if (monitoredEntityId) {
+                      for (const book of group.books) {
+                        const p = (book.provider || '').trim();
+                        const pid = (book.provider_id || '').trim();
+                        const row = (p && pid) ? monitoredBookRowByKey.get(`${p}:${pid}`) : undefined;
+                        const bookUpcoming = row ? isMonitoredBookUpcoming(row, _upcomingTodayMs, _upcomingCurrentYear) : false;
+                        const bookHidden = row?.hidden === 1;
+                        if (bookUpcoming) { upcomingInGroup++; continue; }
+                        if (bookHidden) { hiddenInGroup++; continue; }
+                        booksInSeries++;
+                        const availability = getMonitoredAvailabilityForBook(book);
+                        if (availability.hasEbook || availability.hasAudiobook) booksOnDisk++;
+                      }
+                    }
                     return (
                       <div key={group.key} data-series-key={group.key}>
                         <div className={`flex items-center gap-2 px-3 pb-2 border-b border-gray-200/60 dark:border-gray-700/60 ${isDormantGroup ? 'opacity-60' : ''}`}>
@@ -1859,8 +1872,10 @@ export const MonitoredAuthorBooksTab = ({
                             <svg className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                             <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100 truncate">{group.title}</h3>
                             {monitoredEntityId ? (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
-                                {booksOnDisk}/{booksInSeries}
+                              <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-gray-600 dark:text-gray-300">
+                                <span className={`px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/10 ${booksOnDisk > 0 ? 'text-emerald-600 dark:text-emerald-400' : ''}`}>{booksOnDisk}/{booksInSeries}</span>
+                                {upcomingInGroup > 0 ? <span className="text-amber-500 dark:text-amber-400">+{upcomingInGroup} upcoming</span> : null}
+                                {hiddenInGroup > 0 ? <span className="text-gray-400 dark:text-gray-500">+{hiddenInGroup} hidden</span> : null}
                               </span>
                             ) : (
                               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
