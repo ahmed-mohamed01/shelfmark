@@ -200,7 +200,6 @@ export const AuthorModal = ({
     return `author-details-title-${key.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   }, [author]);
 
-  if (!author && !isClosing) return null;
   if (!author) return null;
 
   const resolvedName = details?.name || author.name;
@@ -228,7 +227,7 @@ export const AuthorModal = ({
           <div className={isPageMode
             ? hideHeader
               ? 'flex flex-col overflow-visible text-[var(--text)]'
-              : 'flex flex-col overflow-visible rounded-none sm:rounded-2xl border-0 sm:border border-black/10 dark:border-white/10 bg-transparent sm:bg-white/80 sm:dark:bg-white/5 text-[var(--text)] sm:shadow-xl'
+              : 'flex flex-col overflow-visible text-[var(--text)]'
             : 'flex h-full sm:h-[90vh] sm:max-h-[90vh] flex-col overflow-hidden rounded-none sm:rounded-2xl border-0 sm:border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-none sm:shadow-2xl'}>
             {!hideHeader && <header className={`flex items-start gap-4 px-5 ${isPageMode ? 'py-2 border-b border-black/10 dark:border-white/10 bg-transparent' : 'py-4 border-b border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)]'}`}>
               <div className="flex-1 min-w-0">
@@ -320,7 +319,7 @@ export const AuthorModal = ({
             </header>}
 
             <div className={hideHeader ? 'pb-3' : 'px-3 pb-3 sm:px-4 sm:pb-4'}>
-              <div className="mt-4 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-soft)] sm:bg-[var(--bg)] p-4">
+              <div className="mt-4 px-4 py-4 rounded-2xl bg-black/[0.03] dark:bg-white/[0.04]">
                 <div className="flex items-start gap-4">
                   <div className="flex-shrink-0">
                     {resolvedPhoto ? (

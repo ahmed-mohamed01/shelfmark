@@ -1,4 +1,4 @@
-import { useCallback, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { hapticTap } from '../utils/haptics';
 
 interface MediaCompactTileBaseProps {
@@ -63,6 +63,9 @@ export const MediaCompactTileBase = ({
   const clearLongPress = useCallback(() => {
     if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
   }, []);
+
+  // Clean up timer on unmount
+  useEffect(() => () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }, []);
 
   const handleClick = useCallback((handler?: () => void) => {
     if (didLongPress.current) { didLongPress.current = false; return; }

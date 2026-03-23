@@ -1506,9 +1506,9 @@ export const MonitoredAuthorBooksTab = ({
         ) : null}
       </div>
     );
-  }, [onGetReleases, triggerReleaseSearch, monitoredEntityId, getBookMonitorState, toggleBookMonitor]);
+  }, [onGetReleases, triggerReleaseSearch, monitoredEntityId, getBookMonitorState, toggleBookMonitor, monitoredBookRows, monitoredBookRowByKey, onMonitorBook]);
 
-  const renderBookOverflowMenu = (book: Book) => {
+  const renderBookOverflowMenu = useCallback((book: Book) => {
     const { defaultContentType, defaultAction } = getDefaultBookSearchMode();
     return (
       <Dropdown widthClassName="w-auto" align="right" panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl" noScrollLimit={true} usePortal={true}
@@ -1521,9 +1521,9 @@ export const MonitoredAuthorBooksTab = ({
         {renderBookActionMenuContent(book, defaultContentType, defaultAction)}
       </Dropdown>
     );
-  };
+  }, [getDefaultBookSearchMode, renderBookActionMenuContent]);
 
-  const renderBookTableActions = (book: Book) => {
+  const renderBookTableActions = useCallback((book: Book) => {
     const { defaultContentType, defaultAction, isAutoDefault, primaryLabel } = getDefaultBookSearchMode();
     return (
       <div className="inline-flex items-stretch rounded-lg border border-emerald-500/40">
@@ -1562,17 +1562,17 @@ export const MonitoredAuthorBooksTab = ({
         </Dropdown>
       </div>
     );
-  };
+  }, [getDefaultBookSearchMode, renderBookActionMenuContent, onGetReleases, monitoredBookRows, triggerReleaseSearch, releaseCombinedMode]);
 
   // --- JSX ---
   return (
     <>
-      <div className="mt-4">
+      <div className="mt-4 border-t border-gray-200/60 dark:border-gray-700/60 pt-4">
         <div
           ref={booksToolbarRef}
-          className={`${compactToolbar ? '' : 'sticky'} bg-[var(--bg)] ${compactToolbar ? 'z-10 top-0' : isPageMode ? 'z-[45] top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned && !compactToolbar ? 'rounded-none border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : 'rounded-t-2xl border border-[var(--border-muted)] border-b-0'}`}
+          className={`${compactToolbar ? '' : 'sticky'} ${compactToolbar ? 'z-10 top-0' : isPageMode ? 'z-[45] top-[76px]' : 'z-40 top-0'} ${isBooksToolbarPinned && !compactToolbar ? 'bg-[var(--bg)] border-0 border-b border-[var(--border-muted)] -ml-[100vw] -mr-[100vw] px-[100vw]' : ''}`}
         >
-          <div className="flex flex-wrap items-center gap-2 gap-y-1.5 px-4 py-2">
+          <div className="flex flex-wrap items-center gap-2 gap-y-1.5 px-3 py-2">
             <div className="flex items-center gap-2 min-w-0">
               <button type="button" onClick={toggleAllGroups} className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover-action transition-all duration-200" aria-label={allGroupsCollapsed ? 'Expand all series groups' : 'Collapse all series groups'} title={allGroupsCollapsed ? 'Expand all' : 'Collapse all'}>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
@@ -1793,7 +1793,7 @@ export const MonitoredAuthorBooksTab = ({
           </div>
         </div>
 
-        <div className={`rounded-b-2xl border border-[var(--border-muted)] border-t-0 bg-[var(--bg-soft)] sm:bg-[var(--bg)] ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`}>
+        <div className={`rounded-2xl bg-black/[0.03] dark:bg-white/[0.04] ${booksViewMode === 'compact' ? 'overflow-visible' : 'overflow-hidden'}`}>
           {activeFilterChips.length > 0 ? (
             <div className="px-4 pt-3 pb-1 flex flex-wrap items-center gap-2">
               {activeFilterChips.map((chip) => (
@@ -1833,8 +1833,8 @@ export const MonitoredAuthorBooksTab = ({
               <div className="px-4 text-sm text-gray-600 dark:text-gray-300">No books match the current filters.</div>
             ) : (
               <>
-                <div key={booksViewMode} className={`w-full ${booksViewMode === 'compact' ? 'px-3 py-1 overflow-visible' : 'overflow-hidden'}`}>
-                  {filteredGroupedBooks.map((group, groupIndex) => {
+                <div key={booksViewMode} className={`w-full ${booksViewMode === 'compact' ? 'flex flex-col gap-5 overflow-visible' : 'overflow-hidden'}`}>
+                  {filteredGroupedBooks.map((group) => {
                     const isCollapsed = collapsedGroups[group.key] ?? false;
                     const isDormantGroup = Boolean((group as any).isDormantGroup);
                     const allSelectedInGroup = monitoredEntityId ? (group.books.length > 0 && group.books.every((book) => Boolean(selectedBookIds[book.id]))) : false;
@@ -1844,8 +1844,8 @@ export const MonitoredAuthorBooksTab = ({
                       return count + (availability.hasEbook || availability.hasAudiobook ? 1 : 0);
                     }, 0) : 0;
                     return (
-                      <div key={group.key} data-series-key={group.key} className={groupIndex === 0 ? '' : 'mt-3'}>
-                        <div className={`w-full px-3 sm:px-4 py-2 border-t border-b border-gray-200/60 dark:border-gray-800/60 bg-black/5 dark:bg-white/5 flex items-center gap-3 ${isDormantGroup ? 'opacity-60' : ''}`}>
+                      <div key={group.key} data-series-key={group.key}>
+                        <div className={`flex items-center gap-2 px-3 pb-2 border-b border-gray-200/60 dark:border-gray-700/60 ${isDormantGroup ? 'opacity-60' : ''}`}>
                           {monitoredEntityId ? (
                             <button type="button" onClick={() => { hapticTap(); toggleSelectAllInGroup(group.books); }} className="flex-shrink-0 text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 transition-colors" aria-label={allSelectedInGroup ? `Unselect all books in ${group.title}` : `Select all books in ${group.title}`} title={allSelectedInGroup ? 'Unselect all in series' : 'Select all in series'}>
                               {allSelectedInGroup ? (
@@ -1855,17 +1855,23 @@ export const MonitoredAuthorBooksTab = ({
                               )}
                             </button>
                           ) : null}
-                          <button type="button" onClick={() => toggleGroupCollapsed(group.key)} className="flex-1 flex items-center gap-2 min-w-0 hover-action" aria-expanded={!isCollapsed}>
-                            <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                            <div className="min-w-0 flex items-center gap-2">
-                              <p className="text-s font-semibold text-gray-700 dark:text-gray-200 truncate">{group.title}</p>
-                              {monitoredEntityId ? <span className={`text-[11px] tabular-nums ${booksOnDisk > 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'}`}>({booksOnDisk}/{booksInSeries})</span> : null}
-                            </div>
+                          <button type="button" onClick={() => toggleGroupCollapsed(group.key)} className="flex items-center gap-2 min-w-0 hover-action w-fit" aria-expanded={!isCollapsed}>
+                            <svg className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100 truncate">{group.title}</h3>
+                            {monitoredEntityId ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+                                {booksOnDisk}/{booksInSeries}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+                                {group.books.length}
+                              </span>
+                            )}
                           </button>
                         </div>
                         {!isCollapsed ? (
                           booksViewMode === 'compact' ? (
-                            <div className="px-3 py-3 grid gap-3" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? Math.min(booksCompactMinWidth, 100) : booksCompactMinWidth}px, 1fr))` }}>
+                            <div className="px-3 pt-3 pb-1 grid gap-4 items-start" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? Math.min(booksCompactMinWidth, 100) : booksCompactMinWidth}px, 1fr))` }}>
                               {group.books.map((book, bookIndex) => {
                                 const isSelected = Boolean(selectedBookIds[book.id]);
                                 const _bookProvider = (book.provider || '').trim();
@@ -1886,22 +1892,17 @@ export const MonitoredAuthorBooksTab = ({
                                 const isSeriesSort = booksSort === 'series';
                                 const isYearSort = booksSort === 'date';
                                 const showSeriesName = Boolean(seriesLabel) && !isSeriesSort;
-                                const showExtendedMeta = booksCompactMinWidth >= 178;
                                 const popularity = extractBookPopularity(book);
                                 const showPopularity = booksCompactMinWidth >= 194 && (popularity.rating !== null || popularity.readersCount !== null);
-                                const yearPart = !isYearSort ? (book.year || 'TBA') : '';
-                                const metaLine = yearPart ? `${yearPart}${book.author ? ` • ${book.author}` : ''}` : (book.author || '');
+                                const metaLine = !isYearSort ? (book.year || undefined) : undefined;
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
-                                const _cProvider = (book.provider || '').trim();
-                                const _cProviderId = (book.provider_id || '').trim();
-                                const _cRow = (_cProvider && _cProviderId) ? monitoredBookRowByKey.get(`${_cProvider}:${_cProviderId}`) : undefined;
-                                const isRemovedCard = _cRow?.state === 'removed_from_provider';
+                                const isRemovedCard = _bookRow?.state === 'removed_from_provider';
                                 const isUpcoming = _bookRow ? isMonitoredBookUpcoming(_bookRow, _upcomingTodayMs, _upcomingCurrentYear) : false;
                                 const authorCountdown = isUpcoming && _bookRow ? getUpcomingCountdown(_bookRow) : null;
                                 return (
                                   <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms` }}>
-                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={showExtendedMeta} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} isUpcoming={isUpcoming} countdownTag={authorCountdown} onEbookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'ebook', 'interactive_search', { combined: false }); } : undefined} onAudiobookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'audiobook', 'interactive_search', { combined: false }); } : undefined} />
+                                    <MonitoredBookCompactTile title={book.title || 'Untitled'} onOpenDetails={monitoredEntityId ? () => setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows)) : undefined} onToggleSelect={monitoredEntityId ? () => toggleBookSelection(book.id) : undefined} isSelected={isSelected} hasActiveSelection={hasActiveBookSelection} seriesPosition={groupSeriesPos} seriesCount={groupSeriesCount} ebookStatus={ebookStatus} audiobookStatus={audiobookStatus} seriesLabel={seriesLabel} showSeriesName={showSeriesName} metaLine={isRemovedCard ? 'Removed from Hardcover' : metaLine} showMetaLine={isRemovedCard || Boolean(metaLine)} popularityLine={popularityLine} showPopularityLine={showPopularity} thumbnail={<RowThumbnail url={book.preview} alt={book.title || undefined} className="w-full aspect-[2/3]" />} overflowMenu={monitoredEntityId ? renderBookOverflowMenu(book) : null} isDimmed={isDormant || isRemovedCard} isUpcoming={isUpcoming} countdownTag={authorCountdown} onEbookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'ebook', 'interactive_search', { combined: false }); } : undefined} onAudiobookSearch={onGetReleases ? () => { void triggerReleaseSearch(book, 'audiobook', 'interactive_search', { combined: false }); } : undefined} />
                                   </div>
                                 );
                               })}

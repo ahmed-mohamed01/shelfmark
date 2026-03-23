@@ -84,7 +84,6 @@ export function useMonitoredState({ dismissedActivityKeys, currentStatus, activi
     transientDownloadActivityItems,
     setTransientDownloadActivityItems,
     showDualGetButtons,
-    setShowDualGetButtons,
     releaseMonitoredEntityId,
     setReleaseMonitoredEntityId,
     batchAutoStatsRef,

@@ -38,12 +38,7 @@ import { getReleaseFormats } from '../utils/releaseFormats';
 import { getBookTitleCandidates, getBookAuthorCandidates, sortReleasesByBookMatch } from '../utils/releaseScoring';
 import { getCachedReleases, setCachedReleases, invalidateCachedReleases } from '../utils/releaseCache';
 import { SortState, getSavedSort, saveSort, clearSort, inferDefaultDirection, sortReleases, FORMAT_SORT_KEY, sortReleasesByFormat } from '../utils/releaseSort';
-
-
-function getReleaseMatchScore(release: Release): number | null {
-  const rawScore = release.extra?.match_score;
-  return typeof rawScore === 'number' ? rawScore : null;
-}
+import { getReleaseMatchScore } from '../hooks/useMonitoredState';
 
 function getReleaseRejectReason(release: Release): string | null {
   const raw = release.extra?.match_reject_reason;

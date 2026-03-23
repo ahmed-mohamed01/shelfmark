@@ -594,7 +594,7 @@ export const getMetadataAuthorBooks = async (
   authorId: string,
   limit = 200,
 ): Promise<{ provider: string; provider_id: string; books: ExternalBookRow[] }> => {
-  return fetchJSON(
+  return fetchJSON<{ provider: string; provider_id: string; books: ExternalBookRow[] }>(
     `${API_BASE}/metadata/authors/${encodeURIComponent(provider)}/${encodeURIComponent(authorId)}/books?limit=${limit}`,
   );
 };
@@ -662,7 +662,7 @@ export const setBookReleaseDate = async (
   asin: string,
   releaseDate: string | null,
 ): Promise<{ ok: boolean }> => {
-  return fetchJSON(`${API_BASE}/monitored/${entityId}/books/release-date`, {
+  return fetchJSON<{ ok: boolean }>(`${API_BASE}/monitored/${entityId}/books/release-date`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
