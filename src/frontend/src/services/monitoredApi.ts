@@ -146,6 +146,8 @@ export interface MonitoredBookRow {
   monitor_ebook?: number | boolean;
   monitor_audiobook?: number | boolean;
   hidden?: number | boolean;
+  saved_monitor_ebook?: number | null;
+  saved_monitor_audiobook?: number | null;
   ebook_last_search_status?: string | null;
   audiobook_last_search_status?: string | null;
   ebook_last_search_at?: string | null;
@@ -528,11 +530,18 @@ export interface MonitoredBookMonitorFlagsPatch {
   hidden?: boolean;
 }
 
+export interface MonitorFlagsResult {
+  provider: string;
+  provider_book_id: string;
+  monitor_ebook: number;
+  monitor_audiobook: number;
+}
+
 export const updateMonitoredBooksMonitorFlags = async (
   entityId: number,
   updates: MonitoredBookMonitorFlagsPatch[] | MonitoredBookMonitorFlagsPatch,
-): Promise<{ ok: boolean; updated: number }> => {
-  return fetchJSON<{ ok: boolean; updated: number }>(`${API_BASE}/monitored/${entityId}/books/monitor-flags`, {
+): Promise<{ ok: boolean; updated: number; results?: MonitorFlagsResult[] }> => {
+  return fetchJSON<{ ok: boolean; updated: number; results?: MonitorFlagsResult[] }>(`${API_BASE}/monitored/${entityId}/books/monitor-flags`, {
     method: 'PATCH',
     body: JSON.stringify(updates),
   });

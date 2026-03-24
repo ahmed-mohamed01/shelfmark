@@ -278,6 +278,16 @@ class MonitoredDB:
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN saved_monitor_ebook INTEGER")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN saved_monitor_audiobook INTEGER")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
                 conn.commit()
             finally:
                 conn.close()
@@ -764,32 +774,73 @@ class MonitoredDB:
         monitor_ebook: bool | None = None,
         monitor_audiobook: bool | None = None,
         hidden: bool | None = None,
-    ) -> bool:
-        """Update per-format monitor flags for a monitored book."""
+    ) -> dict[str, Any] | None:
+        """Update per-format monitor flags for a monitored book.
 
-        updates: list[str] = []
-        params: list[Any] = []
-        if hidden is not None:
-            updates.append("hidden = ?")
-            params.append(1 if hidden else 0)
-            if hidden:
-                # Hiding a book automatically unmonitors it
-                monitor_ebook = False
-                monitor_audiobook = False
-        if monitor_ebook is not None:
-            updates.append("monitor_ebook = ?")
-            params.append(1 if monitor_ebook else 0)
-        if monitor_audiobook is not None:
-            updates.append("monitor_audiobook = ?")
-            params.append(1 if monitor_audiobook else 0)
-        if not updates:
-            return False
+        Returns a dict with the effective ``monitor_ebook`` and
+        ``monitor_audiobook`` values after the update, or *None* if
+        nothing was changed (entity not found / no matching row).
+
+        When *hidden=True*: saves current monitor flags to
+        ``saved_monitor_*`` columns, then zeros them out.
+        When *hidden=False*: restores from ``saved_monitor_*``, then
+        clears the saved columns.
+        """
 
         with self._lock:
             conn = self._connect()
             try:
                 if not self._entity_exists(conn, entity_id, user_ids):
-                    return False
+                    return None
+
+                updates: list[str] = []
+                params: list[Any] = []
+
+                if hidden is not None:
+                    # Read current row to save / restore monitor flags.
+                    row = conn.execute(
+                        """
+                        SELECT monitor_ebook, monitor_audiobook,
+                               saved_monitor_ebook, saved_monitor_audiobook
+                        FROM monitored_books
+                        WHERE entity_id = ? AND provider = ? AND provider_book_id = ?
+                        """,
+                        (entity_id, provider, provider_book_id),
+                    ).fetchone()
+                    if row is None:
+                        return None
+
+                    updates.append("hidden = ?")
+                    params.append(1 if hidden else 0)
+
+                    if hidden:
+                        # Save current flags, then zero them out
+                        updates.append("saved_monitor_ebook = ?")
+                        params.append(int(row["monitor_ebook"] or 0))
+                        updates.append("saved_monitor_audiobook = ?")
+                        params.append(int(row["monitor_audiobook"] or 0))
+                        monitor_ebook = False
+                        monitor_audiobook = False
+                    else:
+                        # Unhide: restore previously-saved flags (fall
+                        # back to 1 for books hidden before the migration)
+                        updates.append("saved_monitor_ebook = NULL")
+                        updates.append("saved_monitor_audiobook = NULL")
+                        saved_eb = row["saved_monitor_ebook"]
+                        saved_ab = row["saved_monitor_audiobook"]
+                        if monitor_ebook is None:
+                            monitor_ebook = bool(saved_eb) if saved_eb is not None else True
+                        if monitor_audiobook is None:
+                            monitor_audiobook = bool(saved_ab) if saved_ab is not None else True
+
+                if monitor_ebook is not None:
+                    updates.append("monitor_ebook = ?")
+                    params.append(1 if monitor_ebook else 0)
+                if monitor_audiobook is not None:
+                    updates.append("monitor_audiobook = ?")
+                    params.append(1 if monitor_audiobook else 0)
+                if not updates:
+                    return None
 
                 params.extend([entity_id, provider, provider_book_id])
                 cur = conn.execute(
@@ -803,7 +854,15 @@ class MonitoredDB:
                     params,
                 )
                 conn.commit()
-                return bool(cur.rowcount)
+                if not cur.rowcount:
+                    return None
+
+                result: dict[str, Any] = {}
+                if monitor_ebook is not None:
+                    result["monitor_ebook"] = 1 if monitor_ebook else 0
+                if monitor_audiobook is not None:
+                    result["monitor_audiobook"] = 1 if monitor_audiobook else 0
+                return result
             finally:
                 conn.close()
 

@@ -1203,6 +1203,7 @@ def register_monitored_routes(
             return jsonify({"error": "Expected a JSON object or array"}), 400
 
         updated = 0
+        results: list[dict[str, Any]] = []
         for item in rows:
             if not isinstance(item, dict):
                 continue
@@ -1226,7 +1227,7 @@ def register_monitored_routes(
             if monitor_ebook is None and monitor_audiobook is None and hidden is None:
                 continue
 
-            ok = monitored_db.set_monitored_book_monitor_flags(
+            result = monitored_db.set_monitored_book_monitor_flags(
                 user_ids=visible_user_ids,
                 entity_id=entity_id,
                 provider=provider,
@@ -1235,10 +1236,15 @@ def register_monitored_routes(
                 monitor_audiobook=monitor_audiobook,
                 hidden=hidden,
             )
-            if ok:
+            if result is not None:
                 updated += 1
+                results.append({
+                    "provider": provider,
+                    "provider_book_id": provider_book_id,
+                    **result,
+                })
 
-        return jsonify({"ok": True, "updated": updated})
+        return jsonify({"ok": True, "updated": updated, "results": results})
 
     # ── Release-date lookup (AudiMeta + Google Books) ───────────
 

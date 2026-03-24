@@ -1705,22 +1705,43 @@ export const MonitoredPage = ({
     if (!provider || !providerBookId) return;
     const wasHidden = isEnabledMonitoredFlag(book.hidden);
     const newHidden = !wasHidden;
+    const snapshot = {
+      hidden: book.hidden,
+      monitor_ebook: book.monitor_ebook,
+      monitor_audiobook: book.monitor_audiobook,
+      saved_monitor_ebook: book.saved_monitor_ebook,
+      saved_monitor_audiobook: book.saved_monitor_audiobook,
+    };
+    const matchRow = (r: MonitoredBookListRow) =>
+      r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id;
     setMonitoredBooksRows((prev) =>
-      prev.map((r) =>
-        r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
-          ? { ...r, hidden: newHidden, ...(newHidden ? { monitor_ebook: 0, monitor_audiobook: 0 } : {}) }
-          : r
-      )
+      prev.map((r) => {
+        if (!matchRow(r)) return r;
+        if (newHidden) {
+          return { ...r, hidden: true, saved_monitor_ebook: isEnabledMonitoredFlag(r.monitor_ebook) ? 1 : 0, saved_monitor_audiobook: isEnabledMonitoredFlag(r.monitor_audiobook) ? 1 : 0, monitor_ebook: 0, monitor_audiobook: 0 };
+        }
+        return { ...r, hidden: false, monitor_ebook: r.saved_monitor_ebook != null ? r.saved_monitor_ebook : 1, monitor_audiobook: r.saved_monitor_audiobook != null ? r.saved_monitor_audiobook : 1, saved_monitor_ebook: null, saved_monitor_audiobook: null };
+      })
     );
     try {
-      await updateMonitoredBooksMonitorFlags(book.author_entity_id, { provider, provider_book_id: providerBookId, hidden: newHidden });
+      const resp = await updateMonitoredBooksMonitorFlags(book.author_entity_id, { provider, provider_book_id: providerBookId, hidden: newHidden });
+      if (resp.results?.length) {
+        const result = resp.results.find(
+          (r) => r.provider === provider && r.provider_book_id === providerBookId,
+        );
+        if (result) {
+          setMonitoredBooksRows((prev) =>
+            prev.map((r) =>
+              matchRow(r)
+                ? { ...r, monitor_ebook: result.monitor_ebook, monitor_audiobook: result.monitor_audiobook }
+                : r
+            )
+          );
+        }
+      }
     } catch (e) {
       setMonitoredBooksRows((prev) =>
-        prev.map((r) =>
-          r.provider === provider && r.provider_book_id === providerBookId && r.author_entity_id === book.author_entity_id
-            ? { ...r, hidden: wasHidden, ...(newHidden ? { monitor_ebook: book.monitor_ebook, monitor_audiobook: book.monitor_audiobook } : {}) }
-            : r
-        )
+        prev.map((r) => matchRow(r) ? { ...r, ...snapshot } : r)
       );
       console.error('Failed to update hidden state:', e);
     }

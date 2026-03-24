@@ -1393,33 +1393,62 @@ export const MonitoredAuthorBooksTab = ({
     const provider = (book.provider || '').trim();
     const providerId = (book.provider_id || '').trim();
     if (!provider || !providerId) return;
-    // Snapshot current row state before optimistic update
-    let snapshot: Pick<MonitoredBookRow, 'hidden' | 'monitor_ebook' | 'monitor_audiobook'> | null = null;
-    let newHidden = false;
-    setMonitoredBookRows((prev) => {
-      const row = prev.find((r) => r.provider === provider && r.provider_book_id === providerId);
-      const wasHidden = row ? isEnabledMonitoredFlag(row.hidden) : false;
-      newHidden = !wasHidden;
-      if (row) snapshot = { hidden: row.hidden, monitor_ebook: row.monitor_ebook, monitor_audiobook: row.monitor_audiobook };
-      return prev.map((r) =>
-        r.provider === provider && r.provider_book_id === providerId
-          ? { ...r, hidden: newHidden, ...(newHidden ? { monitor_ebook: 0, monitor_audiobook: 0 } : {}) }
-          : r
-      );
-    });
+    // Compute newHidden from current state BEFORE the setState call.
+    // Reading from the updater side-effect is unreliable in React 18 —
+    // the eager-state optimisation that calls the updater synchronously
+    // is skipped when the fiber already has pending work (e.g. from a
+    // WebSocket-triggered state update), leaving the outer variable at
+    // its initial value.
+    const currentRow = monitoredBookRows.find(
+      (r) => r.provider === provider && r.provider_book_id === providerId,
+    );
+    const wasHidden = currentRow ? isEnabledMonitoredFlag(currentRow.hidden) : false;
+    const newHidden = !wasHidden;
+    const snapshot: Pick<MonitoredBookRow, 'hidden' | 'monitor_ebook' | 'monitor_audiobook' | 'saved_monitor_ebook' | 'saved_monitor_audiobook'> | null = currentRow
+      ? { hidden: currentRow.hidden, monitor_ebook: currentRow.monitor_ebook, monitor_audiobook: currentRow.monitor_audiobook, saved_monitor_ebook: currentRow.saved_monitor_ebook, saved_monitor_audiobook: currentRow.saved_monitor_audiobook }
+      : null;
+    setMonitoredBookRows((prev) =>
+      prev.map((r) => {
+        if (r.provider !== provider || r.provider_book_id !== providerId) return r;
+        if (newHidden) {
+          // Hiding: save current flags, zero them out
+          return { ...r, hidden: true, saved_monitor_ebook: isEnabledMonitoredFlag(r.monitor_ebook) ? 1 : 0, saved_monitor_audiobook: isEnabledMonitoredFlag(r.monitor_audiobook) ? 1 : 0, monitor_ebook: 0, monitor_audiobook: 0 };
+        }
+        // Unhiding: restore from saved flags (fall back to 1)
+        const restoredEbook = r.saved_monitor_ebook != null ? r.saved_monitor_ebook : 1;
+        const restoredAudio = r.saved_monitor_audiobook != null ? r.saved_monitor_audiobook : 1;
+        return { ...r, hidden: false, monitor_ebook: restoredEbook, monitor_audiobook: restoredAudio, saved_monitor_ebook: null, saved_monitor_audiobook: null };
+      })
+    );
     try {
-      await updateMonitoredBooksMonitorFlags(monitoredEntityId, { provider, provider_book_id: providerId, hidden: newHidden });
+      const resp = await updateMonitoredBooksMonitorFlags(monitoredEntityId, { provider, provider_book_id: providerId, hidden: newHidden });
+      // Apply the authoritative monitor flags from the backend response
+      // (covers both hide and unhide — ensures frontend matches DB).
+      if (resp.results?.length) {
+        const result = resp.results.find(
+          (r) => r.provider === provider && r.provider_book_id === providerId,
+        );
+        if (result) {
+          setMonitoredBookRows((prev) =>
+            prev.map((r) =>
+              r.provider === provider && r.provider_book_id === providerId
+                ? { ...r, monitor_ebook: result.monitor_ebook, monitor_audiobook: result.monitor_audiobook }
+                : r
+            )
+          );
+        }
+      }
     } catch (e) {
       setMonitoredBookRows((prev) =>
         prev.map((r) =>
           r.provider === provider && r.provider_book_id === providerId && snapshot
-            ? { ...r, hidden: snapshot.hidden, monitor_ebook: snapshot.monitor_ebook, monitor_audiobook: snapshot.monitor_audiobook }
+            ? { ...r, hidden: snapshot.hidden, monitor_ebook: snapshot.monitor_ebook, monitor_audiobook: snapshot.monitor_audiobook, saved_monitor_ebook: snapshot.saved_monitor_ebook, saved_monitor_audiobook: snapshot.saved_monitor_audiobook }
             : r
         )
       );
       console.error('Failed to update hidden state:', e);
     }
-  }, [monitoredEntityId]);
+  }, [monitoredEntityId, monitoredBookRows]);
 
   const bulkToggleMonitorForSelection = useCallback(async () => {
     if (selectedBooks.length === 0) return;
@@ -2097,6 +2126,8 @@ export const MonitoredAuthorBooksTab = ({
         onMonitorBook={!monitoredEntityId ? onMonitorBook : undefined}
         onClose={() => setActiveBookDetails(null)}
         onToggleMonitor={activeBookDetails && monitoredEntityId ? (type) => void toggleBookMonitor(activeBookDetails, type) : undefined}
+        monitorEbook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorEbook : undefined}
+        monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
         hidden={activeBookDetails ? isBookHidden(activeBookDetails) : false}
         onToggleHidden={activeBookDetails && monitoredEntityId ? () => void toggleBookHidden(activeBookDetails) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
