@@ -41,8 +41,28 @@ export const getUpcomingCountdown = (book: HasReleaseInfo): string | null => {
 };
 
 /**
+ * Returns a past-tense label for recently released books (e.g. "Released today", "1 day ago", "12 days ago").
+ * Returns null if the book has no release_date or if the release date is in the future.
+ */
+export const getRecentlyReleasedLabel = (book: HasReleaseInfo): string | null => {
+  if (typeof book.release_date === 'string' && book.release_date.trim()) {
+    const releaseMs = parseReleaseDateLocal(book.release_date);
+    if (releaseMs !== null) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const days = Math.floor((today.getTime() - releaseMs) / 86_400_000);
+      if (days < 0) return null;
+      if (days === 0) return 'Released today';
+      if (days === 1) return '1 day ago';
+      return `${days} days ago`;
+    }
+  }
+  return null;
+};
+
+/**
  * Format the release date for display (e.g. "Mar 24, 2026", "2026", or "TBA").
- * Does NOT include the countdown — use getUpcomingCountdown for that.
+ * Does NOT include the countdown — use getUpcomingCountdown or getRecentlyReleasedLabel for that.
  */
 export const formatUpcomingDate = (book: HasReleaseInfo): ReactNode => {
   if (typeof book.release_date === 'string' && book.release_date.trim()) {

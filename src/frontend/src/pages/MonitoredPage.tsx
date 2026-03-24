@@ -41,6 +41,7 @@ import { hapticTap } from '../utils/haptics';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
 import {
   isEnabledMonitoredFlag,
+  isMonitoredBookRecentlyReleased,
   isMonitoredBookUpcoming,
   monitoredBookHasAnyAvailable,
   monitoredBookHasFormatAvailable,
@@ -208,7 +209,7 @@ const _todayStartMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); ret
 const _currentYear = new Date(_todayStartMs).getFullYear();
 const _threeMonthsMs = (() => { const d = new Date(_todayStartMs); d.setMonth(d.getMonth() + 3); return d.getTime(); })();
 
-type UpcomingTimeFilter = 'all' | '3months' | 'this_year' | 'tba';
+type UpcomingTimeFilter = 'all' | 'recent' | '3months' | 'this_year' | 'tba';
 
 const getUpcomingTimeCategory = (
   book: MonitoredBookListRow,
@@ -1117,15 +1118,22 @@ export const MonitoredPage = ({
     return monitoredBooksForTable.filter((book) => isMonitoredBookUpcoming(book, _todayStartMs, _currentYear));
   }, [monitoredBooksForTable]);
 
+  const recentlyReleasedBooksForTable = useMemo(() => {
+    return monitoredBooksForTable.filter((book) => isMonitoredBookRecentlyReleased(book, _todayStartMs));
+  }, [monitoredBooksForTable]);
+
   const filteredUpcomingByTime = useMemo(() => {
-    if (upcomingTimeFilter === 'all') return upcomingMonitoredBooksForTable;
+    if (upcomingTimeFilter === 'all' || upcomingTimeFilter === 'recent') return upcomingMonitoredBooksForTable;
     return upcomingMonitoredBooksForTable.filter(
       (book) => getUpcomingTimeCategory(book, _threeMonthsMs, _currentYear) === upcomingTimeFilter,
     );
   }, [upcomingMonitoredBooksForTable, upcomingTimeFilter]);
 
   const regularMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => !isMonitoredBookUpcoming(book, _todayStartMs, _currentYear));
+    return monitoredBooksForTable.filter((book) =>
+      !isMonitoredBookUpcoming(book, _todayStartMs, _currentYear)
+      && !isMonitoredBookRecentlyReleased(book, _todayStartMs),
+    );
   }, [monitoredBooksForTable]);
 
   const filteredRegularMonitoredBooksByAvailability = useMemo(() => {
@@ -1177,13 +1185,29 @@ export const MonitoredPage = ({
     matchesMonitoredBooksFilter,
   ]);
 
+  const filteredRecentlyReleasedBooksForTable = useMemo(() => {
+    if (!normalizedMonitoredBooksFilterQuery || landingTab === 'authors') {
+      return recentlyReleasedBooksForTable;
+    }
+    return recentlyReleasedBooksForTable.filter(matchesMonitoredBooksFilter);
+  }, [
+    normalizedMonitoredBooksFilterQuery,
+    landingTab,
+    recentlyReleasedBooksForTable,
+    matchesMonitoredBooksFilter,
+  ]);
+
   const monitoredBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
     return groupMonitoredBooks(filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy, 'All monitored books', false);
   }, [filteredRegularMonitoredBooksForTable, monitoredBooksGroupBy]);
 
   const upcomingBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
-    return groupMonitoredBooks(filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming books', true);
+    return groupMonitoredBooks(filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy, 'All upcoming releases', true);
   }, [filteredUpcomingMonitoredBooksForTable, monitoredBooksGroupBy]);
+
+  const recentlyReleasedBookGroups = useMemo<MonitoredBooksGroup[]>(() => {
+    return groupMonitoredBooks(filteredRecentlyReleasedBooksForTable, monitoredBooksGroupBy, 'All recently released books', true);
+  }, [filteredRecentlyReleasedBooksForTable, monitoredBooksGroupBy]);
 
   useEffect(() => {
     try {
@@ -1208,7 +1232,7 @@ export const MonitoredPage = ({
     const snapshot: MonitoredCountsSnapshot = {
       authors: monitoredAuthorsForCards.length,
       books: filteredRegularMonitoredBooksForTable.length,
-      upcoming: filteredUpcomingMonitoredBooksForTable.length,
+      upcoming: upcomingMonitoredBooksForTable.length + recentlyReleasedBooksForTable.length,
       search: searchScope === 'books' ? bookSearchResults.length : authorResults.length,
     };
     setCachedMonitoredCounts(snapshot);
@@ -1217,7 +1241,7 @@ export const MonitoredPage = ({
     } catch {
       // ignore
     }
-  }, [monitoredLoaded, monitoredAuthorsForCards.length, filteredRegularMonitoredBooksForTable.length, filteredUpcomingMonitoredBooksForTable.length, searchScope, bookSearchResults.length, authorResults.length]);
+  }, [monitoredLoaded, monitoredAuthorsForCards.length, filteredRegularMonitoredBooksForTable.length, upcomingMonitoredBooksForTable.length, recentlyReleasedBooksForTable.length, searchScope, bookSearchResults.length, authorResults.length]);
 
   useEffect(() => {
     try {
@@ -1399,12 +1423,24 @@ export const MonitoredPage = ({
   }, [isDesktop, authorViewMode, monitoredCompactMinWidth]);
 
   const isUpcomingTab = landingTab === 'upcoming';
-  const activeBookGroups = isUpcomingTab ? upcomingBookGroups : monitoredBookGroups;
-  const activeBooksCount = isUpcomingTab ? filteredUpcomingMonitoredBooksForTable.length : filteredRegularMonitoredBooksForTable.length;
+  const showOnlyRecent = isUpcomingTab && upcomingTimeFilter === 'recent';
+  const showBothSections = isUpcomingTab && upcomingTimeFilter === 'all' && filteredRecentlyReleasedBooksForTable.length > 0;
+  const activeBookGroups = isUpcomingTab
+    ? (showOnlyRecent
+      ? recentlyReleasedBookGroups
+      : showBothSections
+        ? [...recentlyReleasedBookGroups, ...upcomingBookGroups]
+        : upcomingBookGroups)
+    : monitoredBookGroups;
+  const activeBooksCount = isUpcomingTab
+    ? (showOnlyRecent
+      ? filteredRecentlyReleasedBooksForTable.length
+      : filteredUpcomingMonitoredBooksForTable.length + (upcomingTimeFilter === 'all' ? filteredRecentlyReleasedBooksForTable.length : 0))
+    : filteredRegularMonitoredBooksForTable.length;
   const monitoredBooksCountsReady = monitoredLoaded && (monitored.length === 0 || (monitoredBooksEverLoaded && !monitoredBooksLoading));
   const displayAuthorsCount = monitoredLoaded ? monitored.length : (cachedMonitoredCounts?.authors ?? '–');
   const displayBooksCount = monitoredBooksCountsReady ? filteredRegularMonitoredBooksForTable.length : (cachedMonitoredCounts?.books ?? '–');
-  const displayUpcomingCount = monitoredBooksCountsReady ? upcomingMonitoredBooksForTable.length : (cachedMonitoredCounts?.upcoming ?? '–');
+  const displayUpcomingCount = monitoredBooksCountsReady ? (upcomingMonitoredBooksForTable.length + recentlyReleasedBooksForTable.length) : (cachedMonitoredCounts?.upcoming ?? '–');
   const displaySearchCount = monitoredLoaded
     ? (searchScope === 'books' ? bookSearchResults.length : authorResults.length)
     : (cachedMonitoredCounts?.search ?? '–');
@@ -2801,7 +2837,7 @@ export const MonitoredPage = ({
                     <div className="sm:hidden relative flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
                       <div ref={mobileTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
                       {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
-                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Upcoming' : 'Search';
+                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Releases' : 'Search';
                         const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
                         return (
@@ -2845,7 +2881,7 @@ export const MonitoredPage = ({
                     <div className="hidden sm:flex relative items-center gap-0">
                       <div ref={desktopTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
                       {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
-                        const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Upcoming' : 'Search';
+                        const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Releases' : 'Search';
                         const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
                         return (
@@ -3339,7 +3375,7 @@ export const MonitoredPage = ({
                           </div>
                         ) : landingTab === 'upcoming' ? (
                           <div className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-transparent p-0.5">
-                            {([ ['all', 'All'], ['3months', 'Soon'], ['this_year', 'This Year'], ['tba', 'TBA'] ] as const).map(([value, label]) => (
+                            {([ ['all', 'All'], ['recent', 'Recent'], ['3months', 'Soon'], ['this_year', 'This Year'], ['tba', 'TBA'] ] as const).map(([value, label]) => (
                               <button
                                 key={value}
                                 type="button"
@@ -3626,10 +3662,65 @@ export const MonitoredPage = ({
                       onEdit={(entityId, name) => void openEditAuthorModal(entityId, name)}
                       onToggleSelect={toggleMonitoredAuthorSelection}
                     />
+                  ) : isUpcomingTab && (upcomingTimeFilter === 'all' || upcomingTimeFilter === 'recent') && filteredRecentlyReleasedBooksForTable.length > 0 ? (
+                    <div className="flex flex-col gap-6">
+                      {/* Recently Released section */}
+                      <div className="flex flex-col gap-2">
+                        {upcomingTimeFilter === 'all' && (
+                          <h3 className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                            Recently Released
+                          </h3>
+                        )}
+                        <MonitoredBooksView
+                          isLoading={monitoredBooksLoading}
+                          isUpcomingTab
+                          dateMode="recent"
+                          activeBooksCount={filteredRecentlyReleasedBooksForTable.length}
+                          viewMode={monitoredBooksViewMode}
+                          bookGroups={recentlyReleasedBookGroups}
+                          groupBy={monitoredBooksGroupBy}
+                          selectedBookKeys={selectedMonitoredBookKeys}
+                          booksGridStyle={monitoredBooksGridStyle}
+                          compactMinWidth={monitoredCompactMinWidth}
+                          loadError={monitoredBooksLoadError}
+                          showLoadError={false}
+                          onOpenDetails={openMonitoredBookDetails}
+                          onToggleSelect={toggleMonitoredBookSelection}
+                          getSelectionKey={getMonitoredBookSelectionKey}
+                          renderBookActions={renderMonitoredBookActions}
+                        />
+                      </div>
+                      {/* Upcoming section (only when showing all) */}
+                      {upcomingTimeFilter === 'all' && filteredUpcomingMonitoredBooksForTable.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                            Upcoming
+                          </h3>
+                          <MonitoredBooksView
+                            isLoading={monitoredBooksLoading}
+                            isUpcomingTab
+                            activeBooksCount={filteredUpcomingMonitoredBooksForTable.length}
+                            viewMode={monitoredBooksViewMode}
+                            bookGroups={upcomingBookGroups}
+                            groupBy={monitoredBooksGroupBy}
+                            selectedBookKeys={selectedMonitoredBookKeys}
+                            booksGridStyle={monitoredBooksGridStyle}
+                            compactMinWidth={monitoredCompactMinWidth}
+                            loadError={monitoredBooksLoadError}
+                            showLoadError
+                            onOpenDetails={openMonitoredBookDetails}
+                            onToggleSelect={toggleMonitoredBookSelection}
+                            getSelectionKey={getMonitoredBookSelectionKey}
+                            renderBookActions={renderMonitoredBookActions}
+                          />
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <MonitoredBooksView
                       isLoading={monitoredBooksLoading}
                       isUpcomingTab={isUpcomingTab}
+                      dateMode={showOnlyRecent ? 'recent' : 'upcoming'}
                       activeBooksCount={activeBooksCount}
                       viewMode={monitoredBooksViewMode}
                       bookGroups={activeBookGroups}

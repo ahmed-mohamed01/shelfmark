@@ -25,8 +25,10 @@ interface MonitoredBookCompactTileProps {
   popularityLine?: string;
   showPopularityLine?: boolean;
   isDimmed?: boolean;
-  /** Countdown tag to display on the poster (e.g. "in 12 days") */
+  /** Countdown tag to display on the poster (e.g. "in 12 days", "3 days ago") */
   countdownTag?: string | null;
+  /** Badge color class for the countdown tag (default: amber) */
+  countdownBadgeClass?: string;
   /** Show an upcoming/unreleased indicator on the cover */
   isUpcoming?: boolean;
   onEbookSearch?: () => void;
@@ -54,6 +56,7 @@ export const MonitoredBookCompactTile = ({
   showPopularityLine = false,
   isDimmed = false,
   countdownTag,
+  countdownBadgeClass = 'bg-amber-500',
   isUpcoming = false,
   onEbookSearch,
   onAudiobookSearch,
@@ -82,7 +85,7 @@ export const MonitoredBookCompactTile = ({
     </span>
   ) : null;
   const upcomingBadge = (countdownTag || isUpcoming) ? (
-    <span className="inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white bg-amber-500 rounded" style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
+    <span className={`inline-flex px-1.5 py-0.5 text-[10px] font-bold text-white ${countdownBadgeClass} rounded`} style={{ boxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)' }}>
       {countdownTag || 'Upcoming'}
     </span>
   ) : null;

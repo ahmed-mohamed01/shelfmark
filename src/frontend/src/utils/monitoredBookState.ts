@@ -88,12 +88,35 @@ export const isMonitoredBookUpcoming = (
     if (Number.isFinite(parsed)) {
       const releaseDay = new Date(parsed);
       releaseDay.setHours(0, 0, 0, 0);
-      if (releaseDay.getTime() >= todayStartMs) return true;
+      if (releaseDay.getTime() > todayStartMs) return true;
       return false;
     }
   }
   if (typeof book.publish_year === 'number') return book.publish_year >= currentYear;
   return book.no_release_date === true;
+};
+
+/**
+ * Whether a monitored book was recently released (past release date within the last N days).
+ * Complement of isMonitoredBookUpcoming — covers the window right after release.
+ */
+export const isMonitoredBookRecentlyReleased = (
+  book: { release_date?: string | null; publish_year?: number | null },
+  todayStartMs: number,
+  recentDays = 90,
+): boolean => {
+  if (typeof book.release_date === 'string' && book.release_date.trim()) {
+    const parsed = Date.parse(book.release_date);
+    if (Number.isFinite(parsed)) {
+      const releaseDay = new Date(parsed);
+      releaseDay.setHours(0, 0, 0, 0);
+      const releaseMs = releaseDay.getTime();
+      if (releaseMs > todayStartMs) return false; // future = upcoming, not recent
+      const cutoffMs = todayStartMs - recentDays * 86_400_000;
+      return releaseMs >= cutoffMs;
+    }
+  }
+  return false;
 };
 
 export const getFormatStatus = (

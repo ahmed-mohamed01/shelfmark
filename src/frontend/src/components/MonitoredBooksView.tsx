@@ -6,7 +6,7 @@ import {
   getFormatStatus,
   isMonitoredBookDormantState,
 } from '../utils/monitoredBookState';
-import { getUpcomingCountdown, formatUpcomingDate } from '../utils/upcomingDate';
+import { getUpcomingCountdown, getRecentlyReleasedLabel, formatUpcomingDate } from '../utils/upcomingDate';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
 import { FormatStatusBadge } from './FormatStatusBadge';
@@ -31,6 +31,7 @@ export interface MonitoredBooksGroup {
 export interface MonitoredBooksViewProps {
   isLoading: boolean;
   isUpcomingTab: boolean;
+  dateMode?: 'upcoming' | 'recent';
   activeBooksCount: number;
   viewMode: 'table' | 'compact';
   bookGroups: MonitoredBooksGroup[];
@@ -68,6 +69,7 @@ const AuthorAvatar = ({ url, name }: { url?: string | null; name: string }) => {
 export function MonitoredBooksView({
   isLoading,
   isUpcomingTab,
+  dateMode = 'upcoming',
   activeBooksCount,
   viewMode,
   bookGroups,
@@ -99,7 +101,7 @@ export function MonitoredBooksView({
   if (activeBooksCount === 0) {
     return (
       <div className="text-sm text-gray-500 dark:text-gray-400">
-        {isUpcomingTab ? 'No upcoming monitored books yet.' : 'No books with active eBook/audiobook monitoring yet.'}
+        {isUpcomingTab ? (dateMode === 'recent' ? 'No recently released books.' : 'No upcoming releases yet.') : 'No books with active eBook/audiobook monitoring yet.'}
       </div>
     );
   }
@@ -152,10 +154,12 @@ export function MonitoredBooksView({
                     : null;
                 const popularityLine = [ratingLabel, popularityLabel].filter(Boolean).join(' • ');
                 const releaseDatePart = isUpcomingTab ? (formatUpcomingDate(book) ?? 'TBA') : (book.publish_year ? String(book.publish_year) : null);
-                const tableCountdown = isUpcomingTab ? getUpcomingCountdown(book) : null;
+                const tableCountdown = isUpcomingTab
+                  ? (dateMode === 'recent' ? getRecentlyReleasedLabel(book) : getUpcomingCountdown(book))
+                  : null;
                 const subtitleRow = (
                   <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 truncate">
-                    {authorName}{releaseDatePart ? <> · {releaseDatePart}</> : null}{tableCountdown ? <> · <span className="text-amber-600 dark:text-amber-400 font-medium">{tableCountdown}</span></> : null}
+                    {authorName}{releaseDatePart ? <> · {releaseDatePart}</> : null}{tableCountdown ? <> · <span className={`font-medium ${dateMode === 'recent' ? 'text-blue-600 dark:text-blue-400' : 'text-amber-600 dark:text-amber-400'}`}>{tableCountdown}</span></> : null}
                   </div>
                 );
                 const titleRow = (
@@ -315,7 +319,9 @@ export function MonitoredBooksView({
                   const metaLine = isUpcomingTab
                     ? (formatUpcomingDate(book) ?? 'TBA')
                     : (book.publish_year ? String(book.publish_year) : undefined);
-                  const countdown = isUpcomingTab ? getUpcomingCountdown(book) : null;
+                  const countdown = isUpcomingTab
+                    ? (dateMode === 'recent' ? getRecentlyReleasedLabel(book) : getUpcomingCountdown(book))
+                    : null;
 
                   return (
                     <div
@@ -338,6 +344,7 @@ export function MonitoredBooksView({
                         popularityLine={popularityLine}
                         showPopularityLine={showPopularity}
                         countdownTag={countdown}
+                        countdownBadgeClass={dateMode === 'recent' ? 'bg-blue-500' : 'bg-amber-500'}
                         ebookStatus={ebookStatus}
                         audiobookStatus={audiobookStatus}
                         onEbookSearch={() => onOpenDetails(book)}
