@@ -422,6 +422,59 @@ def register_monitored_routes(
                     s, batch_result.total, batch_result.successful,
                     batch_result.failed, batch_result.retried,
                 )
+
+                # Auto-search for missing books after sync
+                from shelfmark.core.config import config as app_config
+
+                total_queued = 0
+                total_searched = 0
+
+                for uid, entity in ents:
+                    eid = int(entity.get("id") or 0)
+                    ename = str(entity.get("name") or "Author")
+
+                    config_additions, _ = get_monitored_config_additions(app_config, raw_db_user_id=uid)
+                    threshold = float(config_additions.get("auto_download_min_match_score", 75) or 75) / 100.0
+
+                    content_types: list[str] = []
+                    if config_additions.get("release_primary_action_ebook") == "auto_search_download":
+                        content_types.append("ebook")
+                    if config_additions.get("release_primary_action_audiobook") == "auto_search_download":
+                        content_types.append("audiobook")
+                    if not content_types:
+                        continue
+
+                    for content_type in content_types:
+                        try:
+                            result = search_missing_books(
+                                monitored_db,
+                                entity_id=eid,
+                                user_id=uid,
+                                content_type=content_type,
+                                min_match_score=threshold,
+                            )
+                            if result.total_candidates > 0:
+                                total_searched += result.total_candidates
+                                total_queued += result.queued
+                                logger.info(
+                                    "Scheduled auto-search slot=%s entity=%s(%s) type=%s candidates=%s queued=%s unreleased=%s no_match=%s below_cutoff=%s skipped=%s failed=%s",
+                                    s, ename, eid, content_type,
+                                    result.total_candidates, result.queued,
+                                    result.unreleased, result.no_match,
+                                    result.below_cutoff,
+                                    result.skipped_existing_file + result.skipped_history_final_path_exists,
+                                    result.failed,
+                                )
+                        except MonitoredEntityNotFound:
+                            logger.debug("Scheduled auto-search skipped slot=%s entity=%s(%s) — entity not found", s, ename, eid)
+                        except Exception as exc:
+                            logger.warning(
+                                "Scheduled auto-search failed slot=%s entity=%s(%s) type=%s error=%s",
+                                s, ename, eid, content_type, exc,
+                            )
+
+                if total_searched > 0:
+                    logger.info("Scheduled auto-search complete slot=%s searched=%s queued=%s", s, total_searched, total_queued)
             finally:
                 app.extensions["monitored_batch_sync_running"] = False
 

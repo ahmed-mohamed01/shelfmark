@@ -4,7 +4,7 @@ Uses the terminal status hook to record download history without modifying
 the core orchestrator module. This module handles:
 - Recording successful downloads to monitored_book_download_history
 - Recording failed downloads to monitored_book_attempt_history
-- Future: retry logic, scheduled auto-search triggers
+- Scheduled auto-search triggers (called after batch sync in monitored_routes.py)
 """
 
 import threading

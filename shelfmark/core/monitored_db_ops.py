@@ -214,10 +214,13 @@ def fetch_entity_metadata(
         # Hybrid threshold: GT>10 for released books, GT>4 for upcoming/unknown.
         # Use the same release_date resolution as _parse_book_fields (physical
         # edition date takes priority over book-level date).
+        # Exception: books sharing a series with any passing book are kept
+        # regardless of user count to preserve series completeness.
         from datetime import date as _date
 
         today_iso = _date.today().isoformat()
         threshold_passed: list[dict] = []
+        threshold_failed: list[dict] = []
         for b in canonical_books:
             uc = b.get("users_count") or 0
             rd = (b.get("default_physical_edition") or {}).get("release_date") or b.get("release_date")
@@ -226,12 +229,37 @@ def fetch_entity_metadata(
             elif not rd or rd > today_iso:
                 # Upcoming or unknown release date — keep at lower threshold (GT>4)
                 threshold_passed.append(b)
-            # else: released with u<=10 — discard (mostly duplicates/noise)
-        if len(threshold_passed) < len(canonical_books):
-            logger.debug(
-                "entity_id=%s: hybrid threshold filtered %d released low-user books",
-                entity_id, len(canonical_books) - len(threshold_passed),
-            )
+            else:
+                # Released with u<=10 — candidate for filtering
+                threshold_failed.append(b)
+
+        if threshold_failed:
+            # Collect series names from books that passed the threshold so
+            # we can rescue failed books that belong to the same series.
+            passing_series: set[str] = set()
+            for b in threshold_passed:
+                for bs in (b.get("book_series") or []):
+                    sname = (bs.get("series") or {}).get("name", "")
+                    if sname:
+                        passing_series.add(sname)
+
+            rescued = 0
+            for b in threshold_failed:
+                book_series_names = {
+                    (bs.get("series") or {}).get("name", "")
+                    for bs in (b.get("book_series") or [])
+                } - {""}
+                if book_series_names & passing_series:
+                    threshold_passed.append(b)
+                    rescued += 1
+
+            filtered_count = len(threshold_failed) - rescued
+            if filtered_count > 0:
+                logger.debug(
+                    "entity_id=%s: hybrid threshold filtered %d released low-user books"
+                    " (%d rescued by series membership)",
+                    entity_id, filtered_count, rescued,
+                )
         canonical_books = threshold_passed
 
         # Noise filter: title patterns, language heuristic, contributor count
