@@ -938,8 +938,31 @@ export const MonitoredPage = ({
         const overrides = ctx?.deliveryPreferences?.userOverrides ?? {};
         const ebook = overrides.MONITORED_EBOOK_ROOTS;
         const audio = overrides.MONITORED_AUDIOBOOK_ROOTS;
-        setMonitoredEbookRoots(Array.isArray(ebook) ? ebook.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : []);
-        setMonitoredAudiobookRoots(Array.isArray(audio) ? audio.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : []);
+        let ebookArr = Array.isArray(ebook) ? ebook.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+        let audioArr = Array.isArray(audio) ? audio.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+
+        // Fall back to system-configured root folders (DESTINATION / DESTINATION_AUDIOBOOK)
+        // when no user-specific roots exist yet, so the first monitor gets auto-populated paths.
+        if (ebookArr.length === 0 || audioArr.length === 0) {
+          try {
+            const fsRoots = await fsListDirectories();
+            const systemRoots = (fsRoots.directories || []).map((d) => d.path).filter(Boolean);
+            if (ebookArr.length === 0 && systemRoots.length > 0) {
+              ebookArr = [systemRoots[0]];
+            }
+            if (audioArr.length === 0 && systemRoots.length > 1) {
+              audioArr = [systemRoots[1]];
+            } else if (audioArr.length === 0 && systemRoots.length > 0) {
+              audioArr = [systemRoots[0]];
+            }
+          } catch {
+            // best-effort
+          }
+        }
+
+        if (!alive) return;
+        setMonitoredEbookRoots(ebookArr);
+        setMonitoredAudiobookRoots(audioArr);
       } catch (e) {
         if (!alive) return;
         const message = e instanceof Error ? e.message : 'Failed to load folder suggestions';

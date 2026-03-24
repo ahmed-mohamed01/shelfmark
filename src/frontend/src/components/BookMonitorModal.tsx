@@ -78,7 +78,7 @@ export const BookMonitorModal = ({ book, onClose, onMonitored }: BookMonitorModa
     error: string | null;
   }>({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
 
-  // Load root folder suggestions from user settings
+  // Load root folder suggestions from user settings, falling back to system destinations
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -88,8 +88,24 @@ export const BookMonitorModal = ({ book, onClose, onMonitored }: BookMonitorModa
         const overrides = ctx?.deliveryPreferences?.userOverrides ?? {};
         const ebook = overrides.MONITORED_EBOOK_ROOTS;
         const audio = overrides.MONITORED_AUDIOBOOK_ROOTS;
-        setEbookRoots(Array.isArray(ebook) ? ebook.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : []);
-        setAudiobookRoots(Array.isArray(audio) ? audio.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : []);
+        let ebookArr = Array.isArray(ebook) ? ebook.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+        let audioArr = Array.isArray(audio) ? audio.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+
+        if (ebookArr.length === 0 || audioArr.length === 0) {
+          try {
+            const fsRoots = await fsListDirectories();
+            const systemRoots = (fsRoots.directories || []).map((d) => d.path).filter(Boolean);
+            if (ebookArr.length === 0 && systemRoots.length > 0) ebookArr = [systemRoots[0]];
+            if (audioArr.length === 0 && systemRoots.length > 1) audioArr = [systemRoots[1]];
+            else if (audioArr.length === 0 && systemRoots.length > 0) audioArr = [systemRoots[0]];
+          } catch {
+            // best-effort
+          }
+        }
+
+        if (!alive) return;
+        setEbookRoots(ebookArr);
+        setAudiobookRoots(audioArr);
       } catch {
         // best-effort
       }
