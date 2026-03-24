@@ -638,8 +638,11 @@ def _get_urls_for_source(
     # AA Fast - generate URL dynamically
     if source_id == "aa-fast":
         if not config.AA_DONATOR_KEY:
+            logger.debug("aa-fast skipped: no AA_DONATOR_KEY configured")
             return []
-        url = f"{network.get_aa_base_url()}/dyn/api/fast_download.json?md5={book_info.id}&key={config.AA_DONATOR_KEY}"
+        base = network.get_aa_base_url()
+        url = f"{base}/dyn/api/fast_download.json?md5={book_info.id}&key={config.AA_DONATOR_KEY}"
+        logger.info("aa-fast: using donation key with mirror %s for md5=%s", base, book_info.id)
         _url_source_types[url] = "aa-fast"
         return [url]
 
@@ -928,9 +931,27 @@ def _get_download_url(
     sel = selector or network.AAMirrorSelector()
 
     # AA fast download API (JSON response)
-    if link.startswith(f"{network.get_aa_base_url()}/dyn/api/fast_download.json"):
+    if "/dyn/api/fast_download.json" in link:
         page = downloader.html_get_page(link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback)
-        return downloader.get_absolute_url(link, json.loads(page).get("download_url", ""))
+        if not page:
+            logger.warning("AA fast download: empty response")
+            return ""
+        try:
+            data = json.loads(page)
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning("AA fast download: invalid JSON response: %s", exc)
+            return ""
+        if "error" in data:
+            logger.warning("AA fast download error from API: %s", data["error"])
+            if status_callback:
+                status_callback("resolving", f"AA fast: {data['error']}")
+            return ""
+        download_url = data.get("download_url", "")
+        if not download_url:
+            logger.warning("AA fast download: response missing download_url (keys: %s)", list(data.keys()))
+            return ""
+        logger.info("AA fast download: resolved download URL")
+        return downloader.get_absolute_url(link, download_url)
 
     if "/ads.php?md5=" in link and any(domain in link for domain in _get_libgen_domains()):
         return _extract_libgen_download_url(link, cancel_flag)
