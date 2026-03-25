@@ -127,7 +127,6 @@ class MonitoredHardcoverProvider(HardcoverProvider):
             books(
                 where: {
                     contributions: { author: { id: { _eq: $authorId } } }
-                    compilation: { _eq: false }
                     users_count: { _gt: 4 }
                 }
                 limit: $limit
@@ -136,6 +135,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
             ) {
                 id
                 title
+                compilation
                 description
                 rating
                 reviews_count

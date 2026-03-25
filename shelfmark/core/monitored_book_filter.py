@@ -315,6 +315,13 @@ def filter_noise_books(
             noise_reasons.append((book.get("title", ""), reason))
             continue
 
+        # Auto-hide compilations (box sets, omnibuses).  Mislabeled
+        # novels (e.g. Hardcover marking "Eon" as compilation) can be
+        # unhidden by the user from the Hidden section.
+        if book.get("compilation"):
+            auto_hide.append(book)
+            continue
+
         cc = _get_contrib_count(book)
         if cc > ANTHOLOGY_CONTRIBUTOR_THRESHOLD:
             auto_hide.append(book)
@@ -330,7 +337,7 @@ def filter_noise_books(
         )
     if auto_hide:
         logger.debug(
-            "Auto-hiding %d anthology books (contributor count > %d)",
+            "Auto-hiding %d books (compilations and/or contributor count > %d)",
             len(auto_hide),
             ANTHOLOGY_CONTRIBUTOR_THRESHOLD,
         )
