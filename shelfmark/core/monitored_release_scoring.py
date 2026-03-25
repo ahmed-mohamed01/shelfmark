@@ -414,6 +414,15 @@ def _get_target_series_number(book: BookMetadata) -> Optional[float]:
         if number is not None:
             return number
 
+    # Fallback: extract a bare trailing number after the series name
+    # (e.g. "The Primal Hunter 15" with series_name "The Primal Hunter").
+    if book.series_name:
+        for value in [book.title, book.search_title]:
+            if value:
+                number = _extract_series_number_after_series_name(book.series_name, value)
+                if number is not None:
+                    return number
+
     return None
 
 
@@ -702,6 +711,24 @@ def score_release_match(
     # e.g. "Book 1" should not help if the release is from a different series.
     if series_score <= 0:
         series_num_score = 0
+
+    # Hard reject: if both series numbers are confidently extracted and the
+    # series name matches but the numbers differ, this is the wrong book
+    # (e.g. "Primal Hunter 15" vs "Primal Hunter 10").  No amount of
+    # title/author similarity should rescue a wrong series position.
+    if series_score > 0 and series_num_score < 0:
+        return ReleaseMatchScore(
+            score=max(0, title_score + author_score + series_score + series_num_score),
+            breakdown={
+                "title": title_score,
+                "author": author_score,
+                "series": series_score,
+                "series_number": series_num_score,
+            },
+            confidence="none",
+            hard_reject=True,
+            reject_reason="series_number_mismatch",
+        )
 
     should_use_year = title_score >= 34 or (series_score > 0 and series_num_score > 0)
     year_score = _score_year(book, release) if should_use_year else 0

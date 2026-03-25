@@ -54,6 +54,53 @@ def test_book_4_scores_higher_than_book_3_and_book_2_titles():
     assert score_book4.score > score_book3.score > score_book2.score
     assert score_book3.confidence == "none"
     assert score_book2.confidence == "none"
+    assert score_book3.hard_reject is True
+    assert score_book3.reject_reason == "series_number_mismatch"
+    assert score_book2.hard_reject is True
+    assert score_book2.reject_reason == "series_number_mismatch"
+
+
+def test_series_number_mismatch_hard_rejects_even_with_high_title_author():
+    """Primal Hunter 15 should never match Primal Hunter 10, even with perfect
+    author and high title score (Hardcover often uses just the series name as the
+    title, so the title-containment path gives +60)."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="primal-15",
+        title="The Primal Hunter",
+        authors=["Zogarth"],
+        search_author="Zogarth",
+        series_name="The Primal Hunter",
+        series_position=15,
+    )
+
+    for wrong_num in [10, 9, 5]:
+        score = score_release_match(
+            book,
+            Release(
+                source="aa",
+                source_id=f"ph{wrong_num}",
+                title=f"The Primal Hunter {wrong_num}: A LitRPG Adventure",
+                content_type="ebook",
+                extra={"author": "Zogarth"},
+            ),
+        )
+        assert score.hard_reject is True, f"Primal Hunter {wrong_num} was not rejected"
+        assert score.reject_reason == "series_number_mismatch"
+
+    # Correct number should NOT be rejected
+    correct = score_release_match(
+        book,
+        Release(
+            source="aa",
+            source_id="ph15",
+            title="The Primal Hunter 15: A LitRPG Adventure",
+            content_type="ebook",
+            extra={"author": "Zogarth"},
+        ),
+    )
+    assert correct.hard_reject is False
+    assert correct.breakdown["series_number"] == 22
 
 
 def test_torznab_seriesnumber_is_used_when_title_lacks_number():
