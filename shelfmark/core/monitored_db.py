@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     state TEXT NOT NULL DEFAULT 'discovered',
     monitor_ebook INTEGER NOT NULL DEFAULT 1,
     monitor_audiobook INTEGER NOT NULL DEFAULT 1,
+    monitor_locked INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     ebook_last_search_status TEXT,
     audiobook_last_search_status TEXT,
@@ -285,6 +286,11 @@ class MonitoredDB:
                     pass
                 try:
                     conn.execute("ALTER TABLE monitored_books ADD COLUMN saved_monitor_audiobook INTEGER")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_locked INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -774,6 +780,7 @@ class MonitoredDB:
         monitor_ebook: bool | None = None,
         monitor_audiobook: bool | None = None,
         hidden: bool | None = None,
+        monitor_locked: bool | None = None,
     ) -> dict[str, Any] | None:
         """Update per-format monitor flags for a monitored book.
 
@@ -839,6 +846,9 @@ class MonitoredDB:
                 if monitor_audiobook is not None:
                     updates.append("monitor_audiobook = ?")
                     params.append(1 if monitor_audiobook else 0)
+                if monitor_locked is not None:
+                    updates.append("monitor_locked = ?")
+                    params.append(1 if monitor_locked else 0)
                 if not updates:
                     return None
 
@@ -863,6 +873,23 @@ class MonitoredDB:
                 if monitor_audiobook is not None:
                     result["monitor_audiobook"] = 1 if monitor_audiobook else 0
                 return result
+            finally:
+                conn.close()
+
+    def unlock_all_monitor_flags(self, *, entity_id: int) -> None:
+        """Reset monitor_locked to 0 for all books in an entity.
+
+        Called when the user changes the entity's monitor mode so the
+        new mode applies to all books, overriding previous manual overrides.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE monitored_books SET monitor_locked = 0 WHERE entity_id = ?",
+                    (entity_id,),
+                )
+                conn.commit()
             finally:
                 conn.close()
 

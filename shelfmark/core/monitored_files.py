@@ -1154,6 +1154,9 @@ def apply_monitor_modes_for_books(
         # Hidden books should keep monitor flags at 0 — skip recomputation
         if row.get("hidden"):
             continue
+        # User manually set monitor flags — don't overwrite their choice
+        if int(row.get("monitor_locked") or 0):
+            continue
 
         provider = str(row.get("provider") or "").strip()
         provider_book_id = str(row.get("provider_book_id") or "").strip()

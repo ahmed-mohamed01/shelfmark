@@ -589,6 +589,8 @@ def register_monitored_routes(
             )
         )
         if should_reapply_monitor_modes:
+            # User explicitly changed monitor mode — unlock all books so the new mode applies
+            monitored_db.unlock_all_monitor_flags(entity_id=entity_id)
             books = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
             existing_files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
             if books and existing_files:
@@ -1280,6 +1282,9 @@ def register_monitored_routes(
             if monitor_ebook is None and monitor_audiobook is None and hidden is None:
                 continue
 
+            # Lock monitor flags when user explicitly changes them (not via hide/unhide)
+            lock = True if hidden is None and (monitor_ebook is not None or monitor_audiobook is not None) else None
+
             result = monitored_db.set_monitored_book_monitor_flags(
                 user_ids=visible_user_ids,
                 entity_id=entity_id,
@@ -1288,6 +1293,7 @@ def register_monitored_routes(
                 monitor_ebook=monitor_ebook,
                 monitor_audiobook=monitor_audiobook,
                 hidden=hidden,
+                monitor_locked=lock,
             )
             if result is not None:
                 updated += 1
