@@ -730,6 +730,28 @@ def score_release_match(
             reject_reason="series_number_mismatch",
         )
 
+    # Hard reject: series name matches and the book has a specific position
+    # (> 1), but NO series number is extractable from the release.  A release
+    # titled just "The Primal Hunter" when we want book 15 is almost certainly
+    # book 1 or an omnibus — not the target.
+    if series_score > 0 and series_num_score == 0:
+        target = _get_target_series_number(book)
+        if target is not None and target > 1:
+            release_num = _extract_release_series_number(release, book.series_name)
+            if release_num is None:
+                return ReleaseMatchScore(
+                    score=max(0, title_score + author_score + series_score),
+                    breakdown={
+                        "title": title_score,
+                        "author": author_score,
+                        "series": series_score,
+                        "series_number": 0,
+                    },
+                    confidence="none",
+                    hard_reject=True,
+                    reject_reason="series_number_missing",
+                )
+
     should_use_year = title_score >= 34 or (series_score > 0 and series_num_score > 0)
     year_score = _score_year(book, release) if should_use_year else 0
 

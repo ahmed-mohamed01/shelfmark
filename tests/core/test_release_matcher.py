@@ -103,6 +103,55 @@ def test_series_number_mismatch_hard_rejects_even_with_high_title_author():
     assert correct.breakdown["series_number"] == 22
 
 
+def test_no_number_release_rejected_for_later_series_position():
+    """'The Primal Hunter' (no number) is almost certainly book 1, not book 15."""
+    book15 = BookMetadata(
+        provider="hardcover",
+        provider_id="primal-15",
+        title="The Primal Hunter",
+        authors=["Zogarth"],
+        search_author="Zogarth",
+        series_name="The Primal Hunter",
+        series_position=15,
+    )
+
+    no_num = score_release_match(
+        book15,
+        Release(
+            source="prowlarr",
+            source_id="ph-nonum",
+            title="The Primal Hunter",
+            content_type="audiobook",
+            extra={"author": "Zogarth"},
+        ),
+    )
+    assert no_num.hard_reject is True
+    assert no_num.reject_reason == "series_number_missing"
+
+    # For book 1, a no-number release IS correct
+    book1 = BookMetadata(
+        provider="hardcover",
+        provider_id="primal-1",
+        title="The Primal Hunter",
+        authors=["Zogarth"],
+        search_author="Zogarth",
+        series_name="The Primal Hunter",
+        series_position=1,
+    )
+
+    no_num_book1 = score_release_match(
+        book1,
+        Release(
+            source="prowlarr",
+            source_id="ph-nonum",
+            title="The Primal Hunter",
+            content_type="audiobook",
+            extra={"author": "Zogarth"},
+        ),
+    )
+    assert no_num_book1.hard_reject is False
+
+
 def test_torznab_seriesnumber_is_used_when_title_lacks_number():
     book = _book_four()
 
