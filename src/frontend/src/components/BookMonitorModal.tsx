@@ -382,6 +382,7 @@ export const BookMonitorModal = ({ book, onClose, onMonitored }: BookMonitorModa
         title={folderBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
         initialPath={folderBrowserState.initialPath}
         overlayZIndex={1300}
+        quickRoots={folderBrowserState.kind === 'audiobook' ? audiobookRoots : ebookRoots}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
           if (folderBrowserState.kind === 'audiobook') {

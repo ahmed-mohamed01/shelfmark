@@ -8,9 +8,11 @@ interface FolderBrowserModalProps {
   onClose: () => void;
   onSelect: (path: string) => void;
   overlayZIndex?: number;
+  /** Known root folders shown as quick-jump buttons (e.g. previously used roots) */
+  quickRoots?: string[];
 }
 
-export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect, overlayZIndex }: FolderBrowserModalProps) => {
+export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect, overlayZIndex, quickRoots }: FolderBrowserModalProps) => {
   const [currentPath, setCurrentPath] = useState<string | null>(initialPath ?? null);
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<FsDirectoryEntry[]>([]);
@@ -20,6 +22,7 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderError, setNewFolderError] = useState<string | null>(null);
   const [newFolderSaving, setNewFolderSaving] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const newFolderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -27,6 +30,7 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
       setNewFolderMode(false);
       setNewFolderName('');
       setNewFolderError(null);
+      setSearchQuery('');
       return;
     }
     setCurrentPath(initialPath ?? null);
@@ -57,11 +61,18 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
       }
     };
 
+    setSearchQuery('');
     void load();
     return () => {
       alive = false;
     };
   }, [open, currentPath]);
+
+  const filteredDirectories = useMemo(() => {
+    if (!searchQuery.trim()) return directories;
+    const q = searchQuery.trim().toLowerCase();
+    return directories.filter((d) => d.name.toLowerCase().includes(q));
+  }, [directories, searchQuery]);
 
   const breadcrumb = useMemo(() => {
     const path = currentPath;
@@ -131,6 +142,34 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
           </header>
 
           <div className="px-5 py-4 space-y-3">
+            {/* Quick root folder buttons */}
+            {quickRoots && quickRoots.length > 0 ? (
+              <div className="space-y-1.5">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Quick jump</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {quickRoots.map((root) => {
+                    const label = root.split('/').filter(Boolean).slice(-2).join('/');
+                    const isActive = currentPath === root;
+                    return (
+                      <button
+                        key={root}
+                        type="button"
+                        onClick={() => setCurrentPath(root)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                          isActive
+                            ? 'bg-emerald-600 text-white'
+                            : 'border border-[var(--border-muted)] hover:bg-[var(--hover-surface)]'
+                        }`}
+                        title={root}
+                      >
+                        {label || root}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap items-center gap-1 text-xs">
               <button
                 type="button"
@@ -226,14 +265,31 @@ export const FolderBrowserModal = ({ open, title, initialPath, onClose, onSelect
 
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
 
+            {/* Search input — shown when there are enough folders to warrant filtering */}
+            {!isLoading && directories.length > 5 ? (
+              <div className="relative">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filter folders…"
+                  className="w-full px-3 py-1.5 pl-8 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm outline-none"
+                />
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                </svg>
+              </div>
+            ) : null}
+
             <div className="rounded-xl border border-[var(--border-muted)] overflow-hidden">
               <div className="max-h-[320px] overflow-y-auto divide-y divide-black/10 dark:divide-white/10">
                 {isLoading ? (
                   <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">Loading…</div>
-                ) : directories.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">No folders found.</div>
+                ) : filteredDirectories.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    {searchQuery.trim() && directories.length > 0 ? `No folders matching "${searchQuery.trim()}"` : 'No folders found.'}
+                  </div>
                 ) : (
-                  directories.map((dir) => (
+                  filteredDirectories.map((dir) => (
                     <button
                       key={dir.path}
                       type="button"

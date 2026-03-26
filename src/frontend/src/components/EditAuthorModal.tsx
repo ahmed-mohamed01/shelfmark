@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, deleteMonitoredAuthorsByIds } from '../services/monitoredApi';
+import { getSelfUserEditContext } from '../services/api';
+import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, deleteMonitoredAuthorsByIds, fsListDirectories } from '../services/monitoredApi';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 type MonitorMode = 'all' | 'missing' | 'upcoming';
@@ -48,6 +49,8 @@ export const EditAuthorModal = ({
   const [monitorEbookMode, setMonitorEbookMode] = useState<MonitorMode>('upcoming');
   const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<MonitorMode>('upcoming');
   const [entity, setEntity] = useState<MonitoredEntity | null>(null);
+  const [ebookRoots, setEbookRoots] = useState<string[]>([]);
+  const [audiobookRoots, setAudiobookRoots] = useState<string[]>([]);
   const [folderBrowserState, setFolderBrowserState] = useState<{
     open: boolean;
     kind: 'ebook' | 'audiobook' | null;
@@ -57,6 +60,34 @@ export const EditAuthorModal = ({
     kind: null,
     initialPath: null,
   });
+
+  // Load root folder suggestions for quick-jump buttons
+  useEffect(() => {
+    let alive = true;
+    const loadRoots = async () => {
+      try {
+        const ctx = await getSelfUserEditContext();
+        if (!alive) return;
+        const overrides = ctx?.deliveryPreferences?.userOverrides ?? {};
+        let ebookArr = Array.isArray(overrides.MONITORED_EBOOK_ROOTS) ? overrides.MONITORED_EBOOK_ROOTS.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+        let audioArr = Array.isArray(overrides.MONITORED_AUDIOBOOK_ROOTS) ? overrides.MONITORED_AUDIOBOOK_ROOTS.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+        if (ebookArr.length === 0 || audioArr.length === 0) {
+          try {
+            const fsRoots = await fsListDirectories();
+            const systemRoots = (fsRoots.directories || []).map((d) => d.path).filter(Boolean);
+            if (ebookArr.length === 0 && systemRoots.length > 0) ebookArr = [systemRoots[0]];
+            if (audioArr.length === 0 && systemRoots.length > 1) audioArr = [systemRoots[1]];
+            else if (audioArr.length === 0 && systemRoots.length > 0) audioArr = [systemRoots[0]];
+          } catch { /* best-effort */ }
+        }
+        if (!alive) return;
+        setEbookRoots(ebookArr);
+        setAudiobookRoots(audioArr);
+      } catch { /* best-effort */ }
+    };
+    void loadRoots();
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     if (!open || !entityId) {
@@ -319,6 +350,7 @@ export const EditAuthorModal = ({
         title={folderBrowserState.kind === 'audiobook' ? 'Select audiobook folder' : 'Select ebook folder'}
         initialPath={folderBrowserState.initialPath}
         overlayZIndex={2100}
+        quickRoots={folderBrowserState.kind === 'audiobook' ? audiobookRoots : ebookRoots}
         onClose={() => setFolderBrowserState({ open: false, kind: null, initialPath: null })}
         onSelect={(path) => {
           if (folderBrowserState.kind === 'audiobook') {
