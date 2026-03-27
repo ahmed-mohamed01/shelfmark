@@ -1,10 +1,12 @@
-"""Tests for monitored_book_filter — split detection and noise filtering."""
+"""Tests for monitored_book_filter — split detection, dedup, and noise filtering."""
 import json
 
 import pytest
 
 from shelfmark.core.monitored_book_filter import (
     classify_noise,
+    compute_data_quality,
+    deduplicate_books,
     filter_noise_books,
     filter_split_books,
 )
@@ -373,17 +375,31 @@ def test_novellas_not_filtered():
 # Noise filter tests
 # ---------------------------------------------------------------------------
 
-def _book(title, *, users_read=100, lang="en", contrib=1):
-    """Helper to build a minimal book dict for noise filter tests."""
+def _book(title, *, users_read=100, users_count=100, lang="en", contrib=1):
+    """Helper to build a book dict suitable for both classify_noise and filter_noise_books.
+
+    Includes enough fields for compute_data_quality() to produce a robust
+    score above the threshold when lang="en" (preferred_isbns + lang match
+    gives 55 points alone).
+    """
     b = {
         "title": title,
+        "users_count": users_count,
         "users_read_count": users_read,
         "contributions_aggregate": {"aggregate": {"count": contrib}},
+        "preferred_isbns": [{"isbn_13": "9780000000000"}] if lang == "en" else [],
+        "preferred_asins": [],
+        "description": "Test book description",
+        "image": {"url": "https://example.com/cover.jpg"},
+        "default_physical_edition": {"isbn_13": "9780000000000", "pages": 300},
+        "rating": 4.0,
+        "cached_tags": [{"tag": "fiction"}],
     }
     if lang:
         b["lang_editions"] = [{"language": {"code2": lang}}]
     else:
         b["lang_editions"] = []
+        b["preferred_isbns"] = []  # no lang → no preferred editions
     return b
 
 
@@ -409,9 +425,13 @@ def _book(title, *, users_read=100, lang="en", contrib=1):
     "GURPS Discworld",
     "Grimdark Magazine Issue #4",
     "Lightspeed Magazine, February 2015",
+    "Steelheart Chapter Sampler",
+    "Mistborn Adventure Game",
+    "Snapshot / Dreamer",
+    "Elsecaller / King Lopen The First of Alethkar",
 ])
 def test_title_pattern_filters_noise(title):
-    reason = classify_noise(_book(title), lang_codes=["en"])
+    reason = classify_noise(_book(title))
     assert reason is not None, f"Expected '{title}' to be classified as noise"
     assert reason.startswith("title:"), f"Expected title pattern match, got: {reason}"
 
@@ -421,7 +441,7 @@ def test_title_pattern_filters_noise(title):
     "The Way of Kings",
     "Mistborn: The Final Empire",
     "Edge of the Dream: An Epic Fantasy Adventure",
-    "Snapshot / Dreamer",
+    "The Sunlit Man",
     "Trailer Park Fairy Tales",
     "The Unholy Consult",
     "Allomancer Jak and the Pits of Eltania",
@@ -432,53 +452,100 @@ def test_title_pattern_filters_noise(title):
     "Dungeon Crawler Carl",
 ])
 def test_title_pattern_keeps_real_books(title):
-    reason = classify_noise(_book(title), lang_codes=["en"])
+    reason = classify_noise(_book(title))
     assert reason is None, f"Real book '{title}' was wrongly classified as noise: {reason}"
 
 
-# --- Language filter tests ---
+# --- Data quality score tests ---
 
-def test_lang_filter_removes_non_english_released():
-    book = _book("La búsqueda del asesino", lang="es", users_read=5)
-    reason = classify_noise(book, lang_codes=["en"])
-    assert reason is not None
-    assert reason.startswith("lang:")
-
-
-def test_lang_filter_keeps_english():
-    book = _book("The Way of Kings", lang="en", users_read=4000)
-    assert classify_noise(book, lang_codes=["en"]) is None
-
-
-def test_lang_filter_keeps_unreleased_without_editions():
-    """Unreleased books (0 readers) with no lang data should not be filtered."""
-    book = _book("Scion", lang=None, users_read=0)
-    assert classify_noise(book, lang_codes=["en"]) is None
-
-
-def test_lang_filter_keeps_non_english_unreleased():
-    """Non-English book with 0 readers might be upcoming — keep it."""
-    book = _book("Untitled", lang="fr", users_read=0)
-    assert classify_noise(book, lang_codes=["en"]) is None
-
-
-def test_lang_filter_respects_preferred_languages():
-    """If user prefers French, French books should pass."""
-    book = _book("L'Assassin royal", lang="fr", users_read=50)
-    assert classify_noise(book, lang_codes=["en", "fr"]) is None
+def _rich_book(title, *, lang="en", users_count=100, users_read=50,
+               preferred_isbns=True, preferred_asins=False,
+               description=True, cover=True, isbn=True, pages=True,
+               rating=True, tags=True, contrib=1):
+    """Build a book dict with full GraphQL-shape fields for quality tests."""
+    b = {
+        "title": title,
+        "users_count": users_count,
+        "users_read_count": users_read,
+        "contributions_aggregate": {"aggregate": {"count": contrib}},
+        "preferred_isbns": [{"isbn_13": "9780123456789"}] if preferred_isbns else [],
+        "preferred_asins": [{"asin": "B00TEST"}] if preferred_asins else [],
+        "description": "A great book" if description else "",
+        "image": {"url": "https://example.com/cover.jpg"} if cover else {},
+        "default_physical_edition": {
+            "isbn_13": "9780123456789" if isbn else None,
+            "pages": 300 if pages else None,
+        },
+        "rating": 4.2 if rating else None,
+        "cached_tags": [{"tag": "fantasy"}] if tags else None,
+    }
+    if lang:
+        b["lang_editions"] = [{"language": {"code2": lang}}]
+    else:
+        b["lang_editions"] = []
+    return b
 
 
-# --- Non-Latin title tests ---
+def test_quality_high_for_english_book_with_editions():
+    book = _rich_book("Mistborn: The Final Empire", lang="en",
+                      preferred_isbns=True, preferred_asins=True, users_count=5000)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q >= 80, f"Expected high quality for full English book, got {q}"
 
-def test_non_latin_cyrillic_filtered():
-    book = _book("Имя ветра", lang="en", users_read=3)
-    reason = classify_noise(book, lang_codes=["en"])
-    assert reason == "non_latin_title"
+
+def test_quality_low_for_translation_no_data():
+    """Translation with no editions, no lang data → very low quality."""
+    book = _rich_book("A Liga da Lei", lang=None, users_count=2, users_read=0,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=False, cover=True, isbn=False,
+                      pages=False, rating=False, tags=False)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q < 20, f"Expected low quality for bare translation, got {q}"
 
 
-def test_non_latin_kept_if_unreleased():
-    book = _book("Имя ветра", lang="en", users_read=0)
-    assert classify_noise(book, lang_codes=["en"]) is None
+def test_quality_low_for_confirmed_non_english():
+    """Confirmed Spanish book → penalty drives quality down."""
+    book = _rich_book("La búsqueda del asesino", lang="es", users_count=5, users_read=5,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=True, cover=True, isbn=True, pages=True, rating=True, tags=True)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q < 20, f"Expected low quality for confirmed non-English book, got {q}"
+
+
+def test_quality_high_for_popular_book_without_editions():
+    """Popular English book that just lacks edition data on Hardcover."""
+    book = _rich_book("Warbreaker", lang=None, users_count=46, users_read=37,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=False, cover=False, isbn=False,
+                      pages=False, rating=True, tags=True)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q >= 20, f"Expected passing quality for popular book, got {q}"
+
+
+def test_quality_penalizes_non_latin_title():
+    book = _rich_book("Имя ветра", lang="en", users_count=3, users_read=3,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=False, cover=False, isbn=False,
+                      pages=False, rating=True, tags=False)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q < 20, f"Non-Latin title should have low quality, got {q}"
+
+
+def test_quality_penalizes_diacritics():
+    book = _rich_book("Coração de aço", lang=None, users_count=2, users_read=2,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=False, cover=True, isbn=False,
+                      pages=False, rating=True, tags=False)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q < 20, f"Diacritic title should have low quality, got {q}"
+
+
+def test_quality_respects_preferred_languages():
+    """If user prefers French, French books should score well."""
+    book = _rich_book("L'Assassin royal", lang="fr", users_count=50, users_read=50,
+                      preferred_isbns=True, preferred_asins=False)
+    q = compute_data_quality(book, lang_codes=["en", "fr"])
+    assert q >= 50, f"French book with French preference should score well, got {q}"
 
 
 # --- Contributor count / auto-hide tests ---
@@ -528,14 +595,15 @@ def test_filter_noise_books_three_way_split():
     books = [
         _book("Real Novel", contrib=1),
         _book("Guards! Guards!: The Play", contrib=2),      # title noise
-        _book("Die Gabe der Könige", lang="de", users_read=6),  # lang noise
-        _book("Unfettered III", contrib=31),                 # auto-hide
+        _book("Die Gabe der Könige", lang="de", users_read=6),  # auto-hide (low quality)
+        _book("Unfettered III", contrib=31),                 # auto-hide (contrib count)
     ]
     kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
     assert [b["title"] for b in kept] == ["Real Novel"]
-    assert len(noise) == 2
-    assert {b["title"] for b in noise} == {"Guards! Guards!: The Play", "Die Gabe der Könige"}
-    assert [b["title"] for b in auto_hide] == ["Unfettered III"]
+    assert len(noise) == 1
+    assert noise[0]["title"] == "Guards! Guards!: The Play"
+    assert len(auto_hide) == 2
+    assert {b["title"] for b in auto_hide} == {"Die Gabe der Könige", "Unfettered III"}
 
 
 def test_filter_noise_books_empty():
@@ -551,3 +619,220 @@ def test_noise_filter_priority_title_over_contrib():
     kept, noise, auto_hide = filter_noise_books([book], lang_codes=["en"])
     assert len(noise) == 1
     assert len(auto_hide) == 0
+
+
+# ---------------------------------------------------------------------------
+# Deduplication tests
+# ---------------------------------------------------------------------------
+
+
+def test_dedup_subtitle_variants():
+    """Books differing only by subtitle should be merged, keeping higher users."""
+    books = [
+        {"id": 1, "title": "The Age of Diagnosis: Sickness, Health and How Modern Medicine Has Gone Too Far", "users_count": 6},
+        {"id": 2, "title": "The Age of Diagnosis", "users_count": 3},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 1
+    assert len(deduped) == 1
+    assert deduped[0]["id"] == 1  # higher users_count kept
+
+
+def test_dedup_keeps_distinct_books():
+    """Books with genuinely different titles should all be kept."""
+    books = [
+        {"id": 1, "title": "The Sleeping Beauties", "users_count": 36},
+        {"id": 2, "title": "It's All in Your Head", "users_count": 23},
+        {"id": 3, "title": "Brainstorm", "users_count": 7},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 0
+    assert len(deduped) == 3
+
+
+def test_dedup_empty():
+    deduped, count = deduplicate_books([])
+    assert deduped == []
+    assert count == 0
+
+
+def test_dedup_single_book():
+    books = [{"id": 1, "title": "Only Book", "users_count": 10}]
+    deduped, count = deduplicate_books(books)
+    assert count == 0
+    assert len(deduped) == 1
+
+
+def test_dedup_three_way_merge():
+    """Three entries for the same normalised title should collapse to one."""
+    books = [
+        {"id": 1, "title": "The Dictator's Handbook: Why Bad Behavior is Almost Always Good Politics", "users_count": 241},
+        {"id": 2, "title": "The Dictator's Handbook", "users_count": 50},
+        {"id": 3, "title": "A Dictator's Handbook: Revised Edition", "users_count": 5},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 2
+    assert len(deduped) == 1
+    assert deduped[0]["id"] == 1
+
+
+def test_dedup_preserves_order():
+    """Kept books should appear in their original order."""
+    books = [
+        {"id": 1, "title": "Alpha Rising", "users_count": 10},
+        {"id": 2, "title": "Beta Falling: A Long Subtitle", "users_count": 5},
+        {"id": 3, "title": "Beta Falling", "users_count": 20},
+        {"id": 4, "title": "Gamma Setting", "users_count": 15},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 1
+    assert [b["id"] for b in deduped] == [1, 3, 4]  # Beta Falling:subtitle dropped, Beta Falling kept
+
+
+def test_dedup_article_insensitive():
+    """Articles (the/a/an) should not affect dedup matching."""
+    books = [
+        {"id": 1, "title": "The Invention of Power", "users_count": 10},
+        {"id": 2, "title": "Invention of Power: Popes, Kings, and the Birth of the West", "users_count": 5},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 1
+    assert len(deduped) == 1
+    assert deduped[0]["id"] == 1
+
+
+def test_dedup_single_word_prefix_not_merged():
+    """Different books sharing a single-word series prefix must NOT be merged."""
+    books = [
+        {"id": 1, "title": "Mistborn: The Final Empire", "users_count": 5000},
+        {"id": 2, "title": "Mistborn: Secret History", "users_count": 800},
+        {"id": 3, "title": "Mistborn: The Well of Ascension", "users_count": 4000},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 0, "Single-word prefix should not cause dedup"
+    assert len(deduped) == 3
+
+
+# --- Additional title pattern tests ---
+
+
+def test_slash_combined_is_noise():
+    """Slash-combined volumes like 'Snapshot / Dreamer' should be noise."""
+    book = _book("Snapshot / Dreamer")
+    reason = classify_noise(book)
+    assert reason is not None
+    assert reason.startswith("title:")
+
+
+def test_chapter_sampler_is_noise():
+    book = _book("Steelheart Chapter Sampler")
+    reason = classify_noise(book)
+    assert reason is not None
+    assert reason.startswith("title:")
+
+
+def test_adventure_game_is_noise():
+    book = _book("Mistborn Adventure Game")
+    reason = classify_noise(book)
+    assert reason is not None
+    assert reason.startswith("title:")
+
+
+def test_free_preview_is_noise():
+    book = _book("Free Preview: The Way of Kings")
+    reason = classify_noise(book)
+    assert reason is not None
+    assert reason.startswith("title:")
+
+
+def test_short_slash_title_not_noise():
+    """Short titles with slash should NOT be caught (e.g. 'Us / Them')."""
+    book = _book("Us / Them")
+    reason = classify_noise(book)
+    assert reason is None, f"Short slash title wrongly classified as noise: {reason}"
+
+
+# ---------------------------------------------------------------------------
+# Compilation auto-hide tests
+# ---------------------------------------------------------------------------
+
+
+def test_compilation_flag_auto_hides():
+    """Books with compilation=True should be auto-hidden, not noise-filtered."""
+    books = [
+        {**_book("Arcanum Unbounded"), "compilation": True},
+        _book("Mistborn: The Final Empire"),
+    ]
+    kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
+    assert len(kept) == 1
+    assert kept[0]["title"] == "Mistborn: The Final Empire"
+    assert len(auto_hide) == 1
+    assert auto_hide[0]["title"] == "Arcanum Unbounded"
+    assert len(noise) == 0
+
+
+# ---------------------------------------------------------------------------
+# Quality score clamping tests
+# ---------------------------------------------------------------------------
+
+
+def test_quality_score_clamps_to_zero():
+    """Heavily penalised book should return 0, not negative."""
+    book = _rich_book("Пепел и сталь", lang="ru", users_count=2, users_read=0,
+                      preferred_isbns=False, preferred_asins=False,
+                      description=False, cover=False, isbn=False,
+                      pages=False, rating=False, tags=False)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q == 0
+
+
+def test_quality_score_clamps_to_100():
+    """Maximally rich book should not exceed 100."""
+    book = _rich_book("Perfect Book", lang="en", users_count=10000, users_read=5000,
+                      preferred_isbns=True, preferred_asins=True,
+                      description=True, cover=True, isbn=True,
+                      pages=True, rating=True, tags=True)
+    q = compute_data_quality(book, lang_codes=["en"])
+    assert q == 100
+
+
+# ---------------------------------------------------------------------------
+# Split filter boundary tests
+# ---------------------------------------------------------------------------
+
+
+def test_split_filter_parent_less_than_2x_readers():
+    """Parent with <2x readers should NOT cause the split to be filtered."""
+    books = [
+        {"title": "The Way of Kings", "users_read_count": 150, "book_series": []},
+        {"title": "The Way of Kings, Part 1", "users_read_count": 100, "book_series": []},
+    ]
+    canonical, filtered = filter_split_books(books)
+    assert len(filtered) == 0, "Part should not be filtered when parent has <2x readers"
+    assert len(canonical) == 2
+
+
+def test_split_filter_parent_exactly_2x_readers():
+    """Parent with exactly 2x readers SHOULD cause the split to be filtered."""
+    books = [
+        {"title": "The Way of Kings", "users_read_count": 200, "book_series": []},
+        {"title": "The Way of Kings, Part 1", "users_read_count": 100, "book_series": []},
+    ]
+    canonical, filtered = filter_split_books(books)
+    assert len(filtered) == 1
+    assert filtered[0]["title"] == "The Way of Kings, Part 1"
+
+
+def test_split_filter_bad_series_position_no_crash():
+    """Non-numeric series position should not crash the filter."""
+    books = [
+        {"title": "Book One", "users_read_count": 100, "book_series": [
+            {"position": "invalid", "series": {"name": "My Series"}},
+        ]},
+        {"title": "Book Two", "users_read_count": 80, "book_series": [
+            {"position": None, "series": {"name": "My Series"}},
+        ]},
+    ]
+    canonical, filtered = filter_split_books(books)
+    assert len(canonical) == 2
+    assert len(filtered) == 0

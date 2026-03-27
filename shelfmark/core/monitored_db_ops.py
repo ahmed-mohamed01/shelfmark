@@ -201,66 +201,29 @@ def fetch_entity_metadata(
             if len(page_books) < limit:
                 break  # last page
 
-        # Filter non-canonical split editions (e.g. "Part 1", "Part 2")
-        from shelfmark.core.monitored_book_filter import filter_noise_books, filter_split_books
+        # Post-fetch filter pipeline:
+        # 1. Deduplicate (same book appearing with different Hardcover IDs)
+        # 2. Filter non-canonical split editions (e.g. "Part 1", "Part 2")
+        # 3. Noise filter: title patterns, language heuristic, contributor count
+        from shelfmark.core.monitored_book_filter import (
+            deduplicate_books,
+            filter_noise_books,
+            filter_split_books,
+        )
 
-        canonical_books, filtered_books = filter_split_books(all_books)
+        deduped_books, dup_count = deduplicate_books(all_books)
+        if dup_count:
+            logger.debug(
+                "entity_id=%s: merged %d duplicate book entries",
+                entity_id, dup_count,
+            )
+
+        canonical_books, filtered_books = filter_split_books(deduped_books)
         if filtered_books:
             logger.debug(
                 "entity_id=%s: filtered %d split books out of %d total",
-                entity_id, len(filtered_books), len(all_books),
+                entity_id, len(filtered_books), len(deduped_books),
             )
-
-        # Hybrid threshold: GT>10 for released books, GT>4 for upcoming/unknown.
-        # Use the same release_date resolution as _parse_book_fields (physical
-        # edition date takes priority over book-level date).
-        # Exception: books sharing a series with any passing book are kept
-        # regardless of user count to preserve series completeness.
-        from datetime import date as _date
-
-        today_iso = _date.today().isoformat()
-        threshold_passed: list[dict] = []
-        threshold_failed: list[dict] = []
-        for b in canonical_books:
-            uc = b.get("users_count") or 0
-            rd = (b.get("default_physical_edition") or {}).get("release_date") or b.get("release_date")
-            if uc > 10:
-                threshold_passed.append(b)
-            elif not rd or rd > today_iso:
-                # Upcoming or unknown release date — keep at lower threshold (GT>4)
-                threshold_passed.append(b)
-            else:
-                # Released with u<=10 — candidate for filtering
-                threshold_failed.append(b)
-
-        if threshold_failed:
-            # Collect series names from books that passed the threshold so
-            # we can rescue failed books that belong to the same series.
-            passing_series: set[str] = set()
-            for b in threshold_passed:
-                for bs in (b.get("book_series") or []):
-                    sname = (bs.get("series") or {}).get("name", "")
-                    if sname:
-                        passing_series.add(sname)
-
-            rescued = 0
-            for b in threshold_failed:
-                book_series_names = {
-                    (bs.get("series") or {}).get("name", "")
-                    for bs in (b.get("book_series") or [])
-                } - {""}
-                if book_series_names & passing_series:
-                    threshold_passed.append(b)
-                    rescued += 1
-
-            filtered_count = len(threshold_failed) - rescued
-            if filtered_count > 0:
-                logger.debug(
-                    "entity_id=%s: hybrid threshold filtered %d released low-user books"
-                    " (%d rescued by series membership)",
-                    entity_id, filtered_count, rescued,
-                )
-        canonical_books = threshold_passed
 
         # Noise filter: title patterns, language heuristic, contributor count
         canonical_books, noise_books, auto_hide_books = filter_noise_books(
@@ -276,7 +239,8 @@ def fetch_entity_metadata(
         author_name = str(entity.get("name") or "").strip() or None
         auto_hide_ids = {b["id"] for b in auto_hide_books}
 
-        # Upsert all books: auto-hide anthologies get hidden=True, rest get hidden=None
+        # Upsert all books: auto-hidden books (compilations, high contributor count,
+        # low data quality) get hidden=True; rest get hidden=None
         for book in (*auto_hide_books, *canonical_books):
             book_id = str(book["id"])
             discovered_ids.add(f"{provider_name}:{book_id}")

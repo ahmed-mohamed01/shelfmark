@@ -109,10 +109,10 @@ class MonitoredHardcoverProvider(HardcoverProvider):
     ) -> list[dict]:
         """Fetch books for an author via the direct books GraphQL query.
 
-        Filters compilations and books with <=4 users at API level.
-        Post-processing filters in the sync pipeline further narrow results
-        via hybrid threshold, title patterns, language heuristic, and
-        contributor count.
+        Filters books with <=1 user at API level (keeps all books with >= 2
+        users).  Post-processing filters in the sync pipeline further narrow
+        results via split-edition detection, title patterns, language
+        heuristic, duplicate merging, and contributor count.
 
         Returns full data per book:
         - All series memberships with positions
@@ -127,7 +127,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
             books(
                 where: {
                     contributions: { author: { id: { _eq: $authorId } } }
-                    users_count: { _gt: 4 }
+                    users_count: { _gt: 1 }
                 }
                 limit: $limit
                 offset: $offset

@@ -3,9 +3,12 @@
 Split books are partial editions (e.g., "The Way of Kings, Part 1") that should
 be excluded when the canonical full edition ("The Way of Kings") is present.
 
-Noise books are translations, anthologies, boxed sets, graphic novel adaptations,
-magazine issues, and other non-primary editions detected via title patterns,
-language heuristics, and contributor count.
+Noise books are boxed sets, graphic novel adaptations, magazine issues, samplers,
+and other non-primary editions detected via title patterns.
+
+Low-quality entries (translations without metadata, bare stubs) are auto-hidden
+via a data quality score that combines edition availability, language confirmation,
+metadata completeness, and popularity.
 """
 from __future__ import annotations
 
@@ -74,9 +77,9 @@ def _get_series_entries(book: dict[str, Any]) -> list[tuple[str, float | None]]:
             return []
     if isinstance(all_series, list):
         return [
-            (s["name"], s.get("position"))
+            (s.get("name"), s.get("position"))
             for s in all_series
-            if s.get("name")
+            if isinstance(s, dict) and s.get("name")
         ]
     return []
 
@@ -95,7 +98,83 @@ def _get_readers_count(book: dict[str, Any]) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Core filter
+# Deduplication — merge duplicate Hardcover entries for the same book
+# ---------------------------------------------------------------------------
+
+
+def _normalize_for_dedup(title: str) -> str:
+    """Normalise a title for duplicate detection.
+
+    Strips subtitles (after first colon), articles, punctuation,
+    and collapses whitespace so that "The Age of Diagnosis: Sickness,
+    Health and How Modern Medicine Has Gone Too Far" and "The Age of
+    Diagnosis" resolve to the same key.
+
+    Returns empty string for keys shorter than 2 words to avoid
+    false merges on single-word series prefixes (e.g. "Mistborn:",
+    "Sandman:", "Legion:").
+    """
+    s = (title or "").strip()
+    # Strip subtitle after colon
+    colon_idx = s.find(":")
+    if colon_idx > 0:
+        s = s[:colon_idx]
+    key = _normalize_title(s)
+    # Require at least 2 words — single-word keys are too collision-prone
+    # (e.g. "Mistborn: The Final Empire" and "Mistborn: Secret History"
+    # would both reduce to "mistborn" and incorrectly merge).
+    if len(key.split()) < 2:
+        return ""
+    return key
+
+
+def deduplicate_books(
+    books: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Merge duplicate Hardcover entries for the same underlying book.
+
+    Two entries are considered duplicates when their normalised titles
+    (stripped of subtitles, articles, punctuation) match.  The entry
+    with the higher ``users_count`` is kept; the rest are discarded.
+
+    Returns ``(deduped_books, merged_count)`` where *merged_count* is
+    the number of entries removed.
+    """
+    if not books:
+        return [], 0
+
+    # Group by normalised title
+    groups: dict[str, list[int]] = {}
+    for i, book in enumerate(books):
+        key = _normalize_for_dedup(book.get("title") or "")
+        if key:
+            groups.setdefault(key, []).append(i)
+
+    removed: set[int] = set()
+    for key, indices in groups.items():
+        if len(indices) < 2:
+            continue
+        # Keep the entry with highest users_count
+        best_idx = max(indices, key=lambda i: books[i].get("users_count") or 0)
+        for i in indices:
+            if i != best_idx:
+                removed.add(i)
+                logger.debug(
+                    "Dedup: dropping %r (id=%s, users=%s) in favour of %r (id=%s, users=%s)",
+                    books[i].get("title"),
+                    books[i].get("id"),
+                    books[i].get("users_count"),
+                    books[best_idx].get("title"),
+                    books[best_idx].get("id"),
+                    books[best_idx].get("users_count"),
+                )
+
+    deduped = [b for i, b in enumerate(books) if i not in removed]
+    return deduped, len(removed)
+
+
+# ---------------------------------------------------------------------------
+# Core filter — split editions
 # ---------------------------------------------------------------------------
 
 
@@ -123,8 +202,14 @@ def filter_split_books(
     series_int_pos: dict[tuple[str, int], list[int]] = {}
     for i, book in enumerate(books):
         for series_name, pos in _get_series_entries(book):
-            if pos is not None and float(pos) == int(pos):
-                key = (series_name.strip().lower(), int(pos))
+            if pos is None:
+                continue
+            try:
+                fpos = float(pos)
+            except (TypeError, ValueError):
+                continue
+            if fpos == int(fpos):
+                key = (series_name.strip().lower(), int(fpos))
                 series_int_pos.setdefault(key, []).append(i)
 
     filtered_indices: set[int] = set()
@@ -150,7 +235,7 @@ def filter_split_books(
                         filtered_indices.add(i)
                         break
                 else:
-                    # No readers data — title match alone is sufficient
+                    # One or both sides missing readers data — title match is sufficient
                     filtered_indices.add(i)
                     break
             if i in filtered_indices:
@@ -160,9 +245,12 @@ def filter_split_books(
         for series_name, pos in _get_series_entries(book):
             if pos is None:
                 continue
-            fpos = float(pos)
+            try:
+                fpos = float(pos)
+            except (TypeError, ValueError):
+                continue
             frac = fpos - int(fpos)
-            # Only .1, .2 etc — NOT .5 (novellas)
+            # Only fractional positions like .1, .2 — skip integers and .5 (novellas)
             if frac == 0 or abs(frac - 0.5) < 0.01:
                 continue
 
@@ -200,7 +288,7 @@ def filter_split_books(
 
 
 # ---------------------------------------------------------------------------
-# Noise filter — title patterns, language heuristic
+# Noise filter — title patterns
 # ---------------------------------------------------------------------------
 
 # Title patterns that indicate non-primary editions / noise entries.
@@ -208,7 +296,7 @@ _NOISE_TITLE_PATTERNS = [
     re.compile(r"\(\d+ of \d+\)", re.IGNORECASE),                    # "(1 of 5)" dramatized splits
     re.compile(r"Boxed Set|Box Set|\d-Book Bundle", re.IGNORECASE),  # boxed sets
     re.compile(r"Sneak Peek|Free Preview", re.IGNORECASE),           # previews
-    re.compile(r"Chapters[\s-]\d", re.IGNORECASE),                   # "Chapters-1-7" samples
+    re.compile(r"Chapters?[\s-]+\d", re.IGNORECASE),                  # "Chapters-1-7", "Chapter 1" excerpts
     re.compile(r"Annotations$", re.IGNORECASE),                      # annotations
     re.compile(r":\s*The Play$", re.IGNORECASE),                     # stage plays
     re.compile(r"Dramatized Adaptation", re.IGNORECASE),             # dramatized adaptations
@@ -219,12 +307,27 @@ _NOISE_TITLE_PATTERNS = [
     re.compile(r"Colou?ring Book", re.IGNORECASE),                   # colouring books
     re.compile(r"Quizbook", re.IGNORECASE),                          # quiz books
     re.compile(r"\bGURPS\b", re.IGNORECASE),                         # RPG sourcebooks
+    re.compile(r"Adventure Game\b", re.IGNORECASE),                  # tabletop RPG/adventure game books
     re.compile(r"Magazine Issue|Magazine,", re.IGNORECASE),           # magazine issues
+    re.compile(r"\bSampler\b", re.IGNORECASE),                       # samplers/excerpts
+    re.compile(r"^[^/]{4,}\s/\s[^/]{4,}$"),                           # "Title / Title" combined volumes (4+ chars each side)
 ]
 
 # Non-Latin script characters (Cyrillic, CJK, Arabic, Thai) — strong translation signal.
 _NON_LATIN_RE = re.compile(
     r"[\u0400-\u04FF\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\u0600-\u06FF\u0E00-\u0E7F]"
+)
+
+# Extended Latin diacritics common in non-English European languages but rare
+# in English titles.  Two or more hits strongly suggests a translation.
+# Covers: àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþ and uppercase variants.
+_DIACRITIC_RE = re.compile(
+    r"[àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþ"
+    r"ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ"
+    r"ąćęłńśźżĄĆĘŁŃŚŹŻ"        # Polish
+    r"ğışĞİŞ"                     # Turkish
+    r"ěřůĚŘŮ"                     # Czech
+    r"]"
 )
 
 # Contributor count threshold for auto-hide (anthologies with many contributors).
@@ -261,32 +364,97 @@ def _get_lang_codes(book: dict[str, Any]) -> list[str]:
     return []
 
 
-def classify_noise(
+# ---------------------------------------------------------------------------
+# Data quality scoring
+# ---------------------------------------------------------------------------
+
+# Minimum quality score for a book to be shown by default.  Books below
+# this are auto-hidden (user can unhide from the Hidden section).
+# Calibrated against 7543 books from 69 authors: at threshold=20,
+# zero confirmed-English false positives and zero confirmed
+# non-English false negatives.
+DATA_QUALITY_THRESHOLD = 20
+
+
+def compute_data_quality(
     book: dict[str, Any],
     *,
     lang_codes: list[str] | None = None,
-) -> str | None:
-    """Classify a book as noise and return the reason, or None if it should be kept.
+) -> int:
+    """Score a book's data quality on a 0-100 scale.
+
+    Combines edition availability, language confirmation, metadata
+    completeness, popularity, and title-based translation signals.
+
+    Books scoring below ``DATA_QUALITY_THRESHOLD`` are auto-hidden.
+    """
+    preferred = lang_codes or ["en"]
+    title = (book.get("title") or "").strip()
+    phys = book.get("default_physical_edition") or {}
+    book_langs = _get_lang_codes(book)
+    uc = book.get("users_count") or 0
+    readers = _get_readers_count(book) or 0
+
+    score = 0
+
+    # ── Edition availability (strongest signals) ──
+    if book.get("preferred_isbns"):                              score += 35
+    if book.get("preferred_asins"):                              score += 25
+
+    # ── Language confirmation ──
+    if book_langs and any(lc in preferred for lc in book_langs): score += 20
+
+    # ── Metadata completeness ──
+    if (book.get("description") or "").strip():                  score += 5
+    if (book.get("image") or {}).get("url"):                     score += 3
+    if phys.get("isbn_13") or phys.get("isbn_10"):               score += 8
+    if phys.get("pages"):                                        score += 5
+    if book.get("rating"):                                       score += 2
+    if readers > 0:                                              score += 3
+    if book.get("cached_tags"):                                  score += 2
+
+    # ── Popularity bonus (compensates for popular books missing
+    #    edition data on Hardcover) ──
+    if   uc >= 50: score += 25
+    elif uc >= 20: score += 20
+    elif uc >= 10: score += 12
+    elif uc >=  5: score += 5
+
+    # ── Penalties ──
+    diac = len(_DIACRITIC_RE.findall(title))
+
+    # Confirmed non-preferred language editions only
+    if book_langs and not any(lc in preferred for lc in book_langs):
+        score -= 40
+
+    # Non-Latin script (Cyrillic, CJK, Arabic, Thai)
+    if _NON_LATIN_RE.search(title):
+        score -= 40
+
+    # Diacritics in title — translation signal
+    if diac >= 2:
+        score -= 25
+    elif diac == 1 and not book_langs:
+        score -= 15
+
+    return max(0, min(100, score))
+
+
+def classify_noise(book: dict[str, Any]) -> str | None:
+    """Classify a book as hard noise (should be discarded entirely).
+
+    Only matches title patterns that indicate non-primary editions
+    (boxed sets, previews, samplers, graphic novels, etc.).
+    Language and data-quality filtering is handled separately by
+    ``compute_data_quality()``.
 
     Returns a short string describing the noise category, or None.
     """
     title = (book.get("title") or "").strip()
-    users_read = _get_readers_count(book) or 0
-    preferred = lang_codes or ["en"]
 
-    # Title pattern match
     for pattern in _NOISE_TITLE_PATTERNS:
         if pattern.search(title):
             return f"title:{pattern.pattern}"
-
-    # Language: no preferred-language edition + has readers (released non-English)
-    book_langs = _get_lang_codes(book)
-    if book_langs and not any(lc in preferred for lc in book_langs) and users_read > 0:
-        return f"lang:{','.join(book_langs[:3])}"
-
-    # Non-Latin title characters (Cyrillic, CJK, etc.) + has readers
-    if _NON_LATIN_RE.search(title) and users_read > 0:
-        return "non_latin_title"
 
     return None
 
@@ -296,35 +464,50 @@ def filter_noise_books(
     *,
     lang_codes: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Separate books into kept, noise (discard), and auto-hide (anthologies).
+    """Separate books into kept, noise (discard), and auto-hide.
 
     Returns ``(kept, noise_filtered, auto_hide)``.
 
-    - *noise_filtered*: books matched by title patterns or language heuristic — discard.
-    - *auto_hide*: books with contributor count > threshold — upsert with ``hidden=1``.
+    - *noise_filtered*: books matched by title patterns — discard entirely.
+    - *auto_hide*: compilations, anthologies (>N contributors), or books
+      with data quality below ``DATA_QUALITY_THRESHOLD`` — upsert with
+      ``hidden=1`` (user can unhide).
     """
     kept: list[dict[str, Any]] = []
     noise: list[dict[str, Any]] = []
     auto_hide: list[dict[str, Any]] = []
 
     noise_reasons: list[tuple[str, str]] = []
+    hide_reasons: list[tuple[str, str]] = []
+
     for book in books:
-        reason = classify_noise(book, lang_codes=lang_codes)
+        title = book.get("title", "")
+
+        # Hard noise — title patterns → discard
+        reason = classify_noise(book)
         if reason:
             noise.append(book)
-            noise_reasons.append((book.get("title", ""), reason))
+            noise_reasons.append((title, reason))
             continue
 
-        # Auto-hide compilations (box sets, omnibuses).  Mislabeled
-        # novels (e.g. Hardcover marking "Eon" as compilation) can be
-        # unhidden by the user from the Hidden section.
+        # Auto-hide: compilations
         if book.get("compilation"):
             auto_hide.append(book)
+            hide_reasons.append((title, "compilation"))
             continue
 
+        # Auto-hide: anthologies (many contributors)
         cc = _get_contrib_count(book)
         if cc > ANTHOLOGY_CONTRIBUTOR_THRESHOLD:
             auto_hide.append(book)
+            hide_reasons.append((title, f"contributors:{cc}"))
+            continue
+
+        # Auto-hide: low data quality (translations, bare metadata)
+        quality = compute_data_quality(book, lang_codes=lang_codes)
+        if quality < DATA_QUALITY_THRESHOLD:
+            auto_hide.append(book)
+            hide_reasons.append((title, f"quality:{quality}"))
             continue
 
         kept.append(book)
@@ -337,9 +520,9 @@ def filter_noise_books(
         )
     if auto_hide:
         logger.debug(
-            "Auto-hiding %d books (compilations and/or contributor count > %d)",
+            "Auto-hiding %d books: %s",
             len(auto_hide),
-            ANTHOLOGY_CONTRIBUTOR_THRESHOLD,
+            hide_reasons[:20],
         )
 
     return kept, noise, auto_hide
