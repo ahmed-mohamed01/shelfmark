@@ -663,16 +663,14 @@ def test_dedup_single_book():
     assert len(deduped) == 1
 
 
-def test_dedup_three_way_merge():
-    """Three entries for the same normalised title should collapse to one."""
+def test_dedup_exact_match_merges():
+    """Exact normalised title match should merge."""
     books = [
-        {"id": 1, "title": "The Dictator's Handbook: Why Bad Behavior is Almost Always Good Politics", "users_count": 241},
-        {"id": 2, "title": "The Dictator's Handbook", "users_count": 50},
-        {"id": 3, "title": "A Dictator's Handbook: Revised Edition", "users_count": 5},
+        {"id": 1, "title": "The Hunger Games", "users_count": 9671},
+        {"id": 2, "title": "Hunger games", "users_count": 39},
     ]
     deduped, count = deduplicate_books(books)
-    assert count == 2
-    assert len(deduped) == 1
+    assert count == 1
     assert deduped[0]["id"] == 1
 
 

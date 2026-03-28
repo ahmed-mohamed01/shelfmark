@@ -153,9 +153,11 @@ def deduplicate_books(
             union(indices[0], indices[j])
 
     # Step 2: subtitle-variant matching.
-    # Build a lookup of normalised pre-colon keys for books that HAVE a colon.
-    # Then check each book WITHOUT a colon: if its normalised title matches
-    # a colon-stripped key, those are subtitle variants of the same book.
+    # A standalone title (no colon) can merge with a colon-bearing title
+    # whose pre-colon portion matches — BUT only when exactly 1 colon-bearing
+    # book matches.  Multiple matches means it's a series name
+    # (e.g. "Azarinth Healer" matching "Azarinth Healer: Book One/Two/..."),
+    # not a subtitle variant.
     colon_stripped: dict[str, list[int]] = {}
     for i, book in enumerate(books):
         raw_title = (book.get("title") or "").strip()
@@ -172,10 +174,12 @@ def deduplicate_books(
         norm = norms[i]
         if not norm:
             continue
-        # Check if any colon-bearing book's pre-colon part matches this title
-        for j in colon_stripped.get(norm, []):
-            if find(i) != find(j):
-                union(i, j)
+        matches = colon_stripped.get(norm, [])
+        if len(matches) != 1:
+            continue  # 0 = no match, 2+ = series name, not subtitle variant
+        j = matches[0]
+        if find(i) != find(j):
+            union(i, j)
 
     # Step 3: collect groups, pick winner
     groups: dict[int, list[int]] = {}
