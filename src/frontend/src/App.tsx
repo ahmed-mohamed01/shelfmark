@@ -2346,26 +2346,32 @@ function App() {
   const isBrowseFulfilMode = fulfillingRequest !== null;
 
   const renderEmbeddedSearch = useCallback(
-    (book: Book, contentType: ContentType): ReactNode => (
-      <ReleaseModal
-        embedded
-        book={book}
-        contentType={contentType}
-        onClose={() => {}}
-        onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
-        onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
-        onRequestBook={isBrowseFulfilMode || !requestRoleIsAdmin ? undefined : handleReleaseBookRequest}
-        getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
-        onPolicyRefresh={handleReleaseModalPolicyRefresh}
-        supportedFormats={supportedFormats}
-        supportedAudiobookFormats={config?.supported_audiobook_formats || []}
-        defaultLanguages={defaultLanguageCodes}
-        bookLanguages={bookLanguages}
-        currentStatus={statusForButtonState}
-        defaultReleaseSource={config?.default_release_source}
-        showMatchScore={config?.show_release_match_score !== false}
-      />
-    ),
+    (book: Book, contentType: ContentType, monitoredEntityId?: number | null): ReactNode => {
+      const onDownload = isBrowseFulfilMode
+        ? handleBrowseFulfilDownload
+        : (b: Book, r: Release, ct: ContentType) =>
+            handleReleaseDownload(b, r, ct, monitoredEntityId ?? undefined);
+      return (
+        <ReleaseModal
+          embedded
+          book={book}
+          contentType={contentType}
+          onClose={() => {}}
+          onDownload={onDownload}
+          onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
+          onRequestBook={isBrowseFulfilMode || !requestRoleIsAdmin ? undefined : handleReleaseBookRequest}
+          getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
+          onPolicyRefresh={handleReleaseModalPolicyRefresh}
+          supportedFormats={supportedFormats}
+          supportedAudiobookFormats={config?.supported_audiobook_formats || []}
+          defaultLanguages={defaultLanguageCodes}
+          bookLanguages={bookLanguages}
+          currentStatus={statusForButtonState}
+          defaultReleaseSource={config?.default_release_source}
+          showMatchScore={config?.show_release_match_score !== false}
+        />
+      );
+    },
     [isBrowseFulfilMode, handleBrowseFulfilDownload, handleReleaseDownload, handleReleaseRequest,
      requestRoleIsAdmin, handleReleaseBookRequest, getSourceMode, handleReleaseModalPolicyRefresh,
      supportedFormats, config, defaultLanguageCodes, bookLanguages, statusForButtonState],

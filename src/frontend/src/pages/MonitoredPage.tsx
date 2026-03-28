@@ -151,7 +151,7 @@ interface MonitoredPageProps {
   showBooksInMultipleSeries?: boolean;
   metadataSortOptions?: SortOption[];
   status?: StatusData;
-  renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  renderEmbeddedSearch?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => ReactNode;
   onShowToast?: (message: string, type?: 'info' | 'success' | 'error', persistent?: boolean) => string;
   onRemoveToast?: (id: string) => void;
   setTransientActivityItems?: (updater: (prev: ActivityItem[]) => ActivityItem[]) => void;
@@ -4117,9 +4117,9 @@ export const MonitoredPage = ({
           setActiveBookEntityId(null);
           setActiveBookSourceRow(null);
         }}
-        renderEmbeddedSearch={(book, contentType) => {
+        renderEmbeddedSearch={(book, contentType, mEntityId) => {
           if (renderEmbeddedSearch) {
-            return renderEmbeddedSearch(book, contentType);
+            return renderEmbeddedSearch(book, contentType, mEntityId);
           }
           return (
             <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">

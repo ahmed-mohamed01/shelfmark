@@ -40,7 +40,7 @@ interface AuthorModalProps {
   booksSearchQuery?: string;
   onBooksSearchQueryChange?: (value: string) => void;
   openEditOnMount?: boolean;
-  renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  renderEmbeddedSearch?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => ReactNode;
   showBooksInMultipleSeries?: boolean;
   onMonitorBook?: (book: Book) => void;
   /** When true, suppress the modal/page header (breadcrumb, search, edit) — used when embedded in a tab */

@@ -21,7 +21,7 @@ interface BookDetailsModalProps {
   onClose: () => void;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
-  renderEmbeddedSearch: (book: Book, contentType: ContentType) => ReactNode;
+  renderEmbeddedSearch: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => ReactNode;
   previewBook?: Book | null;
   onMonitorBook?: (book: Book) => void;
   onSetReleaseDate?: (book: MonitoredBookRow) => void;
@@ -522,10 +522,10 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
               <div className="px-5 py-4 space-y-4">
                 <div className="text-sm font-medium text-gray-700 dark:text-gray-300">Download</div>
                 <div className="flex flex-wrap gap-2">
-                  {renderEmbeddedSearch(pb, 'ebook')}
+                  {renderEmbeddedSearch(pb, 'ebook', entityId)}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {renderEmbeddedSearch(pb, 'audiobook')}
+                  {renderEmbeddedSearch(pb, 'audiobook', entityId)}
                 </div>
               </div>
             </div>
@@ -922,9 +922,9 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                 </div>
 
               ) : tab === 'ebooks' ? (
-                renderEmbeddedSearch(embeddedSearchBook, 'ebook')
+                renderEmbeddedSearch(embeddedSearchBook, 'ebook', entityId)
               ) : (
-                renderEmbeddedSearch(embeddedSearchBook, 'audiobook')
+                renderEmbeddedSearch(embeddedSearchBook, 'audiobook', entityId)
               )}
             </div>
           </div>

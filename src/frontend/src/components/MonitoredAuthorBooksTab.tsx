@@ -330,7 +330,7 @@ export interface MonitoredAuthorBooksTabProps {
   defaultReleaseActionEbook?: ReleasePrimaryAction;
   defaultReleaseActionAudiobook?: ReleasePrimaryAction;
   releaseCombinedMode?: boolean;
-  renderEmbeddedSearch?: (book: Book, contentType: ContentType) => ReactNode;
+  renderEmbeddedSearch?: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => ReactNode;
   showBooksInMultipleSeries?: boolean;
   onFallbackPhotoChange?: (url: string | null) => void;
   onMonitorBook?: (book: Book) => void;
@@ -2132,9 +2132,9 @@ export const MonitoredAuthorBooksTab = ({
         onToggleHidden={activeBookDetails && monitoredEntityId ? () => void toggleBookHidden(activeBookDetails) : undefined}
         onNavigateToSeries={handleNavigateToSeries}
         onSetReleaseDate={monitoredEntityId ? (row) => { setActiveBookDetails(null); setReleaseDateBook(row); } : undefined}
-        renderEmbeddedSearch={(book, contentType) => {
+        renderEmbeddedSearch={(book, contentType, mEntityId) => {
           if (renderEmbeddedSearch) {
-            return renderEmbeddedSearch(book, contentType);
+            return renderEmbeddedSearch(book, contentType, mEntityId);
           }
           return (
             <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] p-4">
