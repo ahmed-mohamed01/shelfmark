@@ -729,7 +729,3 @@ try:
 except ImportError:
     pass  # Google Books provider is optional
 
-try:
-    from shelfmark.metadata_providers import audible  # noqa: F401, E402
-except ImportError:
-    pass  # Audible provider is optional

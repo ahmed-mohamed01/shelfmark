@@ -4,6 +4,7 @@ import {
   Book,
   Release,
   RequestRecord,
+  RequestSubmissionResult,
   StatusData,
   AppConfig,
   ContentType,
@@ -15,6 +16,7 @@ import {
   ActingAsUserSelection,
   MetadataProviderSummary,
   MetadataSearchConfig,
+  QueuedDownloadResult,
   QueryTargetOption,
   SearchMode,
   isMetadataBook,
@@ -146,6 +148,37 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
     return error.message;
   }
   return fallback;
+};
+
+const isQueuedDownloadResult = (value: unknown): value is QueuedDownloadResult => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const row = value as Record<string, unknown>;
+  return row.kind === 'download' && row.status === 'queued';
+};
+
+const getSubmissionSuccessMessage = (
+  results: RequestSubmissionResult[],
+  fallback: string,
+): string => {
+  const queuedDownloads = results.filter(isQueuedDownloadResult);
+  if (queuedDownloads.length === 0) {
+    return fallback;
+  }
+
+  if (queuedDownloads.length === results.length) {
+    if (queuedDownloads.length === 1) {
+      const title = typeof queuedDownloads[0].title === 'string' && queuedDownloads[0].title.trim()
+        ? queuedDownloads[0].title.trim()
+        : 'Untitled';
+      return `Download queued: ${title}`;
+    }
+    return 'Downloads queued';
+  }
+
+  return 'Download queued and request submitted';
 };
 
 const CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE =
@@ -1088,9 +1121,12 @@ function App() {
   const submitRequests = useCallback(
     async (payloads: CreateRequestPayload[], successMessage: string): Promise<boolean> => {
       try {
-        await createRequests(payloads);
+        const results = await createRequests(payloads);
         await refreshActivitySnapshot();
-        showToast(successMessage, 'success');
+        if (results.some(isQueuedDownloadResult)) {
+          await fetchStatus();
+        }
+        showToast(getSubmissionSuccessMessage(results, successMessage), 'success');
         await refreshRequestPolicy({ force: true });
         return true;
       } catch (error) {
@@ -1102,7 +1138,7 @@ function App() {
         return false;
       }
     },
-    [showToast, refreshRequestPolicy, refreshActivitySnapshot]
+    [fetchStatus, showToast, refreshRequestPolicy, refreshActivitySnapshot]
   );
 
   const openRequestConfirmation = useCallback((
@@ -2617,6 +2653,46 @@ function App() {
           />
         )}
 
+        {activeReleaseBook && (
+          <ReleaseModal
+            book={activeReleaseBook}
+            onClose={handleReleaseModalClose}
+            onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
+            onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
+            onRequestBook={
+              isBrowseFulfilMode || !requestRoleIsAdmin
+                ? undefined
+                : handleReleaseBookRequest
+            }
+            getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
+            onPolicyRefresh={handleReleaseModalPolicyRefresh}
+            supportedFormats={supportedFormats}
+            supportedAudiobookFormats={config?.supported_audiobook_formats || []}
+            contentType={activeReleaseContentType}
+            defaultLanguages={defaultLanguageCodes}
+            bookLanguages={bookLanguages}
+            currentStatus={statusForButtonState}
+            defaultReleaseSource={config?.default_release_source}
+            defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
+            onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
+            defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+            isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+            showReleaseSourceLinks={config?.show_release_source_links !== false}
+            onShowToast={showToast}
+            combinedMode={combinedState ? {
+              phase: combinedState.phase,
+              stepLabel: `Step ${combinedCurrentStep} of ${combinedSelectionPhases.length} — Select ${combinedState.phase === 'ebook' ? 'book' : 'audiobook'}`,
+              ebookMode: combinedState.ebookMode,
+              audiobookMode: combinedState.audiobookMode,
+              stagedEbookRelease: combinedState.stagedEbook?.release ?? null,
+              stagedAudiobookRelease: combinedState.stagedAudiobook ?? null,
+              onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
+              onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
+              onDownload: combinedIsFinalStep ? handleCombinedDownload : undefined,
+            } : null}
+          />
+        )}
+
         {pendingRequestPayload && (
           <RequestConfirmationModal
             payload={pendingRequestPayload}
@@ -2826,16 +2902,17 @@ function App() {
         isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
         showReleaseSourceLinks={config?.show_release_source_links !== false}
         onShowToast={showToast}
-        combinedPhase={combinedState?.phase ?? null}
-        combinedCurrentStep={combinedCurrentStep}
-        combinedTotalSteps={combinedSelectionPhases.length}
-        combinedEbookMode={combinedState?.ebookMode ?? null}
-        combinedAudiobookMode={combinedState?.audiobookMode ?? null}
-        onCombinedNext={combinedState && !combinedIsFinalStep ? handleCombinedNext : undefined}
-        onCombinedBack={combinedState && combinedHasPreviousStep ? handleCombinedBack : undefined}
-        onCombinedDownload={combinedState && combinedIsFinalStep ? handleCombinedDownload : undefined}
-        stagedEbookRelease={combinedState?.stagedEbook?.release ?? null}
-        stagedAudiobookRelease={combinedState?.stagedAudiobook ?? null}
+        combinedMode={combinedState ? {
+          phase: combinedState.phase,
+          stepLabel: `Step ${combinedCurrentStep} of ${combinedSelectionPhases.length} — Select ${combinedState.phase === 'ebook' ? 'book' : 'audiobook'}`,
+          ebookMode: combinedState.ebookMode,
+          audiobookMode: combinedState.audiobookMode,
+          stagedEbookRelease: combinedState.stagedEbook?.release ?? null,
+          stagedAudiobookRelease: combinedState.stagedAudiobook ?? null,
+          onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
+          onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
+          onDownload: combinedIsFinalStep ? handleCombinedDownload : undefined,
+        } : null}
       />
     )}
 
