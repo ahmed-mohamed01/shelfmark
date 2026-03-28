@@ -2674,8 +2674,9 @@ function App() {
             currentStatus={statusForButtonState}
             defaultReleaseSource={config?.default_release_source}
             defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
+            showMatchScore={config?.show_release_match_score !== false}
             onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
-            defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+            defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' || releaseMonitoredEntityId !== null}
             isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
             showReleaseSourceLinks={config?.show_release_source_links !== false}
             onShowToast={showToast}
@@ -2874,47 +2875,6 @@ function App() {
       onPinnedOpenChange={setSidebarPinnedOpen}
       pinnedTopOffset={headerHeight}
     />
-
-    {activeReleaseBook && (
-      <ReleaseModal
-        book={activeReleaseBook}
-        onClose={handleReleaseModalClose}
-        onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
-        onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
-        onRequestBook={
-          isBrowseFulfilMode || !requestRoleIsAdmin
-            ? undefined
-            : handleReleaseBookRequest
-        }
-        getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
-        onPolicyRefresh={handleReleaseModalPolicyRefresh}
-        supportedFormats={supportedFormats}
-        supportedAudiobookFormats={config?.supported_audiobook_formats || []}
-        contentType={activeReleaseContentType}
-        defaultLanguages={defaultLanguageCodes}
-        bookLanguages={bookLanguages}
-        currentStatus={statusForButtonState}
-        defaultReleaseSource={config?.default_release_source}
-        defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
-        showMatchScore={config?.show_release_match_score !== false}
-        onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
-        defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' || releaseMonitoredEntityId !== null}
-        isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
-        showReleaseSourceLinks={config?.show_release_source_links !== false}
-        onShowToast={showToast}
-        combinedMode={combinedState ? {
-          phase: combinedState.phase,
-          stepLabel: `Step ${combinedCurrentStep} of ${combinedSelectionPhases.length} — Select ${combinedState.phase === 'ebook' ? 'book' : 'audiobook'}`,
-          ebookMode: combinedState.ebookMode,
-          audiobookMode: combinedState.audiobookMode,
-          stagedEbookRelease: combinedState.stagedEbook?.release ?? null,
-          stagedAudiobookRelease: combinedState.stagedAudiobook ?? null,
-          onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
-          onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
-          onDownload: combinedIsFinalStep ? handleCombinedDownload : undefined,
-        } : null}
-      />
-    )}
 
     <ToastContainer toasts={toasts} />
 
