@@ -28,10 +28,13 @@ _ARTICLES = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 # Matches split suffixes at end of title:
 #   ", Part 1"  " Part 1"  ", Part One"  " Part One"
 #   ", Vol. 1"  " Vol 1"   ", Volume 1"  " Volume One"
+#   "(Part 2 of 2)"  "(Part 1 of 3)"
 _SPLIT_SUFFIX = re.compile(
-    r"[,\s]+(?:part|vol\.?|volume)\s+"
-    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
-    r"\s*$",
+    r"(?:"
+    r"[,\s]+(?:part|vol\.?|volume)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+    r"|"
+    r"\s*\((?:part\s+)?\d+\s+of\s+\d+\)"
+    r")\s*$",
     re.IGNORECASE,
 )
 
@@ -329,7 +332,7 @@ def filter_split_books(
 
 # Title patterns that indicate non-primary editions / noise entries.
 _NOISE_TITLE_PATTERNS = [
-    re.compile(r"\(\d+ of \d+\)", re.IGNORECASE),                    # "(1 of 5)" dramatized splits
+    re.compile(r"\((?:part\s+)?\d+\s+of\s+\d+\)", re.IGNORECASE),      # "(1 of 5)", "(Part 2 of 2)" dramatized/split entries
     re.compile(r"Boxed Set|Box Set|\d-Book Bundle", re.IGNORECASE),  # boxed sets
     re.compile(r"Sneak Peek|Free Preview", re.IGNORECASE),           # previews
     re.compile(r"Chapters?[\s-]+\d", re.IGNORECASE),                  # "Chapters-1-7", "Chapter 1" excerpts
