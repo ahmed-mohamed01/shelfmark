@@ -628,6 +628,7 @@ export const MonitoredPage = ({
       syncActivityTimeoutsRef.current.delete(data.entity_id);
       const photoUrl = monitoredRef.current.find((a) => a.id === data.entity_id)?.photo_url ?? null;
       onShowToast?.(`Syncing ${data.name}…`, 'info', false);
+      setSyncingEntityId(data.entity_id);
       upsert(data.entity_id, {
         visualStatus: 'resolving',
         statusLabel: 'Syncing',
@@ -650,6 +651,7 @@ export const MonitoredPage = ({
         progressAnimated: false,
       }, data.name);
       scheduleRemoval(data.entity_id, 12000);
+      setSyncingEntityId((cur) => cur === data.entity_id ? null : cur);
     };
 
     const onError = (data: { entity_id: number; error: string }) => {
@@ -660,6 +662,7 @@ export const MonitoredPage = ({
         progressAnimated: false,
       });
       scheduleRemoval(data.entity_id, 20000);
+      setSyncingEntityId((cur) => cur === data.entity_id ? null : cur);
     };
 
     socket.on('monitored_sync_started', onStarted);
@@ -679,6 +682,7 @@ export const MonitoredPage = ({
   // Batch sync notifications (scheduled + manual sync-all)
   const batchSyncTimeoutsRef = useRef<Map<string, number>>(new Map());
   const [syncAllRunning, setSyncAllRunning] = useState(false);
+  const [syncingEntityId, setSyncingEntityId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!socket || !setTransientActivityItems) return;
@@ -2952,12 +2956,17 @@ export const MonitoredPage = ({
                         {activeAuthorDetail.monitoredEntityId ? (
                           <button
                             type="button"
-                            onClick={() => void syncMonitoredEntity(activeAuthorDetail.monitoredEntityId!)}
-                            className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300"
+                            onClick={() => {
+                              const eid = activeAuthorDetail.monitoredEntityId!;
+                              setSyncingEntityId(eid);
+                              syncMonitoredEntity(eid).catch(() => setSyncingEntityId((cur) => cur === eid ? null : cur));
+                            }}
+                            disabled={syncingEntityId === activeAuthorDetail.monitoredEntityId}
+                            className="flex items-center justify-center h-8 w-8 rounded-full hover-action text-gray-600 dark:text-gray-300 disabled:opacity-50"
                             title="Sync this author"
                             aria-label="Sync this author"
                           >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
+                            <svg className={`w-5 h-5${syncingEntityId === activeAuthorDetail.monitoredEntityId ? ' animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8" aria-hidden="true">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
                             </svg>
                           </button>
