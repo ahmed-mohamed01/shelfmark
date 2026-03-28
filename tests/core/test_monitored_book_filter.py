@@ -713,6 +713,30 @@ def test_dedup_single_word_prefix_not_merged():
     assert len(deduped) == 3
 
 
+def test_dedup_series_colon_books_not_merged():
+    """Series books using 'Series: Book N' format must NOT be merged."""
+    books = [
+        {"id": 1, "title": "Azarinth Healer: Book One", "users_count": 135},
+        {"id": 2, "title": "Azarinth Healer: Book Two", "users_count": 98},
+        {"id": 3, "title": "Azarinth Healer: Book Three", "users_count": 86},
+        {"id": 4, "title": "Azarinth Healer: Book Four", "users_count": 67},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 0, "Series books should not be merged"
+    assert len(deduped) == 4
+
+
+def test_dedup_subtitle_variant_still_merges():
+    """A short title should still merge with its longer subtitle variant."""
+    books = [
+        {"id": 1, "title": "The Dictator's Handbook", "users_count": 241},
+        {"id": 2, "title": "The Dictator's Handbook: Why Bad Behavior is Almost Always Good Politics", "users_count": 50},
+    ]
+    deduped, count = deduplicate_books(books)
+    assert count == 1
+    assert deduped[0]["id"] == 1
+
+
 # --- Additional title pattern tests ---
 
 

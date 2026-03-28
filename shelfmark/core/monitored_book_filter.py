@@ -102,40 +102,24 @@ def _get_readers_count(book: dict[str, Any]) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def _normalize_for_dedup(title: str) -> str:
-    """Normalise a title for duplicate detection.
-
-    Strips subtitles (after first colon), articles, punctuation,
-    and collapses whitespace so that "The Age of Diagnosis: Sickness,
-    Health and How Modern Medicine Has Gone Too Far" and "The Age of
-    Diagnosis" resolve to the same key.
-
-    Returns empty string for keys shorter than 2 words to avoid
-    false merges on single-word series prefixes (e.g. "Mistborn:",
-    "Sandman:", "Legion:").
-    """
-    s = (title or "").strip()
-    # Strip subtitle after colon
-    colon_idx = s.find(":")
-    if colon_idx > 0:
-        s = s[:colon_idx]
-    key = _normalize_title(s)
-    # Require at least 2 words — single-word keys are too collision-prone
-    # (e.g. "Mistborn: The Final Empire" and "Mistborn: Secret History"
-    # would both reduce to "mistborn" and incorrectly merge).
-    if len(key.split()) < 2:
-        return ""
-    return key
-
-
 def deduplicate_books(
     books: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
     """Merge duplicate Hardcover entries for the same underlying book.
 
-    Two entries are considered duplicates when their normalised titles
-    (stripped of subtitles, articles, punctuation) match.  The entry
-    with the higher ``users_count`` is kept; the rest are discarded.
+    Two entries are considered duplicates when:
+    - Their full normalised titles match exactly (catches case/article
+      differences like "The Hunger Games" vs "Hunger games"), OR
+    - One title has no colon and the other's pre-colon portion normalises
+      to the same key (catches subtitle variants like "The Age of Diagnosis"
+      vs "The Age of Diagnosis: Sickness, Health and How Modern Medicine
+      Has Gone Too Far").
+
+    Series books using "Series Name: Book Title" format are NOT merged
+    because both entries contain colons, so neither qualifies as the
+    standalone "anchor" title.
+
+    The entry with the higher ``users_count`` is kept.
 
     Returns ``(deduped_books, merged_count)`` where *merged_count* is
     the number of entries removed.
@@ -143,18 +127,66 @@ def deduplicate_books(
     if not books:
         return [], 0
 
-    # Group by normalised title
-    groups: dict[str, list[int]] = {}
+    norms = [_normalize_title(b.get("title") or "") for b in books]
+
+    parent: list[int] = list(range(len(books)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Step 1: exact-match on full normalised title
+    exact: dict[str, list[int]] = {}
+    for i, norm in enumerate(norms):
+        if norm:
+            exact.setdefault(norm, []).append(i)
+
+    for indices in exact.values():
+        for j in range(1, len(indices)):
+            union(indices[0], indices[j])
+
+    # Step 2: subtitle-variant matching.
+    # Build a lookup of normalised pre-colon keys for books that HAVE a colon.
+    # Then check each book WITHOUT a colon: if its normalised title matches
+    # a colon-stripped key, those are subtitle variants of the same book.
+    colon_stripped: dict[str, list[int]] = {}
     for i, book in enumerate(books):
-        key = _normalize_for_dedup(book.get("title") or "")
-        if key:
-            groups.setdefault(key, []).append(i)
+        raw_title = (book.get("title") or "").strip()
+        colon_idx = raw_title.find(":")
+        if colon_idx > 0:
+            pre_colon_norm = _normalize_title(raw_title[:colon_idx])
+            if pre_colon_norm:
+                colon_stripped.setdefault(pre_colon_norm, []).append(i)
+
+    for i, book in enumerate(books):
+        raw_title = (book.get("title") or "").strip()
+        if ":" in raw_title:
+            continue  # only standalone (no-colon) titles can be anchors
+        norm = norms[i]
+        if not norm:
+            continue
+        # Check if any colon-bearing book's pre-colon part matches this title
+        for j in colon_stripped.get(norm, []):
+            if find(i) != find(j):
+                union(i, j)
+
+    # Step 3: collect groups, pick winner
+    groups: dict[int, list[int]] = {}
+    for i in range(len(books)):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
 
     removed: set[int] = set()
-    for key, indices in groups.items():
+    for indices in groups.values():
         if len(indices) < 2:
             continue
-        # Keep the entry with highest users_count
         best_idx = max(indices, key=lambda i: books[i].get("users_count") or 0)
         for i in indices:
             if i != best_idx:
