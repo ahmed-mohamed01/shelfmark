@@ -144,7 +144,10 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
             _record_download_history(task)
             _clear_pending(task)
         elif status == QueueStatus.ERROR:
-            _record_attempt_failure(task)
+            try:
+                _record_attempt_failure(task)
+            except Exception as e:
+                logger.warning("Failed to record monitored attempt failure for %s: %s", book_id, e)
             _try_next_release(task)
         # CANCELLED status: clear pending, no retry
         elif status == QueueStatus.CANCELLED:
@@ -533,7 +536,7 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
         if success:
             title = release.get("title") or release.get("display_title") or "Unknown"
             score = release.get("_match_score", 0)
-            return True, f"Queued: {title} (score: {score:.0%}, {remaining} fallbacks)"
+            return True, f"Queued: {title} (score: {score:.0f}%, {remaining} fallbacks)"
 
         # Immediate queue failure — loop to try next release
         logger.warning("Queue failed for %s: %s, trying next", release.get("source_id", ""), error_msg)
@@ -588,24 +591,6 @@ def _try_next_release(task: DownloadTask) -> None:
         logger.info("Queued fallback: %s", msg)
     else:
         logger.warning("Failed to queue fallback for %s: %s", key, msg)
-
-
-def is_book_pending(
-    entity_id: int,
-    provider: str,
-    provider_book_id: str,
-    content_type: str = "ebook",
-) -> bool:
-    """Check if a book is already pending/in-queue."""
-    key = _pending_key(entity_id, provider, provider_book_id, content_type)
-    with _pending_lock:
-        return key in _pending_releases
-
-
-def get_pending_count() -> int:
-    """Get count of books currently pending/in-queue."""
-    with _pending_lock:
-        return len(_pending_releases)
 
 
 # =============================================================================

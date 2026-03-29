@@ -50,7 +50,7 @@ def _sync_author_core(
     """Fetch books, diff-sync (soft-flag removals), apply monitor modes, clear last_error.
 
     Pure data operation — no WS broadcasts, no sync_status updates.
-    Shared by refresh_author() (scheduler) and _run_author_sync() (background thread).
+    Shared by _run_author_sync() (background thread) and the batch scheduler.
 
     Provider errors now raise typed exceptions (MonitoredProviderTimeoutError,
     MonitoredProviderNetworkError, etc.) which prevent diff_sync_books from
@@ -106,25 +106,6 @@ def _sync_author_core(
         books_removed=diff.removed,
         removed_titles=diff.removed_titles,
     )
-
-
-def refresh_author(
-    db: MonitoredDB,
-    *,
-    entity_id: int,
-    user_id: int | None,
-    preferred_languages: set[str] | None = None,
-) -> RefreshResult:
-    """Refresh author metadata from provider and update DB state.
-
-    Raises:
-        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
-        MonitoredProviderError: If the provider is unavailable.
-    """
-    entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
-    if entity is None or entity.get("kind") != "author":
-        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
-    return _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
 
 
 # =============================================================================
@@ -213,8 +194,8 @@ def _run_author_sync(
                 entity_name=str(entity.get("name") or ""),
                 user_id=user_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ABS availability sync failed for entity %s: %s", entity_id, exc)
 
         # Booklore sync (best-effort — skipped if Booklore not configured)
         try:
@@ -225,8 +206,8 @@ def _run_author_sync(
                 entity_name=str(entity.get("name") or ""),
                 user_id=user_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Booklore availability sync failed for entity %s: %s", entity_id, exc)
 
         # Cover prefetch — broadcast phase, then fetch covers into cache
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
@@ -300,7 +281,10 @@ def start_author_background_sync(
     ws_manager: Any = None,
     user_db: Any = None,
 ) -> None:
-    """Spawn daemon thread running single-phase sync + file scan."""
+    """Spawn daemon thread running single-phase sync + file scan.
+
+    Callers are responsible for checking/setting sync_status before calling.
+    """
     import threading
     t = threading.Thread(
         target=_run_author_sync,
@@ -951,7 +935,7 @@ def search_missing_books(
             if success:
                 summary.queued += 1
             elif message == "Already in queue":
-                pass
+                summary.queued += 1
             elif "unreleased" in message.lower():
                 summary.unreleased += 1
             elif "match score" in message.lower() or "no valid" in message.lower():

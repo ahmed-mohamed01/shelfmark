@@ -50,7 +50,10 @@ def _normalize_languages(languages: Optional[List[str]]) -> Optional[List[str]]:
         default = config.BOOK_LANGUAGE
         if not default:
             return None
-        return [str(lang).strip() for lang in default if str(lang).strip()]
+        resolved = [str(lang).strip() for lang in default if str(lang).strip()]
+        if any(lang.lower() == "all" for lang in resolved):
+            return None
+        return resolved
 
     normalized: List[str] = []
     for lang in languages:

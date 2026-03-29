@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 
 import re
@@ -14,7 +14,6 @@ from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
     apply_monitor_modes_for_books,
-    path_within_allowed_roots,
     resolve_allowed_roots,
 )
 from shelfmark.core.monitored_operations import (
@@ -476,7 +475,8 @@ def register_monitored_routes(
                 if total_searched > 0:
                     logger.info("Scheduled auto-search complete slot=%s searched=%s queued=%s", s, total_searched, total_queued)
             finally:
-                app.extensions["monitored_batch_sync_running"] = False
+                with _batch_sync_lock:
+                    app.extensions["monitored_batch_sync_running"] = False
 
         def _run() -> None:
             from shelfmark.core.config import config as app_config
@@ -504,7 +504,8 @@ def register_monitored_routes(
 
                             entities = _collect_enabled_author_entities()
                             if not entities:
-                                app.extensions["monitored_batch_sync_running"] = False
+                                with _batch_sync_lock:
+                                    app.extensions["monitored_batch_sync_running"] = False
                                 continue
 
                             threading.Thread(
@@ -1584,7 +1585,8 @@ def register_monitored_routes(
 
         entities = _collect_enabled_author_entities()
         if not entities:
-            app.extensions["monitored_batch_sync_running"] = False
+            with _batch_sync_lock:
+                app.extensions["monitored_batch_sync_running"] = False
             return jsonify({"ok": True, "total": 0})
 
         batch_id = f"manual-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -1593,7 +1595,8 @@ def register_monitored_routes(
             try:
                 run_batch_sync(entities, monitored_db, ws_manager, user_db, batch_id=batch_id)
             finally:
-                app.extensions["monitored_batch_sync_running"] = False
+                with _batch_sync_lock:
+                    app.extensions["monitored_batch_sync_running"] = False
 
         t = threading.Thread(target=_run_and_clear, daemon=True, name=f"MonitoredBatchSync-{batch_id}")
         t.start()

@@ -204,6 +204,7 @@ type PendingOnBehalfDownload =
       release: Release;
       releaseContentType: ContentType;
       actingAsUser: ActingAsUserSelection;
+      monitoredEntityId?: number;
     }
   | {
       type: 'combined';
@@ -1484,7 +1485,8 @@ function App() {
           pendingOnBehalfDownload.book,
           pendingOnBehalfDownload.release,
           pendingOnBehalfDownload.releaseContentType,
-          onBehalfOfUserId
+          onBehalfOfUserId,
+          pendingOnBehalfDownload.monitoredEntityId
         );
       }
       setPendingOnBehalfDownload(null);
@@ -1586,7 +1588,7 @@ function App() {
   };
 
   // Handle download from ReleaseModal (universal mode release rows).
-  const handleReleaseDownload = async (
+  const handleReleaseDownload = useCallback(async (
     book: Book,
     release: Release,
     releaseContentType: ContentType,
@@ -1599,6 +1601,8 @@ function App() {
       contentType: toContentType(releaseContentType),
     });
 
+    const monitoredEntityId = monitoredEntityIdOverride ?? releaseMonitoredEntityId ?? undefined;
+
     if (actingAsUser) {
       setPendingOnBehalfDownload({
         type: 'release',
@@ -1606,13 +1610,12 @@ function App() {
         release,
         releaseContentType,
         actingAsUser,
+        monitoredEntityId,
       });
       return;
     }
-
-    const monitoredEntityId = monitoredEntityIdOverride ?? releaseMonitoredEntityId ?? undefined;
     await executeReleaseDownload(book, release, releaseContentType, undefined, monitoredEntityId);
-  };
+  }, [actingAsUser, releaseMonitoredEntityId, executeReleaseDownload]);
 
   const { executeAutoSearch } = useMonitoredAutoSearch({
     config,
@@ -2404,6 +2407,7 @@ function App() {
           bookLanguages={bookLanguages}
           currentStatus={statusForButtonState}
           defaultReleaseSource={config?.default_release_source}
+          defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
           showMatchScore={config?.show_release_match_score !== false}
         />
       );

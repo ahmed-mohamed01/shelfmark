@@ -242,8 +242,9 @@ def fetch_entity_metadata(
         # Upsert all books: auto-hidden books (compilations, high contributor count,
         # low data quality) get hidden=True; rest get hidden=None
         for book in (*auto_hide_books, *canonical_books):
-            book_id = str(book["id"])
-            discovered_ids.add(f"{provider_name}:{book_id}")
+            book_id = str(book.get("id", ""))
+            if not book_id:
+                continue
 
             fields = _parse_book_fields(book, lang_codes=lang_codes)
 
@@ -251,17 +252,22 @@ def fetch_entity_metadata(
             if preferred_languages and fields.get("language") and fields["language"] not in preferred_languages:
                 continue
 
-            db.upsert_monitored_book(
-                user_ids=[user_id],
-                entity_id=entity_id,
-                provider=provider_name,
-                provider_book_id=book_id,
-                authors=author_name,
-                ratings_count=book.get("reviews_count"),
-                state="discovered",
-                hidden=True if book["id"] in auto_hide_ids else None,
-                **fields,
-            )
+            discovered_ids.add(f"{provider_name}:{book_id}")
+
+            try:
+                db.upsert_monitored_book(
+                    user_ids=[user_id],
+                    entity_id=entity_id,
+                    provider=provider_name,
+                    provider_book_id=book_id,
+                    authors=author_name,
+                    ratings_count=book.get("reviews_count"),
+                    state="discovered",
+                    hidden=True if book.get("id") in auto_hide_ids else None,
+                    **fields,
+                )
+            except Exception as exc:
+                logger.warning("Failed to upsert book %s for entity %s: %s", book_id, entity_id, exc)
 
         return discovered_ids
 
@@ -485,7 +491,8 @@ def fetch_book_releases(
             source = get_source(source_name)
             releases = source.search(book, search_plan, expand_search=False, content_type=content_type)
             all_releases.extend(releases)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Release search failed for source %s: %s", source_name, exc)
             continue
 
     if not all_releases:

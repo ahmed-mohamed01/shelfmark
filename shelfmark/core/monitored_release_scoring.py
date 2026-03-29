@@ -92,7 +92,7 @@ _LOW_INFORMATION_TITLE_TOKENS = {
 _LOW_INFORMATION_TITLE_MAX_SCORE = 20
 
 _SERIES_NUM_TOKEN_RE = (
-    r"([0-9]+(?:\.[0-9]+)?|[ivx]+|zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"([0-9]+(?:\.[0-9]+)?|[ivx]+\b|zero|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
 )
 
@@ -313,13 +313,17 @@ def _extract_series_number(text: str) -> Optional[float]:
     for pattern in patterns:
         match = re.search(pattern, raw)
         if match:
-            return _word_to_number(match.group(1))
+            result = _word_to_number(match.group(1))
+            if result is not None:
+                return result
 
     # Fallback on normalized text in case symbols were stripped
     for pattern in patterns:
         match = re.search(pattern, normalized)
         if match:
-            return _word_to_number(match.group(1))
+            result = _word_to_number(match.group(1))
+            if result is not None:
+                return result
 
     return None
 
@@ -488,8 +492,9 @@ def _score_format_priority_tiebreak(release: Release, priority: Dict[str, int]) 
         return 0
 
     # Every priority step is worth +5. Higher-ranked (earlier) formats get larger boosts.
+    # Capped at 15 to prevent format preferences from dominating metadata signals.
     enabled_count = len(priority)
-    return max(0, (enabled_count - rank) * 5)
+    return min(15, max(0, (enabled_count - rank) * 5))
 
 
 def _score_freeleech_direct_tiebreak(release: Release, enabled: bool) -> int:
@@ -660,6 +665,8 @@ def score_release_match(
             )
 
     title_candidates = _get_title_candidates(book)
+    if not title_candidates:
+        return ReleaseScore(raw=0, hard_reject=True, reject_reason="no_title_candidates")
     title_score = max(_score_single_title_candidate(c, release.title) for c in title_candidates)
     author_score = _score_author(book, release)
     has_release_author = bool(_extract_release_author(release))
@@ -933,10 +940,11 @@ def pre_process_releases(
             logger.warning("Failed to get failed source IDs: %s", e)
 
     for release in releases:
+        extra = release.get("extra") or {}
         release_date = (
             release.get("release_date")
-            or release.get("extra", {}).get("release_date")
-            or release.get("extra", {}).get("publication_date")
+            or extra.get("release_date")
+            or extra.get("publication_date")
         )
         is_released, parsed_date = is_book_released(release_date)
         if not is_released:
@@ -944,7 +952,6 @@ def pre_process_releases(
             logger.debug("Skipping unreleased: %s (releases %s)", release.get("title"), parsed_date)
             continue
 
-        extra = release.get("extra", {})
         match_score = release.get("match_score") or extra.get("match_score")
         try:
             score = float(match_score) if match_score is not None else 0.0
