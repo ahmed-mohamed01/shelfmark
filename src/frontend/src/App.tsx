@@ -780,7 +780,7 @@ function App() {
     } catch (error) {
       console.error('Failed to load config:', error);
     }
-  }, [clearTracking, combinedMode, contentType, navigate, setAdvancedFilters, setBooks]);
+  }, [clearTracking, combinedMode, contentType, setAdvancedFilters, setBooks]);
 
   // Fetch config when authenticated
   useEffect(() => {
@@ -2450,7 +2450,7 @@ function App() {
     : '';
 
   const mainAppContent = (
-    <SearchModeProvider searchMode={effectiveSearchMode}>
+    <>
       <div ref={headerRef} className="fixed top-0 left-0 right-0 z-40">
         <Header
           calibreWebUrl={config?.calibre_web_url || ''}
@@ -2653,47 +2653,6 @@ function App() {
           />
         )}
 
-        {activeReleaseBook && (
-          <ReleaseModal
-            book={activeReleaseBook}
-            onClose={handleReleaseModalClose}
-            onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
-            onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
-            onRequestBook={
-              isBrowseFulfilMode || !requestRoleIsAdmin
-                ? undefined
-                : handleReleaseBookRequest
-            }
-            getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
-            onPolicyRefresh={handleReleaseModalPolicyRefresh}
-            supportedFormats={supportedFormats}
-            supportedAudiobookFormats={config?.supported_audiobook_formats || []}
-            contentType={activeReleaseContentType}
-            defaultLanguages={defaultLanguageCodes}
-            bookLanguages={bookLanguages}
-            currentStatus={statusForButtonState}
-            defaultReleaseSource={config?.default_release_source}
-            defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
-            showMatchScore={config?.show_release_match_score !== false}
-            onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
-            defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' || releaseMonitoredEntityId !== null}
-            isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
-            showReleaseSourceLinks={config?.show_release_source_links !== false}
-            onShowToast={showToast}
-            combinedMode={combinedState ? {
-              phase: combinedState.phase,
-              stepLabel: `Step ${combinedCurrentStep} of ${combinedSelectionPhases.length} — Select ${combinedState.phase === 'ebook' ? 'book' : 'audiobook'}`,
-              ebookMode: combinedState.ebookMode,
-              audiobookMode: combinedState.audiobookMode,
-              stagedEbookRelease: combinedState.stagedEbook?.release ?? null,
-              stagedAudiobookRelease: combinedState.stagedAudiobook ?? null,
-              onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
-              onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
-              onDownload: combinedIsFinalStep ? handleCombinedDownload : undefined,
-            } : null}
-          />
-        )}
-
         {pendingRequestPayload && (
           <RequestConfirmationModal
             payload={pendingRequestPayload}
@@ -2725,7 +2684,7 @@ function App() {
       </div>
       </div>
 
-    </SearchModeProvider>
+    </>
   );
 
   const visuallyHiddenStyle: CSSProperties = {
@@ -2846,6 +2805,47 @@ function App() {
       <Route path="/*" element={appElement} />
     </Routes>
 
+    {activeReleaseBook && (
+      <ReleaseModal
+        book={activeReleaseBook}
+        onClose={handleReleaseModalClose}
+        onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
+        onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
+        onRequestBook={
+          isBrowseFulfilMode || !requestRoleIsAdmin
+            ? undefined
+            : handleReleaseBookRequest
+        }
+        getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
+        onPolicyRefresh={handleReleaseModalPolicyRefresh}
+        supportedFormats={supportedFormats}
+        supportedAudiobookFormats={config?.supported_audiobook_formats || []}
+        contentType={activeReleaseContentType}
+        defaultLanguages={defaultLanguageCodes}
+        bookLanguages={bookLanguages}
+        currentStatus={statusForButtonState}
+        defaultReleaseSource={config?.default_release_source}
+        defaultAudiobookReleaseSource={config?.default_release_source_audiobook}
+        showMatchScore={config?.show_release_match_score !== false}
+        onSearchSeries={isBrowseFulfilMode || !canSearchSeriesForBook(activeReleaseBook) ? undefined : handleSearchSeries}
+        defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' || releaseMonitoredEntityId !== null}
+        isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+        showReleaseSourceLinks={config?.show_release_source_links !== false}
+        onShowToast={showToast}
+        combinedMode={combinedState ? {
+          phase: combinedState.phase,
+          stepLabel: `Step ${combinedCurrentStep} of ${combinedSelectionPhases.length} — Select ${combinedState.phase === 'ebook' ? 'book' : 'audiobook'}`,
+          ebookMode: combinedState.ebookMode,
+          audiobookMode: combinedState.audiobookMode,
+          stagedEbookRelease: combinedState.stagedEbook?.release ?? null,
+          stagedAudiobookRelease: combinedState.stagedAudiobook ?? null,
+          onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
+          onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
+          onDownload: combinedIsFinalStep ? handleCombinedDownload : undefined,
+        } : null}
+      />
+    )}
+
     <ActivitySidebar
       isOpen={downloadsSidebarOpen}
       onClose={() => setDownloadsSidebarOpen(false)}
@@ -2891,6 +2891,7 @@ function App() {
       isOpen={selfSettingsOpen}
       onClose={() => setSelfSettingsOpen(false)}
       onShowToast={showToast}
+      onSettingsSaved={handleSettingsSaved}
     />
 
     {/* Auto-show banner on startup for users without config */}
