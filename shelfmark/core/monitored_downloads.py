@@ -576,14 +576,32 @@ def _try_next_release(task: DownloadTask) -> None:
     if not key:
         return
     
+    exhausted: Optional[PendingDownload] = None
     with _pending_lock:
         pending = _pending_releases.get(key)
         if not pending or not pending.releases:
-            # No more releases to try
-            _pending_releases.pop(key, None)
-            logger.info("No more fallback releases for %s after %d attempts", key, pending.attempts if pending else 0)
-            return
-        remaining = len(pending.releases)
+            exhausted = _pending_releases.pop(key, None)
+        else:
+            remaining = len(pending.releases)
+
+    if exhausted is not None:
+        logger.info("No more fallback releases for %s after %d attempts", key, exhausted.attempts)
+        if _user_db is not None:
+            try:
+                _user_db.set_monitored_book_search_status(
+                    user_ids=[exhausted.user_id] if exhausted.user_id else [],
+                    entity_id=exhausted.entity_id,
+                    provider=exhausted.provider,
+                    provider_book_id=exhausted.provider_book_id,
+                    content_type=exhausted.content_type,
+                    status="download_failed",
+                    searched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+            except Exception:
+                pass
+        return
+    if pending is None:
+        return
 
     logger.info("Download failed, trying next release for %s (%d remaining)", key, remaining)
     success, msg = _queue_next_from_pending(key)

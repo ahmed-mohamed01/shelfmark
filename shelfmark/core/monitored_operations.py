@@ -934,14 +934,38 @@ def search_missing_books(
 
             if success:
                 summary.queued += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="queued", error_message=message,
+                )
             elif message == "Already in queue":
                 summary.queued += 1
             elif "unreleased" in message.lower():
                 summary.unreleased += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="not_released", error_message=message,
+                )
             elif "match score" in message.lower() or "no valid" in message.lower():
                 summary.below_cutoff += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="below_cutoff", error_message=message,
+                )
             else:
                 summary.failed += 1
+                write_monitored_book_attempt(
+                    db, user_id=user_id, entity_id=entity_id,
+                    provider=provider, provider_book_id=provider_book_id,
+                    content_type=content_type, attempted_at=now_iso,
+                    status="failed", error_message=message,
+                )
 
         except Exception as exc:
             summary.failed += 1
