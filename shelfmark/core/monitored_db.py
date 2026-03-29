@@ -1202,18 +1202,18 @@ class MonitoredDB:
                 WHERE {uid_clause}
                   AND me.kind = 'author'
                   AND (
-                    LOWER(mb.title) LIKE :like ESCAPE '\'
-                    OR LOWER(COALESCE(mb.authors, '')) LIKE :like ESCAPE '\'
-                    OR LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\'
-                    OR LOWER(me.name) LIKE :like ESCAPE '\'
+                    LOWER(mb.title) LIKE :like ESCAPE '\\'
+                    OR LOWER(COALESCE(mb.authors, '')) LIKE :like ESCAPE '\\'
+                    OR LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\\'
+                    OR LOWER(me.name) LIKE :like ESCAPE '\\'
                   )
                 ORDER BY
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN 0 ELSE 1 END,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN LOWER(COALESCE(mb.series_name, '')) END ASC,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN CASE WHEN mb.series_position IS NULL THEN 1 ELSE 0 END END ASC,
-                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\' THEN mb.series_position END ASC,
-                    CASE WHEN LOWER(mb.title) LIKE :prefix_like ESCAPE '\' THEN 0 ELSE 1 END,
-                    CASE WHEN LOWER(me.name) LIKE :prefix_like ESCAPE '\' THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\\' THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\\' THEN LOWER(COALESCE(mb.series_name, '')) END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\\' THEN CASE WHEN mb.series_position IS NULL THEN 1 ELSE 0 END END ASC,
+                    CASE WHEN LOWER(COALESCE(mb.series_name, '')) LIKE :like ESCAPE '\\' THEN mb.series_position END ASC,
+                    CASE WHEN LOWER(mb.title) LIKE :prefix_like ESCAPE '\\' THEN 0 ELSE 1 END,
+                    CASE WHEN LOWER(me.name) LIKE :prefix_like ESCAPE '\\' THEN 0 ELSE 1 END,
                     mb.first_seen_at DESC,
                     mb.id DESC
                 LIMIT :limit
