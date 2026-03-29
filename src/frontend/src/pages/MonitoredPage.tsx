@@ -204,10 +204,25 @@ const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
 const MONITORED_UPCOMING_TIME_FILTER_KEY = 'monitoredUpcomingTimeFilter';
 
-// Computed once at module load — stable for the lifetime of the session.
-const _todayStartMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
-const _currentYear = new Date(_todayStartMs).getFullYear();
-const _threeMonthsMs = (() => { const d = new Date(_todayStartMs); d.setMonth(d.getMonth() + 3); return d.getTime(); })();
+// Recomputed when the date changes (e.g. page stays open past midnight).
+function _computeDateConstants() {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  const todayStartMs = d.getTime();
+  const currentYear = d.getFullYear();
+  const d3 = new Date(todayStartMs); d3.setMonth(d3.getMonth() + 3);
+  return { todayStartMs, currentYear, threeMonthsMs: d3.getTime() };
+}
+let _dateConstants = _computeDateConstants();
+let _dateConstantsDay = new Date().toDateString();
+
+function _getDateConstants() {
+  const today = new Date().toDateString();
+  if (today !== _dateConstantsDay) {
+    _dateConstants = _computeDateConstants();
+    _dateConstantsDay = today;
+  }
+  return _dateConstants;
+}
 
 type UpcomingTimeFilter = 'all' | 'recent' | '3months' | 'this_year' | 'tba';
 
@@ -652,6 +667,7 @@ export const MonitoredPage = ({
       }, data.name);
       scheduleRemoval(data.entity_id, 12000);
       setSyncingEntityId((cur) => cur === data.entity_id ? null : cur);
+      setMonitoredBooksReloadTick((t) => t + 1);
     };
 
     const onError = (data: { entity_id: number; error: string }) => {
@@ -769,6 +785,7 @@ export const MonitoredPage = ({
       if (!hasFailed) {
         scheduleBatchRemoval(data.batch_id, notices.length > 0 ? 20000 : 12000);
       }
+      setMonitoredBooksReloadTick((t) => t + 1);
     };
 
     socket.on('monitored_batch_sync_started', onBatchStarted);
@@ -1142,24 +1159,28 @@ export const MonitoredPage = ({
   }, [monitoredBooksRows, monitoredBooksSortBy, monitoredBooksSortAsc]);
 
   const upcomingMonitoredBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => isMonitoredBookUpcoming(book, _todayStartMs, _currentYear));
+    const { todayStartMs, currentYear } = _getDateConstants();
+    return monitoredBooksForTable.filter((book) => isMonitoredBookUpcoming(book, todayStartMs, currentYear));
   }, [monitoredBooksForTable]);
 
   const recentlyReleasedBooksForTable = useMemo(() => {
-    return monitoredBooksForTable.filter((book) => isMonitoredBookRecentlyReleased(book, _todayStartMs));
+    const { todayStartMs } = _getDateConstants();
+    return monitoredBooksForTable.filter((book) => isMonitoredBookRecentlyReleased(book, todayStartMs));
   }, [monitoredBooksForTable]);
 
   const filteredUpcomingByTime = useMemo(() => {
     if (upcomingTimeFilter === 'all' || upcomingTimeFilter === 'recent') return upcomingMonitoredBooksForTable;
+    const { threeMonthsMs, currentYear } = _getDateConstants();
     return upcomingMonitoredBooksForTable.filter(
-      (book) => getUpcomingTimeCategory(book, _threeMonthsMs, _currentYear) === upcomingTimeFilter,
+      (book) => getUpcomingTimeCategory(book, threeMonthsMs, currentYear) === upcomingTimeFilter,
     );
   }, [upcomingMonitoredBooksForTable, upcomingTimeFilter]);
 
   const regularMonitoredBooksForTable = useMemo(() => {
+    const { todayStartMs, currentYear } = _getDateConstants();
     return monitoredBooksForTable.filter((book) =>
-      !isMonitoredBookUpcoming(book, _todayStartMs, _currentYear)
-      && !isMonitoredBookRecentlyReleased(book, _todayStartMs),
+      !isMonitoredBookUpcoming(book, todayStartMs, currentYear)
+      && !isMonitoredBookRecentlyReleased(book, todayStartMs),
     );
   }, [monitoredBooksForTable]);
 
@@ -1687,12 +1708,16 @@ export const MonitoredPage = ({
     try {
       for (let idx = 0; idx < selectedMonitoredBooks.length; idx += 1) {
         const row = selectedMonitoredBooks[idx];
-        const book = monitoredBookToBook(row);
-        await onGetReleases(book, contentType, row.author_entity_id, 'auto_search_download', {
-          combined: false,
-          suppressPerBookAutoSearchToasts: true,
-          batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
-        });
+        try {
+          const book = monitoredBookToBook(row);
+          await onGetReleases(book, contentType, row.author_entity_id, 'auto_search_download', {
+            combined: false,
+            suppressPerBookAutoSearchToasts: true,
+            batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
+          });
+        } catch (err) {
+          console.warn(`Bulk download failed for book ${row.title}:`, err);
+        }
       }
     } finally {
       setBulkBookDownloadRunning((prev) => ({ ...prev, [contentType]: false }));
