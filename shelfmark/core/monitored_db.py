@@ -703,16 +703,6 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def get_best_book_cover_url(self, *, user_ids: list[int], entity_id: int) -> str | None:
-        """Return the cover_url of the most popular book for a monitored entity.
-
-        Ranked by readers_count DESC, ratings_count DESC, rating DESC, title ASC.
-        Returns None if the entity has no books with a cover_url.
-        """
-        result = self.get_best_book_cover_urls_batch(user_ids=user_ids, entity_ids=[entity_id])
-        entry = result.get(entity_id)
-        return entry["cover_url"] if entry else None
-
     def get_best_book_cover_urls_batch(
         self, *, user_ids: list[int], entity_ids: list[int]
     ) -> dict[int, dict[str, str]]:

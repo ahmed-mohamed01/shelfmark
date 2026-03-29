@@ -2487,7 +2487,6 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
         )
         from shelfmark.core.monitored_release_scoring import rank_releases_for_book
         from shelfmark.core.search_plan import build_release_search_plan
-        from dataclasses import asdict
 
         provider = request.args.get('provider', '').strip()
         book_id = request.args.get('book_id', '').strip()

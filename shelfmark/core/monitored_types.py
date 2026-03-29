@@ -58,13 +58,6 @@ class MonitoredProviderAuthError(MonitoredProviderError):
         super().__init__(message, error_type="auth")
 
 
-class MonitoredProviderNotFoundError(MonitoredProviderError):
-    """Author/book not found at provider (404 or empty GraphQL result)."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, error_type="not_found")
-
-
 class MonitoredProviderAPIError(MonitoredProviderError):
     """Server error (5xx) or GraphQL errors."""
 
@@ -103,7 +96,7 @@ class DiffResult:
 
 @dataclass
 class RefreshResult:
-    """Result of refresh_author()."""
+    """Result of an author metadata sync."""
     books_upserted: int = 0
     books_removed: int = 0
     removed_titles: list[str] = field(default_factory=list)
