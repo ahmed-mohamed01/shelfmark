@@ -533,7 +533,7 @@ def test_archive_extraction_organize_creates_directories(tmp_path):
     assert result_path.name == "Archive Test.epub"
 
 
-def test_archive_extraction_organize_multifile_assigns_part_numbers(tmp_path):
+def test_archive_extraction_organize_multifile_preserves_audiobook_filenames(tmp_path):
     from shelfmark.download.postprocess.router import post_process_download as _post_process_download
 
     staging = tmp_path / "staging"
@@ -567,14 +567,16 @@ def test_archive_extraction_organize_multifile_assigns_part_numbers(tmp_path):
         result = _post_process_download(archive_path, task, Event(), status_cb)
 
     assert result is not None
-    author_dir = ingest / "Tester"
-    files = sorted(author_dir.glob("*.mp3"))
+    # Multipart audiobooks preserve original filenames inside the template folder
+    book_dir = ingest / "Tester" / "Archive Audio"
+    files = sorted(book_dir.glob("*.mp3"))
     assert len(files) == 2
-    assert files[0].name == "Archive Audio - 01.mp3"
-    assert files[1].name == "Archive Audio - 02.mp3"
+    assert files[0].name == "Part 10.mp3"
+    assert files[1].name == "Part 2.mp3"
 
 
 def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
+    """Multipart audiobooks in organize mode preserve original filenames automatically."""
     from shelfmark.download.postprocess.router import post_process_download as _post_process_download
 
     staging = tmp_path / "staging"
@@ -607,7 +609,7 @@ def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
         "TEMPLATE_RENAME": "{Author} - {Title}",
         "TEMPLATE_ORGANIZE": "{Author}/{Title}",
         "TEMPLATE_AUDIOBOOK_RENAME": "{Author} - {Title}",
-        "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}/{OriginalName}",
+        "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}",
         "SUPPORTED_FORMATS": ["epub"],
         "SUPPORTED_AUDIOBOOK_FORMATS": ["mp3"],
         "HARDLINK_TORRENTS": False,
@@ -623,6 +625,7 @@ def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
         result = _post_process_download(archive_path, task, Event(), status_cb)
 
     assert result is not None
+    # Multipart audiobooks preserve original filenames inside the template folder
     author_title_dir = ingest / "Tester" / "Archive Audio"
     files = sorted(path.name for path in author_title_dir.glob("*.mp3"))
     assert files == ["Part 1 of 2.mp3", "Part 2 of 2.mp3"]

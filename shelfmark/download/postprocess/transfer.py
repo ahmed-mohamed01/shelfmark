@@ -246,6 +246,33 @@ def transfer_book_files(
             final_paths.append(final_path)
             op_counts[op] = op_counts.get(op, 0) + 1
             logger.debug(f"{op.capitalize()} to destination: {final_path.name}")
+        elif is_audiobook:
+            # Multipart audiobooks: organize into folder structure but
+            # preserve original filenames to keep chapter ordering intact.
+            folder_metadata = build_metadata_dict(task)
+            folder_path = run_blocking_io(
+                build_library_path,
+                str(destination),
+                template,
+                folder_metadata,
+                extension=None,
+            )
+            run_blocking_io(folder_path.mkdir, parents=True, exist_ok=True)
+            for source_file in book_files:
+                dest_path = folder_path / source_file.name
+
+                final_path, op = _transfer_single_file(
+                    source_file,
+                    dest_path,
+                    use_hardlink,
+                    is_torrent,
+                    preserve_source=preserve_source,
+                    max_attempts=max_attempts,
+                    duplicate_file_behavior=duplicate_file_behavior,
+                )
+                final_paths.append(final_path)
+                op_counts[op] = op_counts.get(op, 0) + 1
+                logger.debug(f"{op.capitalize()} to destination: {final_path.name}")
         else:
             zero_pad_width = max(len(str(len(book_files))), 2)
             files_with_parts = assign_part_numbers(book_files, zero_pad_width)
@@ -463,6 +490,22 @@ def transfer_directory_to_library(
         logger.debug(f"Library {op}: {source_file.name} -> {final_path}")
         transferred_paths.append(final_path)
         op_counts[op] = op_counts.get(op, 0) + 1
+    elif check_audiobook(task.content_type):
+        # Multipart audiobooks: use template path as directory, keep original filenames.
+        run_blocking_io(base_library_path.mkdir, parents=True, exist_ok=True)
+        for source_file in source_files:
+            dest_path = base_library_path / source_file.name
+            final_path, op = _transfer_single_file(
+                source_file,
+                dest_path,
+                use_hardlink,
+                is_torrent,
+                max_attempts=max_attempts,
+                duplicate_file_behavior=duplicate_file_behavior,
+            )
+            logger.debug(f"Library {op}: {source_file.name} -> {final_path}")
+            transferred_paths.append(final_path)
+            op_counts[op] = op_counts.get(op, 0) + 1
     else:
         zero_pad_width = max(len(str(len(source_files))), 2)
         files_with_parts = assign_part_numbers(source_files, zero_pad_width)

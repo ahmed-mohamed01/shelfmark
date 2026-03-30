@@ -31,8 +31,8 @@ class TestOriginalNameTransferTemplates:
         source_file.write_text("audio")
 
         monkeypatch.setattr(
-            "shelfmark.download.postprocess.transfer.get_template",
-            lambda _is_audiobook, mode: "{OriginalName}" if mode == "rename" else "{Author}/{Title}",
+            "shelfmark.download.postprocess.transfer.get_template_for_task",
+            lambda _task, mode: "{OriginalName}" if mode == "rename" else "{Author}/{Title}",
         )
 
         task = DownloadTask(
@@ -58,6 +58,7 @@ class TestOriginalNameTransferTemplates:
         assert final_paths[0].name == "Part 1 of 2.mp3"
 
     def test_multifile_organize_can_use_original_name(self, tmp_path: Path, monkeypatch):
+        """Multipart audiobooks in organize mode preserve original filenames automatically."""
         source_dir = tmp_path / "source"
         destination = tmp_path / "destination"
         source_dir.mkdir()
@@ -69,8 +70,8 @@ class TestOriginalNameTransferTemplates:
         part1.write_text("audio1")
 
         monkeypatch.setattr(
-            "shelfmark.download.postprocess.transfer.get_template",
-            lambda _is_audiobook, mode: "{Author}/{Title}/{OriginalName}",
+            "shelfmark.download.postprocess.transfer.get_template_for_task",
+            lambda _task, mode: "{Author}/{Title}",
         )
 
         task = DownloadTask(

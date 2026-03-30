@@ -542,16 +542,14 @@ class TestHardlinkWithLibraryMode:
             )
 
         assert result is not None
-        result_path = Path(result)
-        assert result_path.parent.name == "Brandon Sanderson"
 
-        # Check all 3 files created with sequential part numbers
-        author_dir = library / "Brandon Sanderson"
-        files = sorted(author_dir.glob("*.mp3"))
+        # Multipart audiobooks preserve original filenames inside the template folder
+        book_dir = library / "Brandon Sanderson" / "The Way of Kings"
+        files = sorted(book_dir.glob("*.mp3"))
         assert len(files) == 3
-        assert files[0].name == "The Way of Kings - 01.mp3"
-        assert files[1].name == "The Way of Kings - 02.mp3"
-        assert files[2].name == "The Way of Kings - 03.mp3"
+        assert files[0].name == "Part 1.mp3"
+        assert files[1].name == "Part 10.mp3"
+        assert files[2].name == "Part 2.mp3"
 
         # Source files should still exist (hardlinks)
         assert (source_dir / "Part 1.mp3").exists()
@@ -590,9 +588,12 @@ class TestHardlinkWithLibraryMode:
             )
 
         assert result is not None
-        author_dir = library / "Brandon Sanderson"
-        files = list(author_dir.glob("*.mp3"))
+        # Multipart audiobooks preserve original filenames inside the template folder
+        book_dir = library / "Brandon Sanderson" / "The Way of Kings"
+        files = sorted(book_dir.glob("*.mp3"))
         assert len(files) == 2
+        assert files[0].name == "Chapter 01.mp3"
+        assert files[1].name == "Chapter 02.mp3"
 
         # Source dir should be cleaned up
         assert not source_dir.exists()
@@ -914,9 +915,12 @@ class TestTorrentOptimization:
         # Original files should still exist
         assert (torrent_dir / "part1.mp3").exists()
         assert (torrent_dir / "part2.mp3").exists()
-        # Library files should exist
-        author_dir = library / "Test Author"
-        assert len(list(author_dir.glob("*.mp3"))) == 2
+        # Multipart audiobooks preserve original filenames inside the template folder
+        book_dir = library / "Test Author" / "Test Book"
+        files = sorted(book_dir.glob("*.mp3"))
+        assert len(files) == 2
+        assert files[0].name == "part1.mp3"
+        assert files[1].name == "part2.mp3"
 
 
 class TestTorrentSourceCleanupProtection:
@@ -1101,8 +1105,8 @@ class TestTorrentSourceCleanupProtection:
         for audio_file in audio_files:
             assert audio_file.exists(), f"Torrent file {audio_file.name} was deleted!"
 
-        # Verify library has all 12 files
-        library_files = list((library / "Andy Weir").glob("*.mp3"))
+        # Verify library has all 12 files with original names preserved
+        library_files = list((library / "Andy Weir" / "Project Hail Mary").glob("*.mp3"))
         assert len(library_files) == 12
 
     # ==================== COMIC/CBZ TESTS ====================
