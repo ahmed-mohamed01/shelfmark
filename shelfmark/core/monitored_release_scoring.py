@@ -328,6 +328,79 @@ def _extract_series_number(text: str) -> Optional[float]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Segment-based release title parsing
+# ---------------------------------------------------------------------------
+
+_SEGMENT_SEPARATOR_RE = re.compile(
+    r"\s*[-–—]\s+"   # dash variants with surrounding spaces
+    r"|\s*:\s*"      # colon
+    r"|\s*,\s+"      # comma followed by space (not inside numbers)
+    r"|\s*[\[\]()]\s*"  # brackets and parens
+)
+
+
+def _split_release_segments(title: str) -> List[str]:
+    """Split a release title into structural segments and normalize each."""
+    parts = _SEGMENT_SEPARATOR_RE.split(title or "")
+    return [norm for p in parts if (norm := _normalize_text(p))]
+
+
+def _matches_any_segment(candidate_norm: str, segments: List[str]) -> bool:
+    """Check if candidate matches any segment as an isolated title.
+
+    Matches when the candidate:
+    - Exactly equals a segment, OR
+    - Appears as a leading phrase covering ≥70% of the segment's tokens
+      (handles colon-less variants like "An Unwelcome Quest Magic 2 0").
+    """
+    if not candidate_norm or not segments:
+        return False
+
+    candidate_tokens = set(_tokens(candidate_norm))
+    if not candidate_tokens:
+        return False
+
+    for seg in segments:
+        if not seg:
+            continue
+        if candidate_norm == seg:
+            return True
+        seg_tokens = _tokens(seg)
+        if not seg_tokens:
+            continue
+        # Candidate must appear at start of segment as whole words and cover most of it.
+        if (
+            seg.startswith(candidate_norm + " ")
+            and len(candidate_tokens) / len(seg_tokens) >= 0.70
+        ):
+            return True
+    return False
+
+
+def _check_author_in_segments(book: BookMetadata, release_title: str) -> int:
+    """Fallback: check if any known author name matches a release segment."""
+    candidates: List[str] = []
+    if book.search_author:
+        candidates.append(book.search_author)
+    candidates.extend(book.authors or [])
+    if not candidates:
+        return 0
+
+    segments = _split_release_segments(release_title)
+    if not segments:
+        return 0
+
+    for author in candidates:
+        author_norm = _normalize_text(author)
+        if not author_norm or len(author_norm) < 4:
+            continue
+        if _matches_any_segment(author_norm, segments):
+            return 24
+
+    return 0
+
+
 def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     candidate_norm = _normalize_text(candidate)
     release_norm = _normalize_text(release_title)
@@ -350,10 +423,22 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     if distinct_candidate and len(distinct_candidate & distinct_release) == 0:
         return 0
 
-    # If the canonical metadata title appears as a full phrase inside the
-    # release title, treat it as a top-quality title match.
-    if candidate_norm == release_norm or (candidate_norm and f" {candidate_norm} " in f" {release_norm} "):
+    # Exact full-string match is always the strongest signal.
+    if candidate_norm == release_norm:
         return _LOW_INFORMATION_TITLE_MAX_SCORE if is_low_information_candidate else 60
+
+    # Check if the candidate appears as a phrase inside the release title.
+    if candidate_norm and f" {candidate_norm} " in f" {release_norm} ":
+        if is_low_information_candidate:
+            return _LOW_INFORMATION_TITLE_MAX_SCORE
+        # Segment check: is this an isolated title segment or just a word
+        # embedded in a larger phrase (e.g. "Anarchist" in "An Anarchist
+        # History of...")?  Isolated segments get full score; embedded
+        # substrings are capped near the rejection threshold.
+        segments = _split_release_segments(release_title)
+        if _matches_any_segment(candidate_norm, segments):
+            return 60
+        return 24
 
     score = 0
     if ratio >= 0.98:
@@ -695,6 +780,14 @@ def score_release_match(
             reject_reason="low_title_match",
         )
 
+    # Fallback: if author scoring is low (possibly because _extract_release_author
+    # grabbed the wrong part of the title), check if a known author name appears
+    # as an isolated segment in the release title.
+    if (book.authors or book.search_author) and author_score < min_author_score:
+        segment_author_score = _check_author_in_segments(book, release.title)
+        if segment_author_score > author_score:
+            author_score = segment_author_score
+
     # Only hard-reject author mismatch when release actually provides author info.
     # If author is missing from a source payload, treat it as unknown/neutral.
     if (
@@ -741,11 +834,19 @@ def score_release_match(
     # (> 1), but NO series number is extractable from the release.  A release
     # titled just "The Primal Hunter" when we want book 15 is almost certainly
     # book 1 or an omnibus — not the target.
+    #
+    # Exception: when the book title is distinct from the series name (e.g.
+    # "Deceptions" in series "Ascendant"), the title alone identifies the book
+    # and the missing series number is not dangerous.
     if series_score > 0 and series_num_score == 0:
         target = _get_target_series_number(book)
         if target is not None and target > 1:
+            series_norm = _normalize_text(book.series_name or "")
+            title_is_distinct = series_norm and all(
+                series_norm not in _normalize_text(c) for c in title_candidates
+            )
             release_num = _extract_release_series_number(release, book.series_name)
-            if release_num is None:
+            if release_num is None and not title_is_distinct:
                 return ReleaseMatchScore(
                     score=max(0, title_score + author_score + series_score),
                     breakdown={

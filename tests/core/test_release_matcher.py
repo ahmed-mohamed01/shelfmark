@@ -278,3 +278,164 @@ def test_score_can_exceed_100_and_format_priority_still_applies(monkeypatch):
     assert score_pdf.score > 100
     assert score_epub.breakdown["format_priority"] > score_pdf.breakdown["format_priority"]
     assert score_epub.score > score_pdf.score
+
+
+# ---------------------------------------------------------------------------
+# Segment-based matching tests
+# ---------------------------------------------------------------------------
+
+
+def test_author_in_title_rescues_from_hard_reject():
+    """Release has author in title but _extract_release_author grabs the wrong part."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="unwelcome",
+        title="An Unwelcome Quest",
+        authors=["Scott Meyer"],
+        search_author="Scott Meyer",
+        series_name="Magic 2.0",
+        series_position=3,
+    )
+
+    score = score_release_match(
+        book,
+        Release(
+            source="prowlarr",
+            source_id="jackett-1",
+            title="An Unwelcome Quest: Magic 2.0, Book 3 - Scott Meyer [M4B] [64 Kbps]",
+            content_type="audiobook",
+            extra={},
+        ),
+    )
+
+    assert score.hard_reject is False
+    assert score.breakdown["author"] >= 24
+    assert score.score >= 80
+
+
+def test_short_title_embedded_in_phrase_is_penalized():
+    """Single-word title appearing inside a longer phrase should not get full score."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="anarchist",
+        title="Anarchist",
+        authors=["Alexander Olson"],
+        search_author="Alexander Olson",
+    )
+
+    score = score_release_match(
+        book,
+        Release(
+            source="prowlarr",
+            source_id="jackett-2",
+            title="The Art of Not Being Governed: An Anarchist History of Upland Southeast Asia",
+            content_type="audiobook",
+            extra={},
+        ),
+    )
+
+    # Title "Anarchist" is embedded in a phrase, not an isolated segment.
+    # Score is capped at 24 — well below auto-download threshold (75).
+    assert score.breakdown["title"] <= 24
+    assert score.score <= 24
+
+
+def test_short_title_as_isolated_segment_gets_full_score():
+    """Single-word title that IS its own segment should get full score."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="anarchist",
+        title="Anarchist",
+        authors=["Alexander Olson"],
+        search_author="Alexander Olson",
+    )
+
+    score = score_release_match(
+        book,
+        Release(
+            source="prowlarr",
+            source_id="jackett-3",
+            title="Anarchist - Alexander Olson [M4B]",
+            content_type="audiobook",
+            extra={},
+        ),
+    )
+
+    assert score.breakdown["title"] == 60
+    assert score.hard_reject is False
+    assert score.score >= 80
+
+
+def test_multiword_title_phrase_match_unchanged():
+    """Multi-word titles matching as a phrase should still get full score."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="hail-mary",
+        title="Project Hail Mary",
+        authors=["Andy Weir"],
+        search_author="Andy Weir",
+    )
+
+    score = score_release_match(
+        book,
+        Release(
+            source="prowlarr",
+            source_id="test-4",
+            title="Project Hail Mary - Andy Weir [MP3]",
+            content_type="audiobook",
+            extra={},
+        ),
+    )
+
+    assert score.breakdown["title"] == 60
+    assert score.hard_reject is False
+
+
+def test_distinct_title_not_rejected_for_missing_series_number():
+    """Book with title distinct from series name should not require series number."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="deceptions",
+        title="Deceptions",
+        authors=["Craig Alanson"],
+        search_author="Craig Alanson",
+        series_name="Ascendant",
+        series_position=3,
+    )
+
+    score = score_release_match(
+        book,
+        Release(
+            source="direct_download",
+            source_id="dd-1",
+            title="Deceptions (Ascendant)",
+            content_type="ebook",
+            extra={"author": "Craig Alanson"},
+        ),
+    )
+
+    assert score.hard_reject is False
+    assert score.reject_reason is None
+    assert score.score >= 90
+
+
+def test_title_containing_series_still_rejected_for_missing_number():
+    """Books where the title contains the series name still need series number."""
+    book = BookMetadata(
+        provider="hardcover",
+        provider_id="primal-15",
+        title="The Primal Hunter 15",
+        search_title="The Primal Hunter 15",
+        authors=["Zogarth"],
+        search_author="Zogarth",
+        series_name="The Primal Hunter",
+        series_position=15,
+    )
+
+    score = score_release_match(
+        book,
+        _release("The Primal Hunter", extra={"author": "Zogarth"}),
+    )
+
+    assert score.hard_reject is True
+    assert score.reject_reason == "series_number_missing"
