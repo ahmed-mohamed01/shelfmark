@@ -137,6 +137,25 @@ CREATE TABLE IF NOT EXISTS monitored_book_attempt_history (
 
 CREATE INDEX IF NOT EXISTS idx_monitored_book_attempt_history_lookup
 ON monitored_book_attempt_history (entity_id, provider, provider_book_id, content_type, attempted_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_pending_releases (
+    pending_key TEXT PRIMARY KEY,
+    release_data TEXT NOT NULL,
+    user_id INTEGER,
+    entity_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    provider_book_id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    destination_override TEXT,
+    file_organization_override TEXT,
+    template_override TEXT,
+    series_name TEXT,
+    series_position REAL,
+    current_source_id TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    post_process_retries INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -1901,6 +1920,94 @@ class MonitoredDB:
                 LIMIT ?
                 """,
                 (entity_id, provider, provider_book_id, safe_limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # =========================================================================
+    # Pending Releases (persist monitored download fallback queue)
+    # =========================================================================
+
+    def upsert_pending_releases(
+        self,
+        *,
+        pending_key: str,
+        release_data_json: str,
+        user_id: int | None,
+        entity_id: int,
+        provider: str,
+        provider_book_id: str,
+        content_type: str,
+        destination_override: str | None = None,
+        file_organization_override: str | None = None,
+        template_override: str | None = None,
+        series_name: str | None = None,
+        series_position: float | None = None,
+        current_source_id: str | None = None,
+        attempts: int = 0,
+        post_process_retries: int = 0,
+    ) -> None:
+        """Insert or update a pending releases record."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO monitored_pending_releases (
+                        pending_key, release_data, user_id, entity_id,
+                        provider, provider_book_id, content_type,
+                        destination_override, file_organization_override, template_override,
+                        series_name, series_position, current_source_id,
+                        attempts, post_process_retries
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(pending_key) DO UPDATE SET
+                        release_data = excluded.release_data,
+                        current_source_id = excluded.current_source_id,
+                        attempts = excluded.attempts,
+                        post_process_retries = excluded.post_process_retries
+                    """,
+                    (
+                        pending_key,
+                        release_data_json,
+                        user_id,
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        content_type,
+                        destination_override,
+                        file_organization_override,
+                        template_override,
+                        series_name,
+                        series_position,
+                        current_source_id,
+                        attempts,
+                        post_process_retries,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def delete_pending_releases(self, pending_key: str) -> None:
+        """Remove a pending releases record."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "DELETE FROM monitored_pending_releases WHERE pending_key = ?",
+                    (pending_key,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def load_all_pending_releases(self) -> list[dict[str, Any]]:
+        """Load all pending release records (for startup recovery)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM monitored_pending_releases ORDER BY created_at ASC"
             ).fetchall()
             return [dict(r) for r in rows]
         finally:

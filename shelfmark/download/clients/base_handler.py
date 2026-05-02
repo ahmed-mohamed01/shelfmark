@@ -79,6 +79,11 @@ def _diagnose_path_issue(path: str) -> str:
 class ExternalClientHandler(DownloadHandler, ABC):
     """Shared lifecycle handler for sources that hand off to torrent/usenet clients."""
 
+    # Optional hook called with (task_id, download_id, protocol) after the client
+    # accepts a download.  Set by branch-only modules (e.g. download_recovery) to
+    # persist the client-side ID for restart recovery.
+    _download_id_hook: Optional[Callable[[str, str, str], None]] = None
+
     def __init__(self):
         # Track downloads that may need client-side cleanup after Shelfmark completes import.
         # task_id -> (client, download_id, protocol)
@@ -518,6 +523,12 @@ class ExternalClientHandler(DownloadHandler, ABC):
                 download_id, existing_status = existing
                 logger.info(f"Found existing download in {client.name}: {download_id}")
 
+                if self._download_id_hook is not None:
+                    try:
+                        self._download_id_hook(task.task_id, download_id, request.protocol)
+                    except Exception as exc:
+                        logger.debug("download_id_hook failed for %s: %s", task.task_id, exc)
+
                 # If already complete, skip straight to file handling
                 if existing_status.complete:
                     logger.info("Existing download is complete, copying file directly")
@@ -572,6 +583,12 @@ class ExternalClientHandler(DownloadHandler, ABC):
                     return None
 
                 logger.info(f"Added to {client.name}: {download_id} for '{request.release_name}'")
+
+                if self._download_id_hook is not None:
+                    try:
+                        self._download_id_hook(task.task_id, download_id, request.protocol)
+                    except Exception as exc:
+                        logger.debug("download_id_hook failed for %s: %s", task.task_id, exc)
 
             # Poll for progress
             return self._poll_and_complete(

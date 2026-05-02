@@ -282,6 +282,67 @@ class DownloadHistoryService:
         finally:
             conn.close()
 
+    def update_download_id(self, *, task_id: str, download_id: str) -> None:
+        """Store the client-side download ID (torrent hash / NZB ID) for restart recovery."""
+        normalized_task_id = _normalize_task_id(task_id)
+        normalized_download_id = normalize_optional_text(download_id)
+        if normalized_download_id is None:
+            return
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE download_history SET download_id = ? WHERE task_id = ? AND final_status = 'active'",
+                    (normalized_download_id, normalized_task_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_stale_active_rows(self) -> list[dict[str, Any]]:
+        """Return all rows where final_status = 'active' (stale after restart)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM download_history WHERE final_status = 'active' ORDER BY queued_at DESC",
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_recent_completed_with_download_id(self, *, days: int = 7) -> list[dict[str, Any]]:
+        """Return completed rows with a download_id from the last N days."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM download_history
+                WHERE final_status = 'complete'
+                  AND download_id IS NOT NULL
+                  AND download_path IS NOT NULL
+                  AND terminal_at >= datetime('now', ?)
+                ORDER BY terminal_at DESC
+                """,
+                (f"-{days} days",),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def reset_to_active(self, *, task_id: str) -> None:
+        """Reset a completed/errored row back to active for re-processing."""
+        normalized_task_id = _normalize_task_id(task_id)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE download_history SET final_status = 'active', download_path = NULL, status_message = NULL WHERE task_id = ?",
+                    (normalized_task_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def list_recent(
         self,
         *,

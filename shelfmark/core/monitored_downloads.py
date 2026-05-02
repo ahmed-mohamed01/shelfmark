@@ -7,6 +7,7 @@ the core orchestrator module. This module handles:
 - Scheduled auto-search triggers (called after batch sync in monitored_routes.py)
 """
 
+import json
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,11 +53,100 @@ class PendingDownload:
     series_position: Optional[float] = None
     current_source_id: Optional[str] = None
     attempts: int = 0
+    post_process_retries: int = 0  # retries of the *same* release for post-proc failures
+
+# Post-processing error types that should trigger a retry of the same release
+# rather than skipping to the next one. These are transient filesystem/network errors.
+_POST_PROCESS_ERROR_TYPES = frozenset({
+    "PermissionError", "OSError", "IOError", "FileNotFoundError",
+    "IsADirectoryError", "NotADirectoryError", "TimeoutError",
+    "UnknownFailure",
+})
+_MAX_POST_PROCESS_RETRIES = 2
 
 
 def _pending_key(entity_id: int, provider: str, provider_book_id: str, content_type: str) -> str:
     """Generate key for pending releases dict."""
     return f"{entity_id}:{provider}:{provider_book_id}:{content_type}"
+
+
+def _persist_pending(key: str, pending: PendingDownload) -> None:
+    """Write pending releases to DB for restart recovery."""
+    if _user_db is None:
+        return
+    try:
+        _user_db.upsert_pending_releases(
+            pending_key=key,
+            release_data_json=json.dumps(pending.releases),
+            user_id=pending.user_id,
+            entity_id=pending.entity_id,
+            provider=pending.provider,
+            provider_book_id=pending.provider_book_id,
+            content_type=pending.content_type,
+            destination_override=pending.destination_override,
+            file_organization_override=pending.file_organization_override,
+            template_override=pending.template_override,
+            series_name=pending.series_name,
+            series_position=pending.series_position,
+            current_source_id=pending.current_source_id,
+            attempts=pending.attempts,
+            post_process_retries=pending.post_process_retries,
+        )
+    except Exception as exc:
+        logger.warning("Failed to persist pending releases for %s: %s", key, exc)
+
+
+def _delete_pending_from_db(key: str) -> None:
+    """Remove pending releases from DB."""
+    if _user_db is None:
+        return
+    try:
+        _user_db.delete_pending_releases(key)
+    except Exception as exc:
+        logger.warning("Failed to delete pending releases for %s: %s", key, exc)
+
+
+def load_pending_releases_from_db() -> None:
+    """Restore pending releases from DB on startup. Call after set_monitored_db()."""
+    if _user_db is None:
+        return
+    try:
+        rows = _user_db.load_all_pending_releases()
+        restored = 0
+        with _pending_lock:
+            for row in rows:
+                key = row.get("pending_key", "")
+                if not key or key in _pending_releases:
+                    continue
+                try:
+                    releases = json.loads(row.get("release_data", "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    releases = []
+                if not releases:
+                    # Empty releases list — clean up stale DB row
+                    _delete_pending_from_db(key)
+                    continue
+                _pending_releases[key] = PendingDownload(
+                    releases=releases,
+                    user_id=row.get("user_id") or 0,
+                    entity_id=row.get("entity_id") or 0,
+                    provider=row.get("provider") or "",
+                    provider_book_id=row.get("provider_book_id") or "",
+                    content_type=row.get("content_type") or "ebook",
+                    destination_override=row.get("destination_override"),
+                    file_organization_override=row.get("file_organization_override"),
+                    template_override=row.get("template_override"),
+                    series_name=row.get("series_name"),
+                    series_position=row.get("series_position"),
+                    current_source_id=row.get("current_source_id"),
+                    attempts=row.get("attempts") or 0,
+                    post_process_retries=row.get("post_process_retries") or 0,
+                )
+                restored += 1
+        if restored:
+            logger.info("Restored %d pending release group(s) from database", restored)
+    except Exception as exc:
+        logger.warning("Failed to load pending releases from DB: %s", exc)
 
 
 def _infer_monitored_match_content_type(*, row: dict[str, Any], user_id: int | None) -> str | None:
@@ -466,7 +556,7 @@ def process_monitored_book(
     with _pending_lock:
         if key in _pending_releases:
             return False, "Already in queue"
-        _pending_releases[key] = PendingDownload(
+        pending = PendingDownload(
             releases=valid_releases,
             user_id=user_id,
             entity_id=entity_id,
@@ -479,7 +569,9 @@ def process_monitored_book(
             series_name=series_name,
             series_position=series_position,
         )
-    
+        _pending_releases[key] = pending
+        _persist_pending(key, pending)
+
     # Queue first release
     return _queue_next_from_pending(key)
 
@@ -497,12 +589,14 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             pending = _pending_releases.get(key)
             if not pending or not pending.releases:
                 _pending_releases.pop(key, None)
+                _delete_pending_from_db(key)
                 return False, "No more releases to try"
 
             # Take next release
             release = pending.releases.pop(0)
             pending.current_source_id = str(release.get("source_id", ""))
             pending.attempts += 1
+            pending.post_process_retries = 0  # reset for new release
 
             # Snapshot fields we need outside the lock
             entity_id = pending.entity_id
@@ -516,6 +610,9 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             series_position = pending.series_position
             user_id = pending.user_id
             remaining = len(pending.releases)
+
+            # Persist updated state to DB while still holding the lock
+            _persist_pending(key, pending)
 
         # Enrich with monitored context
         release["monitored_entity_id"] = entity_id
@@ -567,22 +664,60 @@ def _clear_pending(task: DownloadTask) -> None:
     if key:
         with _pending_lock:
             _pending_releases.pop(key, None)
+            _delete_pending_from_db(key)
         logger.debug("Cleared pending releases for %s", key)
 
 
 def _try_next_release(task: DownloadTask) -> None:
-    """Try next release from pending list (called on failure)."""
+    """Try next release from pending list (called on failure).
+
+    If the failure was a post-processing error (file downloaded successfully but
+    copy/move failed), retry the *same* release up to _MAX_POST_PROCESS_RETRIES
+    times before falling through to the next release. This avoids wasting bandwidth
+    re-downloading when the issue is a transient disk/network error.
+    """
     key = _get_pending_key_from_task(task)
     if not key:
         return
-    
+
+    # Check if this was a post-processing failure that should be retried
+    error_type = getattr(task, "last_error_type", None) or ""
+    staged_path = getattr(task, "staged_path", None)
+    if staged_path and error_type in _POST_PROCESS_ERROR_TYPES:
+        retry_num = 0
+        should_retry = False
+        with _pending_lock:
+            pending = _pending_releases.get(key)
+            if pending is not None and pending.post_process_retries < _MAX_POST_PROCESS_RETRIES:
+                pending.post_process_retries += 1
+                retry_num = pending.post_process_retries
+                should_retry = True
+                _persist_pending(key, pending)
+
+        if should_retry:
+            logger.info(
+                "Post-processing failed for %s (retry %d/%d), re-queuing same release",
+                key, retry_num, _MAX_POST_PROCESS_RETRIES,
+            )
+            from shelfmark.download.orchestrator import retry_download
+            success, error = retry_download(task.task_id)
+            if success:
+                return
+            logger.warning("Failed to retry post-processing for %s: %s", key, error)
+            # Fall through to next release
+
+    remaining = 0
     exhausted: Optional[PendingDownload] = None
     with _pending_lock:
         pending = _pending_releases.get(key)
         if not pending or not pending.releases:
             exhausted = _pending_releases.pop(key, None)
+            if exhausted:
+                _delete_pending_from_db(key)
         else:
             remaining = len(pending.releases)
+            # Reset post_process_retries for the new release
+            pending.post_process_retries = 0
 
     if exhausted is not None:
         logger.info("No more fallback releases for %s after %d attempts", key, exhausted.attempts)
@@ -600,7 +735,9 @@ def _try_next_release(task: DownloadTask) -> None:
             except Exception:
                 pass
         return
-    if pending is None:
+
+    if remaining == 0:
+        # Key was removed by another thread between checks
         return
 
     logger.info("Download failed, trying next release for %s (%d remaining)", key, remaining)

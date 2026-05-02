@@ -161,10 +161,22 @@ except (sqlite3.OperationalError, OSError) as e:
 
 # Start download coordinator
 if monitored_db is not None:
-    from shelfmark.core.monitored_downloads import set_monitored_db, register_hooks
+    from shelfmark.core.monitored_downloads import set_monitored_db, register_hooks, load_pending_releases_from_db
     set_monitored_db(monitored_db)
     register_hooks()
+
+# Register download recovery hooks (persists download IDs to DB)
+if download_history_service is not None:
+    from shelfmark.core.download_recovery import register as _register_recovery, startup_recover
+    _register_recovery(download_history_service, ws_manager=ws_manager)
+
 backend.start()
+
+# Post-start initialization: load persisted state and scan for stale downloads
+if monitored_db is not None:
+    load_pending_releases_from_db()
+if download_history_service is not None:
+    startup_recover()
 
 # Rate limiting for login attempts
 # Structure: {username: {'count': int, 'lockout_until': datetime}}
@@ -1576,8 +1588,22 @@ def api_retry_download(book_id: str) -> Union[Response, Tuple[Response, int]]:
     """Retry a failed download."""
     try:
         task = backend.book_queue.get_task(book_id)
+
+        # If not in the in-memory queue, try to recover from DB history
         if task is None:
-            return jsonify({"error": "Download not found"}), 404
+            from shelfmark.core.download_recovery import retry_interrupted
+            is_admin, db_user_id, can_access_status = _resolve_status_scope()
+            actor_username = session.get("user_id")
+            normalized_actor_username = actor_username if isinstance(actor_username, str) else None
+            success, error, status_code = retry_interrupted(
+                book_id,
+                actor_user_id=db_user_id,
+                actor_username=normalized_actor_username,
+                is_admin=is_admin,
+            )
+            if success:
+                return jsonify({"status": "queued", "book_id": book_id})
+            return jsonify({"error": error or "Download cannot be retried"}), status_code
 
         is_admin, db_user_id, can_access_status = _resolve_status_scope()
         if not is_admin:
