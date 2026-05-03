@@ -932,10 +932,10 @@ def register_monitored_routes(
         if not _can_edit_entity(entity, db_user_id=db_user_id, global_user_id=global_user_id):
             return jsonify({"error": "You don't have permission to delete this author"}), 403
 
-        deleted = monitored_db.delete_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
-        if not deleted:
-            return jsonify({"error": "Not found"}), 404
-
+        # Record event BEFORE delete: the FK on monitored_events.entity_id is
+        # enforced (PRAGMA foreign_keys=ON), and the row's ON DELETE SET NULL
+        # cascade nulls the link automatically once the entity is gone.
+        # Recording after delete would IntegrityError on the FK.
         try:
             from shelfmark.core.monitored_history import record_author_removed
             record_author_removed(
@@ -945,6 +945,10 @@ def register_monitored_routes(
             )
         except Exception as exc:
             logger.debug("Failed to record author_removed event: %s", exc)
+
+        deleted = monitored_db.delete_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
+        if not deleted:
+            return jsonify({"error": "Not found"}), 404
 
         return jsonify({"ok": True})
 
