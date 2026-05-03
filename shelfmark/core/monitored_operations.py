@@ -103,6 +103,7 @@ def _sync_author_core(
     db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
     return RefreshResult(
         books_upserted=len(books),
+        books_added=diff.added,
         books_removed=diff.removed,
         removed_titles=diff.removed_titles,
     )
@@ -259,6 +260,18 @@ def _run_author_sync(
             complete_data["books_removed"] = sync_result.books_removed
             complete_data["removed_titles"] = sync_result.removed_titles
         _broadcast(ws_manager, user_id, "monitored_sync_complete", complete_data)
+        try:
+            from shelfmark.core.monitored_history import record_author_synced
+            record_author_synced(
+                entity_id=entity_id,
+                author_name=entity_name,
+                books_added=sync_result.books_added,
+                books_removed=sync_result.books_removed,
+                total_books=books_count,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record author_synced event for %s: %s", entity_id, exc)
 
     except MonitoredProviderError as exc:
         error_msg = f"[{exc.error_type}] {exc}"
@@ -266,12 +279,22 @@ def _run_author_sync(
         db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
         _broadcast(ws_manager, user_id, "monitored_sync_error",
                    {"entity_id": entity_id, "error": error_msg, "error_type": exc.error_type})
+        try:
+            from shelfmark.core.monitored_history import record_author_sync_failed
+            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id)
+        except Exception as log_exc:
+            logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
     except Exception as exc:
         error_msg = f"[unknown] {exc}"
         db.update_entity_sync_status(entity_id, "error")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
         _broadcast(ws_manager, user_id, "monitored_sync_error",
                    {"entity_id": entity_id, "error": error_msg, "error_type": "unknown"})
+        try:
+            from shelfmark.core.monitored_history import record_author_sync_failed
+            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id)
+        except Exception as log_exc:
+            logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
 
 
 def start_author_background_sync(
@@ -318,6 +341,8 @@ def _record_sync_failure(
     eid: int,
     ename: str,
     exc: BaseException,
+    user_id: int | None = None,
+    batch_id: str | None = None,
 ) -> None:
     """Record a failed entity sync into *result* and DB."""
     error_msg = f"[{getattr(exc, 'error_type', 'unknown')}] {exc}"
@@ -328,6 +353,14 @@ def _record_sync_failure(
         "message": error_msg, "is_error": True,
     })
     logger.warning("Batch sync failed entity_id=%s: %s", eid, error_msg)
+    try:
+        from shelfmark.core.monitored_history import record_author_sync_failed
+        record_author_sync_failed(
+            entity_id=eid, author_name=ename, error_message=error_msg,
+            batch_id=batch_id, user_id=user_id,
+        )
+    except Exception as log_exc:
+        logger.debug("Failed to record author_sync_failed event for %s: %s", eid, log_exc)
 
 
 def _record_sync_success(
@@ -336,6 +369,8 @@ def _record_sync_success(
     *,
     eid: int,
     ename: str,
+    user_id: int | None = None,
+    batch_id: str | None = None,
 ) -> None:
     """Record a successful entity sync into *result*."""
     result.successful += 1
@@ -345,6 +380,19 @@ def _record_sync_success(
             "message": f"{sync_res.books_removed} book(s) removed from provider",
             "removed_titles": sync_res.removed_titles,
         })
+    try:
+        from shelfmark.core.monitored_history import record_author_synced
+        record_author_synced(
+            entity_id=eid,
+            author_name=ename,
+            books_added=sync_res.books_added,
+            books_removed=sync_res.books_removed,
+            total_books=sync_res.books_upserted,
+            batch_id=batch_id,
+            user_id=user_id,
+        )
+    except Exception as log_exc:
+        logger.debug("Failed to record author_synced event for %s: %s", eid, log_exc)
 
 
 def run_batch_sync(
@@ -383,16 +431,16 @@ def run_batch_sync(
                 db, entity=entity, user_id=uid,
                 preferred_languages=preferred_languages,
             )
-            _record_sync_success(result, sync_res, eid=eid, ename=ename)
+            _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
         except MonitoredProviderError as exc:
             if is_transient_provider_error(exc):
                 error_msg = f"[{exc.error_type}] {exc}"
                 db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
                 retry_queue.append((idx, uid, entity))
             else:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
         except Exception as exc:
-            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
 
     # Retry transient failures once
     if retry_queue:
@@ -411,10 +459,10 @@ def run_batch_sync(
                     db, entity=entity, user_id=uid,
                     preferred_languages=preferred_languages,
                 )
-                _record_sync_success(result, sync_res, eid=eid, ename=ename)
+                _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
                 result.retry_succeeded += 1
             except Exception as exc:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc)
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
 
     _broadcast(ws_manager, None, "monitored_batch_sync_complete", {
         "batch_id": batch_id,

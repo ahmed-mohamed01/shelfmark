@@ -89,7 +89,8 @@ def is_transient_provider_error(exc: BaseException) -> bool:
 
 @dataclass
 class DiffResult:
-    """Result of diff_sync_books() — tracks provider-removal changes."""
+    """Result of diff_sync_books() — tracks provider-side changes."""
+    added: int = 0
     removed: int = 0
     removed_titles: list[str] = field(default_factory=list)
 
@@ -98,6 +99,7 @@ class DiffResult:
 class RefreshResult:
     """Result of an author metadata sync."""
     books_upserted: int = 0
+    books_added: int = 0
     books_removed: int = 0
     removed_titles: list[str] = field(default_factory=list)
 

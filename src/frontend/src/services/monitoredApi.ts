@@ -253,38 +253,6 @@ export interface MonitoredBookFileRow {
   updated_at?: string;
 }
 
-export interface MonitoredBookDownloadHistoryRow {
-  id: number;
-  entity_id: number;
-  provider: string;
-  provider_book_id: string;
-  downloaded_at: string;
-  source?: string | null;
-  source_display_name?: string | null;
-  title_after_rename?: string | null;
-  match_score?: number | null;
-  downloaded_filename?: string | null;
-  final_path?: string | null;
-  overwritten_path?: string | null;
-  created_at?: string;
-}
-
-export interface MonitoredBookAttemptHistoryRow {
-  id: number;
-  entity_id: number;
-  provider: string;
-  provider_book_id: string;
-  content_type: 'ebook' | 'audiobook';
-  attempted_at: string;
-  status: string;
-  source?: string | null;
-  source_id?: string | null;
-  release_title?: string | null;
-  match_score?: number | null;
-  error_message?: string | null;
-  created_at?: string;
-}
-
 export interface MonitoredAuthorBookSearchRow {
   entity_id: number;
   author_name: string;
@@ -333,21 +301,6 @@ export const listMonitoredBookFiles = async (entityId: number): Promise<{ files:
 
   inFlightMonitoredBookFilesRequests.set(entityId, request);
   return request;
-};
-
-export const listMonitoredBookDownloadHistory = async (
-  entityId: number,
-  provider: string,
-  providerBookId: string,
-  limit: number = 50,
-): Promise<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }> => {
-  const params = new URLSearchParams();
-  params.set('provider', provider);
-  params.set('provider_book_id', providerBookId);
-  params.set('limit', String(limit));
-  return fetchJSON<{ history: MonitoredBookDownloadHistoryRow[]; attempt_history: MonitoredBookAttemptHistoryRow[] }>(
-    `${API_BASE}/monitored/${entityId}/books/history?${params.toString()}`
-  );
 };
 
 export interface MonitoredAutoSearchPrecheckResponse {
@@ -681,4 +634,105 @@ export const setBookReleaseDate = async (
       release_date: releaseDate,
     }),
   });
+};
+
+// ---------------------------------------------------------------------------
+// Monitored Events (unified history)
+// ---------------------------------------------------------------------------
+
+export interface MonitoredEvent {
+  id: number;
+  event_type: string;
+  entity_id: number | null;
+  book_provider: string | null;
+  book_provider_id: string | null;
+  book_title: string | null;
+  author_name: string | null;
+  content_type: string | null;
+  source: string | null;
+  source_display_name: string | null;
+  status: string | null;
+  message: string | null;
+  metadata_json: string | null;
+  user_id: number | null;
+  created_at: string;
+}
+
+export interface MonitoredEventStats {
+  downloads: number;
+  searches: number;
+  syncs: number;
+  authors_added: number;
+  authors_removed: number;
+  failures: number;
+  raw: Record<string, number>;
+}
+
+export interface ListEventsParams {
+  entity_id?: number;
+  book_provider?: string;
+  book_provider_id?: string;
+  event_types?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export const listMonitoredEvents = async (
+  params: ListEventsParams = {},
+): Promise<{ events: MonitoredEvent[]; total: number }> => {
+  const query = new URLSearchParams();
+  if (params.entity_id != null) query.set('entity_id', String(params.entity_id));
+  if (params.book_provider) query.set('book_provider', params.book_provider);
+  if (params.book_provider_id) query.set('book_provider_id', params.book_provider_id);
+  if (params.event_types) query.set('event_types', params.event_types);
+  if (params.since) query.set('since', params.since);
+  if (params.until) query.set('until', params.until);
+  if (params.limit != null) query.set('limit', String(params.limit));
+  if (params.offset != null) query.set('offset', String(params.offset));
+  return fetchJSON(`${API_BASE}/monitored/events?${query.toString()}`);
+};
+
+export const listMonitoredBookEvents = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+  limit: number = 50,
+  offset: number = 0,
+): Promise<{ events: MonitoredEvent[]; total: number }> => {
+  const query = new URLSearchParams({
+    provider,
+    provider_book_id: providerBookId,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return fetchJSON(`${API_BASE}/monitored/${entityId}/books/events?${query.toString()}`);
+};
+
+export const getMonitoredEventStats = async (
+  since?: string,
+): Promise<MonitoredEventStats> => {
+  const query = since ? `?since=${encodeURIComponent(since)}` : '';
+  return fetchJSON(`${API_BASE}/monitored/events/stats${query}`);
+};
+
+export const deleteMonitoredEvents = async (
+  params: { before?: string; entity_id?: number } = {},
+): Promise<{ deleted: number }> => {
+  const query = new URLSearchParams();
+  if (params.before) query.set('before', params.before);
+  if (params.entity_id != null) query.set('entity_id', String(params.entity_id));
+  return fetchJSON(`${API_BASE}/monitored/events?${query.toString()}`, { method: 'DELETE' });
+};
+
+export const exportMonitoredEventsCsv = (
+  params: { entity_id?: number; event_types?: string; since?: string; until?: string } = {},
+): void => {
+  const query = new URLSearchParams();
+  if (params.entity_id != null) query.set('entity_id', String(params.entity_id));
+  if (params.event_types) query.set('event_types', params.event_types);
+  if (params.since) query.set('since', params.since);
+  if (params.until) query.set('until', params.until);
+  window.open(`${API_BASE}/monitored/events/export?${query.toString()}`, '_blank');
 };

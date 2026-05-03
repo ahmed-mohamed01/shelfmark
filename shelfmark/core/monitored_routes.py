@@ -884,6 +884,18 @@ def register_monitored_routes(
 
         row["visibility"] = visibility
 
+        try:
+            from shelfmark.core.monitored_history import record_author_added
+            record_author_added(
+                entity_id=int(row["id"]),
+                author_name=name,
+                provider=provider,
+                provider_id=provider_id,
+                user_id=owner_user_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record author_added event: %s", exc)
+
         if kind == "book" and provider and provider_id:
             fetch_entity_metadata(
                 monitored_db,
@@ -923,6 +935,17 @@ def register_monitored_routes(
         deleted = monitored_db.delete_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if not deleted:
             return jsonify({"error": "Not found"}), 404
+
+        try:
+            from shelfmark.core.monitored_history import record_author_removed
+            record_author_removed(
+                entity_id=entity_id,
+                author_name=str(entity.get("name") or "Unknown"),
+                user_id=db_user_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record author_removed event: %s", exc)
+
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/books", methods=["GET"])
@@ -1001,6 +1024,13 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
     def api_list_monitored_book_history(entity_id: int):
+        """Return structured download/attempt history for a book.
+
+        Reads the structured ``monitored_book_download_history`` and
+        ``monitored_book_attempt_history`` tables (source of truth for the
+        auto-search precheck). The ``/api/monitored/events`` endpoints are
+        the audit-log layer; this endpoint exposes the structured rows.
+        """
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
         if gate is not None:
             return gate
@@ -2240,3 +2270,164 @@ def register_monitored_routes(
         except Exception as e:
             logger.error_trace(f"Metadata author books error: {e}")
             return jsonify({"error": str(e)}), 500
+
+    # =========================================================================
+    # Monitored Events (unified history / activity log)
+    # =========================================================================
+
+    def _parse_optional_int(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @app.route("/api/monitored/events", methods=["GET"])
+    def api_list_monitored_events():
+        """List monitored events with optional filters and pagination."""
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        entity_id = _parse_optional_int(request.args.get("entity_id"))
+        book_provider = request.args.get("book_provider") or None
+        book_provider_id = request.args.get("book_provider_id") or None
+        event_types_raw = request.args.get("event_types", "")
+        event_types = [t.strip() for t in event_types_raw.split(",") if t.strip()] or None
+        since = request.args.get("since") or None
+        until = request.args.get("until") or None
+
+        try:
+            limit = int(request.args.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        try:
+            offset = int(request.args.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+
+        events, total = monitored_db.list_events(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            book_provider=book_provider,
+            book_provider_id=book_provider_id,
+            event_types=event_types,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+            since=since,
+            until=until,
+        )
+        return jsonify({"events": events, "total": total})
+
+    @app.route("/api/monitored/<int:entity_id>/books/events", methods=["GET"])
+    def api_list_monitored_book_events(entity_id: int):
+        """List events for a specific book within a monitored entity."""
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        provider = request.args.get("provider", "").strip()
+        provider_book_id = request.args.get("provider_book_id", "").strip()
+
+        try:
+            limit = int(request.args.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = int(request.args.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+
+        events, total = monitored_db.list_events(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            book_provider=provider or None,
+            book_provider_id=provider_book_id or None,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
+        return jsonify({"events": events, "total": total})
+
+    @app.route("/api/monitored/events/stats", methods=["GET"])
+    def api_monitored_event_stats():
+        """Return event counts by type for the stats dashboard."""
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        since = request.args.get("since") or None
+        raw_counts = monitored_db.count_events_by_type(user_ids=visible_user_ids, since=since)
+
+        downloads = sum(v for k, v in raw_counts.items() if k.startswith("download_"))
+        searches = sum(v for k, v in raw_counts.items() if k.startswith("search_"))
+        syncs = monitored_db.count_sync_batches(user_ids=visible_user_ids, since=since)
+        authors_added = raw_counts.get("author_added", 0)
+        authors_removed = raw_counts.get("author_removed", 0)
+        failures = sum(v for k, v in raw_counts.items() if k in ("download_failed", "author_sync_failed"))
+
+        return jsonify({
+            "downloads": downloads,
+            "searches": searches,
+            "syncs": syncs,
+            "authors_added": authors_added,
+            "authors_removed": authors_removed,
+            "failures": failures,
+            "raw": raw_counts,
+        })
+
+    @app.route("/api/monitored/events", methods=["DELETE"])
+    def api_clear_monitored_events():
+        """Clear monitored event history."""
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        before = request.args.get("before") or None
+        entity_id = _parse_optional_int(request.args.get("entity_id"))
+
+        deleted = monitored_db.delete_events(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            before=before,
+        )
+        return jsonify({"deleted": deleted})
+
+    @app.route("/api/monitored/events/export", methods=["GET"])
+    def api_export_monitored_events():
+        """Export monitored events as CSV."""
+        import csv
+        import io
+
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        entity_id = _parse_optional_int(request.args.get("entity_id"))
+        event_types_raw = request.args.get("event_types", "")
+        event_types = [t.strip() for t in event_types_raw.split(",") if t.strip()] or None
+        since = request.args.get("since") or None
+        until = request.args.get("until") or None
+
+        rows = monitored_db.export_events(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            event_types=event_types,
+            since=since,
+            until=until,
+        )
+
+        output = io.StringIO()
+        if rows:
+            writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        else:
+            output.write("No events found.\n")
+
+        from flask import Response as FlaskResponse
+        return FlaskResponse(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=monitored_events.csv"},
+        )

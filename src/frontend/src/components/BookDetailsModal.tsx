@@ -2,15 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Book, ContentType } from '../types';
 import { useSwipe } from '../hooks/useSwipe';
 import {
-  listMonitoredBookDownloadHistory,
   listMonitoredBookFiles,
+  listMonitoredBookEvents,
   listMonitoredBooks,
   MonitoredBookRow,
-  MonitoredBookAttemptHistoryRow,
-  MonitoredBookDownloadHistoryRow,
   MonitoredBookFileRow,
+  MonitoredEvent,
 } from '../services/monitoredApi';
 import { getFormatColor } from '../utils/colorMaps';
+import { MonitoredEventRow, parseEventMeta } from './MonitoredEventRow';
 
 interface BookDetailsModalProps {
   entityId: number | null;
@@ -50,11 +50,9 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
 
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
 
-  const [historyRows, setHistoryRows] = useState<MonitoredBookDownloadHistoryRow[]>([]);
-  const [attemptHistoryRows, setAttemptHistoryRows] = useState<MonitoredBookAttemptHistoryRow[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [attemptHistoryOpen, setAttemptHistoryOpen] = useState(false);
+  const [eventRows, setEventRows] = useState<MonitoredEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
 
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [descriptionOverflows, setDescriptionOverflows] = useState(false);
@@ -179,40 +177,28 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
     };
   }, [entityId, provider, providerBookId]);
 
+  // Fetch unified events for History tab
   useEffect(() => {
     if (entityId == null || !provider || !providerBookId) {
-      setHistoryRows([]);
-      setAttemptHistoryRows([]);
-      setHistoryError(null);
-      setHistoryLoading(false);
+      setEventRows([]); setEventsLoading(false); setEventsError(null);
       return;
     }
-
     let cancelled = false;
-    setHistoryLoading(true);
-    setHistoryError(null);
+    setEventsLoading(true); setEventsError(null);
     void (async () => {
       try {
-        const resp = await listMonitoredBookDownloadHistory(entityId, provider.trim(), providerBookId.trim(), 30);
-        if (cancelled) return;
-        setHistoryRows(resp.history || []);
-        setAttemptHistoryRows(resp.attempt_history || []);
+        const resp = await listMonitoredBookEvents(entityId, provider.trim(), providerBookId.trim(), 100);
+        if (!cancelled) setEventRows(resp.events || []);
       } catch (error) {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : 'Failed to load history';
-        setHistoryError(message);
-        setHistoryRows([]);
-        setAttemptHistoryRows([]);
-      } finally {
         if (!cancelled) {
-          setHistoryLoading(false);
+          setEventsError(error instanceof Error ? error.message : 'Failed to load events');
+          setEventRows([]);
         }
+      } finally {
+        if (!cancelled) setEventsLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [entityId, provider, providerBookId]);
 
   useEffect(() => {
@@ -276,14 +262,14 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
   }, [bookRow?.audiobook_path]);
 
   const latestDownloaderFinalPath = useMemo(() => {
-    for (const row of historyRows) {
-      const path = (row.final_path || '').trim();
-      if (path) {
-        return path;
-      }
+    for (const ev of eventRows) {
+      if (ev.event_type !== 'download_complete') continue;
+      const meta = parseEventMeta(ev);
+      const path = (meta?.download_path || '').trim();
+      if (path) return path;
     }
     return null;
-  }, [historyRows]);
+  }, [eventRows]);
 
   const ebookMonitorLocked = hasEbookFile;
   const audiobookMonitorLocked = hasAudiobookFile;
@@ -563,29 +549,6 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
   }
 
   const titleId = `book-details-modal-title-${bookRow.id}`;
-  const formatHistoryDate = (value?: string | null): string => {
-    if (!value) return 'Unknown date';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return value;
-    return parsed.toLocaleString();
-  };
-
-  const renderAttemptStatusBadge = (status: string) => {
-    const normalized = (status || '').trim().toLowerCase();
-    const statusClass =
-      normalized === 'queued'
-        ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-        : normalized === 'download_failed' || normalized === 'error'
-          ? 'bg-red-500/20 text-red-700 dark:text-red-300'
-          : normalized === 'below_cutoff' || normalized === 'no_match' || normalized === 'not_released'
-            ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
-            : 'bg-gray-500/20 text-gray-700 dark:text-gray-300';
-    return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide uppercase ${statusClass}`}>
-        {normalized || 'unknown'}
-      </span>
-    );
-  };
 
   return (
     <div
@@ -867,65 +830,19 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                 </div>
 
               ) : tab === 'history' ? (
-                /* ── History tab ── */
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <div className="px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5">Download history</div>
-                    <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                      {historyLoading ? (
-                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading history…</div>
-                      ) : historyError ? (
-                        <div className="px-4 py-4 text-sm text-red-500">{historyError}</div>
-                      ) : historyRows.length === 0 ? (
-                        <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No download/rename history yet.</div>
-                      ) : (
-                        historyRows.map((row) => (
-                          <div key={row.id} className="px-4 py-3">
-                            <div className="text-xs text-gray-500 dark:text-gray-400">{formatHistoryDate(row.downloaded_at)}</div>
-                            <div className="mt-1 text-xs text-gray-700 dark:text-gray-200 break-words">
-                              <span className="font-medium">{row.downloaded_filename || 'Unknown file'}</span>
-                              {row.source_display_name ? ` (${row.source_display_name})` : row.source ? ` (${row.source})` : ''}
-                              {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
-                            </div>
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-words">renamed → {row.final_path || 'Unknown location'}</div>
-                            {row.overwritten_path ? (<div className="mt-1 text-xs text-amber-600 dark:text-amber-400 break-words">overwrote: {row.overwritten_path}</div>) : null}
-                          </div>
-                        ))
-                      )}
+                /* ── History tab — unified events timeline ── */
+                <div className="space-y-2">
+                  {eventsLoading ? (
+                    <div className="px-4 py-8 text-sm text-gray-500 dark:text-gray-400 text-center">Loading history…</div>
+                  ) : eventsError ? (
+                    <div className="px-4 py-8 text-sm text-red-500 text-center">{eventsError}</div>
+                  ) : eventRows.length === 0 ? (
+                    <div className="px-4 py-8 text-sm text-gray-500 dark:text-gray-400 text-center">No activity recorded yet.</div>
+                  ) : (
+                    <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden divide-y divide-gray-200/60 dark:divide-gray-800/60">
+                      {eventRows.map((ev) => <MonitoredEventRow key={ev.id} event={ev} />)}
                     </div>
-                  </div>
-                  <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden">
-                    <button type="button" onClick={() => setAttemptHistoryOpen((prev) => !prev)} className="w-full px-4 py-3 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-white/5 flex items-center justify-between hover-action" aria-expanded={attemptHistoryOpen}>
-                      <span>Attempt history ({attemptHistoryRows.length})</span>
-                      <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${attemptHistoryOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                    </button>
-                    {attemptHistoryOpen ? (
-                      <div className="divide-y divide-gray-200/60 dark:divide-gray-800/60">
-                        {historyLoading ? (
-                          <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">Loading attempt history…</div>
-                        ) : historyError ? (
-                          <div className="px-4 py-4 text-sm text-red-500">{historyError}</div>
-                        ) : attemptHistoryRows.length === 0 ? (
-                          <div className="px-4 py-4 text-sm text-gray-500 dark:text-gray-400">No monitored attempt history yet.</div>
-                        ) : (
-                          attemptHistoryRows.map((row) => (
-                            <div key={row.id} className="px-4 py-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-xs text-gray-500 dark:text-gray-400">{formatHistoryDate(row.attempted_at)}</div>
-                                {renderAttemptStatusBadge(row.status)}
-                              </div>
-                              <div className="mt-1 text-xs text-gray-700 dark:text-gray-200 break-words">
-                                <span className="font-medium">{row.release_title || 'No release title'}</span>
-                                {row.source ? ` (${row.source})` : ''}
-                                {typeof row.match_score === 'number' ? ` · score ${row.match_score}` : ''}
-                              </div>
-                              {row.error_message ? (<div className="mt-1 text-xs text-red-600 dark:text-red-300 break-words">{row.error_message}</div>) : null}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
+                  )}
                 </div>
 
               ) : tab === 'ebooks' ? (

@@ -428,7 +428,7 @@ def diff_sync_books(
     existing_books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
     result = DiffResult()
 
-    # Collect books to flag as removed (single batch UPDATE instead of N queries)
+    existing_keys: set[str] = set()
     keys_to_remove: list[tuple[str, str]] = []
     for book in existing_books:
         provider = str(book.get("provider") or "").strip()
@@ -436,6 +436,7 @@ def diff_sync_books(
         if not provider or not provider_book_id:
             continue
         key = f"{provider}:{provider_book_id}"
+        existing_keys.add(key)
         state = str(book.get("state") or "discovered")
 
         if key not in current_provider_ids:
@@ -443,6 +444,8 @@ def diff_sync_books(
                 continue  # already flagged or user-ignored
             keys_to_remove.append((provider, provider_book_id))
             result.removed_titles.append(str(book.get("title") or "Unknown"))
+
+    result.added = len(current_provider_ids - existing_keys)
 
     if keys_to_remove:
         try:

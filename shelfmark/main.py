@@ -164,6 +164,8 @@ if monitored_db is not None:
     from shelfmark.core.monitored_downloads import set_monitored_db, register_hooks, load_pending_releases_from_db
     set_monitored_db(monitored_db)
     register_hooks()
+    from shelfmark.core.monitored_history import set_db as _set_history_db
+    _set_history_db(monitored_db)
 
 # Register download recovery hooks (persists download IDs to DB)
 if download_history_service is not None:

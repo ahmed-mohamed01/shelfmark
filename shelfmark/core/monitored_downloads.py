@@ -232,12 +232,14 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
     try:
         if status == QueueStatus.COMPLETE:
             _record_download_history(task)
+            _record_download_event(task, "complete")
             _clear_pending(task)
         elif status == QueueStatus.ERROR:
             try:
                 _record_attempt_failure(task)
             except Exception as e:
                 logger.warning("Failed to record monitored attempt failure for %s: %s", book_id, e)
+            _record_download_event(task, "failed")
             _try_next_release(task)
         # CANCELLED status: clear pending, no retry
         elif status == QueueStatus.CANCELLED:
@@ -255,6 +257,43 @@ def _is_monitored_download(task: DownloadTask) -> bool:
     """Check if a download task originated from a monitored entity."""
     history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
     return isinstance(history_context, dict) and history_context.get("entity_id") is not None
+
+
+def _record_download_event(task: DownloadTask, outcome: str) -> None:
+    """Record a download event to the unified monitored_events table."""
+    if not _is_monitored_download(task):
+        return
+    try:
+        from shelfmark.core.monitored_history import record_download_complete, record_download_failed
+        hc = task.output_args.get("history_context", {})
+        common = dict(
+            entity_id=int(hc["entity_id"]),
+            book_provider=str(hc.get("provider") or ""),
+            book_provider_id=str(hc.get("provider_book_id") or ""),
+            book_title=str(task.title or ""),
+            author_name=str(task.author or ""),
+            content_type=task.content_type,
+            source=str(task.source or ""),
+            source_display_name=get_source_display_name(task.source),
+            task_id=task.task_id,
+            user_id=task.user_id,
+        )
+        if outcome == "complete":
+            record_download_complete(
+                **common,
+                download_path=task.download_path,
+                downloaded_filename=str(hc.get("downloaded_filename") or ""),
+                match_score=_parse_float_safe(hc.get("match_score")),
+            )
+        elif outcome == "failed":
+            record_download_failed(
+                **common,
+                error_message=task.status_message or task.last_error_message,
+                release_title=str(hc.get("release_title") or ""),
+                match_score=_parse_float_safe(hc.get("match_score")),
+            )
+    except Exception as exc:
+        logger.debug("Failed to record download event for %s: %s", task.task_id, exc)
 
 
 def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
@@ -633,6 +672,24 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
         if success:
             title = release.get("title") or release.get("display_title") or "Unknown"
             score = release.get("_match_score", 0)
+            try:
+                from shelfmark.core.monitored_history import record_download_queued
+                record_download_queued(
+                    entity_id=entity_id,
+                    book_provider=provider,
+                    book_provider_id=provider_book_id,
+                    book_title=title,
+                    content_type=content_type,
+                    task_id=str(release.get("source_id", "")),
+                    source=str(release.get("source", "")),
+                    release_title=str(release.get("raw_title") or release.get("display_title") or ""),
+                    match_score=score if isinstance(score, (int, float)) else None,
+                    format=str(release.get("format", "")),
+                    size=str(release.get("size", "")),
+                    user_id=user_id,
+                )
+            except Exception as exc:
+                logger.debug("Failed to record download_queued event: %s", exc)
             return True, f"Queued: {title} (score: {score:.0f}%, {remaining} fallbacks)"
 
         # Immediate queue failure — loop to try next release
@@ -817,4 +874,22 @@ def write_monitored_book_attempt(
         match_score=match_score,
         error_message=error_message,
     )
+
+    # Record to unified events table
+    try:
+        from shelfmark.core.monitored_history import record_search_result
+        record_search_result(
+            entity_id=entity_id,
+            book_provider=provider,
+            book_provider_id=provider_book_id,
+            content_type=content_type,
+            search_status=status,
+            release_title=release_title,
+            match_score=match_score,
+            error_message=error_message,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        logger.debug("Failed to record search_result event: %s", exc)
+
     return attempted_at_iso

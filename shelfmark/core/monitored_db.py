@@ -156,6 +156,36 @@ CREATE TABLE IF NOT EXISTS monitored_pending_releases (
     post_process_retries INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS monitored_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    entity_id INTEGER REFERENCES monitored_entities(id) ON DELETE SET NULL,
+    book_provider TEXT,
+    book_provider_id TEXT,
+    book_title TEXT,
+    author_name TEXT,
+    content_type TEXT,
+    source TEXT,
+    source_display_name TEXT,
+    status TEXT,
+    message TEXT,
+    metadata_json TEXT,
+    user_id INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_events_entity
+ON monitored_events (entity_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_events_book
+ON monitored_events (entity_id, book_provider, book_provider_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_events_type
+ON monitored_events (event_type, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_events_date
+ON monitored_events (created_at DESC);
 """
 
 
@@ -255,6 +285,76 @@ def _migrate_monitored_book_files_v3(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_monitored_events_backfill_user_id(conn: sqlite3.Connection) -> None:
+    """Backfill ``user_id`` on events recorded before the column was populated.
+
+    Events are now scoped by ``user_id`` for multi-user isolation. Older rows
+    may have NULL because ``_record_sync_success/_record_sync_failure`` did not
+    pass it through. Recover via the FK to ``monitored_entities`` where possible.
+    Idempotent.
+    """
+    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'").fetchone():
+        return
+    conn.execute(
+        """
+        UPDATE monitored_events
+        SET user_id = (
+            SELECT user_id FROM monitored_entities
+            WHERE monitored_entities.id = monitored_events.entity_id
+        )
+        WHERE user_id IS NULL AND entity_id IS NOT NULL
+        """
+    )
+    conn.commit()
+
+
+def _migrate_monitored_events_cascade_to_set_null(conn: sqlite3.Connection) -> None:
+    """Change monitored_events.entity_id FK from CASCADE to SET NULL.
+
+    Events should be preserved as an audit trail when an author is deleted.
+    Idempotent — safe to call multiple times.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='monitored_events'"
+    ).fetchone()
+    if not row:
+        return  # table doesn't exist yet; CREATE TABLE will handle it
+    schema: str = row[0] if isinstance(row, tuple) else row["sql"]
+    if "ON DELETE SET NULL" in schema:
+        return  # already migrated
+    if "ON DELETE CASCADE" not in schema:
+        return  # unexpected schema, skip
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+        ALTER TABLE monitored_events RENAME TO monitored_events_old;
+        CREATE TABLE monitored_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            entity_id INTEGER REFERENCES monitored_entities(id) ON DELETE SET NULL,
+            book_provider TEXT,
+            book_provider_id TEXT,
+            book_title TEXT,
+            author_name TEXT,
+            content_type TEXT,
+            source TEXT,
+            source_display_name TEXT,
+            status TEXT,
+            message TEXT,
+            metadata_json TEXT,
+            user_id INTEGER,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO monitored_events SELECT * FROM monitored_events_old;
+        DROP TABLE monitored_events_old;
+        CREATE INDEX IF NOT EXISTS idx_monitored_events_entity ON monitored_events (entity_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitored_events_book ON monitored_events (entity_id, book_provider, book_provider_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitored_events_type ON monitored_events (event_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_monitored_events_date ON monitored_events (created_at DESC);
+        PRAGMA foreign_keys = ON;
+    """)
+    conn.commit()
+
+
 class MonitoredDB:
     """Thread-safe SQLite interface for monitored_* tables.
 
@@ -281,6 +381,8 @@ class MonitoredDB:
                 _migrate_monitored_book_files_v2(conn)
                 _migrate_monitored_book_files_v3(conn)
                 conn.executescript(_CREATE_MONITORED_TABLES_SQL)
+                _migrate_monitored_events_cascade_to_set_null(conn)
+                _migrate_monitored_events_backfill_user_id(conn)
                 # Lazy migration: column is in CREATE TABLE for new DBs but
                 # existing tables need ALTER TABLE (CREATE IF NOT EXISTS is a no-op).
                 try:
@@ -2008,6 +2110,223 @@ class MonitoredDB:
         try:
             rows = conn.execute(
                 "SELECT * FROM monitored_pending_releases ORDER BY created_at ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # =========================================================================
+    # Monitored Events (unified history / activity log)
+    # =========================================================================
+
+    def insert_event(
+        self,
+        *,
+        event_type: str,
+        entity_id: int | None = None,
+        book_provider: str | None = None,
+        book_provider_id: str | None = None,
+        book_title: str | None = None,
+        author_name: str | None = None,
+        content_type: str | None = None,
+        source: str | None = None,
+        source_display_name: str | None = None,
+        status: str | None = None,
+        message: str | None = None,
+        metadata_json: str | None = None,
+        user_id: int | None = None,
+    ) -> int | None:
+        """Insert a history event and return its id."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO monitored_events (
+                        event_type, entity_id, book_provider, book_provider_id,
+                        book_title, author_name, content_type,
+                        source, source_display_name, status, message,
+                        metadata_json, user_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_type, entity_id, book_provider, book_provider_id,
+                        book_title, author_name, content_type,
+                        source, source_display_name, status, message,
+                        metadata_json, user_id,
+                    ),
+                )
+                conn.commit()
+                return cursor.lastrowid
+            finally:
+                conn.close()
+
+    def list_events(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int | None = None,
+        book_provider: str | None = None,
+        book_provider_id: str | None = None,
+        event_types: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return paginated events scoped to *user_ids*. Returns (rows, total_count)."""
+        if not user_ids:
+            return [], 0
+        conn = self._connect()
+        try:
+            user_clause, user_params = self._user_id_clause(user_ids)
+            conditions: list[str] = [user_clause]
+            params: list[Any] = list(user_params)
+
+            if entity_id is not None:
+                conditions.append("entity_id = ?")
+                params.append(entity_id)
+            if book_provider is not None and book_provider_id is not None:
+                conditions.append("book_provider = ? AND book_provider_id = ?")
+                params.extend([book_provider, book_provider_id])
+            if event_types:
+                placeholders = ",".join("?" * len(event_types))
+                conditions.append(f"event_type IN ({placeholders})")
+                params.extend(event_types)
+            if since:
+                conditions.append("created_at >= ?")
+                params.append(since)
+            if until:
+                conditions.append("created_at <= ?")
+                params.append(until)
+
+            where = f" WHERE {' AND '.join(conditions)}"
+
+            count_row = conn.execute(
+                f"SELECT COUNT(*) FROM monitored_events{where}", params,
+            ).fetchone()
+            total = count_row[0] if count_row else 0
+
+            query_params = list(params)
+            query_params.extend([limit, offset])
+            rows = conn.execute(
+                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                query_params,
+            ).fetchall()
+            return [dict(r) for r in rows], total
+        finally:
+            conn.close()
+
+    def count_events_by_type(self, *, user_ids: list[int], since: str | None = None) -> dict[str, int]:
+        """Return event counts grouped by type, scoped to *user_ids*."""
+        if not user_ids:
+            return {}
+        conn = self._connect()
+        try:
+            user_clause, user_params = self._user_id_clause(user_ids)
+            params: list[Any] = list(user_params)
+            where = f"WHERE {user_clause}"
+            if since:
+                where += " AND created_at >= ?"
+                params.append(since)
+            rows = conn.execute(
+                f"SELECT event_type, COUNT(*) as cnt FROM monitored_events {where} GROUP BY event_type",
+                params,
+            ).fetchall()
+            return {row["event_type"]: row["cnt"] for row in rows}
+        finally:
+            conn.close()
+
+    def count_sync_batches(self, *, user_ids: list[int], since: str | None = None) -> int:
+        """Count distinct sync batches, scoped to *user_ids*."""
+        if not user_ids:
+            return 0
+        conn = self._connect()
+        try:
+            user_clause, user_params = self._user_id_clause(user_ids)
+            params: list[Any] = list(user_params)
+            where = (
+                f"WHERE {user_clause} "
+                "AND event_type IN ('author_synced', 'author_sync_failed') "
+                "AND json_extract(metadata_json, '$.batch_id') IS NOT NULL"
+            )
+            if since:
+                where += " AND created_at >= ?"
+                params.append(since)
+            row = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT json_extract(metadata_json, '$.batch_id')) as cnt
+                FROM monitored_events {where}
+                """,
+                params,
+            ).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
+
+    def delete_events(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int | None = None,
+        before: str | None = None,
+    ) -> int:
+        """Delete events scoped to *user_ids*. Returns number of rows deleted."""
+        if not user_ids:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                user_clause, user_params = self._user_id_clause(user_ids)
+                conditions: list[str] = [user_clause]
+                params: list[Any] = list(user_params)
+                if entity_id is not None:
+                    conditions.append("entity_id = ?")
+                    params.append(entity_id)
+                if before:
+                    conditions.append("created_at < ?")
+                    params.append(before)
+                where = f" WHERE {' AND '.join(conditions)}"
+                cursor = conn.execute(f"DELETE FROM monitored_events{where}", params)
+                conn.commit()
+                return cursor.rowcount or 0
+            finally:
+                conn.close()
+
+    def export_events(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int | None = None,
+        event_types: list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return all matching events scoped to *user_ids* (no pagination)."""
+        if not user_ids:
+            return []
+        conn = self._connect()
+        try:
+            user_clause, user_params = self._user_id_clause(user_ids)
+            conditions: list[str] = [user_clause]
+            params: list[Any] = list(user_params)
+            if entity_id is not None:
+                conditions.append("entity_id = ?")
+                params.append(entity_id)
+            if event_types:
+                placeholders = ",".join("?" * len(event_types))
+                conditions.append(f"event_type IN ({placeholders})")
+                params.extend(event_types)
+            if since:
+                conditions.append("created_at >= ?")
+                params.append(since)
+            if until:
+                conditions.append("created_at <= ?")
+                params.append(until)
+            where = f" WHERE {' AND '.join(conditions)}"
+            rows = conn.execute(
+                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC",
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
         finally:

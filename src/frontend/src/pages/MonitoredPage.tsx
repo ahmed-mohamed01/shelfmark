@@ -36,6 +36,7 @@ import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewMod
 import { MonitoredAuthorsView, type AuthorAvailabilityStats } from '../components/MonitoredAuthorsView';
 import { MonitoredBooksView, type MonitoredBookListRow, type MonitoredBooksGroup } from '../components/MonitoredBooksView';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
+import { MonitoredHistoryTab } from '../components/MonitoredHistoryTab';
 import { FloatingSelectionBar, type FloatingSelectionBarAction } from '../components/FloatingSelectionBar';
 import { hapticTap } from '../utils/haptics';
 import { Book, ButtonStateInfo, ContentType, OpenReleasesOptions, ReleasePrimaryAction, SortOption, StatusData } from '../types';
@@ -118,7 +119,7 @@ const groupMonitoredBooks = (
 };
 
 
-const LANDING_TAB_ORDER: readonly ('authors' | 'books' | 'upcoming' | 'search')[] = ['authors', 'books', 'upcoming', 'search'];
+const LANDING_TAB_ORDER: readonly ('authors' | 'books' | 'upcoming' | 'search' | 'history')[] = ['authors', 'books', 'upcoming', 'search', 'history'];
 
 interface MonitoredPageProps {
   onActivityClick?: () => void;
@@ -304,9 +305,9 @@ export const MonitoredPage = ({
   onRemoveToast: _onRemoveToast,
   setTransientActivityItems,
 }: MonitoredPageProps) => {
-  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search' | 'author-detail'>(() => {
+  const [landingTab, setLandingTab] = useState<'authors' | 'books' | 'upcoming' | 'search' | 'history' | 'author-detail'>(() => {
     const saved = localStorage.getItem('monitoredLandingTab');
-    return saved === 'books' || saved === 'upcoming' || saved === 'search' ? saved : 'authors';
+    return saved === 'books' || saved === 'upcoming' || saved === 'search' || saved === 'history' ? saved : 'authors';
   });
   const [view, setView] = useState<'landing' | 'search'>('landing');
   const [activeAuthorDetail, setActiveAuthorDetail] = useState<{
@@ -321,6 +322,9 @@ export const MonitoredPage = ({
   const [authorBooksControls, setAuthorBooksControls] = useState<import('../components/MonitoredAuthorBooksTab').AuthorBooksTabControls | null>(null);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
   const prevTabIndexRef = useRef(LANDING_TAB_ORDER.indexOf(landingTab as typeof LANDING_TAB_ORDER[number]));
+  const historyExportRef = useRef<(() => void) | null>(null);
+  const historyClearRef = useRef<(() => void) | null>(null);
+  const [historyDateRange, setHistoryDateRange] = useState('');
   const mobileTabRefs = useRef<Record<string, HTMLElement | null>>({});
   const mobileTabIndicatorRef = useRef<HTMLDivElement | null>(null);
   const desktopTabRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -2107,7 +2111,7 @@ export const MonitoredPage = ({
   const deferredAuthorCleanupRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (deferredAuthorCleanupRef.current) clearTimeout(deferredAuthorCleanupRef.current); }, []);
 
-  const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search' | 'author-detail') => {
+  const openMonitoredTab = useCallback((tab: 'authors' | 'books' | 'upcoming' | 'search' | 'history' | 'author-detail') => {
     if (tab !== 'author-detail' && activeAuthorDetail) {
       // Animate indicator to target tab first, then remove the author tab after animation
       setLandingTab(tab);
@@ -2888,9 +2892,9 @@ export const MonitoredPage = ({
                     {/* Mobile: horizontal scrollable tab bar with sliding indicator */}
                     <div className="sm:hidden relative flex items-center gap-0 overflow-x-auto scrollbar-hide -mx-1">
                       <div ref={mobileTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
-                      {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
-                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Releases' : 'Search';
-                        const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
+                      {(['authors', 'books', 'upcoming', 'search', 'history'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
+                        const label = key === 'authors' ? 'Authors' : key === 'books' ? 'Monitored' : key === 'upcoming' ? 'Releases' : key === 'search' ? 'Search' : 'History';
+                        const count = key !== 'search' && key !== 'history' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
                         return (
                           <button
@@ -2932,9 +2936,9 @@ export const MonitoredPage = ({
                     {/* Desktop: text tabs with sliding underline (matches mobile style) */}
                     <div className="hidden sm:flex relative items-center gap-0">
                       <div ref={desktopTabIndicatorRef} className="absolute bottom-0 h-0.5 bg-emerald-600 rounded-full transition-all duration-300 ease-out" />
-                      {(['authors', 'books', 'upcoming', 'search'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
-                        const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Releases' : 'Search';
-                        const count = key !== 'search' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
+                      {(['authors', 'books', 'upcoming', 'search', 'history'] as const).filter((key) => !activeAuthorDetail || key === 'authors').map((key) => {
+                        const label = key === 'authors' ? 'Monitored Authors' : key === 'books' ? 'Monitored Books' : key === 'upcoming' ? 'Releases' : key === 'search' ? 'Search' : 'History';
+                        const count = key !== 'search' && key !== 'history' ? (key === 'authors' ? displayAuthorsCount : key === 'books' ? displayBooksCount : displayUpcomingCount) : null;
                         const isActive = landingTab === key;
                         return (
                           <button
@@ -2974,7 +2978,7 @@ export const MonitoredPage = ({
                       )}
                     </div>
                   </div>
-                  <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' ? 'hidden' : ''}`}>
+                  <div className={`flex items-center gap-2 flex-wrap justify-end ml-auto ${landingTab === 'search' || landingTab === 'history' ? 'hidden' : ''}`}>
                     {landingTab === 'author-detail' && activeAuthorDetail ? (
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Sync this author */}
@@ -3584,6 +3588,55 @@ export const MonitoredPage = ({
                       </>
                     )}
                   </div>
+                  {/* History tab: date filter + overflow in header */}
+                  {landingTab === 'history' ? (
+                    <div className="flex items-center gap-2 ml-auto">
+                      <select
+                        value={historyDateRange}
+                        onChange={e => setHistoryDateRange(e.target.value)}
+                        className="px-2 py-1.5 rounded-lg text-xs bg-[var(--bg)] border border-[var(--border-muted)] text-[var(--text)]"
+                      >
+                        <option value="">All time</option>
+                        <option value="today">Today</option>
+                        <option value="7d">7 days</option>
+                        <option value="30d">30 days</option>
+                      </select>
+                      <Dropdown
+                        align="right"
+                        widthClassName="w-auto"
+                        panelClassName="z-[2200] min-w-[180px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+                        renderTrigger={({ isOpen, toggle }) => (
+                          <button
+                            type="button"
+                            onClick={toggle}
+                            className={`p-2 rounded-full transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${isOpen ? 'text-white bg-emerald-600 hover:bg-emerald-700' : 'hover-action text-gray-900 dark:text-gray-100'}`}
+                            title="History options"
+                            aria-label="History options"
+                            aria-expanded={isOpen}
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+                              <circle cx="12" cy="5" r="1.5" />
+                              <circle cx="12" cy="12" r="1.5" />
+                              <circle cx="12" cy="19" r="1.5" />
+                            </svg>
+                          </button>
+                        )}
+                      >
+                        {({ close }) => (
+                          <div className="px-3 py-3 space-y-1">
+                            <button type="button" className="w-full px-2.5 py-2 rounded-lg text-left text-sm hover-surface flex items-center gap-2" onClick={() => { historyExportRef.current?.(); close(); }}>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+                              Export CSV
+                            </button>
+                            <button type="button" className="w-full px-2.5 py-2 rounded-lg text-left text-sm hover-surface flex items-center gap-2 text-red-600 dark:text-red-400" onClick={() => { historyClearRef.current?.(); close(); }}>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>
+                              Clear History
+                            </button>
+                          </div>
+                        )}
+                      </Dropdown>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className={`flex-1 min-h-0 overflow-visible sm:overflow-y-auto px-4 pt-3 pb-4 ${swipeDirection === 'left' ? 'animate-tab-slide-right' : swipeDirection === 'right' ? 'animate-tab-slide-left' : ''}`}>
@@ -3705,6 +3758,8 @@ export const MonitoredPage = ({
                       displaySearchCount={displaySearchCount}
                     />
                     </>
+                  ) : landingTab === 'history' ? (
+                    <MonitoredHistoryTab onShowToast={onShowToast} exportRef={historyExportRef} clearRef={historyClearRef} dateRange={historyDateRange} />
                   ) : landingTab === 'authors' ? (
                     <MonitoredAuthorsView
                       viewMode={monitoredViewMode}
