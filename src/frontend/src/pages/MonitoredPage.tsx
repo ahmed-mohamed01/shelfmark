@@ -4166,6 +4166,17 @@ export const MonitoredPage = ({
         onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
         hidden={activeBookMonitorState.row ? isEnabledMonitoredFlag(activeBookMonitorState.row.hidden) : false}
         onToggleHidden={activeBookMonitorState.row ? () => void toggleSingleBookHidden(activeBookMonitorState.row!) : undefined}
+        onAuthorClick={(authorName) => {
+          const entity = monitored.find((e) => e.id === activeBookEntityId);
+          navigateToAuthorPage({
+            name: authorName,
+            provider: entity?.provider || null,
+            provider_id: entity?.provider_id || null,
+            photo_url: entity?.photo_url || null,
+            source_url: entity?.cached_source_url || null,
+            monitoredEntityId: entity?.id ?? null,
+          });
+        }}
         onSetReleaseDate={activeBookEntityId != null && activeBookSourceRow ? (_row) => {
           setActiveBookEntityId(null);
           setActiveBookSourceRow(null);

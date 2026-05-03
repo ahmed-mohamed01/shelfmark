@@ -21,6 +21,7 @@ interface BookDetailsModalProps {
   onClose: () => void;
   onToggleMonitor?: (type: 'ebook' | 'audiobook' | 'both') => void;
   onNavigateToSeries?: (seriesName: string) => void;
+  onAuthorClick?: (authorName: string) => void;
   renderEmbeddedSearch: (book: Book, contentType: ContentType, monitoredEntityId?: number | null) => ReactNode;
   previewBook?: Book | null;
   onMonitorBook?: (book: Book) => void;
@@ -34,7 +35,7 @@ const TAB_ORDER: readonly TabKey[] = ['details', 'files', 'history', 'ebooks', '
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate, hidden, onToggleHidden }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, onAuthorClick, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate, hidden, onToggleHidden }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('details');
   const [showHeaderThumb, setShowHeaderThumb] = useState(false);
@@ -622,7 +623,13 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                   Removed from Hardcover
                 </span>
               )}
-              <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{embeddedSearchBook.author || 'Unknown author'}</p>
+              {onAuthorClick && embeddedSearchBook.author ? (
+                <button type="button" onClick={() => { setIsClosing(true); onAuthorClick(embeddedSearchBook.author!); setTimeout(onClose, 50); }} className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline truncate text-left" title={`Go to ${embeddedSearchBook.author}`}>
+                  {embeddedSearchBook.author}
+                </button>
+              ) : (
+                <p className="text-sm text-gray-600 dark:text-gray-300 truncate">{embeddedSearchBook.author || 'Unknown author'}</p>
+              )}
             </div>
             <button
               type="button"

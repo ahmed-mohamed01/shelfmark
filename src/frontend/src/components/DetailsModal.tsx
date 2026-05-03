@@ -11,6 +11,7 @@ interface DetailsModalProps {
   onDownload: (book: Book) => Promise<void>;
   onFindDownloads?: (book: Book) => void;  // For Universal mode
   onSearchSeries?: (seriesName: string, seriesId?: string) => void;  // Callback to search for series
+  onAuthorClick?: (authorName: string) => void;
   buttonState: ButtonStateInfo;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
@@ -22,6 +23,7 @@ export const DetailsModal = ({
   onDownload,
   onFindDownloads,
   onSearchSeries,
+  onAuthorClick,
   buttonState,
   showReleaseSourceLinks = true,
   onShowToast,
@@ -165,9 +167,15 @@ export const DetailsModal = ({
               <h3 id={titleId} className="text-lg font-semibold leading-snug">
                 {book.title || 'Untitled'}
               </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300">
-                {book.author || 'Unknown author'}
-              </p>
+              {onAuthorClick && book.author ? (
+                <button type="button" onClick={() => { onAuthorClick(book.author!); handleClose(); }} className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline truncate text-left" title={`Search for ${book.author}`}>
+                  {book.author}
+                </button>
+              ) : (
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  {book.author || 'Unknown author'}
+                </p>
+              )}
             </div>
             <button
               type="button"

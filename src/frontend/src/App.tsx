@@ -2648,6 +2648,10 @@ function App() {
               void handleGetReleases(book);
             }}
             onSearchSeries={canSearchSeriesForBook(selectedBook) ? handleSearchSeries : undefined}
+            onAuthorClick={(authorName) => {
+              setSearchInput(authorName);
+              void handleSearch({ query: authorName, config });
+            }}
             buttonState={
               isMetadataBook(selectedBook)
                 ? getUniversalActionButtonState(selectedBook.id)
