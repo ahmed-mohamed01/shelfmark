@@ -204,6 +204,7 @@ const MONITORED_BOOKS_SEARCH_QUERY_KEY = 'monitoredBooksSearchQuery';
 const MONITORED_BOOKS_SEARCH_EXPANDED_KEY = 'monitoredBooksSearchExpanded';
 const MONITORED_BOOKS_AVAILABILITY_FILTER_KEY = 'monitoredBooksAvailabilityFilter';
 const MONITORED_UPCOMING_TIME_FILTER_KEY = 'monitoredUpcomingTimeFilter';
+const MONITORED_RELEASES_SHOW_UNMONITORED_KEY = 'monitoredReleasesShowUnmonitored';
 
 // Recomputed when the date changes (e.g. page stays open past midnight).
 function _computeDateConstants() {
@@ -467,6 +468,9 @@ export const MonitoredPage = ({
   const [upcomingTimeFilter, setUpcomingTimeFilter] = useState<UpcomingTimeFilter>(() => {
     const saved = localStorage.getItem(MONITORED_UPCOMING_TIME_FILTER_KEY);
     return saved === '3months' || saved === 'this_year' || saved === 'tba' ? saved : 'all';
+  });
+  const [showUnmonitoredInReleases, setShowUnmonitoredInReleases] = useState<boolean>(() => {
+    return localStorage.getItem(MONITORED_RELEASES_SHOW_UNMONITORED_KEY) === 'true';
   });
   const [monitoredSortBy, setMonitoredSortBy] = useState<'alphabetical' | 'date_added' | 'books_count'>(() => {
     const saved = localStorage.getItem('monitoredAuthorSortBy');
@@ -1122,14 +1126,7 @@ export const MonitoredPage = ({
     return map;
   }, [monitoredBooksRows]);
 
-  const monitoredBooksForTable = useMemo(() => {
-    const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
-      !isEnabledMonitoredFlag(book.hidden)
-      && (monitoredBookTracksEbook(book)
-        || monitoredBookTracksAudiobook(book)
-        || monitoredBookHasAnyAvailable(book))
-    ));
-
+  const sortBooksForDisplay = useCallback((books: MonitoredBookListRow[]) => {
     const getReleaseSortKey = (book: MonitoredBookListRow): number => {
       if (typeof book.release_date === 'string' && book.release_date.trim()) {
         const parsed = Date.parse(book.release_date);
@@ -1141,7 +1138,7 @@ export const MonitoredPage = ({
 
     const dir = monitoredBooksSortAsc ? 1 : -1;
 
-    return trackedOrFulfilled.sort((a, b) => {
+    return [...books].sort((a, b) => {
       if (monitoredBooksSortBy === 'date') {
         const diff = getReleaseSortKey(a) - getReleaseSortKey(b);
         if (diff !== 0) return diff * dir;
@@ -1160,17 +1157,36 @@ export const MonitoredPage = ({
       if (titleCompare !== 0) return titleCompare * dir;
       return (a.author_name || '').localeCompare(b.author_name || '', undefined, { sensitivity: 'base' }) * dir;
     });
-  }, [monitoredBooksRows, monitoredBooksSortBy, monitoredBooksSortAsc]);
+  }, [monitoredBooksSortBy, monitoredBooksSortAsc]);
+
+  const monitoredBooksForTable = useMemo(() => {
+    const trackedOrFulfilled = monitoredBooksRows.filter((book) => (
+      !isEnabledMonitoredFlag(book.hidden)
+      && (monitoredBookTracksEbook(book)
+        || monitoredBookTracksAudiobook(book)
+        || monitoredBookHasAnyAvailable(book))
+    ));
+    return sortBooksForDisplay(trackedOrFulfilled);
+  }, [monitoredBooksRows, sortBooksForDisplay]);
+
+  // Releases-tab base set: same as monitoredBooksForTable, but when the
+  // "Show unmonitored books" overflow toggle is on, the tracks/available
+  // requirement is dropped — only `hidden` still excludes a book.
+  const releasesBaseRows = useMemo(() => {
+    if (!showUnmonitoredInReleases) return monitoredBooksForTable;
+    const visible = monitoredBooksRows.filter((book) => !isEnabledMonitoredFlag(book.hidden));
+    return sortBooksForDisplay(visible);
+  }, [monitoredBooksForTable, monitoredBooksRows, showUnmonitoredInReleases, sortBooksForDisplay]);
 
   const upcomingMonitoredBooksForTable = useMemo(() => {
     const { todayStartMs, currentYear } = _getDateConstants();
-    return monitoredBooksForTable.filter((book) => isMonitoredBookUpcoming(book, todayStartMs, currentYear));
-  }, [monitoredBooksForTable]);
+    return releasesBaseRows.filter((book) => isMonitoredBookUpcoming(book, todayStartMs, currentYear));
+  }, [releasesBaseRows]);
 
   const recentlyReleasedBooksForTable = useMemo(() => {
     const { todayStartMs } = _getDateConstants();
-    return monitoredBooksForTable.filter((book) => isMonitoredBookRecentlyReleased(book, todayStartMs));
-  }, [monitoredBooksForTable]);
+    return releasesBaseRows.filter((book) => isMonitoredBookRecentlyReleased(book, todayStartMs));
+  }, [releasesBaseRows]);
 
   const filteredUpcomingByTime = useMemo(() => {
     if (upcomingTimeFilter === 'all' || upcomingTimeFilter === 'recent') return upcomingMonitoredBooksForTable;
@@ -1183,8 +1199,7 @@ export const MonitoredPage = ({
   const regularMonitoredBooksForTable = useMemo(() => {
     const { todayStartMs, currentYear } = _getDateConstants();
     return monitoredBooksForTable.filter((book) =>
-      !isMonitoredBookUpcoming(book, todayStartMs, currentYear)
-      && !isMonitoredBookRecentlyReleased(book, todayStartMs),
+      !isMonitoredBookUpcoming(book, todayStartMs, currentYear),
     );
   }, [monitoredBooksForTable]);
 
@@ -1305,6 +1320,7 @@ export const MonitoredPage = ({
       localStorage.setItem('monitoredBooksGroupBy', monitoredBooksGroupBy);
       localStorage.setItem(MONITORED_BOOKS_AVAILABILITY_FILTER_KEY, monitoredBooksAvailabilityFilter);
       localStorage.setItem(MONITORED_UPCOMING_TIME_FILTER_KEY, upcomingTimeFilter);
+      localStorage.setItem(MONITORED_RELEASES_SHOW_UNMONITORED_KEY, String(showUnmonitoredInReleases));
       if (landingTab !== 'author-detail') localStorage.setItem('monitoredLandingTab', landingTab);
       localStorage.setItem('monitoredAuthorSortBy', monitoredSortBy);
       localStorage.setItem('monitoredAuthorSortAsc', String(monitoredSortAsc));
@@ -1321,6 +1337,7 @@ export const MonitoredPage = ({
     monitoredBooksGroupBy,
     monitoredBooksAvailabilityFilter,
     upcomingTimeFilter,
+    showUnmonitoredInReleases,
     landingTab,
     monitoredSortBy,
     monitoredSortAsc,
@@ -1671,7 +1688,11 @@ export const MonitoredPage = ({
       const hasFailure = results.some((result) => result.status === 'rejected');
 
       const selectedKeys = new Set(selectedRows.map((book) => getMonitoredBookSelectionKey(book)));
-      setMonitoredBooksRows((prev) => prev.filter((book) => !selectedKeys.has(getMonitoredBookSelectionKey(book))));
+      setMonitoredBooksRows((prev) => prev.map((book) => (
+        selectedKeys.has(getMonitoredBookSelectionKey(book))
+          ? { ...book, monitor_ebook: 0, monitor_audiobook: 0 }
+          : book
+      )));
       setSelectedMonitoredBookKeys({});
 
       if (hasFailure) {
@@ -3582,6 +3603,27 @@ export const MonitoredPage = ({
                                   <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Switch to compact view to adjust size.</div>
                                 ) : null}
                               </div>
+
+                              {landingTab === 'upcoming' ? (
+                                <div>
+                                  <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Display</div>
+                                  <button
+                                    type="button"
+                                    className={`w-full px-2.5 py-1.5 rounded-lg text-left text-sm hover-surface flex items-center justify-between ${showUnmonitoredInReleases ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                                    onClick={() => setShowUnmonitoredInReleases((v) => !v)}
+                                    role="option"
+                                    aria-selected={showUnmonitoredInReleases}
+                                    title="Include books you've unmonitored (hidden books always excluded)"
+                                  >
+                                    <span>Show unmonitored books</span>
+                                    {showUnmonitoredInReleases && (
+                                      <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                      </svg>
+                                    )}
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </Dropdown>
