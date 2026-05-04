@@ -412,6 +412,12 @@ def monitoring_schedules_settings():
             placeholder="02:00,14:00",
             show_when={"field": "MONITORED_SCHEDULED_REFRESH_ENABLED", "value": True},
         ),
+        CheckboxField(
+            key="MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED",
+            label="Enable Scheduled Auto-Download",
+            description="Automatically search and download monitored books at the configured refresh times. Runs independently of book-info refresh — every monitored book flagged for ebook or audiobook is searched on each refresh slot.",
+            default=True,
+        ),
         NumberField(
             key="RELEASE_ENRICHMENT_RECHECK_DAYS",
             label="Release Date Recheck Interval (days)",

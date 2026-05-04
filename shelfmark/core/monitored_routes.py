@@ -412,18 +412,27 @@ def register_monitored_routes(
 
         def _run_scheduled(ents: list, bid: str, s: str) -> None:
             try:
-                batch_result = run_batch_sync(
-                    ents, monitored_db, ws_manager, user_db,
-                    batch_id=bid,
-                )
-                logger.info(
-                    "Scheduled monitored refresh complete slot=%s total=%s successful=%s failed=%s retried=%s",
-                    s, batch_result.total, batch_result.successful,
-                    batch_result.failed, batch_result.retried,
-                )
-
-                # Auto-search for missing books after sync
                 from shelfmark.core.config import config as app_config
+
+                refresh_enabled = app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True)
+                auto_download_enabled = app_config.get("MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True)
+
+                if refresh_enabled:
+                    batch_result = run_batch_sync(
+                        ents, monitored_db, ws_manager, user_db,
+                        batch_id=bid,
+                    )
+                    logger.info(
+                        "Scheduled monitored refresh complete slot=%s total=%s successful=%s failed=%s retried=%s",
+                        s, batch_result.total, batch_result.successful,
+                        batch_result.failed, batch_result.retried,
+                    )
+                else:
+                    logger.info("Scheduled refresh skipped slot=%s: MONITORED_SCHEDULED_REFRESH_ENABLED=false", s)
+
+                if not auto_download_enabled:
+                    logger.info("Scheduled auto-download skipped slot=%s: MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED=false", s)
+                    return
 
                 total_queued = 0
                 total_searched = 0
@@ -435,15 +444,7 @@ def register_monitored_routes(
                     config_additions, _ = get_monitored_config_additions(app_config, raw_db_user_id=uid)
                     threshold = float(config_additions.get("auto_download_min_match_score", 75) or 75) / 100.0
 
-                    content_types: list[str] = []
-                    if config_additions.get("release_primary_action_ebook") == "auto_search_download":
-                        content_types.append("ebook")
-                    if config_additions.get("release_primary_action_audiobook") == "auto_search_download":
-                        content_types.append("audiobook")
-                    if not content_types:
-                        continue
-
-                    for content_type in content_types:
+                    for content_type in ("ebook", "audiobook"):
                         try:
                             result = search_missing_books(
                                 monitored_db,
@@ -484,7 +485,9 @@ def register_monitored_routes(
             last_run_marker = ""
             while not stop_event.is_set():
                 try:
-                    if not app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True):
+                    refresh_enabled = app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True)
+                    auto_download_enabled = app_config.get("MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True)
+                    if not (refresh_enabled or auto_download_enabled):
                         stop_event.wait(30)
                         continue
 
