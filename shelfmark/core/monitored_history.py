@@ -47,6 +47,7 @@ def _record(
     status: str | None = None,
     message: str | None = None,
     metadata: dict[str, Any] | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     """Write an event to the monitored_events table."""
@@ -66,6 +67,7 @@ def _record(
             status=status,
             message=message,
             metadata_json=json.dumps(metadata) if metadata else None,
+            session_id=session_id,
             user_id=user_id,
         )
     except Exception as exc:
@@ -92,6 +94,7 @@ def record_download_queued(
     match_score: float | None = None,
     format: str | None = None,
     size: str | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     _record(
@@ -115,6 +118,7 @@ def record_download_queued(
                 "size": size,
             }.items() if v is not None
         } or None,
+        session_id=session_id,
         user_id=user_id,
     )
 
@@ -133,6 +137,7 @@ def record_download_complete(
     downloaded_filename: str | None = None,
     match_score: float | None = None,
     task_id: str | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     _record(
@@ -155,6 +160,7 @@ def record_download_complete(
                 "match_score": match_score,
             }.items() if v is not None
         } or None,
+        session_id=session_id,
         user_id=user_id,
     )
 
@@ -173,6 +179,7 @@ def record_download_failed(
     release_title: str | None = None,
     match_score: float | None = None,
     task_id: str | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     _record(
@@ -195,6 +202,7 @@ def record_download_failed(
                 "error_message": error_message,
             }.items() if v is not None
         } or None,
+        session_id=session_id,
         user_id=user_id,
     )
 
@@ -202,6 +210,33 @@ def record_download_failed(
 # ---------------------------------------------------------------------------
 # Search events
 # ---------------------------------------------------------------------------
+
+
+def record_search_started(
+    *,
+    entity_id: int,
+    book_provider: str,
+    book_provider_id: str,
+    book_title: str | None = None,
+    author_name: str | None = None,
+    content_type: str | None = None,
+    session_id: str,
+    user_id: int | None = None,
+) -> None:
+    """Record the start of a search attempt for a book. Creates a session."""
+    _record(
+        event_type="search_started",
+        entity_id=entity_id,
+        book_provider=book_provider,
+        book_provider_id=book_provider_id,
+        book_title=book_title,
+        author_name=author_name,
+        content_type=content_type,
+        status="info",
+        message=f"Searching releases for: {book_title or 'Unknown'}",
+        session_id=session_id,
+        user_id=user_id,
+    )
 
 
 def record_search_result(
@@ -218,6 +253,7 @@ def record_search_result(
     cutoff_score: float | None = None,
     release_title: str | None = None,
     error_message: str | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     """Record a search outcome (queued, no_match, below_cutoff, not_released, error)."""
@@ -259,6 +295,7 @@ def record_search_result(
                 "error_message": error_message,
             }.items() if v is not None
         } or None,
+        session_id=session_id,
         user_id=user_id,
     )
 
@@ -373,6 +410,7 @@ def record_file_imported(
     author_name: str | None = None,
     content_type: str | None = None,
     final_path: str | None = None,
+    session_id: str | None = None,
     user_id: int | None = None,
 ) -> None:
     _record(
@@ -386,5 +424,6 @@ def record_file_imported(
         status="success",
         message=f"File imported: {book_title or 'Unknown'}",
         metadata={"final_path": final_path} if final_path else None,
+        session_id=session_id,
         user_id=user_id,
     )

@@ -9,6 +9,7 @@ Import graph: monitored_operations → monitored_db_ops, monitored_files,
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -808,6 +809,7 @@ def search_missing_books(
         MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
     """
     from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
+    from shelfmark.core.monitored_history import record_search_started
     from shelfmark.core.monitored_release_scoring import is_book_released
     from shelfmark.metadata_providers import BookMetadata
 
@@ -860,6 +862,23 @@ def search_missing_books(
         book_title = str(row.get("title") or "").strip() or None
         availability_payload = availability.availability_by_book.get((provider, provider_book_id), {})
 
+        # Mint a session_id for this attempt and emit search_started so the History
+        # tab can group all subsequent events (search, queue, complete/fail) under
+        # one expandable row.
+        session_id = str(uuid.uuid4())
+        try:
+            record_search_started(
+                entity_id=entity_id,
+                book_provider=provider,
+                book_provider_id=provider_book_id,
+                book_title=book_title,
+                content_type=content_type,
+                session_id=session_id,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc)
+
         skip_reason, skip_detail = _resolve_search_skip_reason(
             db,
             entity_id=entity_id,
@@ -881,6 +900,7 @@ def search_missing_books(
                 attempted_at=now_iso,
                 status="no_match",
                 error_message="skip_existing_file_history_final_path_exists",
+                session_id=session_id,
             )
             continue
         if skip_reason == "existing_file":
@@ -895,6 +915,7 @@ def search_missing_books(
                 attempted_at=now_iso,
                 status="no_match",
                 error_message="skip_existing_file",
+                session_id=session_id,
             )
             continue
 
@@ -921,6 +942,7 @@ def search_missing_books(
                 attempted_at=now_iso,
                 status="not_released",
                 error_message=unreleased_message,
+                session_id=session_id,
             )
             continue
 
@@ -962,6 +984,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="no_match",
+                    session_id=session_id,
                 )
                 continue
 
@@ -978,6 +1001,7 @@ def search_missing_books(
                 template_override=tmpl_override,
                 series_name=row.get("series_name") or None,
                 series_position=row.get("series_position"),
+                session_id=session_id,
             )
 
             if success:
@@ -987,6 +1011,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="queued", error_message=message,
+                    session_id=session_id,
                 )
             elif message == "Already in queue":
                 summary.queued += 1
@@ -997,6 +1022,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="not_released", error_message=message,
+                    session_id=session_id,
                 )
             elif "match score" in message.lower() or "no valid" in message.lower():
                 summary.below_cutoff += 1
@@ -1005,6 +1031,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="below_cutoff", error_message=message,
+                    session_id=session_id,
                 )
             else:
                 summary.failed += 1
@@ -1013,6 +1040,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="failed", error_message=message,
+                    session_id=session_id,
                 )
 
         except Exception as exc:
@@ -1022,6 +1050,7 @@ def search_missing_books(
                 provider=provider, provider_book_id=provider_book_id,
                 content_type=content_type, attempted_at=now_iso,
                 status="error", error_message=str(exc),
+                session_id=session_id,
             )
 
     return summary

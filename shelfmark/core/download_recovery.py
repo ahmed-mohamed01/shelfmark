@@ -19,7 +19,7 @@ import threading
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
@@ -39,6 +39,30 @@ _registered: bool = False
 # Polling constants for recovery of in-progress client downloads
 _RECOVERY_POLL_INTERVAL = 5  # seconds
 _RECOVERY_STALL_TIMEOUT = 3600  # 1 hour with no progress change → give up
+
+# Hooks invoked after a successful silent-import recovery, with (task_id, final_path).
+# The general recovery path bypasses book_queue's terminal-status hook, so layered
+# concerns (e.g. monitored events, monitored_book_download_history) need this hook
+# to learn about completion. Branch-only — no Rule #1 conflict.
+_recovery_complete_hooks: List[Callable[[str, str], None]] = []
+
+
+def register_recovery_complete_hook(hook: Callable[[str, str], None]) -> None:
+    """Append a callback fired after _recover_completed imports a file.
+
+    Args:
+        hook: ``hook(task_id, final_path)`` — task_id from the recovered DB row,
+            final_path is the absolute path the file was imported to.
+    """
+    _recovery_complete_hooks.append(hook)
+
+
+def _fire_recovery_complete_hooks(task_id: str, final_path: str) -> None:
+    for hook in list(_recovery_complete_hooks):
+        try:
+            hook(task_id, final_path)
+        except Exception as exc:
+            logger.warning("Recovery-complete hook failed for %s: %s", task_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +731,7 @@ def _recover_completed(
                 download_path=result,
             )
             logger.info("Recovery: successfully imported %s → %s", task_id, result)
+            _fire_recovery_complete_hooks(task_id, result)
         else:
             _download_history_service.finalize_download(
                 task_id=task_id,

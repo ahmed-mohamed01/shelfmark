@@ -8,6 +8,9 @@ import {
   MonitoredEventStats,
 } from '../services/monitoredApi';
 import { MonitoredEventRow, parseEventMeta, formatEventDate } from './MonitoredEventRow';
+import { MonitoredEventSessionRow, SessionLatestStatus } from './MonitoredEventSessionRow';
+import { useRealtimeStatus } from '../hooks/useRealtimeStatus';
+import { Book } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,12 +20,18 @@ type FilterCategory = 'all' | 'downloads' | 'searches' | 'syncs' | 'authors' | '
 
 const FILTER_EVENT_TYPES: Record<FilterCategory, string[] | null> = {
   all: null,
-  downloads: ['download_queued', 'download_complete', 'download_failed'],
-  searches: ['search_queued', 'search_no_match', 'search_below_cutoff', 'search_not_released', 'search_result'],
+  downloads: ['download_queued', 'download_complete', 'download_failed', 'file_imported'],
+  searches: ['search_started', 'search_queued', 'search_no_match', 'search_below_cutoff', 'search_not_released', 'search_result'],
   syncs: ['author_synced', 'author_sync_failed'],
   authors: ['author_added', 'author_removed'],
   failures: ['download_failed', 'author_sync_failed'],
 };
+
+const SESSION_EVENT_TYPES = new Set([
+  'search_started', 'search_queued', 'search_no_match', 'search_below_cutoff',
+  'search_not_released', 'search_result',
+  'download_queued', 'download_complete', 'download_failed', 'file_imported',
+]);
 
 
 function dateRangeToSince(value: string): string | undefined {
@@ -169,65 +178,177 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
 
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
 
-  // Collapse sync events with the same batch_id into grouped display items
-  type DisplayItem = { kind: 'single'; event: MonitoredEvent } | { kind: 'batch'; batchId: string; events: MonitoredEvent[]; totalAdded: number; totalRemoved: number; totalBooks: number };
+  // Collapse sync events with the same batch_id and download lifecycle events with
+  // the same session_id into grouped display items.
+  type DisplayItem =
+    | { kind: 'single'; event: MonitoredEvent }
+    | { kind: 'batch'; batchId: string; events: MonitoredEvent[]; totalAdded: number; totalRemoved: number; totalBooks: number }
+    | {
+        kind: 'session';
+        sessionId: string;
+        events: MonitoredEvent[];
+        bookTitle: string | null;
+        authorName: string | null;
+        latestStatus: SessionLatestStatus;
+        activeTaskId: string | null;
+        firstAt: string;
+        lastAt: string;
+        isActive: boolean;
+      };
 
-  const displayItems = useMemo<DisplayItem[]>(() => {
-    const items: DisplayItem[] = [];
+  // Live download progress (read-only consumption of upstream hook)
+  const { status: liveStatus } = useRealtimeStatus({ pollInterval: 5000 });
+
+  const liveTaskIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const cat of ['queued', 'resolving', 'locating', 'downloading'] as const) {
+      const bucket = liveStatus[cat];
+      if (bucket) Object.keys(bucket).forEach(id => ids.add(id));
+    }
+    return ids;
+  }, [liveStatus]);
+
+  const lookupLiveBook = (taskId: string): Book | null => (
+    (liveStatus.downloading?.[taskId] ?? null) ||
+    (liveStatus.locating?.[taskId] ?? null) ||
+    (liveStatus.resolving?.[taskId] ?? null) ||
+    (liveStatus.queued?.[taskId] ?? null) ||
+    null
+  );
+
+  const renderSession = (
+    item: Extract<DisplayItem, { kind: 'session' }>,
+    defaultExpanded = false,
+  ) => (
+    <MonitoredEventSessionRow
+      key={`session-${item.sessionId}`}
+      events={item.events}
+      bookTitle={item.bookTitle}
+      authorName={item.authorName}
+      latestStatus={item.latestStatus}
+      isActive={item.isActive}
+      liveBook={item.activeTaskId ? lookupLiveBook(item.activeTaskId) : null}
+      defaultExpanded={defaultExpanded}
+    />
+  );
+
+  // Pass 1: group events into sessions/batches/singles. Heavy work — depends
+  // only on the events array, NOT on liveTaskIds, so it doesn't re-run on every
+  // WebSocket tick. Sessions are emitted with isActive=false; pass 2 annotates.
+  const baseDisplayItems = useMemo<DisplayItem[]>(() => {
+    const sessionMap = new Map<string, MonitoredEvent[]>();
     const batchMap = new Map<string, MonitoredEvent[]>();
-    const batchOrder: string[] = [];
+    type Anchor = { kind: 'session' | 'batch' | 'single'; key: string };
+    const anchors: Anchor[] = [];
+    const seenSessions = new Set<string>();
+    const seenBatches = new Set<string>();
 
     for (const ev of events) {
       const meta = parseEventMeta(ev);
-      const bid = meta?.batch_id;
-      if (bid && (ev.event_type === 'author_synced' || ev.event_type === 'author_sync_failed')) {
-        if (!batchMap.has(bid)) {
-          batchMap.set(bid, []);
-          batchOrder.push(bid);
+      const sid = ev.session_id;
+      const bid = meta?.batch_id as string | undefined;
+
+      if (sid && SESSION_EVENT_TYPES.has(ev.event_type)) {
+        if (!sessionMap.has(sid)) sessionMap.set(sid, []);
+        sessionMap.get(sid)!.push(ev);
+        if (!seenSessions.has(sid)) {
+          seenSessions.add(sid);
+          anchors.push({ kind: 'session', key: sid });
         }
+      } else if (bid && (ev.event_type === 'author_synced' || ev.event_type === 'author_sync_failed')) {
+        if (!batchMap.has(bid)) batchMap.set(bid, []);
         batchMap.get(bid)!.push(ev);
+        if (!seenBatches.has(bid)) {
+          seenBatches.add(bid);
+          anchors.push({ kind: 'batch', key: bid });
+        }
       } else {
-        // Flush any pending batch that appeared before this non-batch event
-        // (batches are contiguous in time-sorted results)
-        items.push({ kind: 'single', event: ev });
+        anchors.push({ kind: 'single', key: String(ev.id) });
       }
     }
 
-    // Build batch items and interleave at correct position
-    // Since events are sorted desc, batch items go where the first event of the batch was
-    const batchItems = new Map<string, DisplayItem>();
-    for (const bid of batchOrder) {
-      const batchEvents = batchMap.get(bid)!;
-      const totalAdded = batchEvents.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.books_added || 0); }, 0);
-      const totalRemoved = batchEvents.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.books_removed || 0); }, 0);
-      const totalBooks = batchEvents.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.total_books || 0); }, 0);
-      batchItems.set(bid, { kind: 'batch', batchId: bid, events: batchEvents, totalAdded, totalRemoved, totalBooks });
-    }
-
-    // Re-walk events to produce correct ordering with batches collapsed
     const result: DisplayItem[] = [];
-    const seenBatches = new Set<string>();
-    for (const ev of events) {
-      const meta = parseEventMeta(ev);
-      const bid = meta?.batch_id;
-      if (bid && batchItems.has(bid)) {
-        if (!seenBatches.has(bid)) {
-          seenBatches.add(bid);
-          result.push(batchItems.get(bid)!);
-        }
+    const eventById = new Map<string, MonitoredEvent>();
+    for (const ev of events) eventById.set(String(ev.id), ev);
+
+    for (const a of anchors) {
+      if (a.kind === 'single') {
+        const ev = eventById.get(a.key);
+        if (ev) result.push({ kind: 'single', event: ev });
+      } else if (a.kind === 'batch') {
+        const evs = batchMap.get(a.key)!;
+        const totalAdded = evs.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.books_added || 0); }, 0);
+        const totalRemoved = evs.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.books_removed || 0); }, 0);
+        const totalBooks = evs.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.total_books || 0); }, 0);
+        result.push({ kind: 'batch', batchId: a.key, events: evs, totalAdded, totalRemoved, totalBooks });
       } else {
-        result.push({ kind: 'single', event: ev });
+        const evs = sessionMap.get(a.key)!;
+        const latest = evs[0];
+        const earliest = evs[evs.length - 1];
+        const queuedEv = evs.find(e => e.event_type === 'download_queued');
+        const queuedMeta = queuedEv ? parseEventMeta(queuedEv) : null;
+        const taskId = (queuedMeta?.task_id as string | undefined) ?? null;
+        const hasComplete = evs.some(e => e.event_type === 'download_complete' || e.event_type === 'file_imported');
+        const hasFailed = evs.some(e => e.event_type === 'download_failed');
+        const hasQueued = !!queuedEv;
+        const latestStatus: SessionLatestStatus =
+          hasComplete ? 'complete' :
+          hasFailed ? 'failed' :
+          hasQueued ? 'downloading' : 'searching';
+        result.push({
+          kind: 'session',
+          sessionId: a.key,
+          events: evs,
+          bookTitle: latest.book_title ?? earliest.book_title ?? null,
+          authorName: latest.author_name ?? earliest.author_name ?? null,
+          latestStatus,
+          activeTaskId: taskId,
+          firstAt: earliest.created_at,
+          lastAt: latest.created_at,
+          isActive: false, // annotated in pass 2
+        });
       }
     }
     return result;
   }, [events]);
 
-  // Group display items by date
+  // Pass 2: annotate sessions with isActive from live WebSocket state. Cheap
+  // O(N) walk; when no session changed state we return the base array verbatim
+  // so downstream memos (activeItems, restItems, grouped) early-bail on identity.
+  const displayItems = useMemo<DisplayItem[]>(() => {
+    let changed = false;
+    const result = baseDisplayItems.map(item => {
+      if (item.kind !== 'session') return item;
+      const isActive = !!item.activeTaskId
+        && liveTaskIds.has(item.activeTaskId)
+        && item.latestStatus !== 'complete'
+        && item.latestStatus !== 'failed';
+      if (isActive === item.isActive) return item;
+      changed = true;
+      return { ...item, isActive };
+    });
+    return changed ? result : baseDisplayItems;
+  }, [baseDisplayItems, liveTaskIds]);
+
+  // Split active sessions out — pinned to top under "Active" heading
+  const activeItems = useMemo(
+    () => displayItems.filter((i): i is Extract<DisplayItem, { kind: 'session' }> => i.kind === 'session' && i.isActive),
+    [displayItems],
+  );
+  const restItems = useMemo(
+    () => displayItems.filter(i => !(i.kind === 'session' && i.isActive)),
+    [displayItems],
+  );
+
+  // Group remaining display items by date
   const grouped = useMemo(() => {
     const groups: { label: string; items: DisplayItem[] }[] = [];
     let currentLabel = '';
-    for (const item of displayItems) {
-      const ts = item.kind === 'single' ? item.event.created_at : item.events[0].created_at;
+    for (const item of restItems) {
+      const ts =
+        item.kind === 'single' ? item.event.created_at :
+        item.kind === 'session' ? item.firstAt :
+        item.events[0].created_at;
       const label = groupLabel(ts);
       if (label !== currentLabel) {
         currentLabel = label;
@@ -236,7 +357,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       groups[groups.length - 1].items.push(item);
     }
     return groups;
-  }, [displayItems]);
+  }, [restItems]);
 
   const hasMore = events.length < total;
 
@@ -276,6 +397,19 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       ) : null}
 
 
+      {/* Active sessions — pinned to top */}
+      {activeItems.length > 0 ? (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">Active</span>
+            <span className="text-[10px] text-gray-400">({activeItems.length})</span>
+          </div>
+          <div className="rounded-2xl border border-blue-500/40 overflow-hidden divide-y divide-gray-200/60 dark:divide-gray-800/60">
+            {activeItems.map(item => renderSession(item, true))}
+          </div>
+        </div>
+      ) : null}
+
       {/* Timeline */}
       {error ? (
         <div className="text-sm text-red-500 text-center py-8">{error}</div>
@@ -291,6 +425,9 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
               </div>
               <div className="rounded-2xl border border-[var(--border-muted)] overflow-hidden divide-y divide-gray-200/60 dark:divide-gray-800/60">
                 {group.items.map(item => {
+                  if (item.kind === 'session') {
+                    return renderSession(item);
+                  }
                   if (item.kind === 'batch') {
                     const isExpanded = expandedBatches.has(item.batchId);
                     const failCount = item.events.filter(e => e.event_type === 'author_sync_failed').length;

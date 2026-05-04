@@ -654,6 +654,7 @@ export interface MonitoredEvent {
   status: string | null;
   message: string | null;
   metadata_json: string | null;
+  session_id: string | null;
   user_id: number | null;
   created_at: string;
 }

@@ -36,6 +36,9 @@ _pending_lock = threading.Lock()
 _deferred_history: Dict[str, Dict[str, Any]] = {}
 _deferred_lock = threading.Lock()
 
+# Deferred file_imported events: task_id → kwargs (paired with _deferred_history)
+_deferred_file_imported: Dict[str, Dict[str, Any]] = {}
+
 
 @dataclass
 class PendingDownload:
@@ -54,6 +57,8 @@ class PendingDownload:
     current_source_id: Optional[str] = None
     attempts: int = 0
     post_process_retries: int = 0  # retries of the *same* release for post-proc failures
+    session_id: Optional[str] = None  # links events for this download attempt
+    task_id: Optional[str] = None  # current orchestrator task_id; updated each queue
 
 # Post-processing error types that should trigger a retry of the same release
 # rather than skipping to the next one. These are transient filesystem/network errors.
@@ -91,6 +96,8 @@ def _persist_pending(key: str, pending: PendingDownload) -> None:
             current_source_id=pending.current_source_id,
             attempts=pending.attempts,
             post_process_retries=pending.post_process_retries,
+            session_id=pending.session_id,
+            task_id=pending.task_id,
         )
     except Exception as exc:
         logger.warning("Failed to persist pending releases for %s: %s", key, exc)
@@ -141,6 +148,8 @@ def load_pending_releases_from_db() -> None:
                     current_source_id=row.get("current_source_id"),
                     attempts=row.get("attempts") or 0,
                     post_process_retries=row.get("post_process_retries") or 0,
+                    session_id=row.get("session_id"),
+                    task_id=row.get("task_id"),
                 )
                 restored += 1
         if restored:
@@ -224,6 +233,16 @@ def register_hooks() -> None:
 
     book_queue.update_download_path = _patched_update_path
 
+    # Register a callback for the silent-import recovery path. recover_completed
+    # bypasses book_queue.update_status, so the terminal hook above never fires
+    # for those downloads — without this callback, post-restart imports would
+    # never get download_complete / file_imported monitored events.
+    try:
+        from shelfmark.core.download_recovery import register_recovery_complete_hook
+        register_recovery_complete_hook(_on_recovery_complete)
+    except Exception as exc:
+        logger.warning("Failed to register monitored recovery hook: %s", exc)
+
     logger.info("Monitored download hooks registered")
 
 
@@ -264,8 +283,23 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
     if not _is_monitored_download(task):
         return
     try:
-        from shelfmark.core.monitored_history import record_download_complete, record_download_failed
+        from shelfmark.core.monitored_history import (
+            record_download_complete,
+            record_download_failed,
+            record_file_imported,
+        )
         hc = task.output_args.get("history_context", {})
+
+        # Look up session_id from pending state (still present at terminal hook time —
+        # _clear_pending/_try_next_release run after this recorder).
+        session_id: Optional[str] = None
+        key = _get_pending_key_from_task(task)
+        if key:
+            with _pending_lock:
+                pending = _pending_releases.get(key)
+                if pending is not None:
+                    session_id = pending.session_id
+
         common = dict(
             entity_id=int(hc["entity_id"]),
             book_provider=str(hc.get("provider") or ""),
@@ -276,6 +310,7 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
             source=str(task.source or ""),
             source_display_name=get_source_display_name(task.source),
             task_id=task.task_id,
+            session_id=session_id,
             user_id=task.user_id,
         )
         if outcome == "complete":
@@ -285,6 +320,21 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
                 downloaded_filename=str(hc.get("downloaded_filename") or ""),
                 match_score=_parse_float_safe(hc.get("match_score")),
             )
+            # Emit file_imported once the file has been moved to its final library
+            # location. download_complete and file_imported are intentionally two
+            # separate events — there's a real gap between "client finished
+            # downloading" and "Shelfmark moved the file to the library folder".
+            # If download_path isn't populated yet (terminal hook fired before
+            # update_download_path), defer until _flush_deferred_history.
+            file_imported_kwargs = {
+                k: v for k, v in common.items()
+                if k not in {"source", "source_display_name", "task_id"}
+            }
+            if task.download_path:
+                record_file_imported(final_path=task.download_path, **file_imported_kwargs)
+            else:
+                with _deferred_lock:
+                    _deferred_file_imported[task.task_id] = file_imported_kwargs
         elif outcome == "failed":
             record_download_failed(
                 **common,
@@ -294,6 +344,72 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
             )
     except Exception as exc:
         logger.debug("Failed to record download event for %s: %s", task.task_id, exc)
+
+
+def _on_recovery_complete(task_id: str, final_path: str) -> None:
+    """Emit monitored terminal events for a download that recovery silently imported.
+
+    The recovery path (download_recovery._recover_completed) writes directly to
+    the general download_history without going through book_queue.update_status,
+    so the regular terminal hook in this module never fires. We map task_id back
+    to its monitored session via the persisted PendingDownload.task_id and emit
+    the same download_complete + file_imported events.
+    """
+    if not task_id or not final_path:
+        return
+
+    # Find the pending entry whose task_id matches the recovered task.
+    matched_key: Optional[str] = None
+    matched_pending: Optional[PendingDownload] = None
+    with _pending_lock:
+        for k, p in _pending_releases.items():
+            if p.task_id and p.task_id == task_id:
+                matched_key = k
+                matched_pending = p
+                break
+
+    if matched_pending is None:
+        # Not a monitored download — nothing to record.
+        return
+
+    try:
+        from shelfmark.core.monitored_history import (
+            record_download_complete,
+            record_file_imported,
+        )
+        common = dict(
+            entity_id=matched_pending.entity_id,
+            book_provider=matched_pending.provider,
+            book_provider_id=matched_pending.provider_book_id,
+            content_type=matched_pending.content_type,
+            session_id=matched_pending.session_id,
+            user_id=matched_pending.user_id,
+        )
+        # Two distinct events: download_complete = client finished downloading,
+        # file_imported = Shelfmark moved the file to the library. Recovery sees
+        # them at the same instant since the import is synchronous, but consumers
+        # treat them as separate timeline entries.
+        record_download_complete(
+            **common,
+            download_path=final_path,
+            task_id=task_id,
+        )
+        record_file_imported(
+            **common,
+            final_path=final_path,
+        )
+        logger.info(
+            "Monitored recovery hook: emitted download_complete + file_imported for task %s (session %s)",
+            task_id, matched_pending.session_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to emit monitored events on recovery for %s: %s", task_id, exc)
+
+    # Clear the pending entry — the download is done; no fallback retries needed.
+    if matched_key:
+        with _pending_lock:
+            _pending_releases.pop(matched_key, None)
+        _delete_pending_from_db(matched_key)
 
 
 def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
@@ -464,18 +580,27 @@ def _flush_deferred_history(task_id: str, final_path: str) -> None:
     """Complete a deferred history insert with the now-known final_path."""
     with _deferred_lock:
         kwargs = _deferred_history.pop(task_id, None)
-    if kwargs is None or _user_db is None:
-        return
+        file_imported_kwargs = _deferred_file_imported.pop(task_id, None)
     clean_path = str(final_path or "").strip()
-    content_type = kwargs.pop("_content_type", None)
-    kwargs["final_path"] = clean_path
-    _user_db.insert_monitored_book_download_history(**kwargs)
-    # Also register the file match (mirrors the immediate path in _record_download_history)
-    _upsert_file_match_from_history(kwargs, clean_path, content_type=content_type)
-    logger.debug(
-        "Flushed deferred monitored download history: task_id=%s path=%s",
-        task_id, final_path,
-    )
+    if kwargs is not None and _user_db is not None:
+        content_type = kwargs.pop("_content_type", None)
+        kwargs["final_path"] = clean_path
+        _user_db.insert_monitored_book_download_history(**kwargs)
+        # Also register the file match (mirrors the immediate path in _record_download_history)
+        _upsert_file_match_from_history(kwargs, clean_path, content_type=content_type)
+        logger.debug(
+            "Flushed deferred monitored download history: task_id=%s path=%s",
+            task_id, final_path,
+        )
+    if file_imported_kwargs is not None:
+        # Always emit the event even if final_path is empty — the recorder handles
+        # an empty/None path by omitting it from metadata. Dropping the event would
+        # leak the deferred entry (already popped above) and lose the timeline row.
+        try:
+            from shelfmark.core.monitored_history import record_file_imported
+            record_file_imported(final_path=clean_path or None, **file_imported_kwargs)
+        except Exception as exc:
+            logger.debug("Failed to flush deferred file_imported event for %s: %s", task_id, exc)
 
 
 def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] = None) -> None:
@@ -539,6 +664,7 @@ def process_monitored_book(
     template_override: Optional[str] = None,
     series_name: Optional[str] = None,
     series_position: Optional[float] = None,
+    session_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Process releases for a monitored book: pre-process, queue best, auto-retry on failure.
     
@@ -607,6 +733,7 @@ def process_monitored_book(
             template_override=template_override,
             series_name=series_name,
             series_position=series_position,
+            session_id=session_id,
         )
         _pending_releases[key] = pending
         _persist_pending(key, pending)
@@ -634,6 +761,10 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             # Take next release
             release = pending.releases.pop(0)
             pending.current_source_id = str(release.get("source_id", ""))
+            # Orchestrator sets task.task_id = release["source_id"], so this
+            # mirrors the task_id that will be queued. Used by the recovery hook
+            # to map a recovered task_id back to its session.
+            pending.task_id = pending.current_source_id or None
             pending.attempts += 1
             pending.post_process_retries = 0  # reset for new release
 
@@ -648,6 +779,7 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             series_name = pending.series_name
             series_position = pending.series_position
             user_id = pending.user_id
+            session_id = pending.session_id
             remaining = len(pending.releases)
 
             # Persist updated state to DB while still holding the lock
@@ -682,10 +814,12 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
                     content_type=content_type,
                     task_id=str(release.get("source_id", "")),
                     source=str(release.get("source", "")),
+                    source_display_name=get_source_display_name(release.get("source")),
                     release_title=str(release.get("raw_title") or release.get("display_title") or ""),
                     match_score=score if isinstance(score, (int, float)) else None,
                     format=str(release.get("format", "")),
                     size=str(release.get("size", "")),
+                    session_id=session_id,
                     user_id=user_id,
                 )
             except Exception as exc:
@@ -825,6 +959,7 @@ def write_monitored_book_attempt(
     release_title: str | None = None,
     match_score: float | None = None,
     error_message: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Record a monitored book search attempt and update its search status.
 
@@ -887,6 +1022,7 @@ def write_monitored_book_attempt(
             release_title=release_title,
             match_score=match_score,
             error_message=error_message,
+            session_id=session_id,
             user_id=user_id,
         )
     except Exception as exc:

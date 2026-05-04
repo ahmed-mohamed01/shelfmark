@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS monitored_pending_releases (
     current_source_id TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     post_process_retries INTEGER NOT NULL DEFAULT 0,
+    session_id TEXT,
+    task_id TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -171,6 +173,7 @@ CREATE TABLE IF NOT EXISTS monitored_events (
     status TEXT,
     message TEXT,
     metadata_json TEXT,
+    session_id TEXT,
     user_id INTEGER,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -186,6 +189,14 @@ ON monitored_events (event_type, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_monitored_events_date
 ON monitored_events (created_at DESC);
+"""
+
+# Index that depends on the session_id column. Created AFTER the lazy ALTER below
+# so that databases predating the session_id column still initialize cleanly.
+_SESSION_ID_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_monitored_events_session
+ON monitored_events (session_id, created_at ASC)
+WHERE session_id IS NOT NULL;
 """
 
 
@@ -415,6 +426,23 @@ class MonitoredDB:
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute("ALTER TABLE monitored_events ADD COLUMN session_id TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN session_id TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN task_id TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                # Create the session_id index now that the column is guaranteed to exist.
+                conn.executescript(_SESSION_ID_INDEX_SQL)
                 conn.commit()
             finally:
                 conn.close()
@@ -2049,6 +2077,8 @@ class MonitoredDB:
         current_source_id: str | None = None,
         attempts: int = 0,
         post_process_retries: int = 0,
+        session_id: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         """Insert or update a pending releases record."""
         with self._lock:
@@ -2061,13 +2091,15 @@ class MonitoredDB:
                         provider, provider_book_id, content_type,
                         destination_override, file_organization_override, template_override,
                         series_name, series_position, current_source_id,
-                        attempts, post_process_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        attempts, post_process_retries, session_id, task_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(pending_key) DO UPDATE SET
                         release_data = excluded.release_data,
                         current_source_id = excluded.current_source_id,
                         attempts = excluded.attempts,
-                        post_process_retries = excluded.post_process_retries
+                        post_process_retries = excluded.post_process_retries,
+                        session_id = COALESCE(monitored_pending_releases.session_id, excluded.session_id),
+                        task_id = excluded.task_id
                     """,
                     (
                         pending_key,
@@ -2085,6 +2117,8 @@ class MonitoredDB:
                         current_source_id,
                         attempts,
                         post_process_retries,
+                        session_id,
+                        task_id,
                     ),
                 )
                 conn.commit()
@@ -2134,6 +2168,7 @@ class MonitoredDB:
         status: str | None = None,
         message: str | None = None,
         metadata_json: str | None = None,
+        session_id: str | None = None,
         user_id: int | None = None,
     ) -> int | None:
         """Insert a history event and return its id."""
@@ -2146,14 +2181,14 @@ class MonitoredDB:
                         event_type, entity_id, book_provider, book_provider_id,
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
-                        metadata_json, user_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, session_id, user_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event_type, entity_id, book_provider, book_provider_id,
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
-                        metadata_json, user_id,
+                        metadata_json, session_id, user_id,
                     ),
                 )
                 conn.commit()
