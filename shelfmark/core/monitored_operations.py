@@ -794,14 +794,15 @@ def filter_search_candidates(availability_books: list[dict], content_type: str) 
     """Filter monitored books to those eligible for auto-search.
 
     A book is a candidate when (1) it is flagged for the requested content_type,
-    (2) it is not removed from the upstream provider, and (3) it has provider/id
-    fields populated. Used by ``search_missing_books`` and by the scheduler's
-    upfront candidate-count step — keep one source of truth.
+    (2) it is not hidden, (3) it is not removed from the upstream provider, and
+    (4) it has provider/id fields populated. Used by ``search_missing_books``
+    and by the scheduler's upfront candidate-count step — keep one source of truth.
     """
     monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
     return [
         row for row in availability_books
         if bool(int(row.get(monitor_col) or 0))
+        and not bool(int(row.get("hidden") or 0))
         and str(row.get("state") or "") != "removed_from_provider"
         and str(row.get("provider") or "").strip()
         and str(row.get("provider_book_id") or "").strip()
