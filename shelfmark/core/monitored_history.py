@@ -222,6 +222,7 @@ def record_search_started(
     content_type: str | None = None,
     session_id: str,
     user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Record the start of a search attempt for a book. Creates a session."""
     _record(
@@ -234,6 +235,7 @@ def record_search_started(
         content_type=content_type,
         status="info",
         message=f"Searching releases for: {book_title or 'Unknown'}",
+        metadata=metadata or None,
         session_id=session_id,
         user_id=user_id,
     )
@@ -255,6 +257,7 @@ def record_search_result(
     error_message: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Record a search outcome (queued, no_match, below_cutoff, not_released, error)."""
     status_map = {
@@ -275,6 +278,19 @@ def record_search_result(
     }
     event_type = f"search_{search_status}" if search_status in ("no_match", "below_cutoff", "not_released", "queued") else "search_result"
 
+    merged_metadata = {
+        k: v for k, v in {
+            "search_status": search_status,
+            "releases_found": releases_found,
+            "best_score": best_score,
+            "cutoff_score": cutoff_score,
+            "release_title": release_title,
+            "error_message": error_message,
+        }.items() if v is not None
+    }
+    if metadata:
+        merged_metadata.update({k: v for k, v in metadata.items() if v is not None})
+
     _record(
         event_type=event_type,
         entity_id=entity_id,
@@ -285,16 +301,7 @@ def record_search_result(
         content_type=content_type,
         status=status_map.get(search_status, "info"),
         message=message_map.get(search_status, f"Search: {search_status}"),
-        metadata={
-            k: v for k, v in {
-                "search_status": search_status,
-                "releases_found": releases_found,
-                "best_score": best_score,
-                "cutoff_score": cutoff_score,
-                "release_title": release_title,
-                "error_message": error_message,
-            }.items() if v is not None
-        } or None,
+        metadata=merged_metadata or None,
         session_id=session_id,
         user_id=user_id,
     )
@@ -390,6 +397,46 @@ def record_author_sync_failed(
             k: v for k, v in {
                 "error_message": error_message,
                 "batch_id": batch_id,
+            }.items() if v is not None
+        } or None,
+        user_id=user_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Batch run events (scheduled or manual auto-download runs)
+# ---------------------------------------------------------------------------
+
+
+def record_run_started(
+    *,
+    run_id: str,
+    trigger: str,
+    total_candidates: int,
+    slot: str | None = None,
+    user_id: int | None = None,
+) -> None:
+    """Record the start of a batch auto-download run.
+
+    A run groups per-book sessions (each anchored by ``search_started``) under
+    a single timeline entry. ``trigger`` is ``"scheduled"`` or ``"manual"`` —
+    the History tab uses it to badge the parent row.
+    """
+    label = "Scheduled" if trigger == "scheduled" else "Manual"
+    _record(
+        event_type="monitored_run_started",
+        status="info",
+        message=(
+            f"{label} search for monitored books — {total_candidates} books to download"
+            if total_candidates
+            else f"{label} search for monitored books"
+        ),
+        metadata={
+            k: v for k, v in {
+                "run_id": run_id,
+                "trigger": trigger,
+                "total_candidates": total_candidates,
+                "slot": slot,
             }.items() if v is not None
         } or None,
         user_id=user_id,

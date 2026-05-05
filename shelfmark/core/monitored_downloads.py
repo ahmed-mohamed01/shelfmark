@@ -278,6 +278,57 @@ def _is_monitored_download(task: DownloadTask) -> bool:
     return isinstance(history_context, dict) and history_context.get("entity_id") is not None
 
 
+def record_manual_download_queued_if_applicable(task_id: str, task: DownloadTask) -> None:
+    """Emit a `download_queued` monitored event for the manual bulk-download path.
+
+    Manual bulk downloads bypass `process_monitored_book`, so they have no
+    PendingDownload — the scheduled-path emitter in `_queue_next_from_pending`
+    never runs for them. Instead the frontend threads `session_id`/`run_id`
+    through the request payload → release → orchestrator's `history_context`.
+    This helper is invoked by the upstream queue hook in main.py; it short-
+    circuits when a PendingDownload exists (scheduled path; that emitter has
+    already fired) to avoid double-emission.
+    """
+    if not _is_monitored_download(task):
+        return
+    hc = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    if not isinstance(hc, dict):
+        return
+    session_id_raw = hc.get("session_id")
+    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+        return
+    session_id = session_id_raw.strip()
+
+    # Scheduled path already emitted via _queue_next_from_pending — don't double-emit.
+    key = _get_pending_key_from_task(task)
+    if key:
+        with _pending_lock:
+            if _pending_releases.get(key) is not None:
+                return
+
+    try:
+        from shelfmark.core.monitored_history import record_download_queued
+        record_download_queued(
+            entity_id=int(hc["entity_id"]),
+            book_provider=str(hc.get("provider") or ""),
+            book_provider_id=str(hc.get("provider_book_id") or ""),
+            book_title=str(task.title or ""),
+            author_name=str(task.author or ""),
+            content_type=task.content_type,
+            task_id=task_id,
+            source=str(task.source or ""),
+            source_display_name=get_source_display_name(task.source),
+            release_title=str(hc.get("release_title") or ""),
+            match_score=_parse_float_safe(hc.get("match_score")),
+            format=str(getattr(task, "format", "") or ""),
+            size=str(getattr(task, "size", "") or ""),
+            session_id=session_id,
+            user_id=task.user_id,
+        )
+    except Exception as exc:
+        logger.debug("Failed to record manual download_queued for %s: %s", task_id, exc)
+
+
 def _record_download_event(task: DownloadTask, outcome: str) -> None:
     """Record a download event to the unified monitored_events table."""
     if not _is_monitored_download(task):
@@ -291,7 +342,9 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
         hc = task.output_args.get("history_context", {})
 
         # Look up session_id from pending state (still present at terminal hook time —
-        # _clear_pending/_try_next_release run after this recorder).
+        # _clear_pending/_try_next_release run after this recorder). Fall back to
+        # history_context for the manual bulk-download path, which has no
+        # PendingDownload but threads session_id through the queue payload.
         session_id: Optional[str] = None
         key = _get_pending_key_from_task(task)
         if key:
@@ -299,6 +352,10 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
                 pending = _pending_releases.get(key)
                 if pending is not None:
                     session_id = pending.session_id
+        if session_id is None:
+            ctx_session = hc.get("session_id")
+            if isinstance(ctx_session, str) and ctx_session.strip():
+                session_id = ctx_session.strip()
 
         common = dict(
             entity_id=int(hc["entity_id"]),
@@ -960,6 +1017,7 @@ def write_monitored_book_attempt(
     match_score: float | None = None,
     error_message: str | None = None,
     session_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     """Record a monitored book search attempt and update its search status.
 
@@ -1020,10 +1078,11 @@ def write_monitored_book_attempt(
             content_type=content_type,
             search_status=status,
             release_title=release_title,
-            match_score=match_score,
+            best_score=match_score,
             error_message=error_message,
             session_id=session_id,
             user_id=user_id,
+            metadata=metadata,
         )
     except Exception as exc:
         logger.debug("Failed to record search_result event: %s", exc)

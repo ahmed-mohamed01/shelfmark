@@ -10,6 +10,7 @@ import {
   getMetadataAuthorBooks,
   deleteMonitoredBook,
   ExternalBookRow,
+  recordMonitoredRunStarted,
 } from '../services/monitoredApi';
 import { useSocket } from '../contexts/SocketContext';
 import { Dropdown } from './Dropdown';
@@ -1265,14 +1266,30 @@ export const MonitoredAuthorBooksTab = ({
     if (!onGetReleases || booksToDownload.length === 0 || bulkDownloadRunningByType[contentType]) return;
     const batchId = `${contentType}:${Date.now()}`;
     const batchTotal = booksToDownload.length;
+    // Run-level id for History grouping. The frontend mints it once and the
+    // backend records a `monitored_run_started` event so the UI can render a
+    // single "Manual batch search — N books" parent containing per-book sessions.
+    const runId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    void recordMonitoredRunStarted({
+      runId,
+      trigger: 'manual',
+      totalCandidates: batchTotal,
+    });
     setBulkDownloadRunningByType((prev) => ({ ...prev, [contentType]: true }));
     try {
       for (let idx = 0; idx < booksToDownload.length; idx += 1) {
         const book = booksToDownload[idx];
+        const sessionId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+          ? crypto.randomUUID()
+          : `session-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`;
         await triggerReleaseSearch(book, contentType, 'auto_search_download', {
           combined: false,
           suppressPerBookAutoSearchToasts: true,
           batchAutoDownload: { batchId, index: idx + 1, total: batchTotal, contentType },
+          sessionId,
+          runId,
         });
       }
     } finally {

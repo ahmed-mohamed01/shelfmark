@@ -1244,6 +1244,12 @@ def _record_download_queued(task_id: str, task: Any) -> None:
         logger.warning("Failed to record download at queue time for task %s: %s", task_id, exc)
         return
 
+    try:
+        from shelfmark.core.monitored_downloads import record_manual_download_queued_if_applicable
+        record_manual_download_queued_if_applicable(task_id, task)
+    except Exception as exc:
+        logger.warning("Failed to record manual monitored download_queued for %s: %s", task_id, exc)
+
     if activity_view_state_service is None:
         return
 

@@ -177,24 +177,39 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
   }, [exportRef, clearRef, handleExport, handleClearHistory]);
 
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
 
-  // Collapse sync events with the same batch_id and download lifecycle events with
-  // the same session_id into grouped display items.
+  // Collapse sync events with the same batch_id, download lifecycle events with
+  // the same session_id, and per-book sessions tied to a monitored_run_started
+  // event into grouped display items.
+  type SessionDisplayItem = {
+    kind: 'session';
+    sessionId: string;
+    events: MonitoredEvent[];
+    bookTitle: string | null;
+    authorName: string | null;
+    latestStatus: SessionLatestStatus;
+    activeTaskId: string | null;
+    firstAt: string;
+    lastAt: string;
+    isActive: boolean;
+  };
+  type RunDisplayItem = {
+    kind: 'run';
+    runId: string;
+    trigger: 'scheduled' | 'manual';
+    totalCandidates: number;
+    slot: string | null;
+    startEvent: MonitoredEvent | null;
+    sessions: SessionDisplayItem[];
+    firstAt: string;
+    lastAt: string;
+  };
   type DisplayItem =
     | { kind: 'single'; event: MonitoredEvent }
     | { kind: 'batch'; batchId: string; events: MonitoredEvent[]; totalAdded: number; totalRemoved: number; totalBooks: number }
-    | {
-        kind: 'session';
-        sessionId: string;
-        events: MonitoredEvent[];
-        bookTitle: string | null;
-        authorName: string | null;
-        latestStatus: SessionLatestStatus;
-        activeTaskId: string | null;
-        firstAt: string;
-        lastAt: string;
-        isActive: boolean;
-      };
+    | SessionDisplayItem
+    | RunDisplayItem;
 
   // Live download progress (read-only consumption of upstream hook)
   const { status: liveStatus } = useRealtimeStatus({ pollInterval: 5000 });
@@ -238,19 +253,68 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
   const baseDisplayItems = useMemo<DisplayItem[]>(() => {
     const sessionMap = new Map<string, MonitoredEvent[]>();
     const batchMap = new Map<string, MonitoredEvent[]>();
-    type Anchor = { kind: 'session' | 'batch' | 'single'; key: string };
+    const runStartedById = new Map<string, MonitoredEvent>();
+    const sessionRunMap = new Map<string, string>(); // sessionId -> runId (from search_started.metadata)
+    const sessionsByRun = new Map<string, Set<string>>(); // runId -> sessionIds
+
+    // Pre-scan: catalog run_started events and link sessions to runs via the
+    // session anchor's metadata. Runs with no run_started event in the loaded
+    // window won't surface as parents; their sessions render standalone.
+    for (const ev of events) {
+      if (ev.event_type === 'monitored_run_started') {
+        const meta = parseEventMeta(ev);
+        const runId = meta?.run_id as string | undefined;
+        if (runId && !runStartedById.has(runId)) {
+          runStartedById.set(runId, ev);
+        }
+      }
+      if (ev.event_type === 'search_started' && ev.session_id) {
+        const meta = parseEventMeta(ev);
+        const runId = meta?.run_id as string | undefined;
+        if (runId) {
+          sessionRunMap.set(ev.session_id, runId);
+          if (!sessionsByRun.has(runId)) sessionsByRun.set(runId, new Set());
+          sessionsByRun.get(runId)!.add(ev.session_id);
+        }
+      }
+    }
+
+    type Anchor = { kind: 'session' | 'batch' | 'single' | 'run'; key: string };
     const anchors: Anchor[] = [];
     const seenSessions = new Set<string>();
     const seenBatches = new Set<string>();
+    const seenRuns = new Set<string>();
 
     for (const ev of events) {
       const meta = parseEventMeta(ev);
       const sid = ev.session_id;
       const bid = meta?.batch_id as string | undefined;
 
+      if (ev.event_type === 'monitored_run_started') {
+        const runId = meta?.run_id as string | undefined;
+        if (runId && !seenRuns.has(runId)) {
+          seenRuns.add(runId);
+          anchors.push({ kind: 'run', key: runId });
+        }
+        continue;
+      }
+
       if (sid && SESSION_EVENT_TYPES.has(ev.event_type)) {
         if (!sessionMap.has(sid)) sessionMap.set(sid, []);
         sessionMap.get(sid)!.push(ev);
+
+        const linkedRun = sessionRunMap.get(sid);
+        if (linkedRun && runStartedById.has(linkedRun)) {
+          // Session is part of a known run; emit run anchor at this position
+          // if not yet placed (handles loaded windows where run_started lives
+          // later in the chronological tail than the session).
+          if (!seenRuns.has(linkedRun)) {
+            seenRuns.add(linkedRun);
+            anchors.push({ kind: 'run', key: linkedRun });
+          }
+          continue;
+        }
+
         if (!seenSessions.has(sid)) {
           seenSessions.add(sid);
           anchors.push({ kind: 'session', key: sid });
@@ -267,6 +331,33 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       }
     }
 
+    const buildSessionItem = (sessionId: string, evs: MonitoredEvent[]): SessionDisplayItem => {
+      const latest = evs[0];
+      const earliest = evs[evs.length - 1];
+      const queuedEv = evs.find(e => e.event_type === 'download_queued');
+      const queuedMeta = queuedEv ? parseEventMeta(queuedEv) : null;
+      const taskId = (queuedMeta?.task_id as string | undefined) ?? null;
+      const hasComplete = evs.some(e => e.event_type === 'download_complete' || e.event_type === 'file_imported');
+      const hasFailed = evs.some(e => e.event_type === 'download_failed');
+      const hasQueued = !!queuedEv;
+      const latestStatus: SessionLatestStatus =
+        hasComplete ? 'complete' :
+        hasFailed ? 'failed' :
+        hasQueued ? 'downloading' : 'searching';
+      return {
+        kind: 'session',
+        sessionId,
+        events: evs,
+        bookTitle: latest.book_title ?? earliest.book_title ?? null,
+        authorName: latest.author_name ?? earliest.author_name ?? null,
+        latestStatus,
+        activeTaskId: taskId,
+        firstAt: earliest.created_at,
+        lastAt: latest.created_at,
+        isActive: false, // annotated in pass 2
+      };
+    };
+
     const result: DisplayItem[] = [];
     const eventById = new Map<string, MonitoredEvent>();
     for (const ev of events) eventById.set(String(ev.id), ev);
@@ -281,32 +372,38 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
         const totalRemoved = evs.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.books_removed || 0); }, 0);
         const totalBooks = evs.reduce((sum, e) => { const m = parseEventMeta(e); return sum + (m?.total_books || 0); }, 0);
         result.push({ kind: 'batch', batchId: a.key, events: evs, totalAdded, totalRemoved, totalBooks });
+      } else if (a.kind === 'run') {
+        const startEvent = runStartedById.get(a.key) || null;
+        const startMeta = startEvent ? parseEventMeta(startEvent) : null;
+        const trigger = ((startMeta?.trigger as string) === 'scheduled' ? 'scheduled' : 'manual') as 'scheduled' | 'manual';
+        const totalCandidates = (startMeta?.total_candidates as number | undefined) || 0;
+        const slot = (startMeta?.slot as string | null | undefined) || null;
+        const childIds = sessionsByRun.get(a.key) || new Set<string>();
+        const childSessions: SessionDisplayItem[] = [];
+        for (const sid of childIds) {
+          const evs = sessionMap.get(sid);
+          if (evs && evs.length > 0) childSessions.push(buildSessionItem(sid, evs));
+        }
+        // Newest first inside the run, matching the timeline's overall ordering.
+        childSessions.sort((s1, s2) => s2.lastAt.localeCompare(s1.lastAt));
+        const allTimes: string[] = childSessions.flatMap(s => [s.firstAt, s.lastAt]);
+        if (startEvent) allTimes.push(startEvent.created_at);
+        const firstAt = allTimes.length ? allTimes.reduce((a, b) => a < b ? a : b) : new Date().toISOString();
+        const lastAt = allTimes.length ? allTimes.reduce((a, b) => a > b ? a : b) : firstAt;
+        result.push({
+          kind: 'run',
+          runId: a.key,
+          trigger,
+          totalCandidates,
+          slot,
+          startEvent,
+          sessions: childSessions,
+          firstAt,
+          lastAt,
+        });
       } else {
         const evs = sessionMap.get(a.key)!;
-        const latest = evs[0];
-        const earliest = evs[evs.length - 1];
-        const queuedEv = evs.find(e => e.event_type === 'download_queued');
-        const queuedMeta = queuedEv ? parseEventMeta(queuedEv) : null;
-        const taskId = (queuedMeta?.task_id as string | undefined) ?? null;
-        const hasComplete = evs.some(e => e.event_type === 'download_complete' || e.event_type === 'file_imported');
-        const hasFailed = evs.some(e => e.event_type === 'download_failed');
-        const hasQueued = !!queuedEv;
-        const latestStatus: SessionLatestStatus =
-          hasComplete ? 'complete' :
-          hasFailed ? 'failed' :
-          hasQueued ? 'downloading' : 'searching';
-        result.push({
-          kind: 'session',
-          sessionId: a.key,
-          events: evs,
-          bookTitle: latest.book_title ?? earliest.book_title ?? null,
-          authorName: latest.author_name ?? earliest.author_name ?? null,
-          latestStatus,
-          activeTaskId: taskId,
-          firstAt: earliest.created_at,
-          lastAt: latest.created_at,
-          isActive: false, // annotated in pass 2
-        });
+        result.push(buildSessionItem(a.key, evs));
       }
     }
     return result;
@@ -317,8 +414,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
   // so downstream memos (activeItems, restItems, grouped) early-bail on identity.
   const displayItems = useMemo<DisplayItem[]>(() => {
     let changed = false;
-    const result = baseDisplayItems.map(item => {
-      if (item.kind !== 'session') return item;
+    const annotateSession = (item: SessionDisplayItem): SessionDisplayItem => {
       const isActive = !!item.activeTaskId
         && liveTaskIds.has(item.activeTaskId)
         && item.latestStatus !== 'complete'
@@ -326,6 +422,15 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       if (isActive === item.isActive) return item;
       changed = true;
       return { ...item, isActive };
+    };
+    const result = baseDisplayItems.map(item => {
+      if (item.kind === 'session') return annotateSession(item);
+      if (item.kind === 'run') {
+        const newSessions = item.sessions.map(annotateSession);
+        if (newSessions.every((s, i) => s === item.sessions[i])) return item;
+        return { ...item, sessions: newSessions };
+      }
+      return item;
     });
     return changed ? result : baseDisplayItems;
   }, [baseDisplayItems, liveTaskIds]);
@@ -348,6 +453,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       const ts =
         item.kind === 'single' ? item.event.created_at :
         item.kind === 'session' ? item.firstAt :
+        item.kind === 'run' ? item.firstAt :
         item.events[0].created_at;
       const label = groupLabel(ts);
       if (label !== currentLabel) {
@@ -427,6 +533,74 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
                 {group.items.map(item => {
                   if (item.kind === 'session') {
                     return renderSession(item);
+                  }
+                  if (item.kind === 'run') {
+                    const isExpanded = expandedRuns.has(item.runId);
+                    const downloadingCount = item.sessions.filter(s => s.latestStatus === 'downloading').length;
+                    const completeCount = item.sessions.filter(s => s.latestStatus === 'complete').length;
+                    const failedCount = item.sessions.filter(s => s.latestStatus === 'failed').length;
+                    const searchingCount = item.sessions.filter(s => s.latestStatus === 'searching').length;
+                    const triggerLabel = item.trigger === 'scheduled' ? 'Scheduled' : 'Manual';
+                    const accentClass = item.trigger === 'scheduled'
+                      ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
+                    const iconClass = item.trigger === 'scheduled' ? 'text-emerald-500' : 'text-amber-500';
+                    const sessionsCount = item.sessions.length;
+                    const headerCount = item.totalCandidates || sessionsCount;
+                    return (
+                      <div key={`run-${item.runId}`}>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedRuns(prev => { const next = new Set(prev); if (next.has(item.runId)) next.delete(item.runId); else next.add(item.runId); return next; })}
+                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+                        >
+                          <div className={`mt-0.5 flex-shrink-0 ${iconClass}`}>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5h18M3 12h18M3 16.5h18" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${accentClass}`}>
+                                {triggerLabel}
+                              </span>
+                              <span className="text-[10px] text-gray-400">
+                                {sessionsCount}{headerCount && headerCount !== sessionsCount ? ` of ${headerCount}` : ''} book{sessionsCount === 1 ? '' : 's'}
+                              </span>
+                              {item.slot ? <span className="text-[10px] text-gray-400">@ {item.slot}</span> : null}
+                            </div>
+                            <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
+                              <span className="font-medium">
+                                {item.trigger === 'scheduled' ? 'Scheduled search for monitored books' : 'Manual batch search'}
+                                {headerCount ? ` — ${headerCount} book${headerCount === 1 ? '' : 's'} to download` : ''}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-gray-500">
+                              {completeCount > 0 ? `${completeCount} complete` : ''}
+                              {downloadingCount > 0 ? `${completeCount > 0 ? ' · ' : ''}${downloadingCount} downloading` : ''}
+                              {searchingCount > 0 ? `${(completeCount > 0 || downloadingCount > 0) ? ' · ' : ''}${searchingCount} searching` : ''}
+                              {failedCount > 0 ? <span className="text-red-500">{(completeCount > 0 || downloadingCount > 0 || searchingCount > 0) ? ' · ' : ''}{failedCount} failed</span> : null}
+                              {sessionsCount === 0 ? 'No books processed yet' : ''}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(item.firstAt)}</span>
+                            <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                          </div>
+                        </button>
+                        {isExpanded ? (
+                          <div className="border-t border-gray-200/40 dark:border-gray-800/40 bg-black/[0.02] dark:bg-white/[0.02]">
+                            {item.sessions.length === 0 ? (
+                              <div className="px-4 py-3 pl-11 text-[11px] text-gray-500">No sessions recorded for this run.</div>
+                            ) : (
+                              item.sessions.map(s => renderSession(s))
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
                   }
                   if (item.kind === 'batch') {
                     const isExpanded = expandedBatches.has(item.batchId);

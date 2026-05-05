@@ -18,7 +18,14 @@ interface UseMonitoredAutoSearchParams {
   setTransientDownloadActivityItems: Dispatch<SetStateAction<ActivityItem[]>>;
   batchAutoStatsRef: MutableRefObject<Record<string, BatchAutoStats>>;
   cancelledBatchIdsRef: MutableRefObject<Set<string>>;
-  handleReleaseDownload: (book: Book, release: Release, contentType: ContentType, monitoredEntityId?: number | null) => Promise<void>;
+  handleReleaseDownload: (
+    book: Book,
+    release: Release,
+    contentType: ContentType,
+    monitoredEntityId?: number | null,
+    sessionId?: string | null,
+    runId?: string | null,
+  ) => Promise<void>;
 }
 
 export function useMonitoredAutoSearch({
@@ -46,6 +53,9 @@ export function useMonitoredAutoSearch({
       ? `auto-search-batch:${batchAuto.batchId}:${normalizedContentType}`
       : null;
     const batchStatsKey = batchMasterActivityId || '';
+    // History grouping: sessionId anchors per-book events; runId groups all sessions in this manual batch.
+    const sessionId = options?.sessionId;
+    const runId = options?.runId;
 
     const updateBatchMasterActivity = (params: {
       statusDetail: string;
@@ -197,6 +207,9 @@ export function useMonitoredAutoSearch({
           provider: book.provider,
           provider_book_id: book.provider_id,
           content_type: normalizedContentType,
+          book_title: book.title,
+          session_id: sessionId,
+          run_id: runId,
         });
         if (precheck.skip) {
           const skipMessage = precheck.reason === 'history_final_path_exists'
@@ -228,6 +241,8 @@ export function useMonitoredAutoSearch({
             errorMessage: precheck.reason === 'history_final_path_exists'
               ? 'skip_existing_file_history_final_path_exists'
               : 'skip_existing_file',
+            sessionId,
+            runId,
           });
           finalizeBatchIfComplete();
           return 'skip';
@@ -252,6 +267,8 @@ export function useMonitoredAutoSearch({
         contentType: normalizedContentType,
         status: 'not_released',
         errorMessage: unreleasedMessage,
+        sessionId,
+        runId,
       });
       if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
         showToast(`${unreleasedMessage}. Skipping auto-search.`, 'info');
@@ -349,7 +366,7 @@ export function useMonitoredAutoSearch({
         if (!suppressPerBookAutoSearchToasts) {
           showToast(`Starting download (match ${bestMatchScore})`, 'info');
         }
-        await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null);
+        await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null, sessionId, runId);
         if (!suppressPerBookAutoSearchToasts) {
           showToast(`Queued top match (score ${bestMatchScore})`, 'success');
         }
@@ -383,6 +400,8 @@ export function useMonitoredAutoSearch({
         sourceId: bestRelease?.source_id,
         releaseTitle: bestRelease?.title,
         matchScore: bestMatchScore,
+        sessionId,
+        runId,
       });
       if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
         showToast(
@@ -410,6 +429,8 @@ export function useMonitoredAutoSearch({
         contentType: normalizedContentType,
         status: 'error',
         errorMessage: error instanceof Error ? error.message : String(error),
+        sessionId,
+        runId,
       });
       if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
         showToast(

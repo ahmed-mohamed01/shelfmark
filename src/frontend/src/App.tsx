@@ -1323,6 +1323,8 @@ function App() {
       releaseContentType: ContentType,
       onBehalfOfUserId?: number,
       monitoredEntityId?: number,
+      sessionId?: string | null,
+      runId?: string | null,
     ): Promise<void> => {
       const requestStartedAtSeconds = Date.now() / 1000;
       try {
@@ -1335,6 +1337,8 @@ function App() {
               monitored_book_provider: book.provider,
               monitored_book_provider_id: book.provider_id,
               match_score: typeof release.extra?.match_score === 'number' ? release.extra.match_score : undefined,
+              session_id: sessionId || undefined,
+              run_id: runId || undefined,
             }
           : basePayload;
         await downloadRelease(payload, onBehalfOfUserId);
@@ -1593,6 +1597,8 @@ function App() {
     release: Release,
     releaseContentType: ContentType,
     monitoredEntityIdOverride?: number | null,
+    sessionId?: string | null,
+    runId?: string | null,
   ) => {
     policyTrace('release.action:start', {
       bookId: book.id,
@@ -1614,7 +1620,7 @@ function App() {
       });
       return;
     }
-    await executeReleaseDownload(book, release, releaseContentType, undefined, monitoredEntityId);
+    await executeReleaseDownload(book, release, releaseContentType, undefined, monitoredEntityId, sessionId, runId);
   }, [actingAsUser, releaseMonitoredEntityId, executeReleaseDownload]);
 
   const { executeAutoSearch } = useMonitoredAutoSearch({

@@ -200,6 +200,8 @@ def queue_release(
                     "provider_book_id": str(monitored_book_provider_id or "").strip() or None,
                     "release_title": str(release_title or "").strip() or None,
                     "match_score": release_match_score,
+                    "session_id": str(release_data.get("session_id") or "").strip() or None,
+                    "run_id": str(release_data.get("run_id") or "").strip() or None,
                 }
             except (TypeError, ValueError):
                 history_context = None

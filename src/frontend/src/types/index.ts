@@ -208,6 +208,17 @@ export interface OpenReleasesOptions {
   };
   suppressPerBookAutoSearchToasts?: boolean;
   combined?: boolean;
+  /**
+   * Per-book session id for History grouping. Minted by the bulk loop and
+   * threaded through precheck → attempt → download so all per-book events
+   * land under one session row.
+   */
+  sessionId?: string;
+  /**
+   * Per-batch run id. Tagged in the search_started metadata so the History
+   * UI groups all books in this batch under a single "Manual" run row.
+   */
+  runId?: string;
 }
 
 export type RequestPolicyMode = 'download' | 'request_release' | 'request_book' | 'blocked';

@@ -320,6 +320,9 @@ export const precheckMonitoredAutoSearch = async (
     provider: string;
     provider_book_id: string;
     content_type: 'ebook' | 'audiobook';
+    book_title?: string;
+    session_id?: string;
+    run_id?: string;
   },
 ): Promise<MonitoredAutoSearchPrecheckResponse> => {
   return fetchJSON<MonitoredAutoSearchPrecheckResponse>(`${API_BASE}/monitored/${entityId}/books/auto-search-precheck`, {
@@ -338,7 +341,33 @@ interface RecordMonitoredBookAttemptPayload {
   release_title?: string;
   match_score?: number;
   error_message?: string;
+  session_id?: string;
+  run_id?: string;
 }
+
+export const recordMonitoredRunStarted = async (params: {
+  runId: string;
+  trigger: 'manual' | 'scheduled';
+  totalCandidates: number;
+  slot?: string;
+}): Promise<void> => {
+  try {
+    await fetchJSON<{ ok: boolean }>(`${API_BASE}/monitored/run-started`, {
+      method: 'POST',
+      body: JSON.stringify({
+        run_id: params.runId,
+        trigger: params.trigger,
+        total_candidates: params.totalCandidates,
+        slot: params.slot,
+      }),
+    });
+  } catch (err) {
+    console.warn(
+      'Failed to record monitored run-started:',
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+};
 
 const recordMonitoredBookAttempt = async (
   entityId: number,
@@ -361,6 +390,8 @@ export interface RecordAutoSearchAttemptParams {
   releaseTitle?: string;
   matchScore?: number | null;
   errorMessage?: string;
+  sessionId?: string;
+  runId?: string;
 }
 
 export const recordMonitoredAutoSearchAttempt = async (
@@ -382,6 +413,8 @@ export const recordMonitoredAutoSearchAttempt = async (
       release_title: params.releaseTitle,
       match_score: typeof params.matchScore === 'number' ? params.matchScore : undefined,
       error_message: params.errorMessage,
+      session_id: params.sessionId,
+      run_id: params.runId,
     });
   } catch (err) {
     console.warn(

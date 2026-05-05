@@ -790,6 +790,24 @@ def resolve_book_auto_search_precheck(
     return bool(reason), reason, detail
 
 
+def filter_search_candidates(availability_books: list[dict], content_type: str) -> list[dict]:
+    """Filter monitored books to those eligible for auto-search.
+
+    A book is a candidate when (1) it is flagged for the requested content_type,
+    (2) it is not removed from the upstream provider, and (3) it has provider/id
+    fields populated. Used by ``search_missing_books`` and by the scheduler's
+    upfront candidate-count step — keep one source of truth.
+    """
+    monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
+    return [
+        row for row in availability_books
+        if bool(int(row.get(monitor_col) or 0))
+        and str(row.get("state") or "") != "removed_from_provider"
+        and str(row.get("provider") or "").strip()
+        and str(row.get("provider_book_id") or "").strip()
+    ]
+
+
 def search_missing_books(
     db: MonitoredDB,
     *,
@@ -797,6 +815,7 @@ def search_missing_books(
     user_id: int | None,
     content_type: str = "ebook",
     min_match_score: float | None = None,
+    run_id: str | None = None,
 ) -> SearchSummary:
     """Find monitored books with no existing file and queue downloads for them.
 
@@ -834,16 +853,7 @@ def search_missing_books(
         tmpl_override = "{Author}/{Series}/{Title}/{Title} ({Year})"
 
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
-    monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
-    has_file_key = "has_ebook_available" if content_type == "ebook" else "has_audiobook_available"
-
-    candidates = [
-        row for row in availability.books
-        if bool(int(row.get(monitor_col) or 0))
-        and str(row.get("state") or "") != "removed_from_provider"
-        and str(row.get("provider") or "").strip()
-        and str(row.get("provider_book_id") or "").strip()
-    ]
+    candidates = filter_search_candidates(availability.books, content_type)
 
     summary = SearchSummary(
         entity_id=entity_id,
@@ -855,6 +865,7 @@ def search_missing_books(
         return summary
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    run_metadata: dict[str, Any] | None = {"run_id": run_id} if run_id else None
 
     for row in candidates:
         provider = str(row.get("provider") or "").strip()
@@ -875,6 +886,7 @@ def search_missing_books(
                 content_type=content_type,
                 session_id=session_id,
                 user_id=user_id,
+                metadata=run_metadata,
             )
         except Exception as exc:
             logger.debug("Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc)

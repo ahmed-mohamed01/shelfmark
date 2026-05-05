@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import re
 import threading
+import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, request, session
@@ -17,6 +18,8 @@ from shelfmark.core.monitored_files import (
     resolve_allowed_roots,
 )
 from shelfmark.core.monitored_operations import (
+    compute_book_availability,
+    filter_search_candidates,
     record_scan_error,
     resolve_book_auto_search_precheck,
     run_batch_sync,
@@ -434,6 +437,32 @@ def register_monitored_routes(
                     logger.info("Scheduled auto-download skipped slot=%s: MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED=false", s)
                     return
 
+                # Compute total candidate count upfront so the run-started event
+                # can show "N books to download" from t=0 in the History UI.
+                total_candidates = 0
+                for uid, entity in ents:
+                    eid = int(entity.get("id") or 0)
+                    try:
+                        av = compute_book_availability(monitored_db, entity_id=eid, user_id=uid)
+                    except Exception as exc:
+                        logger.debug("Skipping candidate count for entity %s: %s", eid, exc)
+                        continue
+                    total_candidates += len(filter_search_candidates(av.books, "ebook"))
+                    total_candidates += len(filter_search_candidates(av.books, "audiobook"))
+
+                run_id = str(uuid.uuid4())
+                try:
+                    from shelfmark.core.monitored_history import record_run_started
+                    record_run_started(
+                        run_id=run_id,
+                        trigger="scheduled",
+                        total_candidates=total_candidates,
+                        slot=s,
+                        user_id=None,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to record run_started for slot=%s: %s", s, exc)
+
                 total_queued = 0
                 total_searched = 0
 
@@ -452,6 +481,7 @@ def register_monitored_routes(
                                 user_id=uid,
                                 content_type=content_type,
                                 min_match_score=threshold,
+                                run_id=run_id,
                             )
                             if result.total_candidates > 0:
                                 total_searched += result.total_candidates
@@ -1095,6 +1125,28 @@ def register_monitored_routes(
         if entity is None:
             return jsonify({"error": "Not found"}), 404
 
+        # Manual flow anchors a session here so subsequent download events
+        # group under the same row in History. Scheduled flow records its
+        # search_started inside search_missing_books (no double-emission).
+        session_id = str(payload.get("session_id") or "").strip() or None
+        run_id = str(payload.get("run_id") or "").strip() or None
+        book_title = str(payload.get("book_title") or "").strip() or None
+        if session_id:
+            try:
+                from shelfmark.core.monitored_history import record_search_started
+                record_search_started(
+                    entity_id=entity_id,
+                    book_provider=provider,
+                    book_provider_id=provider_book_id,
+                    book_title=book_title,
+                    content_type=content_type,
+                    session_id=session_id,
+                    user_id=int(entity["user_id"]),
+                    metadata={"run_id": run_id} if run_id else None,
+                )
+            except Exception as exc:
+                logger.debug("Failed to record search_started for precheck %s/%s: %s", provider, provider_book_id, exc)
+
         try:
             skip, reason, detail = resolve_book_auto_search_precheck(
                 monitored_db,
@@ -1157,6 +1209,10 @@ def register_monitored_routes(
             except (TypeError, ValueError):
                 match_score = None
 
+        attempt_session_id = str(payload.get("session_id") or "").strip() or None
+        attempt_run_id = str(payload.get("run_id") or "").strip() or None
+        attempt_metadata = {"run_id": attempt_run_id} if attempt_run_id else None
+
         write_monitored_book_attempt(monitored_db,
             user_id=int(entity["user_id"]),
             entity_id=entity_id,
@@ -1169,6 +1225,8 @@ def register_monitored_routes(
             release_title=release_title,
             match_score=match_score,
             error_message=error_message,
+            session_id=attempt_session_id,
+            metadata=attempt_metadata,
         )
         return jsonify({"ok": True})
 
@@ -1639,6 +1697,51 @@ def register_monitored_routes(
         t.start()
 
         return jsonify({"ok": True, "batch_id": batch_id, "total": len(entities)})
+
+    @app.route("/api/monitored/run-started", methods=["POST"])
+    def api_record_monitored_run_started():
+        """Record a manual batch auto-download run.
+
+        Frontend calls this once at the start of a bulk auto-download to
+        anchor the History UI's run grouping. Scheduled runs call the
+        recorder directly from the scheduler thread.
+        """
+        db_user_id, _, _, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        if gate is not None:
+            return gate
+
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        run_id = str(payload.get("run_id") or "").strip()
+        trigger = str(payload.get("trigger") or "manual").strip().lower()
+        if trigger not in {"scheduled", "manual"}:
+            return jsonify({"error": "trigger must be scheduled or manual"}), 400
+        if not run_id:
+            return jsonify({"error": "run_id is required"}), 400
+
+        try:
+            total_candidates = int(payload.get("total_candidates") or 0)
+        except (TypeError, ValueError):
+            total_candidates = 0
+
+        slot = str(payload.get("slot") or "").strip() or None
+
+        try:
+            from shelfmark.core.monitored_history import record_run_started
+            record_run_started(
+                run_id=run_id,
+                trigger=trigger,
+                total_candidates=total_candidates,
+                slot=slot,
+                user_id=int(db_user_id) if db_user_id is not None else None,
+            )
+        except Exception as exc:
+            logger.warning("Failed to record run_started for %s: %s", run_id, exc)
+            return jsonify({"error": "Failed to record run"}), 500
+
+        return jsonify({"ok": True, "run_id": run_id})
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)
