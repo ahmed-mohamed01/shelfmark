@@ -426,6 +426,21 @@ class MonitoredDB:
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+                # One-time backfill: prior versions of upsert_monitored_book
+                # set hidden=1 without zeroing the monitor flags, leaving rows
+                # with hidden=1 AND monitor_*=1 — visible as "Wanted" on the
+                # author page but excluded from the Monitored Books tab.
+                conn.execute(
+                    """
+                    UPDATE monitored_books
+                    SET saved_monitor_ebook = COALESCE(saved_monitor_ebook, monitor_ebook),
+                        saved_monitor_audiobook = COALESCE(saved_monitor_audiobook, monitor_audiobook),
+                        monitor_ebook = 0,
+                        monitor_audiobook = 0
+                    WHERE hidden = 1 AND (monitor_ebook = 1 OR monitor_audiobook = 1)
+                    """
+                )
+                conn.commit()
                 try:
                     conn.execute("ALTER TABLE monitored_events ADD COLUMN session_id TEXT")
                     conn.commit()
@@ -1605,6 +1620,26 @@ class MonitoredDB:
                         1 if hidden else 0,
                     ),
                 )
+                if hidden:
+                    # Keep monitor flags consistent with hidden=1 (matches the
+                    # explicit hide path in set_monitored_book_monitor_flags).
+                    # Save current flags to saved_monitor_* the first time we
+                    # hide so an unhide can restore them.
+                    conn.execute(
+                        """
+                        UPDATE monitored_books
+                        SET saved_monitor_ebook = COALESCE(saved_monitor_ebook, monitor_ebook),
+                            saved_monitor_audiobook = COALESCE(saved_monitor_audiobook, monitor_audiobook),
+                            monitor_ebook = 0,
+                            monitor_audiobook = 0
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND hidden = 1
+                          AND (monitor_ebook = 1 OR monitor_audiobook = 1)
+                        """,
+                        (entity_id, provider, provider_book_id),
+                    )
                 conn.commit()
             finally:
                 conn.close()
