@@ -490,6 +490,15 @@ def fetch_book_releases(
         source_name = str(source_row.get("name") or "").strip()
         if not source_name or not bool(source_row.get("enabled")):
             continue
+        # Skip sources that don't support the requested content type. Without this,
+        # ebook-only sources (e.g. Direct Download) return ebook releases for an
+        # audiobook search; the override at line below then force-tags them as
+        # audiobook and they later fail postprocessing as "Unsupported audiobook
+        # file type: .mobi". `supported_content_types` is populated by
+        # release_sources.list_available_sources() from each source class.
+        supported = source_row.get("supported_content_types") or ["ebook", "audiobook"]
+        if content_type not in supported:
+            continue
         try:
             source = get_source(source_name)
             releases = source.search(book, search_plan, expand_search=False, content_type=content_type)
