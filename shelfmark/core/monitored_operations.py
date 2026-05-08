@@ -874,6 +874,58 @@ def search_missing_books(
         book_title = str(row.get("title") or "").strip() or None
         availability_payload = availability.availability_by_book.get((provider, provider_book_id), {})
 
+        # Resolve release status before emitting any History events. Otherwise an
+        # unreleased book gets a phantom "SEARCHING" row in the History tab even
+        # though we immediately skip the actual search below.
+        release_date_raw = str(row.get("release_date") or "").strip()
+        is_released, parsed_release_date = is_book_released(release_date_raw)
+        if parsed_release_date is None:
+            if len(release_date_raw) == 4 and release_date_raw.isdigit():
+                try:
+                    parsed_release_date = date(int(release_date_raw), 1, 1)
+                    is_released = parsed_release_date <= datetime.now(timezone.utc).date()
+                except ValueError:
+                    pass
+            else:
+                # is_book_released() defaults to "released" when the date is
+                # missing/unparseable. For the auto-search path that's wrong:
+                # Hardcover often leaves release_date NULL for upcoming/announced
+                # books. Fall back to publish_year, and if that is also missing,
+                # treat as unreleased to avoid wasting search cycles.
+                publish_year_raw = row.get("publish_year")
+                try:
+                    publish_year_int = int(publish_year_raw) if publish_year_raw is not None else None
+                except (TypeError, ValueError):
+                    publish_year_int = None
+                if publish_year_int is None:
+                    is_released = False
+                else:
+                    current_year = datetime.now(timezone.utc).year
+                    is_released = publish_year_int <= current_year
+                    if not is_released:
+                        parsed_release_date = date(publish_year_int, 1, 1)
+        if not is_released:
+            summary.unreleased += 1
+            if parsed_release_date is not None:
+                unreleased_message = f"Book is unreleased until {parsed_release_date.isoformat()}"
+            elif release_date_raw:
+                unreleased_message = "Book is unreleased"
+            else:
+                unreleased_message = "Release date unknown"
+            write_monitored_book_attempt(
+                db,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                attempted_at=now_iso,
+                status="not_released",
+                error_message=unreleased_message,
+                session_id=None,
+            )
+            continue
+
         # Mint a session_id for this attempt and emit search_started so the History
         # tab can group all subsequent events (search, queue, complete/fail) under
         # one expandable row.
@@ -928,55 +980,6 @@ def search_missing_books(
                 attempted_at=now_iso,
                 status="no_match",
                 error_message="skip_existing_file",
-                session_id=session_id,
-            )
-            continue
-
-        release_date_raw = str(row.get("release_date") or "").strip()
-        is_released, parsed_release_date = is_book_released(release_date_raw)
-        if parsed_release_date is None:
-            if len(release_date_raw) == 4 and release_date_raw.isdigit():
-                try:
-                    parsed_release_date = date(int(release_date_raw), 1, 1)
-                    is_released = parsed_release_date <= datetime.now(timezone.utc).date()
-                except ValueError:
-                    pass
-            else:
-                # is_book_released() defaults to "released" when the date is
-                # missing/unparseable. For the auto-search path that's wrong:
-                # Hardcover often leaves release_date NULL for upcoming/announced
-                # books. Fall back to publish_year, and if that is also missing,
-                # treat as unreleased to avoid wasting search cycles.
-                publish_year_raw = row.get("publish_year")
-                try:
-                    publish_year_int = int(publish_year_raw) if publish_year_raw is not None else None
-                except (TypeError, ValueError):
-                    publish_year_int = None
-                if publish_year_int is None:
-                    is_released = False
-                else:
-                    current_year = datetime.now(timezone.utc).year
-                    is_released = publish_year_int <= current_year
-                    if not is_released:
-                        parsed_release_date = date(publish_year_int, 1, 1)
-        if not is_released:
-            summary.unreleased += 1
-            if parsed_release_date is not None:
-                unreleased_message = f"Book is unreleased until {parsed_release_date.isoformat()}"
-            elif release_date_raw:
-                unreleased_message = "Book is unreleased"
-            else:
-                unreleased_message = "Release date unknown"
-            write_monitored_book_attempt(
-                db,
-                user_id=user_id,
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                content_type=content_type,
-                attempted_at=now_iso,
-                status="not_released",
-                error_message=unreleased_message,
                 session_id=session_id,
             )
             continue
