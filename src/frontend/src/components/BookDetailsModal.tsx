@@ -821,7 +821,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                               <div className="min-w-0 flex-1">
                                 <div className="text-sm text-gray-900 dark:text-gray-100 break-words" title={f.path}>{fileName}</div>
                                 {dirPath ? (
-                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate" title={f.path}>{dirPath}</div>
+                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 break-all" title={f.path}>{dirPath}</div>
                                 ) : null}
                                 {metaParts.length > 0 ? (
                                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">{metaParts.join(' · ')}</div>
