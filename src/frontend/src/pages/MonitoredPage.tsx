@@ -46,6 +46,7 @@ import {
   isMonitoredBookUpcoming,
   monitoredBookHasAnyAvailable,
   monitoredBookHasFormatAvailable,
+  monitoredBookHasMissingTrackedFormat,
   monitoredBookTracksAudiobook,
   monitoredBookTracksEbook,
 } from '../utils/monitoredBookState';
@@ -1205,9 +1206,11 @@ export const MonitoredPage = ({
 
   const filteredRegularMonitoredBooksByAvailability = useMemo(() => {
     if (monitoredBooksAvailabilityFilter === 'fulfilled') {
-      return regularMonitoredBooksForTable.filter((book) => monitoredBookHasAnyAvailable(book));
+      return regularMonitoredBooksForTable.filter((book) => (
+        monitoredBookHasAnyAvailable(book) && !monitoredBookHasMissingTrackedFormat(book)
+      ));
     }
-    return regularMonitoredBooksForTable.filter((book) => !monitoredBookHasAnyAvailable(book));
+    return regularMonitoredBooksForTable.filter((book) => monitoredBookHasMissingTrackedFormat(book));
   }, [regularMonitoredBooksForTable, monitoredBooksAvailabilityFilter]);
 
   const normalizedMonitoredBooksFilterQuery = monitoredBooksSearchQuery.trim().toLowerCase();

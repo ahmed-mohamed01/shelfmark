@@ -57,6 +57,14 @@ export const monitoredBookHasAnyAvailable = (book: MonitoredBookStateLike): bool
   monitoredBookHasFormatAvailable(book, 'ebook') || monitoredBookHasFormatAvailable(book, 'audiobook')
 );
 
+// A book is "missing" if any tracked format lacks a file. Aligns the
+// Monitored Books tab with the per-format badges and per-format auto-search:
+// a book with ebook present but a tracked-and-missing audiobook still counts.
+export const monitoredBookHasMissingTrackedFormat = (book: MonitoredBookStateLike): boolean => (
+  (monitoredBookTracksEbook(book) && !monitoredBookHasFormatAvailable(book, 'ebook'))
+  || (monitoredBookTracksAudiobook(book) && !monitoredBookHasFormatAvailable(book, 'audiobook'))
+);
+
 export const isMonitoredBookDormantState = (book: MonitoredBookStateLike): boolean => (
   !monitoredBookTracksEbook(book)
   && !monitoredBookTracksAudiobook(book)
