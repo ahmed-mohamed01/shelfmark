@@ -962,9 +962,9 @@ export const MonitoredAuthorBooksTab = ({
     return provider && providerId ? hiddenBookKeys.has(`${provider}:${providerId}`) : false;
   }, [hiddenBookKeys]);
 
-  const [_upcomingTodayMs, _upcomingCurrentYear] = useMemo(() => {
+  const _upcomingTodayMs = useMemo(() => {
     const now = new Date();
-    return [new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), now.getFullYear()];
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   }, []);
 
   const getMonitoredAvailabilityForBook = useCallback((book: Book): {
@@ -1893,7 +1893,7 @@ export const MonitoredAuthorBooksTab = ({
                         const p = (book.provider || '').trim();
                         const pid = (book.provider_id || '').trim();
                         const row = (p && pid) ? monitoredBookRowByKey.get(`${p}:${pid}`) : undefined;
-                        const bookUpcoming = row ? isMonitoredBookUpcoming(row, _upcomingTodayMs, _upcomingCurrentYear) : false;
+                        const bookUpcoming = row ? isMonitoredBookUpcoming(row, _upcomingTodayMs) : false;
                         const bookHidden = row?.hidden === 1;
                         if (bookUpcoming) { upcomingInGroup++; continue; }
                         if (bookHidden) { hiddenInGroup++; continue; }
@@ -1959,7 +1959,7 @@ export const MonitoredAuthorBooksTab = ({
                                 const popularityLine = [popularity.rating !== null ? `★ ${popularity.rating.toFixed(1)}` : null, popularity.readersCount !== null ? `${popularity.readersCount.toLocaleString()} readers` : null].filter(Boolean).join(' • ');
                                 const isDormant = isBookDormant(book);
                                 const isRemovedCard = _bookRow?.state === 'removed_from_provider';
-                                const isUpcoming = _bookRow ? isMonitoredBookUpcoming(_bookRow, _upcomingTodayMs, _upcomingCurrentYear) : false;
+                                const isUpcoming = _bookRow ? isMonitoredBookUpcoming(_bookRow, _upcomingTodayMs) : false;
                                 const authorCountdown = isUpcoming && _bookRow ? getUpcomingCountdown(_bookRow) : null;
                                 return (
                                   <div key={book.id} className="animate-pop-up will-change-transform" style={{ animationDelay: `${bookIndex * 30}ms` }}>

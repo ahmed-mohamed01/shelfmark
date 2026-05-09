@@ -260,16 +260,8 @@ export function useMonitoredAutoSearch({
         contentType: normalizedContentType,
         unreleasedUntil,
       });
-      void recordMonitoredAutoSearchAttempt({
-        monitoredEntityId,
-        provider: book.provider,
-        providerBookId: book.provider_id,
-        contentType: normalizedContentType,
-        status: 'not_released',
-        errorMessage: unreleasedMessage,
-        sessionId,
-        runId,
-      });
+      // Skip silently — no History entry. Logging an attempt for every
+      // unreleased book on each batch run drowns the History tab in noise.
       if (!suppressPerBookAutoSearchToasts || !isForcedAutoAction) {
         showToast(`${unreleasedMessage}. Skipping auto-search.`, 'info');
       }

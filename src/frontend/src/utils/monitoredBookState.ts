@@ -75,33 +75,25 @@ export type FormatAvailabilityStatus = 'available' | 'wanted' | 'missing';
 
 const MISSING_SEARCH_STATUSES = new Set(['no_match', 'below_cutoff', 'download_failed', 'error']);
 
-/**
- * Returns the availability status for a single format on a monitored book.
- * Returns null if the format is not tracked and no file exists (no badge shown).
- *   available — file found (shown even when monitoring is disabled)
- *   missing   — monitored, searched, all attempts failed (no_match / below_cutoff / download_failed / error)
- *   wanted    — monitored, not yet found (never searched, queued, or not yet released)
- */
-/**
- * Whether a monitored book is upcoming (unreleased).
- * True when release date is in the future, year is current/future, or no date is known (TBA).
- */
+// Whether a monitored book is upcoming (unreleased). True when the release
+// date is in the future or absent/unparseable — books with missing metadata
+// surface in the Upcoming section so the user can triage (keep monitoring
+// vs. unmonitor) instead of burning auto-search cycles. publish_year is not
+// a fallback: it usually reflects the original work, not the edition the
+// user wants, so it can't substitute for a real release date.
 export const isMonitoredBookUpcoming = (
-  book: { release_date?: string | null; publish_year?: number | null; no_release_date?: boolean },
+  book: { release_date?: string | null },
   todayStartMs: number,
-  currentYear: number,
 ): boolean => {
   if (typeof book.release_date === 'string' && book.release_date.trim()) {
     const parsed = Date.parse(book.release_date);
     if (Number.isFinite(parsed)) {
       const releaseDay = new Date(parsed);
       releaseDay.setHours(0, 0, 0, 0);
-      if (releaseDay.getTime() > todayStartMs) return true;
-      return false;
+      return releaseDay.getTime() > todayStartMs;
     }
   }
-  if (typeof book.publish_year === 'number') return book.publish_year >= currentYear;
-  return book.no_release_date === true;
+  return true;
 };
 
 /**
@@ -109,7 +101,7 @@ export const isMonitoredBookUpcoming = (
  * Complement of isMonitoredBookUpcoming — covers the window right after release.
  */
 export const isMonitoredBookRecentlyReleased = (
-  book: { release_date?: string | null; publish_year?: number | null },
+  book: { release_date?: string | null },
   todayStartMs: number,
   recentDays = 90,
 ): boolean => {
@@ -127,6 +119,13 @@ export const isMonitoredBookRecentlyReleased = (
   return false;
 };
 
+/**
+ * Returns the availability status for a single format on a monitored book.
+ * Returns null if the format is not tracked and no file exists (no badge shown).
+ *   available — file found (shown even when monitoring is disabled)
+ *   missing   — monitored, searched, all attempts failed (no_match / below_cutoff / download_failed / error)
+ *   wanted    — monitored, not yet found (never searched, queued, or not yet released)
+ */
 export const getFormatStatus = (
   book: MonitoredBookStateLike,
   format: 'ebook' | 'audiobook',

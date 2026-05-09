@@ -227,6 +227,9 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
     assert payload.get("below_cutoff") == 0
     assert payload.get("failed") == 0
 
+    # Unreleased books are now skipped silently — no attempt history row, no
+    # search_result event. The summary counter is the only signal so the
+    # History tab isn't flooded with one row per unreleased book per run.
     history_response = client.get(
         f"/api/monitored/{entity['id']}/books/history",
         query_string={"provider": provider, "provider_book_id": provider_book_id, "limit": "10"},
@@ -234,9 +237,61 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
     assert history_response.status_code == 200
     history_payload = history_response.get_json() or {}
     attempts = history_payload.get("attempt_history") or []
-    assert len(attempts) >= 1
-    assert attempts[0]["status"] == "not_released"
-    assert attempts[0]["error_message"] == f"Book is unreleased until {future_year}-01-01"
+    assert attempts == []
+
+
+def test_monitored_search_treats_missing_release_date_as_unreleased(main_module, client):
+    """A book with no release_date but a past publish_year must be skipped.
+
+    publish_year is no longer a fallback for the released/unreleased decision —
+    these books surface in the Upcoming UI for the user to triage instead of
+    being silently auto-searched.
+    """
+    user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
+    _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+    entity = main_module.monitored_db.create_monitored_entity(
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id=f"author-{uuid.uuid4().hex[:8]}",
+        name="Missing Date Tester",
+        settings={"monitor_ebook_mode": "missing"},
+    )
+
+    provider = "hardcover"
+    provider_book_id = "book-no-release-date"
+    main_module.monitored_db.upsert_monitored_book(
+        user_ids=[user["id"]],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        title="Book With No Release Date",
+        authors="Author One",
+        publish_year=date.today().year - 5,
+        release_date=None,
+    )
+    main_module.monitored_db.set_monitored_book_monitor_flags(
+        user_ids=[user["id"]],
+        entity_id=entity["id"],
+        provider=provider,
+        provider_book_id=provider_book_id,
+        monitor_ebook=True,
+    )
+
+    with patch("shelfmark.metadata_providers.get_provider", side_effect=AssertionError("provider lookup should be skipped when release_date is missing")):
+        response = client.post(
+            f"/api/monitored/{entity['id']}/search",
+            json={"content_type": "ebook"},
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json() or {}
+    assert payload.get("ok") is True
+    assert payload.get("total_candidates") == 1
+    assert payload.get("unreleased") == 1
+    assert payload.get("queued") == 0
+    assert payload.get("no_match") == 0
 
 
 def test_monitored_search_skips_when_history_final_path_exists(main_module, client, tmp_path: Path):

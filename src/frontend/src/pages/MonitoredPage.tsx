@@ -1180,8 +1180,8 @@ export const MonitoredPage = ({
   }, [monitoredBooksForTable, monitoredBooksRows, showUnmonitoredInReleases, sortBooksForDisplay]);
 
   const upcomingMonitoredBooksForTable = useMemo(() => {
-    const { todayStartMs, currentYear } = _getDateConstants();
-    return releasesBaseRows.filter((book) => isMonitoredBookUpcoming(book, todayStartMs, currentYear));
+    const { todayStartMs } = _getDateConstants();
+    return releasesBaseRows.filter((book) => isMonitoredBookUpcoming(book, todayStartMs));
   }, [releasesBaseRows]);
 
   const recentlyReleasedBooksForTable = useMemo(() => {
@@ -1198,9 +1198,9 @@ export const MonitoredPage = ({
   }, [upcomingMonitoredBooksForTable, upcomingTimeFilter]);
 
   const regularMonitoredBooksForTable = useMemo(() => {
-    const { todayStartMs, currentYear } = _getDateConstants();
+    const { todayStartMs } = _getDateConstants();
     return monitoredBooksForTable.filter((book) =>
-      !isMonitoredBookUpcoming(book, todayStartMs, currentYear),
+      !isMonitoredBookUpcoming(book, todayStartMs),
     );
   }, [monitoredBooksForTable]);
 
