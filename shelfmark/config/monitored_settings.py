@@ -35,12 +35,12 @@ register_group("monitoring", "Monitoring", icon="book", order=13)
 
 def _get_release_priority_source_options(content_type: str) -> list[dict[str, str]]:
     """Return release source options for the given content type."""
+    from shelfmark.core.monitored_utils import source_supports_content_type
     from shelfmark.release_sources import list_available_sources
 
     options: list[dict[str, str]] = []
     for source in list_available_sources():
-        supported = source.get("supported_content_types") or []
-        if content_type not in supported:
+        if not source_supports_content_type(source, content_type):
             continue
 
         source_name = str(source.get("name") or "").strip()

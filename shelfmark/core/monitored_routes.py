@@ -210,6 +210,31 @@ def enrich_release_for_monitored(
             else:
                 # No explicit author dir — use default destination with full path template.
                 release_payload["template_override"] = "{Author}/{Series}/{Title}/{Title} ({Year})"
+
+            # Inject the book's release_date from monitored DB so the orchestrator's
+            # release-date precheck (queue_release) can block manual downloads of
+            # unreleased books. Release sources don't populate release_date on
+            # the Release object, so without this the precheck is silent.
+            book_provider = str(release_payload.get("monitored_book_provider") or "").strip()
+            book_provider_id = str(release_payload.get("monitored_book_provider_id") or "").strip()
+            if (
+                book_provider
+                and book_provider_id
+                and not release_payload.get("release_date")
+            ):
+                books = monitored_db.list_monitored_books(
+                    user_ids=lookup_ids,
+                    entity_id=int(monitored_entity_id_int),
+                ) or []
+                for b in books:
+                    if (
+                        str(b.get("provider") or "").strip() == book_provider
+                        and str(b.get("provider_book_id") or "").strip() == book_provider_id
+                    ):
+                        rd = b.get("release_date")
+                        if rd:
+                            release_payload["release_date"] = rd
+                        break
     except Exception:
         logger.warning("Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True)
 

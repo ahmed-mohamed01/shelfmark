@@ -18,7 +18,11 @@ from typing import Any
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_types import DiffResult
-from shelfmark.core.monitored_utils import extract_book_popularity
+from shelfmark.core.monitored_utils import (
+    extract_book_popularity,
+    release_matches_content_type,
+    source_supports_content_type,
+)
 from shelfmark.metadata_providers import normalize_language_code
 
 logger = setup_logger(__name__)
@@ -470,46 +474,6 @@ def diff_sync_books(
 # =============================================================================
 
 
-_EBOOK_FORMATS = {"epub", "mobi", "azw", "azw3", "pdf", "fb2", "djvu", "cbz", "cbr", "lit", "lrf"}
-_AUDIOBOOK_FORMATS = {"m4b", "mp3", "m4a", "flac", "ogg", "wma", "aac", "wav", "opus"}
-
-
-def _release_matches_content_type(release: Any, requested: str) -> bool:
-    """Return True if a release plausibly matches the requested content_type.
-
-    Filters out cross-type pollution from sources that support both kinds
-    (Prowlarr) but expand or mis-categorize results — e.g. an audiobook search
-    that auto-expands and returns ebook torrents. Also catches the Anna's
-    Archive parser quirk where ebook records get tagged "audiobook" because
-    the page text contains "Book (Audiobook)".
-
-    Decision order:
-    1. If the release's `format` clearly belongs to the wrong family, drop.
-    2. Else if the release's `content_type` clearly indicates wrong family, drop.
-    3. Else keep (ambiguous releases pass through; downstream postprocessing
-       will catch genuinely-wrong files).
-    """
-    fmt = str(getattr(release, "format", None) or "").strip().lower()
-    rct = str(getattr(release, "content_type", None) or "").strip().lower()
-    is_audio_format = fmt in _AUDIOBOOK_FORMATS if fmt else False
-    is_ebook_format = fmt in _EBOOK_FORMATS if fmt else False
-    rct_says_audio = bool(rct) and "audiobook" in rct
-    rct_says_ebook = bool(rct) and "audiobook" not in rct and rct != ""
-
-    if requested == "audiobook":
-        if is_ebook_format:
-            return False
-        if rct_says_ebook and not is_audio_format:
-            return False
-        return True
-    # requested == "ebook"
-    if is_audio_format:
-        return False
-    if rct_says_audio and not is_ebook_format:
-        return False
-    return True
-
-
 def fetch_book_releases(
     book: Any,
     *,
@@ -536,8 +500,7 @@ def fetch_book_releases(
         # and they later fail postprocessing as "Unsupported audiobook file type:
         # .mobi". `supported_content_types` is populated by
         # release_sources.list_available_sources() from each source class.
-        supported = source_row.get("supported_content_types") or ["ebook", "audiobook"]
-        if content_type not in supported:
+        if not source_supports_content_type(source_row, content_type):
             continue
         try:
             source = get_source(source_name)
@@ -550,7 +513,7 @@ def fetch_book_releases(
     # Drop releases whose format/content_type clearly belongs to the other
     # content family — covers Prowlarr auto-expanding into ebook categories
     # during an audiobook search, and similar cross-pollination cases.
-    matched_releases = [r for r in all_releases if _release_matches_content_type(r, content_type)]
+    matched_releases = [r for r in all_releases if release_matches_content_type(r, content_type)]
     dropped = len(all_releases) - len(matched_releases)
     if dropped:
         logger.debug(

@@ -211,3 +211,75 @@ def extract_author_photo_url(author: dict) -> str | None:
     if isinstance(image_obj, str) and image_obj:
         return image_obj
     return author.get("cached_image") or None
+
+
+# =============================================================================
+# Content-type matching for releases
+# =============================================================================
+
+
+_EBOOK_FORMATS = frozenset({"epub", "mobi", "azw", "azw3", "pdf", "fb2", "djvu", "cbz", "cbr", "lit", "lrf"})
+_AUDIOBOOK_FORMATS = frozenset({"m4b", "mp3", "m4a", "flac", "ogg", "wma", "aac", "wav", "opus"})
+
+
+def _release_field(release: Any, name: str) -> str:
+    """Read a field from a release object or dict, normalised to lowercase string."""
+    if isinstance(release, dict):
+        value = release.get(name)
+    else:
+        value = getattr(release, name, None)
+    return str(value or "").strip().lower()
+
+
+def release_matches_content_type(release: Any, requested: str) -> bool:
+    """Return True if a release plausibly matches the requested content_type.
+
+    Filters cross-type pollution from sources that support both kinds (Prowlarr)
+    but expand or mis-categorize results — e.g. an audiobook search that
+    auto-expands and returns ebook torrents. Also catches the Anna's Archive
+    parser quirk where ebook records get tagged "audiobook" because the page
+    text contains "Book (Audiobook)".
+
+    Decision order:
+    1. If `format` clearly belongs to the wrong family, drop.
+    2. Else if `content_type` clearly indicates wrong family, drop.
+    3. Else keep (ambiguous releases pass through; downstream postprocessing
+       will catch genuinely-wrong files).
+
+    Works on both Release objects and asdict-style dicts.
+    """
+    fmt = _release_field(release, "format")
+    rct = _release_field(release, "content_type")
+    is_audio_format = fmt in _AUDIOBOOK_FORMATS if fmt else False
+    is_ebook_format = fmt in _EBOOK_FORMATS if fmt else False
+    rct_says_audio = bool(rct) and "audiobook" in rct
+    rct_says_ebook = bool(rct) and "audiobook" not in rct
+
+    if requested == "audiobook":
+        if is_ebook_format:
+            return False
+        if rct_says_ebook and not is_audio_format:
+            return False
+        return True
+    # requested == "ebook"
+    if is_audio_format:
+        return False
+    if rct_says_audio and not is_ebook_format:
+        return False
+    return True
+
+
+def source_supports_content_type(source_row: dict | None, requested: str) -> bool:
+    """Return True if a source_row from list_available_sources() declares support
+    for the requested content_type.
+
+    Sources without an explicit `supported_content_types` list are assumed to
+    support both — matches the existing default in list_available_sources().
+    The default tuple lives in `shelfmark.core.request_policy` so all callers
+    agree on what "no declaration" implies.
+    """
+    if not source_row:
+        return False
+    from shelfmark.core.request_policy import DEFAULT_SUPPORTED_CONTENT_TYPES
+    supported = source_row.get("supported_content_types") or DEFAULT_SUPPORTED_CONTENT_TYPES
+    return requested in supported

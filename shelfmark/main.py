@@ -2658,6 +2658,12 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
                 logger.warning(f"Release search failed for source {source_name}: {e}")
                 errors.append(f"{source_name}: {str(e)}")
 
+        # Drop releases whose format/content_type clearly belongs to the other
+        # content family (ebook results in an audiobook search, etc.) so the UI
+        # never offers a release that will fail postprocessing.
+        from shelfmark.core.monitored_utils import release_matches_content_type
+        all_releases = [r for r in all_releases if release_matches_content_type(r, content_type)]
+
         # Rank by metadata match quality and annotate releases with score details
         scored_releases = rank_releases_for_book(book, all_releases)
         all_releases = [release for release, _ in scored_releases]

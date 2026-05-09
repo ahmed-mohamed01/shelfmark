@@ -1026,6 +1026,7 @@ def pre_process_releases(
     valid_releases: List[Dict[str, Any]] = []
     unreleased_count = 0
     below_cutoff_count = 0
+    cross_type_count = 0
 
     failed_source_pairs: set[tuple[str, str]] = set()
     if user_db is not None:
@@ -1040,7 +1041,21 @@ def pre_process_releases(
         except Exception as e:
             logger.warning("Failed to get failed source IDs: %s", e)
 
+    from shelfmark.core.monitored_utils import release_matches_content_type
+
     for release in releases:
+        # Defence-in-depth: drop releases whose format/content_type belongs to
+        # the wrong family. fetch_book_releases applies the same filter, so this
+        # is a no-op for the scheduled path; it protects any future caller that
+        # bypasses fetch_book_releases.
+        if not release_matches_content_type(release, content_type):
+            cross_type_count += 1
+            logger.debug(
+                "Skipping cross-type release: %s (format=%s, content_type=%s, requested=%s)",
+                release.get("title"), release.get("format"), release.get("content_type"), content_type,
+            )
+            continue
+
         extra = release.get("extra") or {}
         release_date = (
             release.get("release_date")
@@ -1071,7 +1086,7 @@ def pre_process_releases(
         valid_releases.append(release)
 
     if not valid_releases:
-        if unreleased_count > 0 and below_cutoff_count == 0:
+        if unreleased_count > 0 and below_cutoff_count == 0 and cross_type_count == 0:
             return [], "Book is unreleased"
         elif below_cutoff_count > 0:
             return [], f"No releases meet minimum match score ({min_match_score:.0f})"
@@ -1084,8 +1099,8 @@ def pre_process_releases(
     )
 
     logger.info(
-        "Pre-processed %d releases: %d valid, %d unreleased, %d below cutoff, %d previously failed",
-        len(releases), len(valid_releases), unreleased_count, below_cutoff_count,
+        "Pre-processed %d releases: %d valid, %d unreleased, %d below cutoff, %d cross-type, %d previously failed",
+        len(releases), len(valid_releases), unreleased_count, below_cutoff_count, cross_type_count,
         sum(1 for r in valid_releases if r.get("_previously_failed")),
     )
 
