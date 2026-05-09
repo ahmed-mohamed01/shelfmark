@@ -807,16 +807,25 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                         const isBooklore = f.source === 'booklore';
                         const formatLabel = f.ext ? f.ext.toUpperCase() : f.file_type ? f.file_type.toUpperCase() : 'FILE';
                         const badgeKey = f.ext || f.file_type || '';
+                        const path = f.path || '';
+                        const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+                        const fileName = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+                        const dirPath = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : '';
+                        const metaParts = [
+                          typeof f.confidence === 'number' ? `${(f.confidence * 100).toFixed(0)}%` : null,
+                          isAbs ? 'from AudioBookShelf' : isBooklore ? 'from Booklore' : null,
+                        ].filter(Boolean);
                         return (
                           <div key={f.id} className="px-4 py-3">
                             <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-sm text-gray-900 dark:text-gray-100 truncate" title={f.path}>{f.path}</div>
-                                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">
-                                  {formatLabel}
-                                  {typeof f.confidence === 'number' ? ` · ${(f.confidence * 100).toFixed(0)}%` : ''}
-                                  {isAbs ? ' · from AudioBookShelf' : isBooklore ? ' · from Booklore' : ''}
-                                </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm text-gray-900 dark:text-gray-100 break-words" title={f.path}>{fileName}</div>
+                                {dirPath ? (
+                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate" title={f.path}>{dirPath}</div>
+                                ) : null}
+                                {metaParts.length > 0 ? (
+                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">{metaParts.join(' · ')}</div>
+                                ) : null}
                               </div>
                               {badgeKey ? (
                                 <span className={`${getFormatColor(badgeKey).bg} ${getFormatColor(badgeKey).text} inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-semibold tracking-wide uppercase flex-shrink-0`}>{formatLabel}</span>
