@@ -18,6 +18,7 @@ from shelfmark.core.settings_registry import (
     TagListField,
     OrderableListField,
     HeadingField,
+    CustomComponentField,
 )
 
 log = logging.getLogger(__name__)
@@ -404,12 +405,20 @@ def monitoring_schedules_settings():
             description="Run monitored-author refresh jobs automatically at configured times.",
             default=True,
         ),
-        TextField(
-            key="MONITORED_REFRESH_TIMES",
-            label="Refresh Times (HH:MM)",
-            description="Comma-separated 24-hour local times. Example: 02:00,14:00",
-            default="02:00,14:00",
-            placeholder="02:00,14:00",
+        CustomComponentField(
+            key="monitored_refresh_times_picker",
+            component="monitored_refresh_times",
+            label="Refresh Times",
+            description="Pick a time and click Add. Times run on the local clock.",
+            bind_keys=["MONITORED_REFRESH_TIMES"],
+            value_fields=[
+                TextField(
+                    key="MONITORED_REFRESH_TIMES",
+                    label="Refresh Times",
+                    default="02:00,14:00",
+                ),
+            ],
+            wrap_in_field_wrapper=True,
             show_when={"field": "MONITORED_SCHEDULED_REFRESH_ENABLED", "value": True},
         ),
         CheckboxField(
@@ -429,9 +438,12 @@ def monitoring_schedules_settings():
     ]
 
 
-def _on_save_schedules(values: Dict[str, Any]) -> Dict[str, Any] | None:
+def _on_save_schedules(values: Dict[str, Any]) -> Dict[str, Any]:
     """Validate monitored refresh times on save."""
-    return validate_monitored_refresh_times(values)
+    error = validate_monitored_refresh_times(values)
+    if error is not None:
+        return error
+    return {"error": False, "message": "", "values": values}
 
 
 register_on_save("monitoring_schedules", _on_save_schedules)

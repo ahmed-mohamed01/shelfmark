@@ -1,4 +1,5 @@
 import { ComponentType, ReactNode } from 'react';
+import { MonitoredRefreshTimesField } from './MonitoredRefreshTimesField';
 import { OidcAdminHint } from './OidcAdminHint';
 import { OidcEnvInfo } from './OidcEnvInfo';
 import { RequestPolicyGridField } from './RequestPolicyGridField';
@@ -50,6 +51,9 @@ const CUSTOM_FIELD_DEFINITIONS: Record<string, CustomFieldDefinition> = {
   },
   oidc_env_info: {
     renderer: OidcEnvInfo,
+  },
+  monitored_refresh_times: {
+    renderer: MonitoredRefreshTimesField,
   },
 };
 
