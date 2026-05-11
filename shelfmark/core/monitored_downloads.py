@@ -1016,6 +1016,7 @@ def write_monitored_book_attempt(
     release_title: str | None = None,
     match_score: float | None = None,
     error_message: str | None = None,
+    book_title: str | None = None,
     session_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> str:
@@ -1075,6 +1076,7 @@ def write_monitored_book_attempt(
             entity_id=entity_id,
             book_provider=provider,
             book_provider_id=provider_book_id,
+            book_title=book_title,
             content_type=content_type,
             search_status=status,
             release_title=release_title,

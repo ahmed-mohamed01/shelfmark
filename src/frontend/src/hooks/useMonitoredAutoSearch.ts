@@ -232,18 +232,9 @@ export function useMonitoredAutoSearch({
               progressAnimated: true,
             });
           }
-          void recordMonitoredAutoSearchAttempt({
-            monitoredEntityId,
-            provider: book.provider,
-            providerBookId: book.provider_id,
-            contentType: normalizedContentType,
-            status: 'no_match',
-            errorMessage: precheck.reason === 'history_final_path_exists'
-              ? 'skip_existing_file_history_final_path_exists'
-              : 'skip_existing_file',
-            sessionId,
-            runId,
-          });
+          // Skip silently — matches the unreleased-skip path below. Recording
+          // an attempt with status="no_match" misrepresents a correct no-op as
+          // a failed search in the History tab.
           finalizeBatchIfComplete();
           return 'skip';
         }
@@ -392,6 +383,7 @@ export function useMonitoredAutoSearch({
         sourceId: bestRelease?.source_id,
         releaseTitle: bestRelease?.title,
         matchScore: bestMatchScore,
+        bookTitle: book.title,
         sessionId,
         runId,
       });
@@ -421,6 +413,7 @@ export function useMonitoredAutoSearch({
         contentType: normalizedContentType,
         status: 'error',
         errorMessage: error instanceof Error ? error.message : String(error),
+        bookTitle: book.title,
         sessionId,
         runId,
       });

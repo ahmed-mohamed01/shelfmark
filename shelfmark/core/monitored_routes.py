@@ -1225,6 +1225,7 @@ def register_monitored_routes(
         source_id = str(payload.get("source_id") or "").strip() or None
         release_title = str(payload.get("release_title") or "").strip() or None
         error_message = str(payload.get("error_message") or "").strip() or None
+        book_title = str(payload.get("book_title") or "").strip() or None
 
         raw_match_score = payload.get("match_score")
         match_score: float | None = None
@@ -1250,6 +1251,7 @@ def register_monitored_routes(
             release_title=release_title,
             match_score=match_score,
             error_message=error_message,
+            book_title=book_title,
             session_id=attempt_session_id,
             metadata=attempt_metadata,
         )

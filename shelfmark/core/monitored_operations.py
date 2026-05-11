@@ -900,6 +900,27 @@ def search_missing_books(
             summary.unreleased += 1
             continue
 
+        # Resolve skip BEFORE emitting search_started — otherwise an already-
+        # available book gets a phantom "Searching releases" row in the History
+        # tab followed by a misleading "no_match" attempt. The skip is silent
+        # for the same reason the unreleased path is: it's a correct no-op,
+        # not a failed search, and noisy entries drown out real events.
+        skip_reason, _skip_detail = _resolve_search_skip_reason(
+            db,
+            entity_id=entity_id,
+            user_id=user_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            content_type=content_type,
+            availability_payload=availability_payload,
+        )
+        if skip_reason == "history_final_path_exists":
+            summary.skipped_history_final_path_exists += 1
+            continue
+        if skip_reason == "existing_file":
+            summary.skipped_existing_file += 1
+            continue
+
         # Mint a session_id for this attempt and emit search_started so the History
         # tab can group all subsequent events (search, queue, complete/fail) under
         # one expandable row.
@@ -917,46 +938,6 @@ def search_missing_books(
             )
         except Exception as exc:
             logger.debug("Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc)
-
-        skip_reason, skip_detail = _resolve_search_skip_reason(
-            db,
-            entity_id=entity_id,
-            user_id=user_id,
-            provider=provider,
-            provider_book_id=provider_book_id,
-            content_type=content_type,
-            availability_payload=availability_payload,
-        )
-        if skip_reason == "history_final_path_exists":
-            summary.skipped_history_final_path_exists += 1
-            write_monitored_book_attempt(
-                db,
-                user_id=user_id,
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                content_type=content_type,
-                attempted_at=now_iso,
-                status="no_match",
-                error_message="skip_existing_file_history_final_path_exists",
-                session_id=session_id,
-            )
-            continue
-        if skip_reason == "existing_file":
-            summary.skipped_existing_file += 1
-            write_monitored_book_attempt(
-                db,
-                user_id=user_id,
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                content_type=content_type,
-                attempted_at=now_iso,
-                status="no_match",
-                error_message="skip_existing_file",
-                session_id=session_id,
-            )
-            continue
 
         try:
             # Build BookMetadata from DB row — data is already stored from sync
@@ -996,6 +977,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="no_match",
+                    book_title=book_title,
                     session_id=session_id,
                 )
                 continue
@@ -1023,6 +1005,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="queued", error_message=message,
+                    book_title=book_title,
                     session_id=session_id,
                 )
             elif message == "Already in queue":
@@ -1036,6 +1019,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="below_cutoff", error_message=message,
+                    book_title=book_title,
                     session_id=session_id,
                 )
             else:
@@ -1045,6 +1029,7 @@ def search_missing_books(
                     provider=provider, provider_book_id=provider_book_id,
                     content_type=content_type, attempted_at=now_iso,
                     status="failed", error_message=message,
+                    book_title=book_title,
                     session_id=session_id,
                 )
 
@@ -1055,6 +1040,7 @@ def search_missing_books(
                 provider=provider, provider_book_id=provider_book_id,
                 content_type=content_type, attempted_at=now_iso,
                 status="error", error_message=str(exc),
+                book_title=book_title,
                 session_id=session_id,
             )
 

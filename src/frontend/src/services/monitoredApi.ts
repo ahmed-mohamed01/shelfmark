@@ -341,6 +341,7 @@ interface RecordMonitoredBookAttemptPayload {
   release_title?: string;
   match_score?: number;
   error_message?: string;
+  book_title?: string;
   session_id?: string;
   run_id?: string;
 }
@@ -390,6 +391,7 @@ export interface RecordAutoSearchAttemptParams {
   releaseTitle?: string;
   matchScore?: number | null;
   errorMessage?: string;
+  bookTitle?: string;
   sessionId?: string;
   runId?: string;
 }
@@ -413,6 +415,7 @@ export const recordMonitoredAutoSearchAttempt = async (
       release_title: params.releaseTitle,
       match_score: typeof params.matchScore === 'number' ? params.matchScore : undefined,
       error_message: params.errorMessage,
+      book_title: params.bookTitle,
       session_id: params.sessionId,
       run_id: params.runId,
     });

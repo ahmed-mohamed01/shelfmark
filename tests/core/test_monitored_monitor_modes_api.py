@@ -173,9 +173,9 @@ def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_
     assert history_response.status_code == 200
     history_payload = history_response.get_json() or {}
     attempts = history_payload.get("attempt_history") or []
-    assert len(attempts) >= 1
-    assert attempts[0]["status"] == "no_match"
-    assert attempts[0]["error_message"] == "skip_existing_file"
+    # Skips are silent — no attempt row is written. The skipped_existing_file
+    # counter in the summary above is the source of truth.
+    assert attempts == []
 
 
 def test_monitored_search_skips_unreleased_books_before_source_search(main_module, client):
@@ -360,6 +360,7 @@ def test_monitored_search_skips_when_history_final_path_exists(main_module, clie
     assert history_response.status_code == 200
     history_payload = history_response.get_json() or {}
     attempts = history_payload.get("attempt_history") or []
-    assert len(attempts) >= 1
-    assert attempts[0]["status"] == "no_match"
-    assert attempts[0]["error_message"] == "skip_existing_file_history_final_path_exists"
+    # Skips are silent — no attempt row is written. The
+    # skipped_history_final_path_exists counter in the summary above is the
+    # source of truth.
+    assert attempts == []
