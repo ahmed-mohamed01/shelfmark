@@ -14,6 +14,8 @@ services:
       DEBUG: true
       # HIDE_LOCAL_AUTH: true
       OIDC_AUTO_REDIRECT: true
+      # Uses host's TZ env var if set (e.g. exported in your shell), otherwise falls back to Europe/London.
+      TZ: ${TZ:-Europe/London}
     volumes:
       - ./.local/config:/config
       - ./.local/books:/books

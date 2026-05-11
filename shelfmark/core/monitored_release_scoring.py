@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from difflib import SequenceMatcher
 import re
 import threading
@@ -972,7 +972,7 @@ def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
     if parsed is None:
         return True, None  # No date = assume released
 
-    today = datetime.now(timezone.utc).date()
+    today = date.today()
     return parsed <= today, parsed
 
 

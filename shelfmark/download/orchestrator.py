@@ -9,7 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from email.utils import parseaddr
 from pathlib import Path
 from threading import Event, Lock
@@ -137,7 +137,7 @@ def queue_release(
             or extra.get('publication_date')
             or extra.get('publish_date')
         )
-        if explicit_release_date is not None and datetime.now(timezone.utc).date() < explicit_release_date:
+        if explicit_release_date is not None and date.today() < explicit_release_date:
             return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
 
         # Get author, year, preview, and content_type from top-level (preferred) or extra (fallback)
