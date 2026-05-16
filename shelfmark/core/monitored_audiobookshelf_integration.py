@@ -18,16 +18,14 @@ from urllib.request import Request, urlopen
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_attribution_v2 import (
+    SourceMetadata,
+    pick_best_attribution,
+)
 from shelfmark.core.monitored_integration_matching import (
     AUTHOR_SPLIT_RE as _AUTHOR_SPLIT_RE,
-    COLON_SUBTITLE_RE as _COLON_SUBTITLE_RE,
-    PAREN_SUFFIX_RE as _PAREN_SUFFIX_RE,
     SERIES_POS_RE as _SERIES_POS_RE,
-    author_matches as _author_matches,
-    get_integration_thresholds as _get_integration_thresholds,
     norm as _norm,
-    normalize_shelfmark_title as _normalize_shelfmark_title,
-    parse_series_position as _parse_series_position,
 )
 
 logger = setup_logger(__name__)
@@ -35,9 +33,6 @@ logger = setup_logger(__name__)
 # ---------------------------------------------------------------------------
 # ABS-specific regex
 # ---------------------------------------------------------------------------
-
-# Regex for "(Unabridged)" suffix in ABS titles
-_UNABRIDGED_RE = re.compile(r"\s*\(unabridged\)\s*$", re.IGNORECASE)
 
 # Pre-compiled helpers for _parse_abs_series_pairs()
 _SERIES_SEGMENT_SPLIT_RE = re.compile(r",\s*(?=[A-Za-z])")
@@ -140,9 +135,9 @@ def _find_abs_author_items(
     if not authors:
         return []
 
-    # Use the same token-split logic as _author_matches so that name suffixes
-    # like "(Author)" or middle names don't drop the ratio below threshold.
-    # target_parts is constant across all authors — compute once outside the loop.
+    # Split on commas/semicolons so name suffixes like "(Author)" or co-author
+    # lists don't drop the per-pair ratio below threshold. target_parts is
+    # constant across all authors — compute once outside the loop.
     target_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(author_name) if p.strip()] or [author_name]
     best_author: dict[str, Any] | None = None
     best_ratio = 0.0
@@ -186,26 +181,6 @@ def _find_abs_author_items(
 # ---------------------------------------------------------------------------
 # Title normalisation helpers
 # ---------------------------------------------------------------------------
-
-
-def _normalize_abs_title(title: str, series_names: list[str]) -> str:
-    """Strip '(Unabridged)', strip 'SeriesName: ' prefix, and strip ': subtitle' suffix.
-
-    ABS sometimes stores titles as "Title : SeriesName" (e.g. "The Dark Talent :
-    Alcatraz vs the Evil Librarians"). Stripping the suffix gives the bare title
-    that matches the shelfmark entry.
-    """
-    t = _UNABRIDGED_RE.sub("", title).strip()
-    # Strip 'SeriesName: ' prefix (e.g. 'Infinity Blade: Awakening' → 'Awakening')
-    for sn in series_names:
-        prefix = sn.rstrip() + ": "
-        if t.lower().startswith(prefix.lower()):
-            t = t[len(prefix):].strip()
-            break
-    # Strip ': subtitle' suffix (e.g. 'The Dark Talent : Alcatraz vs the Evil Librarians'
-    # → 'The Dark Talent')
-    t = _COLON_SUBTITLE_RE.sub("", t).strip()
-    return t
 
 
 # ---------------------------------------------------------------------------
@@ -265,209 +240,31 @@ def _parse_abs_series_pairs(
 
 
 # ---------------------------------------------------------------------------
-# ASIN helpers
+# Adapter: ABS library item → unified SourceMetadata
 # ---------------------------------------------------------------------------
 
 
-def _parse_asins(raw: Any) -> set[str]:
-    """Return the set of ASINs from a book's asins field (JSON string or list)."""
-    if not raw:
-        return set()
-    if isinstance(raw, str):
-        try:
-            val = json.loads(raw)
-        except Exception:
-            return set()
-        if isinstance(val, list):
-            return {str(a).strip() for a in val if a}
-        return set()
-    if isinstance(raw, list):
-        return {str(a).strip() for a in raw if a}
-    return set()
+def _abs_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
+    """Translate an ABS library item into the unified ``SourceMetadata`` shape.
 
-
-# ---------------------------------------------------------------------------
-# Core matching
-# ---------------------------------------------------------------------------
-
-
-def _match_abs_item_to_books(
-    abs_item: dict[str, Any],
-    books: list[dict[str, Any]],
-    entity_name: str = "",
-    thresholds: dict[str, float] | None = None,
-) -> tuple[dict[str, Any] | None, float, str]:
-    """Match an ABS library item to a monitored book.
-
-    ``entity_name`` is used as a fallback author for the confirmation check
-    when a book row has ``authors = NULL`` (which is always the case for books
-    belonging to an author entity, since the author is implied by the entity).
-
-    Returns (book, confidence, reason) or (None, 0.0, '') if no match.
+    ABS items can carry multiple series pairs; we take the first one for
+    matching (the unified scorer accepts only one series_name+position). The
+    rest, if any, are noise as far as Hardcover attribution goes.
     """
-    if thresholds is None:
-        thresholds = _get_integration_thresholds()
-
-    meta = (abs_item.get("media") or {}).get("metadata") or {}
-    abs_asin = (meta.get("asin") or "").strip()
-    abs_title = (meta.get("title") or "").strip()
-    abs_author = (meta.get("authorName") or "").strip()
-    abs_series_str = (meta.get("seriesName") or "").strip()
-    abs_subtitle = (meta.get("subtitle") or "").strip()
-
-    # ------------------------------------------------------------------
-    # Phase 1: ASIN exact match
-    # ------------------------------------------------------------------
-    if abs_asin:
-        for book in books:
-            if abs_asin in _parse_asins(book.get("asins")):
-                logger.debug("ABS match [asin] %r → %r", abs_title, book.get("title"))
-                return book, 1.0, "abs_asin"
-
-    # ------------------------------------------------------------------
-    # Phase 2: Series + position + title confirmation
-    # ------------------------------------------------------------------
-    series_pairs = _parse_abs_series_pairs(abs_series_str, abs_subtitle)
-    series_names = [sn for sn, _ in series_pairs]
-
-    if series_pairs and abs_title:
-        norm_abs = _normalize_abs_title(abs_title, series_names)
-        norm_abs_n = _norm(norm_abs)
-        # Raw normalised title — no series-prefix stripping, fixes cases where
-        # the prefix strip removes too much (e.g. "Azarinth Healer: Book Four"
-        # → "Book Four" after strip, but "azarinth healer book four" raw).
-        norm_abs_raw_n = _norm(abs_title)
-        # Pre-normalise series-pair names once
-        norm_series_pairs = [(sn, pos, _norm(sn)) for sn, pos in series_pairs]
-
-        p2_best_book: dict[str, Any] | None = None
-        p2_best_t = 0.0
-        p2_best_sn = ""
-        p2_best_pos = 0.0
-
-        for book in books:
-            b_series = (book.get("series_name") or "").strip()
-            b_pos_raw = book.get("series_position")
-            if b_pos_raw is None:
-                continue
-            b_pos = _parse_series_position(str(b_pos_raw))
-            if b_pos is None:
-                continue
-            norm_b_series = _norm(b_series)
-            raw_shelf = book.get("title") or ""
-            norm_shelf_stripped = _norm(_normalize_shelfmark_title(raw_shelf))
-            norm_shelf_full = _norm(raw_shelf)
-            for abs_sn, abs_pos, norm_abs_sn in norm_series_pairs:
-                if abs(b_pos - abs_pos) > 0.01:
-                    continue
-                sn_ratio = SequenceMatcher(None, norm_abs_sn, norm_b_series).ratio()
-                if sn_ratio < thresholds["series_name"]:
-                    continue
-                # Also compare raw title and series name against shelfmark title.
-                # Fixes "Azarinth Healer: Book Four" (raw includes series prefix
-                # that was stripped away) and "Beware of Chicken: A Xianxia …"
-                # book 1 (series name itself is the book title).
-                t_ratio = max(
-                    SequenceMatcher(None, norm_abs_n, norm_shelf_stripped).ratio(),
-                    SequenceMatcher(None, norm_abs_n, norm_shelf_full).ratio(),
-                    SequenceMatcher(None, norm_abs_raw_n, norm_shelf_stripped).ratio(),
-                    SequenceMatcher(None, norm_abs_raw_n, norm_shelf_full).ratio(),
-                    SequenceMatcher(None, norm_abs_sn, norm_shelf_stripped).ratio(),
-                    SequenceMatcher(None, norm_abs_sn, norm_shelf_full).ratio(),
-                )
-                if t_ratio >= thresholds["series_title"] and t_ratio > p2_best_t:
-                    p2_best_t, p2_best_book = t_ratio, book
-                    p2_best_sn, p2_best_pos = abs_sn, abs_pos
-
-        if p2_best_book is not None:
-            # Confidence is proportional to title quality, capped at 0.92
-            conf = min(0.92, 0.80 + p2_best_t * 0.12)
-            logger.debug(
-                "ABS match [series_pos] %r → %r (series=%r pos=%.1f t=%.2f conf=%.2f)",
-                abs_title,
-                p2_best_book.get("title"),
-                p2_best_sn,
-                p2_best_pos,
-                p2_best_t,
-                conf,
-            )
-            return p2_best_book, conf, "abs_series_pos"
-
-    # ------------------------------------------------------------------
-    # Phase 3: Bidirectional-normalised title fuzzy match
-    # ------------------------------------------------------------------
-    if not abs_title:
-        return None, 0.0, ""
-
-    norm_abs = _normalize_abs_title(abs_title, series_names)
-    norm_abs_n = _norm(norm_abs)
-    # Raw normalised title without any stripping — fallback for cases where the
-    # series-prefix strip removes meaningful words (e.g. "Azarinth Healer: Book
-    # Four" stripped to "Book Four" would fail, but raw title matches fine).
-    norm_abs_raw_n = _norm(abs_title)
-    # Parenthetical-stripped form — handles "We Are Legion (We Are Bob)" vs
-    # "We Are Legion": stripping "(We Are Bob)" makes both sides comparable.
-    norm_abs_paren_n = _norm(_PAREN_SUFFIX_RE.sub("", abs_title))
-    best_book: dict[str, Any] | None = None
-    best_t_ratio = 0.0
-
-    for book in books:
-        raw_shelf = book.get("title") or ""
-        norm_shelf_stripped = _norm(_normalize_shelfmark_title(raw_shelf))
-        norm_shelf_full = _norm(raw_shelf)
-        norm_shelf_paren = _norm(_PAREN_SUFFIX_RE.sub("", raw_shelf))
-        t_ratio = max(
-            SequenceMatcher(None, norm_abs_n, norm_shelf_stripped).ratio(),
-            SequenceMatcher(None, norm_abs_n, norm_shelf_full).ratio(),
-            SequenceMatcher(None, norm_abs_raw_n, norm_shelf_stripped).ratio(),
-            SequenceMatcher(None, norm_abs_raw_n, norm_shelf_full).ratio(),
-            SequenceMatcher(None, norm_abs_paren_n, norm_shelf_stripped).ratio(),
-            SequenceMatcher(None, norm_abs_paren_n, norm_shelf_full).ratio(),
-            SequenceMatcher(None, norm_abs_n, norm_shelf_paren).ratio(),
-            SequenceMatcher(None, norm_abs_paren_n, norm_shelf_paren).ratio(),
-        )
-        if t_ratio < thresholds["title"] or t_ratio <= best_t_ratio:
-            continue
-        # Author confirmation — split on commas to handle narrators in ABS authorName.
-        # Fall back to entity_name when book.authors is NULL (author entities always
-        # store NULL there since the author is implied by the entity itself).
-        # When ABS has no author metadata at all, allow a title-only match if the
-        # title ratio is strong (≥ 0.88) to avoid rejecting valid matches.
-        book_author_str = book.get("authors") or entity_name
-        if not abs_author:
-            if t_ratio >= 0.88:
-                best_t_ratio, best_book = t_ratio, book
-            else:
-                logger.debug(
-                    "ABS title match %r → %r (t=%.2f) skipped: no ABS author and t < 0.88",
-                    abs_title,
-                    book.get("title"),
-                    t_ratio,
-                )
-        elif _author_matches(abs_author, book_author_str, threshold=thresholds["author"]):
-            best_t_ratio, best_book = t_ratio, book
-        else:
-            logger.debug(
-                "ABS title match %r → %r (t=%.2f) rejected: author mismatch (abs=%r vs book=%r)",
-                abs_title,
-                book.get("title"),
-                t_ratio,
-                abs_author,
-                book_author_str,
-            )
-
-    if best_book:
-        conf = best_t_ratio * 0.85
-        logger.debug(
-            "ABS match [fuzzy] %r → %r (t=%.2f conf=%.2f)",
-            abs_title,
-            best_book.get("title"),
-            best_t_ratio,
-            conf,
-        )
-        return best_book, conf, "abs_fuzzy"
-
-    return None, 0.0, ""
+    meta = (item.get("media") or {}).get("metadata") or {}
+    series_pairs = _parse_abs_series_pairs(
+        (meta.get("seriesName") or "").strip(),
+        (meta.get("subtitle") or "").strip(),
+    )
+    first_series, first_pos = series_pairs[0] if series_pairs else (None, None)
+    return SourceMetadata(
+        title=(meta.get("title") or "").strip() or None,
+        author=(meta.get("authorName") or "").strip() or None,
+        series_name=first_series,
+        series_position=first_pos,
+        asin=(meta.get("asin") or "").strip() or None,
+        source_label="abs",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -574,16 +371,20 @@ def sync_abs_availability_for_entity(
     matched = 0
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
-    thresholds = _get_integration_thresholds()
 
     for item in candidate_items:
         meta = (item.get("media") or {}).get("metadata") or {}
         abs_title = (meta.get("title") or item.get("path") or "?").strip()
 
-        book, conf, reason = _match_abs_item_to_books(item, books, entity_name=entity_name, thresholds=thresholds)
-        if not book:
+        src_meta = _abs_item_to_source_metadata(item)
+        result = pick_best_attribution(
+            path=None, books=books, author_name=entity_name,
+            embedded=None, source_metadata=src_meta,
+        )
+        if result.book is None:
             unmatched_titles.append(abs_title)
             continue
+
         path = (item.get("path") or "").strip()
         if not path:
             unmatched_titles.append(abs_title)
@@ -602,20 +403,29 @@ def sync_abs_availability_for_entity(
                 except Exception as _fmt_exc:
                     logger.debug("ABS: could not fetch full item %s for format: %s", item_id, _fmt_exc)
 
+        # Serialise the v2 evidence vector for the API + UI "Why?" panel.
+        try:
+            from dataclasses import asdict as _asdict
+            import json as _json
+            evidence_json = _json.dumps(_asdict(result.evidence), default=str)
+        except Exception:
+            evidence_json = None
+
         try:
             monitored_db.upsert_monitored_book_file(
                 user_ids=[user_id],
                 entity_id=entity_id,
-                provider=book.get("provider"),
-                provider_book_id=book.get("provider_book_id"),
+                provider=result.book.get("provider"),
+                provider_book_id=result.book.get("provider_book_id"),
                 path=path,
                 ext=item_ext,
                 file_type="audiobook",
                 size_bytes=item.get("size"),
                 mtime=None,
-                confidence=conf,
-                match_reason=reason,
+                confidence=result.confidence,
+                match_reason=result.match_reason,
                 source="audiobookshelf",
+                evidence_json=evidence_json,
             )
             kept_paths.append(path)
             matched += 1
@@ -624,7 +434,7 @@ def sync_abs_availability_for_entity(
                 "ABS: failed to upsert match for %r (entity=%s book=%s): %s",
                 path,
                 entity_id,
-                book.get("provider_book_id"),
+                result.book.get("provider_book_id"),
                 exc,
             )
             unmatched_titles.append(abs_title)

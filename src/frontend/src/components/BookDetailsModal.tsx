@@ -11,6 +11,8 @@ import {
 } from '../services/monitoredApi';
 import { getFormatColor } from '../utils/colorMaps';
 import { MonitoredEventRow, parseEventMeta } from './MonitoredEventRow';
+import { EvidencePanel } from './EvidencePanel';
+import { FixMatchModal } from './FixMatchModal';
 
 interface BookDetailsModalProps {
   entityId: number | null;
@@ -49,6 +51,16 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
   const [bookError, setBookError] = useState<string | null>(null);
 
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
+  const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<number>>(new Set());
+  const [fixMatchFileId, setFixMatchFileId] = useState<number | null>(null);
+  // Bumped after a successful Fix-match apply to retrigger the files-fetch effect.
+  const [filesReloadKey, setFilesReloadKey] = useState(0);
+
+  // Reset evidence panel state when the modal targets a different book — file
+  // row ids are entity-scoped and can collide across books.
+  useEffect(() => {
+    setExpandedEvidenceIds(new Set());
+  }, [entityId, provider, providerBookId]);
 
   const [eventRows, setEventRows] = useState<MonitoredEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -175,7 +187,8 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
     return () => {
       cancelled = true;
     };
-  }, [entityId, provider, providerBookId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entityId, provider, providerBookId, filesReloadKey]);
 
   // Fetch unified events for History tab
   useEffect(() => {
@@ -811,20 +824,63 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                         const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
                         const fileName = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
                         const dirPath = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : '';
+                        const isManual = !!f.manual_override;
                         const metaParts = [
                           typeof f.confidence === 'number' ? `${(f.confidence * 100).toFixed(0)}%` : null,
                           isAbs ? 'from AudioBookShelf' : isBooklore ? 'from Booklore' : null,
                         ].filter(Boolean);
+                        const evidence = f.evidence ?? null;
+                        const evidenceExpanded = expandedEvidenceIds.has(f.id);
+                        const toggleEvidence = () => {
+                          setExpandedEvidenceIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(f.id)) next.delete(f.id);
+                            else next.add(f.id);
+                            return next;
+                          });
+                        };
                         return (
                           <div key={f.id} className="px-4 py-3">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
-                                <div className="text-sm text-gray-900 dark:text-gray-100 break-words" title={f.path}>{fileName}</div>
+                                <div className="text-sm text-gray-900 dark:text-gray-100 break-words" title={f.path}>
+                                  {fileName}
+                                  {isManual ? (
+                                    <span
+                                      className="ml-2 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                                      title="Manually attributed — future scans will not change this match"
+                                    >
+                                      ✋ manual
+                                    </span>
+                                  ) : null}
+                                </div>
                                 {dirPath ? (
                                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 break-all" title={f.path}>{dirPath}</div>
                                 ) : null}
                                 {metaParts.length > 0 ? (
-                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">{metaParts.join(' · ')}</div>
+                                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-2">
+                                    <span>{metaParts.join(' · ')}</span>
+                                    {evidence ? (
+                                      <button
+                                        type="button"
+                                        onClick={toggleEvidence}
+                                        className="text-blue-600 dark:text-blue-400 hover:underline focus:outline-none"
+                                      >
+                                        {evidenceExpanded ? 'hide why' : 'why?'}
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      onClick={() => setFixMatchFileId(f.id)}
+                                      className="text-blue-600 dark:text-blue-400 hover:underline focus:outline-none"
+                                      title="Pick the correct book for this file"
+                                    >
+                                      fix match
+                                    </button>
+                                  </div>
+                                ) : null}
+                                {evidence && evidenceExpanded ? (
+                                  <EvidencePanel evidence={evidence} />
                                 ) : null}
                               </div>
                               {badgeKey ? (
@@ -863,6 +919,14 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
           </div>
         </div>
       </div>
+      {fixMatchFileId != null && entityId != null ? (
+        <FixMatchModal
+          entityId={entityId}
+          fileId={fixMatchFileId}
+          onClose={() => setFixMatchFileId(null)}
+          onApplied={() => setFilesReloadKey((k) => k + 1)}
+        />
+      ) : null}
     </div>
   );
 };

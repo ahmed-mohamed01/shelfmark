@@ -236,6 +236,45 @@ export const deleteMonitoredBook = async (entityId: number, provider: string, pr
 // Monitored book files and history
 // ---------------------------------------------------------------------------
 
+export interface AttributionMetadataData {
+  title?: string;
+  authors?: string[];
+  series_name?: string;
+  series_position?: number;
+  isbn_13?: string;
+  isbn_10?: string;
+  asin?: string;
+  year?: number;
+  source_label?: string;
+}
+
+export interface AttributionEvidence {
+  net_score?: number;
+  confidence?: number;
+  accept?: boolean;
+  title_core?: string;
+  title_core_fuzz?: number;
+  author_folder_match?: boolean;
+  author_folder_ratio?: number;
+  author_trailer_match?: boolean;
+  series_folder_match?: boolean;
+  series_folder_ratio?: number;
+  series_in_filename?: boolean;
+  position_votes?: { value: number; weight: string; source: string }[];
+  position_agree_high?: boolean;
+  position_agree_med?: boolean;
+  position_disagree_high?: boolean;
+  position_disagree_med?: boolean;
+  embedded_metadata_used?: boolean;
+  embedded_data?: AttributionMetadataData;
+  source_metadata_used?: boolean;
+  source_data?: AttributionMetadataData;
+  hard_reject?: boolean;
+  hard_reject_reason?: string;
+  positives?: { name: string; weight: number; detail?: string }[];
+  penalties?: { name: string; weight: number; detail?: string }[];
+}
+
 export interface MonitoredBookFileRow {
   id: number;
   entity_id: number;
@@ -249,8 +288,39 @@ export interface MonitoredBookFileRow {
   mtime?: string | null;
   confidence?: number | null;
   match_reason?: string | null;
+  evidence?: AttributionEvidence | null;
+  manual_override?: number | boolean | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface MatchCandidate {
+  file: {
+    id: number;
+    path: string;
+    source: string;
+    ext: string | null;
+    file_type: string | null;
+    currently_attached_book: {
+      provider: string | null;
+      provider_book_id: string | null;
+    };
+  };
+  confidence: number;
+  net_score: number;
+  is_current: boolean;
+  evidence: AttributionEvidence;
+}
+
+export interface MatchCandidatesResponse {
+  candidates: MatchCandidate[];
+  target_book: {
+    title: string | null;
+    series_name: string | null;
+    series_position: number | null;
+    provider: string | null;
+    provider_book_id: string | null;
+  };
 }
 
 export interface MonitoredAuthorBookSearchRow {
@@ -302,6 +372,53 @@ export const listMonitoredBookFiles = async (entityId: number): Promise<{ files:
   inFlightMonitoredBookFilesRequests.set(entityId, request);
   return request;
 };
+
+/**
+ * Fetch ranked candidate FILES that could match the book the anchor file is
+ * currently attached to. Backs the "Fix match" UI: each candidate carries the
+ * v2 evidence so the modal can render a per-row tooltip / why-this-rank.
+ */
+export const listMatchCandidates = async (
+  entityId: number,
+  fileId: number,
+): Promise<MatchCandidatesResponse> =>
+  fetchJSON<MatchCandidatesResponse>(
+    `${API_BASE}/monitored/${entityId}/files/${fileId}/candidates`,
+  );
+
+/**
+ * Swap the anchor row's book attribution to a different file (by file id).
+ * Sets ``manual_override=1`` on the chosen row so future scans/syncs leave it
+ * alone. If ``chosenFileId === fileId`` this is a no-op swap that simply
+ * marks the row as manually confirmed.
+ */
+export const setManualMatch = async (
+  entityId: number,
+  fileId: number,
+  chosenFileId: number,
+): Promise<{ ok: boolean }> =>
+  fetchJSON<{ ok: boolean }>(
+    `${API_BASE}/monitored/${entityId}/files/${fileId}/match`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: chosenFileId }),
+    },
+  );
+
+/** Detach a file row entirely (the next scan/sync may re-attribute it). */
+export const detachMatch = async (
+  entityId: number,
+  fileId: number,
+): Promise<{ ok: boolean; detached: boolean }> =>
+  fetchJSON<{ ok: boolean; detached: boolean }>(
+    `${API_BASE}/monitored/${entityId}/files/${fileId}/match`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detach: true }),
+    },
+  );
 
 export interface MonitoredAutoSearchPrecheckResponse {
   ok: boolean;

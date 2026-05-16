@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import difflib
+import json
 import os
 import re
+from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,12 +39,6 @@ _AVAILABILITY_FIELDS: dict[str, dict[str, str]] = {
     },
 }
 
-_TAG_PATTERNS = [
-    re.compile(r"\[[^\]]+\]"),
-    re.compile(r"\([^\)]+\)"),
-    re.compile(r"\{[^\}]+\}"),
-]
-
 _WORD_NUMBER_MAP = {
     "one": "1",
     "two": "2",
@@ -56,12 +51,6 @@ _WORD_NUMBER_MAP = {
     "nine": "9",
     "ten": "10",
 }
-
-_VOLUME_MARKER_RE = re.compile(
-    r"\b(?:(arc|book|vol(?:ume)?)\s*[-:#]?\s*)(\d{1,3})\b",
-    re.IGNORECASE,
-)
-
 
 # ---------------------------------------------------------------------------
 # Text normalization helpers
@@ -85,44 +74,6 @@ def normalize_match_text(raw: str) -> str:
     return s
 
 
-def normalize_candidate_title(raw: str, author_name: str) -> str:
-    """Normalize a filename stem into a candidate title for matching."""
-    s = (raw or "").strip()
-    if not s:
-        return ""
-    s = s.replace("_", " ").replace(".", " ")
-    for pat in _TAG_PATTERNS:
-        s = pat.sub(" ", s)
-    s = re.sub(
-        r"\b(ebook|epub|mobi|azw3?|pdf|retail|repack|illustrated|unabridged|scan|ocr)\b",
-        " ",
-        s,
-        flags=re.IGNORECASE,
-    )
-    a = (author_name or "").strip()
-    # Normalize the author name the same way as the filename: dots→spaces, collapse whitespace
-    a_normalized = re.sub(r"\s+", " ", a.replace(".", " ")).strip()
-    if a_normalized:
-        # Build regex that matches both the original and dot-normalized author name
-        a_pattern = re.escape(a_normalized).replace(r"\ ", r"\s+")
-        # Exact match: "Title - Author" (end)
-        s_stripped = re.sub(rf"\s*[-–—:]\s*{a_pattern}\s*$", " ", s, flags=re.IGNORECASE)
-        if s_stripped == s:
-            # Multi-author fallback: "Title - Author1, Author2" where author appears anywhere
-            # in a dash-delimited block at the end (e.g. different author order)
-            s_stripped = re.sub(
-                rf"\s*[-–—]\s*[^-–—]*{a_pattern}[^-–—]*$",
-                " ",
-                s,
-                flags=re.IGNORECASE,
-            )
-        s = s_stripped
-        # "Author - Title" (start)
-        s = re.sub(rf"^\s*{a_pattern}\s*[-–—:]\s*", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
 def _row_provider_key(row: dict[str, Any]) -> tuple[str, str]:
     """Extract (provider, provider_book_id) as stripped strings from a row dict."""
     return (
@@ -131,27 +82,7 @@ def _row_provider_key(row: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _is_series_container(parent: Path, audio_exts: set[str]) -> bool:
-    """Return True if parent contains sub-directories that hold audio files."""
-    try:
-        for child in parent.iterdir():
-            if not child.is_dir():
-                continue
-            try:
-                has_audio = any(
-                    fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in audio_exts
-                    for fp in child.iterdir()
-                )
-            except Exception:
-                has_audio = False
-            if has_audio:
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _record_scan_match(
+def _record_scan_match_v2(
     *,
     monitored_db: MonitoredDB,
     user_id: int,
@@ -160,172 +91,105 @@ def _record_scan_match(
     file_type: str,
     size_bytes: int | None,
     mtime: str,
-    candidate: str,
-    best_score: float,
-    best_row: dict[str, Any] | None,
-    top_matches: list[Any],
-    match_reason: str,
+    author_name: str,
+    books: list[dict[str, Any]],
+    metadata_cache: dict[str, Any],
     best_by_book_and_type: dict[tuple[str, str, str], float],
     matched: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
 ) -> None:
-    """Record a single scan result: upsert to DB if best, append to matched or unmatched."""
+    """Record a single scan result using the v2 attribution matcher.
+
+    Uses path decomposition + position extraction + embedded metadata. Persists
+    structured evidence_json alongside the existing confidence/match_reason.
+    """
+    # Local imports keep cyclic-risk low (v2 module imports normalize_match_text
+    # from this module).
+    from shelfmark.core.monitored_attribution_v2 import pick_best_attribution
+
     path_str = str(file_path)
-    if best_row is not None and best_score >= 0.55:
-        p = best_row.get("provider")
-        bid = best_row.get("provider_book_id")
-        provider: str | None = str(p) if p is not None else None
-        provider_book_id: str | None = str(bid) if bid is not None else None
+    embedded = metadata_cache.get(path_str)
 
-        match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
-        prev = best_by_book_and_type.get(match_key)
-        if prev is None or best_score > prev:
-            best_by_book_and_type[match_key] = float(best_score)
-            monitored_db.upsert_monitored_book_file(
-                user_ids=[user_id],
-                entity_id=entity_id,
-                provider=provider,
-                provider_book_id=provider_book_id,
-                path=path_str,
-                ext=file_type,
-                file_type=file_type,
-                size_bytes=size_bytes,
-                mtime=mtime,
-                confidence=float(best_score),
-                match_reason=match_reason,
-            )
+    result = pick_best_attribution(
+        path=path_str,
+        books=books,
+        author_name=author_name,
+        embedded=embedded,
+    )
+    evidence = result.evidence
 
-        matched.append({
-            "path": path_str,
-            "ext": file_type,
-            "file_type": file_type,
-            "size_bytes": size_bytes,
-            "mtime": mtime,
-            "candidate": candidate,
-            "match": {
-                "provider": provider,
-                "provider_book_id": provider_book_id,
-                "title": best_row.get("title"),
-                "confidence": float(best_score),
-                "reason": match_reason,
-                "top_matches": top_matches,
-            },
+    # Serialise evidence for the API / "Why?" UI. asdict drops dataclass typing
+    # but keeps the same field shape we render.
+    try:
+        evidence_payload = asdict(evidence)
+        evidence_json: str | None = json.dumps(evidence_payload, default=str)
+    except (TypeError, ValueError):
+        evidence_json = None
+
+    top_matches: list[dict[str, Any]] = []
+    if result.book is not None:
+        top_matches.append({
+            "title": result.book.get("title"),
+            "provider": result.book.get("provider"),
+            "provider_book_id": result.book.get("provider_book_id"),
+            "score": float(result.confidence),
         })
-    else:
+
+    if result.book is None or not evidence.accept:
         unmatched.append({
             "path": path_str,
             "ext": file_type,
             "file_type": file_type,
             "size_bytes": size_bytes,
             "mtime": mtime,
-            "candidate": candidate,
-            "best_score": float(best_score),
+            "candidate": evidence.title_core or "",
+            "best_score": float(result.confidence),
             "top_matches": top_matches,
+            "reason": result.match_reason,
         })
+        return
 
+    best_book = result.book
+    p_val = best_book.get("provider")
+    bid_val = best_book.get("provider_book_id")
+    provider: str | None = str(p_val) if p_val is not None else None
+    provider_book_id: str | None = str(bid_val) if bid_val is not None else None
+    match_key = (str(provider or ""), str(provider_book_id or ""), file_type)
+    prev = best_by_book_and_type.get(match_key)
+    if prev is None or result.confidence > prev:
+        best_by_book_and_type[match_key] = float(result.confidence)
+        monitored_db.upsert_monitored_book_file(
+            user_ids=[user_id],
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            path=path_str,
+            ext=file_type,
+            file_type=file_type,
+            size_bytes=size_bytes,
+            mtime=mtime,
+            confidence=float(result.confidence),
+            match_reason=result.match_reason,
+            evidence_json=evidence_json,
+        )
 
-def title_match_variants(raw_title: str) -> list[str]:
-    """Generate variants of a title for matching (e.g., with/without subtitle)."""
-    title = (raw_title or "").strip()
-    if not title:
-        return []
-
-    variants: list[str] = [title]
-    colon_base = title.split(":", 1)[0].strip()
-    if colon_base and colon_base.lower() != title.lower():
-        variants.append(colon_base)
-
-    return list({v.lower(): v for v in variants}.values())
-
-
-def extract_volume_markers(s: str) -> dict[str, int]:
-    """Extract structured volume markers (Arc X, Book Y, Vol Z) from text."""
-    out: dict[str, int] = {}
-    text = (s or "").strip().lower()
-    if not text:
-        return out
-    for m in _VOLUME_MARKER_RE.finditer(text):
-        kind = (m.group(1) or "").lower()
-        num_raw = m.group(2) or ""
-        try:
-            num = int(num_raw)
-        except Exception:
-            continue
-        if kind.startswith("vol"):
-            kind = "vol"
-        out[kind] = num
-    return out
-
-
-def score_title_match(candidate: str, title: str) -> float:
-    """Score how well a candidate filename matches a book title (0.0-1.0)."""
-    c = normalize_match_text(candidate)
-    t = normalize_match_text(title)
-    if not c or not t:
-        return 0.0
-    if c == t:
-        return 1.0
-
-    base = difflib.SequenceMatcher(None, c, t).ratio()
-
-    c_markers = extract_volume_markers(c)
-    t_markers = extract_volume_markers(t)
-
-    bonus = 0.0
-    penalty = 0.0
-    for kind in ("arc", "book", "vol"):
-        cn = c_markers.get(kind)
-        tn = t_markers.get(kind)
-        if cn is None or tn is None:
-            continue
-        if cn == tn:
-            bonus = max(bonus, 0.22)
-        else:
-            penalty = max(penalty, 0.35)
-
-    for kind in ("arc", "book", "vol"):
-        if kind in c_markers:
-            continue
-        tn = t_markers.get(kind)
-        if tn is None:
-            continue
-        penalty += min(0.16, 0.04 * max(0, int(tn) - 1))
-
-    score = base + bonus - penalty
-    if score < 0.0:
-        return 0.0
-    if score > 1.0:
-        return 1.0
-    return float(score)
-
-
-def prefer_row_on_tie(
-    *,
-    candidate: str,
-    row: dict[str, Any],
-    display_title: str,
-    best_row: dict[str, Any],
-    best_display_title: str,
-) -> bool:
-    """Determine if `row` should be preferred over `best_row` on a tie score."""
-    candidate_norm = normalize_match_text(candidate)
-    title_norm = normalize_match_text(display_title)
-    best_norm = normalize_match_text(best_display_title)
-
-    title_extends_candidate = bool(candidate_norm and title_norm.startswith(f"{candidate_norm} "))
-    best_extends_candidate = bool(candidate_norm and best_norm.startswith(f"{candidate_norm} "))
-    if title_extends_candidate != best_extends_candidate:
-        return title_extends_candidate
-
-    row_has_series = row.get("series_position") is not None or bool(str(row.get("series_name") or "").strip())
-    best_has_series = best_row.get("series_position") is not None or bool(str(best_row.get("series_name") or "").strip())
-    if row_has_series != best_has_series:
-        return row_has_series
-
-    if len(title_norm) != len(best_norm):
-        return len(title_norm) > len(best_norm)
-
-    return False
+    matched.append({
+        "path": path_str,
+        "ext": file_type,
+        "file_type": file_type,
+        "size_bytes": size_bytes,
+        "mtime": mtime,
+        "candidate": evidence.title_core or "",
+        "match": {
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "title": best_book.get("title"),
+            "confidence": float(result.confidence),
+            "reason": result.match_reason,
+            "top_matches": top_matches,
+            "evidence": evidence_payload if evidence_json else None,
+        },
+    })
 
 
 def _normalize_alias_series_position(value: Any) -> float | None:
@@ -808,52 +672,6 @@ def prune_stale_matched_files(
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 
 
-def _score_candidate_against_known_titles(
-    *,
-    candidate: str,
-    known_titles: list[tuple[dict[str, Any], str, str]],
-) -> tuple[float, dict[str, Any] | None, list[dict[str, Any]]]:
-    best_score = 0.0
-    best_row: dict[str, Any] | None = None
-    best_title = ""
-    scored: list[tuple[float, dict[str, Any], str]] = []
-
-    for row, match_title, display_title in known_titles:
-        score = score_title_match(candidate, match_title)
-        scored.append((score, row, display_title))
-        if score > best_score:
-            best_score = score
-            best_row = row
-            best_title = display_title
-        elif (
-            best_row is not None
-            and abs(score - best_score) < 1e-9
-            and prefer_row_on_tie(
-                candidate=candidate,
-                row=row,
-                display_title=display_title,
-                best_row=best_row,
-                best_display_title=best_title,
-            )
-        ):
-            best_row = row
-            best_title = display_title
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top_matches = [
-        {
-            "title": title,
-            "provider": row.get("provider"),
-            "provider_book_id": row.get("provider_book_id"),
-            "score": float(score),
-        }
-        for (score, row, title) in scored[:5]
-        if title
-    ]
-
-    return best_score, best_row, top_matches
-
-
 def scan_monitored_author_files(
     *,
     monitored_db: MonitoredDB,
@@ -884,20 +702,17 @@ def scan_monitored_author_files(
     effective_ebook_ext = {f".{ext}" for ext in effective_ebook_names}
     effective_audio_ext = {f".{ext}" for ext in effective_audio_names}
 
-    known_titles: list[tuple[dict[str, Any], str, str]] = []
-    for row in books:
-        title = str(row.get("title") or "").strip()
-        if not title:
-            continue
-        for match_title in title_match_variants(title):
-            known_titles.append((row, match_title, title))
-
     scanned_ebook_files = 0
     scanned_audio_folders = 0
     matched: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
     best_by_book_and_type: dict[tuple[str, str, str], float] = {}
     seen_paths: set[str] = set()
+
+    # Per-scan embedded-metadata cache (eager, per design). Filled lazily as we
+    # encounter each file — keeps the call inline rather than re-walking.
+    from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
+    metadata_cache: dict[str, Any] = {}
 
     if ebook_path is not None:
         for p in _iter_files_recursive_safe(ebook_path):
@@ -920,15 +735,15 @@ def scan_monitored_author_files(
             except Exception:
                 size_bytes = None
 
-            candidate = normalize_candidate_title(p.stem, author_name)
-            best_score, best_row, top_matches = _score_candidate_against_known_titles(
-                candidate=candidate,
-                known_titles=known_titles,
-            )
-
             file_type = ext.lstrip(".")
             mtime = iso_mtime(p)
-            _record_scan_match(
+            path_str = str(p)
+            if path_str not in metadata_cache:
+                meta = read_embedded_metadata(path_str)
+                if meta is not None:
+                    metadata_cache[path_str] = meta
+
+            _record_scan_match_v2(
                 monitored_db=monitored_db,
                 user_id=user_id,
                 entity_id=entity_id,
@@ -936,11 +751,9 @@ def scan_monitored_author_files(
                 file_type=file_type,
                 size_bytes=size_bytes,
                 mtime=mtime,
-                candidate=candidate,
-                best_score=best_score,
-                best_row=best_row,
-                top_matches=top_matches,
-                match_reason="filename_title_fuzzy",
+                author_name=author_name,
+                books=books,
+                metadata_cache=metadata_cache,
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,
@@ -980,26 +793,6 @@ def scan_monitored_author_files(
             seen_dirs.add(parent_key)
             scanned_audio_folders += 1
 
-            folder_name = parent.name
-            series_name = parent.parent.name if parent.parent and parent.parent != audiobook_path else ""
-
-            is_series_container = _is_series_container(parent, effective_audio_ext)
-
-            if is_series_container:
-                combined = best_file.stem
-                if folder_name:
-                    combined = f"{combined} {folder_name}"
-            else:
-                combined = folder_name
-                if series_name and not re.match(r"^\d+\.?\s*", folder_name):
-                    combined = f"{folder_name} {series_name}"
-
-            candidate = normalize_candidate_title(combined, author_name)
-            best_score, best_row, top_matches = _score_candidate_against_known_titles(
-                candidate=candidate,
-                known_titles=known_titles,
-            )
-
             best_ext = best_file.suffix.lower()
             file_type = best_ext.lstrip(".")
             mtime = iso_mtime(best_file)
@@ -1010,7 +803,16 @@ def scan_monitored_author_files(
 
             seen_paths.add(str(best_file))
 
-            _record_scan_match(
+            # Eager-read metadata for the chosen audio file. The v2 matcher
+            # uses the full file path (which is the canonical "leaf" for the
+            # audio folder) for path decomposition.
+            path_str = str(best_file)
+            if path_str not in metadata_cache:
+                meta = read_embedded_metadata(path_str)
+                if meta is not None:
+                    metadata_cache[path_str] = meta
+
+            _record_scan_match_v2(
                 monitored_db=monitored_db,
                 user_id=user_id,
                 entity_id=entity_id,
@@ -1018,11 +820,9 @@ def scan_monitored_author_files(
                 file_type=file_type,
                 size_bytes=size_bytes,
                 mtime=mtime,
-                candidate=candidate,
-                best_score=best_score,
-                best_row=best_row,
-                top_matches=top_matches,
-                match_reason="folder_title_fuzzy",
+                author_name=author_name,
+                books=books,
+                metadata_cache=metadata_cache,
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,

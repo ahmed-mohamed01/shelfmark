@@ -243,44 +243,6 @@ def release_scoring_settings():
             min_value=0,
             max_value=30,
         ),
-        HeadingField(
-            key="integration_matching_heading",
-            title="Integration Matching",
-            description="Fuzzy-match thresholds used when matching monitored books against integration libraries (Audiobookshelf, Booklore).",
-            columns=2,
-        ),
-        NumberField(
-            key="INTEGRATION_TITLE_MATCH_MIN",
-            label="Title Match Minimum (%)",
-            description="Minimum title fuzzy-match score for integration matching.",
-            default=70,
-            min_value=30,
-            max_value=100,
-        ),
-        NumberField(
-            key="INTEGRATION_AUTHOR_MATCH_MIN",
-            label="Author Match Minimum (%)",
-            description="Minimum author fuzzy-match score for integration matching.",
-            default=70,
-            min_value=30,
-            max_value=100,
-        ),
-        NumberField(
-            key="INTEGRATION_SERIES_NAME_MATCH_MIN",
-            label="Series Name Match Minimum (%)",
-            description="Minimum series name fuzzy-match score for series-based matching.",
-            default=75,
-            min_value=30,
-            max_value=100,
-        ),
-        NumberField(
-            key="INTEGRATION_SERIES_TITLE_MATCH_MIN",
-            label="Series Title Match Minimum (%)",
-            description="Minimum title score to confirm a series-based match.",
-            default=60,
-            min_value=30,
-            max_value=100,
-        ),
     ]
 
 

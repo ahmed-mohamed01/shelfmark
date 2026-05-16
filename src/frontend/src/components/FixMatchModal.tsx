@@ -1,0 +1,240 @@
+import { useCallback, useEffect, useState } from 'react';
+import {
+  detachMatch,
+  listMatchCandidates,
+  setManualMatch,
+  type MatchCandidate,
+  type MatchCandidatesResponse,
+} from '../services/monitoredApi';
+
+interface FixMatchModalProps {
+  entityId: number;
+  fileId: number;
+  onClose: () => void;
+  /** Called after a successful set / detach so the parent refetches. */
+  onApplied: () => void;
+}
+
+const formatPosition = (pos: number | null | undefined): string => {
+  if (pos == null) return '';
+  return `#${pos}`;
+};
+
+const sourceLabel = (s: string | null): string => {
+  if (!s) return 'unknown';
+  if (s === 'audiobookshelf') return 'AudioBookShelf';
+  if (s === 'booklore') return 'Booklore';
+  if (s === 'filesystem') return 'Filesystem';
+  return s;
+};
+
+export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatchModalProps) => {
+  const [data, setData] = useState<MatchCandidatesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    listMatchCandidates(entityId, fileId)
+      .then((resp) => {
+        if (cancelled) return;
+        setData(resp);
+        const cur = resp.candidates.find((c) => c.is_current);
+        if (cur) setSelectedFileId(cur.file.id);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : 'Failed to load candidates');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entityId, fileId]);
+
+  const target = data?.target_book;
+
+  const onApply = useCallback(async () => {
+    if (selectedFileId == null) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await setManualMatch(entityId, fileId, selectedFileId);
+      onApplied();
+      onClose();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to set match');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [selectedFileId, entityId, fileId, onApplied, onClose]);
+
+  const onDetach = useCallback(async () => {
+    if (!confirm('Detach this attribution? The book will have no file linked until the next scan.')) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await detachMatch(entityId, fileId);
+      onApplied();
+      onClose();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to detach');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [entityId, fileId, onApplied, onClose]);
+
+  return (
+    <div
+      className="modal-overlay active sm:px-6 sm:py-6"
+      style={{ zIndex: 2100 }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="details-container w-full max-w-2xl h-auto settings-modal-enter"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Fix match"
+      >
+        <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-[var(--border-muted)]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                Fix match
+              </h2>
+              {target ? (
+                <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                  Pick the file that represents{' '}
+                  <span className="text-gray-800 dark:text-gray-200 font-medium">
+                    {target.title}
+                  </span>
+                  {target.series_name ? (
+                    <span className="text-gray-500 dark:text-gray-400">
+                      {' '}({target.series_name} {formatPosition(target.series_position)})
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-900 dark:hover:text-gray-200 -mt-1 -mr-1"
+              aria-label="Close"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 max-h-[60vh] overflow-y-auto">
+          {loading ? (
+            <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+              Loading candidates…
+            </div>
+          ) : error ? (
+            <div className="py-4 text-sm text-red-600 dark:text-red-400">{error}</div>
+          ) : !data || data.candidates.length === 0 ? (
+            <div className="py-4 text-sm text-gray-500 dark:text-gray-400">
+              No candidate files found. The scanner may not have discovered other
+              files of this type in this author's library yet — try running a
+              filesystem rescan or syncing AudioBookShelf / Booklore.
+            </div>
+          ) : (
+            <ul className="space-y-1">
+              {data.candidates.map((c: MatchCandidate) => {
+                const checked = selectedFileId === c.file.id;
+                const confPct = Math.round((c.confidence ?? 0) * 100);
+                const path = c.file.path || '';
+                const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+                const fileName = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+                const dirPath = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : '';
+                return (
+                  <li key={c.file.id}>
+                    <label className={`flex items-start gap-3 p-2 rounded-lg cursor-pointer ${
+                      checked ? 'bg-blue-500/10 dark:bg-blue-500/20' : 'hover:bg-black/5 dark:hover:bg-white/5'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="fix-match-candidate"
+                        className="mt-1"
+                        checked={checked}
+                        onChange={() => setSelectedFileId(c.file.id)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-gray-900 dark:text-gray-100 break-words">
+                          {fileName || '(no path)'}
+                          {c.is_current ? (
+                            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-500/20 text-blue-700 dark:text-blue-300">
+                              current
+                            </span>
+                          ) : null}
+                        </div>
+                        {dirPath ? (
+                          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 break-all">
+                            {dirPath}
+                          </div>
+                        ) : null}
+                        <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                          {sourceLabel(c.file.source)}
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums whitespace-nowrap">
+                        {confPct}%
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-[var(--border-muted)] flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onDetach}
+            disabled={submitting || loading}
+            className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50 dark:text-red-400 dark:hover:text-red-300"
+          >
+            Detach attribution
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 text-sm rounded-lg border border-[var(--border-muted)] text-gray-700 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onApply}
+              disabled={submitting || loading || selectedFileId == null}
+              className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50"
+            >
+              {submitting ? 'Setting…' : 'Set match'}
+            </button>
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>
+  );
+};

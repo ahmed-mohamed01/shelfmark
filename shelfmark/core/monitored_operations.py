@@ -23,6 +23,7 @@ from shelfmark.core.monitored_db_ops import (
 )
 from shelfmark.core.monitored_types import (
     AvailabilityData,
+    AvailabilitySyncResult,
     BatchSyncResult,
     MonitoredEntityNotFound,
     MonitoredPathError,
@@ -39,6 +40,79 @@ logger = setup_logger(__name__)
 # =============================================================================
 # Author refresh
 # =============================================================================
+
+
+def sync_availability_sources(
+    db: MonitoredDB,
+    *,
+    entity_id: int,
+    entity_name: str,
+    user_id: int | None,
+    user_db: Any,
+) -> AvailabilitySyncResult:
+    """Refresh file-availability state for one entity across all sources.
+
+    Runs the three availability-source checks, each best-effort:
+
+      1. Filesystem scan (skipped when no library roots are configured).
+      2. AudioBookShelf sync (skipped when integration is disabled / no config).
+      3. Booklore sync (same).
+
+    All three populate ``monitored_book_files`` via the unified attribution
+    evaluator. Shared by the per-author sync (``_run_author_sync``), the
+    batch sync (``run_batch_sync``), and the manual per-author scan route
+    so all three paths behave identically.
+
+    Errors are captured (not raised) so any one source failing doesn't
+    prevent the others from running. Callers that need HTTP error responses
+    inspect ``result.fs_error``; background sync paths ignore it.
+    """
+    result = AvailabilitySyncResult()
+
+    # Filesystem scan — best-effort, skipped if library paths not configured.
+    try:
+        from shelfmark.core.monitored_files import resolve_allowed_roots
+        roots = resolve_allowed_roots(user_db, db_user_id=int(user_id or 0)) if user_db else []
+        if roots:
+            result.fs_scan = update_file_availability(
+                db, entity_id=entity_id, user_id=user_id, allowed_roots=roots,
+            )
+        else:
+            logger.warning("File scan skipped for entity %s: no allowed roots resolved", entity_id)
+    except (MonitoredEntityNotFound, MonitoredPathError) as exc:
+        # Route handlers translate these into specific HTTP responses.
+        result.fs_error = exc
+    except Exception as exc:
+        result.fs_error = exc
+        logger.warning("File scan failed for entity %s: %s", entity_id, exc)
+
+    # ABS sync — best-effort, skipped if ABS not configured.
+    try:
+        from shelfmark.core.monitored_audiobookshelf_integration import sync_abs_availability_for_entity
+        result.abs = sync_abs_availability_for_entity(
+            monitored_db=db,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            user_id=user_id,
+        ) or result.abs
+    except Exception as exc:
+        logger.warning("ABS availability sync failed for entity %s: %s", entity_id, exc)
+        result.abs = {"abs_skipped": True, "reason": "error"}
+
+    # Booklore sync — best-effort, skipped if Booklore not configured.
+    try:
+        from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
+        result.bl = sync_booklore_availability_for_entity(
+            monitored_db=db,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            user_id=user_id,
+        ) or result.bl
+    except Exception as exc:
+        logger.warning("Booklore availability sync failed for entity %s: %s", entity_id, exc)
+        result.bl = {"bl_skipped": True, "reason": "error"}
+
+    return result
 
 
 def _sync_author_core(
@@ -174,42 +248,13 @@ def _run_author_sync(
                    {"entity_id": entity_id, "phase": "fetching_books"})
         sync_result = _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
 
-        # Auto file scan (best-effort — skipped if library paths not configured)
+        # File availability across all sources (filesystem + ABS + Booklore).
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
                    {"entity_id": entity_id, "phase": "scanning_files"})
-        try:
-            from shelfmark.core.monitored_files import resolve_allowed_roots
-            roots = resolve_allowed_roots(user_db, db_user_id=int(user_id or 0)) if user_db else []
-            if roots:
-                update_file_availability(db, entity_id=entity_id, user_id=user_id, allowed_roots=roots)
-            else:
-                logger.warning("File scan skipped for entity %s: no allowed roots resolved", entity_id)
-        except Exception as exc:
-            logger.warning("File scan failed for entity %s: %s", entity_id, exc)
-
-        # ABS sync (best-effort — skipped if ABS not configured)
-        try:
-            from shelfmark.core.monitored_audiobookshelf_integration import sync_abs_availability_for_entity
-            sync_abs_availability_for_entity(
-                monitored_db=db,
-                entity_id=entity_id,
-                entity_name=str(entity.get("name") or ""),
-                user_id=user_id,
-            )
-        except Exception as exc:
-            logger.debug("ABS availability sync failed for entity %s: %s", entity_id, exc)
-
-        # Booklore sync (best-effort — skipped if Booklore not configured)
-        try:
-            from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
-            sync_booklore_availability_for_entity(
-                monitored_db=db,
-                entity_id=entity_id,
-                entity_name=str(entity.get("name") or ""),
-                user_id=user_id,
-            )
-        except Exception as exc:
-            logger.debug("Booklore availability sync failed for entity %s: %s", entity_id, exc)
+        sync_availability_sources(
+            db, entity_id=entity_id, entity_name=entity_name,
+            user_id=user_id, user_db=user_db,
+        )
 
         # Cover prefetch — broadcast phase, then fetch covers into cache
         _broadcast(ws_manager, user_id, "monitored_sync_progress",
@@ -432,6 +477,9 @@ def run_batch_sync(
                 db, entity=entity, user_id=uid,
                 preferred_languages=preferred_languages,
             )
+            sync_availability_sources(
+                db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
+            )
             _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
         except MonitoredProviderError as exc:
             if is_transient_provider_error(exc):
@@ -459,6 +507,9 @@ def run_batch_sync(
                 sync_res = _sync_author_core(
                     db, entity=entity, user_id=uid,
                     preferred_languages=preferred_languages,
+                )
+                sync_availability_sources(
+                    db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
                 )
                 _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
                 result.retry_succeeded += 1

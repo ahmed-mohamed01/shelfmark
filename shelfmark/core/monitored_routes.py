@@ -18,6 +18,7 @@ from shelfmark.core.monitored_files import (
     resolve_allowed_roots,
 )
 from shelfmark.core.monitored_operations import (
+    sync_availability_sources,
     compute_book_availability,
     filter_search_candidates,
     record_scan_error,
@@ -25,10 +26,9 @@ from shelfmark.core.monitored_operations import (
     run_batch_sync,
     search_missing_books,
     start_author_background_sync,
-    update_file_availability,
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
-from shelfmark.core.monitored_types import MonitoredEntityNotFound, MonitoredPathError
+from shelfmark.core.monitored_types import AvailabilitySyncResult, MonitoredEntityNotFound, MonitoredPathError
 from shelfmark.core.monitored_utils import extract_author_photo_url, normalize_preferred_languages, transform_cached_cover_urls
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
@@ -36,6 +36,23 @@ from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
+
+# Audio file extensions used to bucket monitored_book_files rows into
+# audiobook-vs-ebook for the candidates endpoint. A row counts as audiobook
+# when its file_type is the explicit string "audiobook" OR an audio extension.
+_AUDIO_FILE_TYPES: frozenset[str] = frozenset({
+    "m4b", "mp3", "m4a", "flac", "opus", "aac", "ogg", "wav", "aax",
+})
+
+# Total Link: rel=preload header size we'll emit on the entities-list
+# response. Kept well under common nginx proxy_buffer_size (4 KiB) so
+# reverse proxies don't 502 with "upstream sent too big header".
+_MAX_LINK_HEADER_BYTES = 2048
+
+
+def _row_is_audiobook(file_type: str | None) -> bool:
+    ft = (file_type or "").lower()
+    return ft == "audiobook" or ft in _AUDIO_FILE_TYPES
 
 
 def _resolve_global_monitor_user_id(user_db: UserDB) -> int:
@@ -748,11 +765,17 @@ def register_monitored_routes(
         # fetching them while the JS is still parsing the JSON response body.
         try:
             preload_urls: list[str] = []
+            total_bytes = 0
             for row in rows:
                 settings = row.get("settings") or {}
                 url = settings.get("photo_url") or row.get("best_book_cover_url")
                 if url and isinstance(url, str) and url.startswith("/"):
-                    preload_urls.append(f"<{url}>; rel=preload; as=image")
+                    entry = f"<{url}>; rel=preload; as=image"
+                    added = len(entry) + (2 if preload_urls else 0)  # ", " separator
+                    if total_bytes + added > _MAX_LINK_HEADER_BYTES:
+                        break
+                    preload_urls.append(entry)
+                    total_bytes += added
                     if len(preload_urls) >= 20:
                         break
             if preload_urls:
@@ -1082,7 +1105,275 @@ def register_monitored_routes(
                 books=books,
                 file_rows=rows,
             )
+
+        # Parse evidence_json (v2 attribution breakdown) so the frontend gets a
+        # structured object rather than a string.
+        import json as _json
+        for r in rows:
+            raw = r.get("evidence_json")
+            if isinstance(raw, str) and raw:
+                try:
+                    r["evidence"] = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    r["evidence"] = None
+            else:
+                r["evidence"] = None
+            # Drop the raw string from the response to keep payloads compact.
+            r.pop("evidence_json", None)
+
         return jsonify({"files": rows})
+
+    @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/candidates", methods=["GET"])
+    def api_list_match_candidates(entity_id: int, file_id: int):
+        """Return ranked candidate FILES that could match the book this row is
+        currently attached to.
+
+        The "Fix match" UI uses this to let the user pick the right file for
+        a book when the algorithm picked the wrong one. Universe of candidates:
+        every other file currently in monitored_book_files for this entity
+        matching the same content type (ebook vs audiobook). Each is re-scored
+        against the target book; the current file is included and flagged.
+        """
+        from dataclasses import asdict as _asdict
+        from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
+        from shelfmark.core.monitored_attribution_v2 import (
+            SourceMetadata,
+            evaluate_match,
+        )
+
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode,
+        )
+        if gate is not None:
+            return gate
+
+        rows = monitored_db.list_monitored_book_files(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        )
+        if rows is None:
+            return jsonify({"error": "Not found"}), 404
+        file_row = next((r for r in rows if r.get("id") == file_id), None)
+        if file_row is None:
+            return jsonify({"error": "File not found"}), 404
+
+        # The book this file is currently attached to drives the ranking.
+        books = monitored_db.list_monitored_books(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        ) or []
+        target_book = next(
+            (b for b in books
+             if b.get("provider") == file_row.get("provider")
+             and b.get("provider_book_id") == file_row.get("provider_book_id")),
+            None,
+        )
+        if target_book is None:
+            return jsonify({"error": "Currently-attached book not found"}), 404
+
+        entity = monitored_db.get_monitored_entity(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        )
+        author_name = (entity or {}).get("name") if entity else None
+
+        # Audiobook ↔ ebook split: only show same-format candidates.
+        is_audiobook = _row_is_audiobook(file_row.get("file_type"))
+        candidate_rows = [
+            r for r in rows
+            if _row_is_audiobook(r.get("file_type")) == is_audiobook
+        ]
+
+        ranked: list[dict[str, Any]] = []
+        for cand in candidate_rows:
+            cand_path = cand.get("path") or ""
+            cand_source = cand.get("source") or "filesystem"
+            # All sources contribute path signals — ABS/Booklore paths carry
+            # the same series/author/title structure as filesystem paths.
+            # Filesystem rows additionally try embedded metadata; integration
+            # rows recover their stored source_data from evidence_json.
+            embedded = None
+            src_meta: SourceMetadata | None = None
+            if cand_source == "filesystem" and cand_path:
+                try:
+                    embedded = read_embedded_metadata(cand_path)
+                except Exception:
+                    embedded = None
+            elif cand_source in ("audiobookshelf", "booklore"):
+                stored = cand.get("evidence_json")
+                source_data: dict[str, Any] = {}
+                if isinstance(stored, str) and stored:
+                    try:
+                        import json as _json
+                        parsed = _json.loads(stored)
+                        if isinstance(parsed, dict):
+                            source_data = parsed.get("source_data") or {}
+                    except Exception:
+                        source_data = {}
+                src_meta = SourceMetadata(
+                    title=source_data.get("title"),
+                    author=(source_data.get("authors") or [None])[0]
+                           if isinstance(source_data.get("authors"), list) else None,
+                    series_name=source_data.get("series_name"),
+                    series_position=source_data.get("series_position"),
+                    isbn_13=source_data.get("isbn_13"),
+                    isbn_10=source_data.get("isbn_10"),
+                    asin=source_data.get("asin"),
+                    source_label="abs" if cand_source == "audiobookshelf" else "booklore",
+                )
+
+            ev = evaluate_match(
+                path=cand_path,
+                book=target_book, author_name=author_name,
+                embedded=embedded, source_metadata=src_meta,
+            )
+            ranked.append({
+                "file": {
+                    "id": cand.get("id"),
+                    "path": cand_path,
+                    "source": cand_source,
+                    "ext": cand.get("ext"),
+                    "file_type": cand.get("file_type"),
+                    "currently_attached_book": {
+                        "provider": cand.get("provider"),
+                        "provider_book_id": cand.get("provider_book_id"),
+                    },
+                },
+                "confidence": ev.confidence,
+                "net_score": ev.net_score,
+                "is_current": cand.get("id") == file_id,
+                "evidence": _asdict(ev),
+            })
+        ranked.sort(key=lambda r: r["net_score"], reverse=True)
+
+        return jsonify({
+            "candidates": ranked[:50],
+            "target_book": {
+                "title": target_book.get("title"),
+                "series_name": target_book.get("series_name"),
+                "series_position": target_book.get("series_position"),
+                "provider": target_book.get("provider"),
+                "provider_book_id": target_book.get("provider_book_id"),
+            },
+        })
+
+    @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/match", methods=["POST"])
+    def api_set_manual_match(entity_id: int, file_id: int):
+        """User picks the correct FILE for the book this row is currently
+        attached to (or detaches the row entirely).
+
+        Body shapes:
+          { "file_id": N }                               → swap attribution to file N
+          { "source": "...", "path": "..." }             → swap by (source, path)
+          { "detach": true }                             → delete this row
+
+        On swap, the chosen file's existing row (if any) is updated to point
+        at the target book with ``manual_override=1``. The original row is
+        either kept (if the user is just adding a second file to the book) or
+        detached if the chosen file IS this row (no-op).
+        """
+        from dataclasses import asdict as _asdict
+        import json as _json
+        from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
+        from shelfmark.core.monitored_attribution_v2 import evaluate_match
+
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode,
+        )
+        if gate is not None:
+            return gate
+
+        payload = request.get_json(silent=True) or {}
+
+        rows = monitored_db.list_monitored_book_files(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        )
+        if rows is None:
+            return jsonify({"error": "Not found"}), 404
+        anchor_row = next((r for r in rows if r.get("id") == file_id), None)
+        if anchor_row is None:
+            return jsonify({"error": "File not found"}), 404
+
+        if payload.get("detach"):
+            monitored_db.delete_monitored_book_file_by_id(
+                user_ids=visible_user_ids, entity_id=entity_id, file_id=file_id,
+            )
+            return jsonify({"ok": True, "detached": True})
+
+        # Resolve the chosen file row — either by id or by (source, path).
+        chosen_row: dict[str, Any] | None = None
+        chosen_id = payload.get("file_id")
+        if isinstance(chosen_id, int):
+            chosen_row = next((r for r in rows if r.get("id") == chosen_id), None)
+        else:
+            chosen_source = (payload.get("source") or "").strip()
+            chosen_path = (payload.get("path") or "").strip()
+            if chosen_source and chosen_path:
+                chosen_row = next(
+                    (r for r in rows
+                     if (r.get("source") or "") == chosen_source
+                     and (r.get("path") or "") == chosen_path),
+                    None,
+                )
+        if chosen_row is None:
+            return jsonify({"error": "Chosen file not found in this entity"}), 400
+
+        # Target book is whatever the anchor row was attached to.
+        target_provider = anchor_row.get("provider")
+        target_pbid = anchor_row.get("provider_book_id")
+        if not target_provider or not target_pbid:
+            return jsonify({"error": "Anchor row has no attached book"}), 400
+
+        books = monitored_db.list_monitored_books(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        ) or []
+        target_book = next(
+            (b for b in books
+             if b.get("provider") == target_provider
+             and b.get("provider_book_id") == target_pbid),
+            None,
+        )
+        if target_book is None:
+            return jsonify({"error": "Target book not found in this entity"}), 404
+
+        # Re-score the chosen (path, book) pair so evidence_json reflects the
+        # user's chosen attribution. Confidence is forced to 1.0.
+        entity = monitored_db.get_monitored_entity(
+            user_ids=visible_user_ids, entity_id=entity_id,
+        )
+        author_name = (entity or {}).get("name") if entity else None
+        chosen_path = chosen_row.get("path") or ""
+        chosen_source = chosen_row.get("source") or "filesystem"
+        embedded = None
+        if chosen_source == "filesystem" and chosen_path:
+            try:
+                embedded = read_embedded_metadata(chosen_path)
+            except Exception:
+                embedded = None
+        ev = evaluate_match(
+            path=chosen_path if chosen_source == "filesystem" else "",
+            book=target_book, author_name=author_name, embedded=embedded,
+        )
+
+        # Re-point the target book's attribution at chosen_path. The upsert
+        # uses ON CONFLICT(entity_id, provider, provider_book_id, file_type,
+        # source), so if the target book already had a different file attached
+        # (the anchor row), that row is updated in place to point at chosen_path
+        # — no separate delete needed.
+        monitored_db.upsert_monitored_book_file(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            provider=target_provider,
+            provider_book_id=target_pbid,
+            path=chosen_path,
+            ext=chosen_row.get("ext"),
+            file_type=chosen_row.get("file_type"),
+            size_bytes=chosen_row.get("size_bytes"),
+            mtime=chosen_row.get("mtime"),
+            confidence=1.0,
+            match_reason="manual_override",
+            source=chosen_source,
+            evidence_json=_json.dumps(_asdict(ev), default=str),
+            manual_override=True,
+        )
+        return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
     def api_list_monitored_book_history(entity_id: int):
@@ -1273,97 +1564,69 @@ def register_monitored_routes(
         if entity.get("kind") != "author":
             return jsonify({"error": "Scan is only supported for author entities"}), 400
 
-        roots = resolve_allowed_roots(user_db, db_user_id=int(db_user_id or 0))
-        if not roots:
+        if not resolve_allowed_roots(user_db, db_user_id=int(db_user_id or 0)):
             return jsonify({"error": "No allowed roots configured"}), 400
-
-        # Capture dir names before calling ops (needed for error recording)
-        settings = entity.get("settings") or {}
-        ebook_dir = str(settings.get("ebook_author_dir") or "").strip().rstrip("/")
-        audiobook_dir = str(settings.get("audiobook_author_dir") or "").strip().rstrip("/")
 
         entity_owner_id = int(entity["user_id"])
 
-        # Filesystem scan — capture errors so ABS sync can still run afterwards
-        _scan_result = None
-        _scan_error_response: tuple[dict, int] | None = None
-        try:
-            _scan_result = update_file_availability(
-                monitored_db,
-                entity_id=entity_id,
-                user_id=entity_owner_id,
-                allowed_roots=roots,
+        sync_result: AvailabilitySyncResult = sync_availability_sources(
+            monitored_db,
+            entity_id=entity_id,
+            entity_name=entity.get("name") or "",
+            user_id=entity_owner_id,
+            user_db=user_db,
+        )
+
+        # Translate any filesystem-scan exception captured by the helper into
+        # the appropriate HTTP response. ABS/Booklore errors don't fail the
+        # whole call — they're surfaced inside their result dicts.
+        fs_err = sync_result.fs_error
+        if fs_err is not None:
+            if isinstance(fs_err, MonitoredEntityNotFound):
+                return jsonify({"error": "Not found"}), 404
+            if isinstance(fs_err, MonitoredPathError):
+                msg = str(fs_err)
+                if msg == "ebook_author_dir or audiobook_author_dir must be set":
+                    return jsonify({"error": msg}), 400
+                if msg in {"ebook_author_dir is not within allowed roots", "audiobook_author_dir is not within allowed roots"}:
+                    return jsonify({"error": "Path not allowed"}), 403
+                if msg in {"Invalid ebook_author_dir", "Invalid audiobook_author_dir"}:
+                    return jsonify({"error": msg}), 400
+                if msg == "directories_not_found":
+                    return jsonify({"error": "Directory not found", "details": {}, "files_cleared": True}), 404
+                return jsonify({"error": msg}), 400
+            # Unknown exception — log a scan_error event for the History UI.
+            settings = entity.get("settings") or {}
+            record_scan_error(
+                monitored_db, entity_id=entity_id, user_id=entity_owner_id, error=fs_err,
+                ebook_dir=str(settings.get("ebook_author_dir") or "").strip().rstrip("/"),
+                audiobook_dir=str(settings.get("audiobook_author_dir") or "").strip().rstrip("/"),
             )
-        except MonitoredEntityNotFound:
-            return jsonify({"error": "Not found"}), 404
-        except MonitoredPathError as exc:
-            msg = str(exc)
-            if msg == "ebook_author_dir or audiobook_author_dir must be set":
-                _scan_error_response = ({"error": msg}, 400)
-            elif msg in {"ebook_author_dir is not within allowed roots", "audiobook_author_dir is not within allowed roots"}:
-                _scan_error_response = ({"error": "Path not allowed"}, 403)
-            elif msg in {"Invalid ebook_author_dir", "Invalid audiobook_author_dir"}:
-                _scan_error_response = ({"error": msg}, 400)
-            elif msg == "directories_not_found":
-                _scan_error_response = ({"error": "Directory not found", "details": {}, "files_cleared": True}, 404)
-            else:
-                _scan_error_response = ({"error": msg}, 400)
-        except Exception as exc:
-            logger.warning("Monitored scan failed entity_id=%s: %s", entity_id, exc)
-            record_scan_error(monitored_db, entity_id=entity_id, user_id=entity_owner_id, error=exc, ebook_dir=ebook_dir, audiobook_dir=audiobook_dir)
-            _scan_error_response = ({"error": "Scan failed"}, 500)
+            return jsonify({"error": "Scan failed"}), 500
 
-        # ABS sync — always runs as long as the entity exists, independent of FS scan
-        try:
-            from shelfmark.core.monitored_audiobookshelf_integration import sync_abs_availability_for_entity
-            abs_result = sync_abs_availability_for_entity(
-                monitored_db=monitored_db,
-                entity_id=entity_id,
-                entity_name=entity.get("name") or "",
-                user_id=entity_owner_id,
-            )
-        except Exception as abs_exc:
-            logger.warning("ABS sync failed entity_id=%s: %s", entity_id, abs_exc)
-            abs_result = {"abs_skipped": True, "reason": "error"}
-
-        # Booklore sync — always runs as long as the entity exists, independent of FS scan
-        bl_result: dict[str, Any] = {"bl_skipped": True, "reason": "not_run"}
-        try:
-            from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
-            bl_result = sync_booklore_availability_for_entity(
-                monitored_db=monitored_db,
-                entity_id=entity_id,
-                entity_name=entity.get("name") or "",
-                user_id=entity_owner_id,
-            )
-        except Exception as bl_exc:
-            logger.warning("Booklore sync failed entity_id=%s: %s", entity_id, bl_exc)
-            bl_result = {"bl_skipped": True, "reason": "error"}
-
-        if _scan_error_response is not None:
-            return jsonify(_scan_error_response[0]), _scan_error_response[1]
-
-        result = _scan_result  # type: ignore[assignment]
+        scan = sync_result.fs_scan
+        if scan is None:
+            return jsonify({"error": "Scan produced no result"}), 500
 
         return jsonify({
             "ok": True,
             "entity_id": entity_id,
             "scanned": {
-                "ebook_author_dir": result.ebook_dir,
-                "audiobook_author_dir": result.audiobook_dir,
+                "ebook_author_dir": scan.ebook_dir,
+                "audiobook_author_dir": scan.audiobook_dir,
             },
-            "warnings": result.warnings,
+            "warnings": scan.warnings,
             "stats": {
-                "ebook_files_scanned": result.scanned_ebook_files,
-                "audiobook_folders_scanned": result.scanned_audio_folders,
-                "matched": len(result.matched),
-                "unmatched": len(result.unmatched),
+                "ebook_files_scanned": scan.scanned_ebook_files,
+                "audiobook_folders_scanned": scan.scanned_audio_folders,
+                "matched": len(scan.matched),
+                "unmatched": len(scan.unmatched),
             },
-            "matched": result.matched,
-            "unmatched": result.unmatched,
-            "missing_books": result.missing_books,
-            "abs": abs_result,
-            "booklore": bl_result,
+            "matched": scan.matched,
+            "unmatched": scan.unmatched,
+            "missing_books": scan.missing_books,
+            "abs": sync_result.abs,
+            "booklore": sync_result.bl,
         })
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])

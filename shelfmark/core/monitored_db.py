@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
     mtime TIMESTAMP,
     confidence REAL,
     match_reason TEXT,
+    evidence_json TEXT,
+    manual_override INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_id, path, source),
@@ -296,6 +298,74 @@ def _migrate_monitored_book_files_v3(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_monitored_book_files_v4(conn: sqlite3.Connection) -> None:
+    """Add evidence_json column for v2 structured attribution evidence.
+
+    Additive only — no data loss. Stores per-row evidence vector (positives,
+    penalties, position_votes, etc.) as JSON, surfaced in the BookDetailsModal
+    "Why?" UI.
+    """
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()
+    }
+    if "evidence_json" in cols:
+        return  # already migrated
+    conn.execute("ALTER TABLE monitored_book_files ADD COLUMN evidence_json TEXT")
+    conn.commit()
+
+
+def _migrate_monitored_book_files_v5(conn: sqlite3.Connection) -> None:
+    """Wipe pre-unified-matcher attributions so next scan/sync repopulates under v2.
+
+    Targets rows from sources whose attribution algorithms changed shape (now
+    all running through the unified ``pick_best_attribution`` evaluator):
+
+      * ``filesystem`` — was the v2 path matcher; now also runs through the
+        same unified evaluator with the same shape (re-derivation is identical
+        for identifier-matched rows, fresh for everything else).
+      * ``audiobookshelf`` / ``booklore`` — were three-phase decision trees
+        with the old looser title-confirmation threshold. Now metadata-fed
+        into the unified evaluator. Wholesale wipe; sync will re-derive.
+
+    ``download`` rows survive — those were attributed at download time with
+    a known target book; the path is canonical by construction.
+
+    Gated by ``PRAGMA user_version`` in ``initialize()`` so it runs exactly
+    once per DB.
+    """
+    cur = conn.execute(
+        """
+        DELETE FROM monitored_book_files
+        WHERE source IN ('filesystem', 'audiobookshelf', 'booklore')
+        """
+    )
+    deleted = cur.rowcount or 0
+    conn.commit()
+    if deleted:
+        logger.info(
+            "Migration v5: wiped %d legacy attribution rows; next scan/sync "
+            "will repopulate under the unified matcher.", deleted,
+        )
+
+
+def _migrate_monitored_book_files_v6(conn: sqlite3.Connection) -> None:
+    """Add manual_override column.
+
+    When set to 1, the row was set by a user via the "Fix match" UI; the
+    scanner and integration sync loops must not overwrite it. Centralised
+    enforcement lives in ``upsert_monitored_book_file``.
+    """
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()
+    }
+    if "manual_override" in cols:
+        return
+    conn.execute(
+        "ALTER TABLE monitored_book_files ADD COLUMN manual_override INTEGER NOT NULL DEFAULT 0"
+    )
+    conn.commit()
+
+
 def _migrate_monitored_events_backfill_user_id(conn: sqlite3.Connection) -> None:
     """Backfill ``user_id`` on events recorded before the column was populated.
 
@@ -392,6 +462,17 @@ class MonitoredDB:
                 _migrate_monitored_book_files_v2(conn)
                 _migrate_monitored_book_files_v3(conn)
                 conn.executescript(_CREATE_MONITORED_TABLES_SQL)
+                _migrate_monitored_book_files_v4(conn)
+                # v5 + v6: gated by PRAGMA user_version so they run exactly
+                # once per DB. v5 wipes legacy attributions; v6 adds the
+                # manual_override column.
+                user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if user_version < 6:
+                    if user_version < 5:
+                        _migrate_monitored_book_files_v5(conn)
+                    _migrate_monitored_book_files_v6(conn)
+                    conn.execute("PRAGMA user_version = 6")
+                    conn.commit()
                 _migrate_monitored_events_cascade_to_set_null(conn)
                 _migrate_monitored_events_backfill_user_id(conn)
                 # Lazy migration: column is in CREATE TABLE for new DBs but
@@ -1750,23 +1831,51 @@ class MonitoredDB:
         confidence: float | None,
         match_reason: str | None,
         source: str = "filesystem",
+        evidence_json: str | None = None,
+        manual_override: bool = False,
     ) -> None:
         """Upsert a matched file for a monitored book.
 
         Constraints:
         - one row per (entity_id, path)
         - one row per (entity_id, provider, provider_book_id, file_type, source)
+
+        Manual-override guard:
+        - When the row at (entity_id, path, source) currently has
+          ``manual_override = 1`` and the caller is NOT setting it (i.e.
+          ``manual_override=False``), the upsert is a no-op. Scanners /
+          integration sync loops therefore leave user-confirmed rows alone.
+        - When ``manual_override=True``, the row is written through normally
+          and the flag is set on insert/update — this is the "Fix match"
+          endpoint's path.
         """
 
         normalized_path = (path or "").strip()
         if not normalized_path:
             return
 
+        manual_flag = 1 if manual_override else 0
+
         with self._lock:
             conn = self._connect()
             try:
                 if not self._entity_exists(conn, entity_id, user_ids):
                     raise ValueError("Monitored entity not found")
+
+                # Manual-override guard: scanners and integration sync loops
+                # must not clobber a user-confirmed attribution. Skip when an
+                # existing row at this (entity_id, path, source) is marked
+                # manual_override AND the caller isn't setting it themselves.
+                if not manual_override:
+                    existing = conn.execute(
+                        """
+                        SELECT manual_override FROM monitored_book_files
+                        WHERE entity_id = ? AND path = ? AND source = ?
+                        """,
+                        (entity_id, normalized_path, source),
+                    ).fetchone()
+                    if existing and (existing["manual_override"] if isinstance(existing, sqlite3.Row) else existing[0]):
+                        return
 
                 if provider and provider_book_id and file_type:
                     # Prevent path-key collisions when re-pointing an existing
@@ -1800,9 +1909,11 @@ class MonitoredDB:
                             mtime,
                             confidence,
                             match_reason,
+                            evidence_json,
+                            manual_override,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(entity_id, provider, provider_book_id, file_type, source)
                         DO UPDATE SET
                             path=excluded.path,
@@ -1811,6 +1922,8 @@ class MonitoredDB:
                             mtime=excluded.mtime,
                             confidence=excluded.confidence,
                             match_reason=excluded.match_reason,
+                            evidence_json=excluded.evidence_json,
+                            manual_override=excluded.manual_override,
                             updated_at=CURRENT_TIMESTAMP
                         """,
                         (
@@ -1825,6 +1938,8 @@ class MonitoredDB:
                             mtime,
                             confidence,
                             match_reason,
+                            evidence_json,
+                            manual_flag,
                         ),
                     )
                 else:
@@ -1842,9 +1957,11 @@ class MonitoredDB:
                             mtime,
                             confidence,
                             match_reason,
+                            evidence_json,
+                            manual_override,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(entity_id, path, source)
                         DO UPDATE SET
                             provider=excluded.provider,
@@ -1855,6 +1972,8 @@ class MonitoredDB:
                             mtime=excluded.mtime,
                             confidence=excluded.confidence,
                             match_reason=excluded.match_reason,
+                            evidence_json=excluded.evidence_json,
+                            manual_override=excluded.manual_override,
                             updated_at=CURRENT_TIMESTAMP
                         """,
                         (
@@ -1869,10 +1988,35 @@ class MonitoredDB:
                             mtime,
                             confidence,
                             match_reason,
+                            evidence_json,
+                            manual_flag,
                         ),
                     )
 
                 conn.commit()
+            finally:
+                conn.close()
+
+    def delete_monitored_book_file_by_id(
+        self, *, user_ids: list[int], entity_id: int, file_id: int,
+    ) -> bool:
+        """Delete a monitored_book_files row by id.
+
+        Returns True if a row was deleted. Verifies the row belongs to the
+        given entity AND that the entity is visible to ``user_ids`` — so a
+        caller can't delete another user's row by guessing file_ids.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    return False
+                cur = conn.execute(
+                    "DELETE FROM monitored_book_files WHERE id = ? AND entity_id = ?",
+                    (file_id, entity_id),
+                )
+                conn.commit()
+                return (cur.rowcount or 0) > 0
             finally:
                 conn.close()
 
