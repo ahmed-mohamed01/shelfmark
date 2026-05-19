@@ -12,7 +12,7 @@ import {
 import { getFormatColor } from '../utils/colorMaps';
 import { MonitoredEventRow, parseEventMeta } from './MonitoredEventRow';
 import { EvidencePanel } from './EvidencePanel';
-import { FixMatchModal } from './FixMatchModal';
+import { FixMatchModal, type FixMatchTarget } from './FixMatchModal';
 
 interface BookDetailsModalProps {
   entityId: number | null;
@@ -30,6 +30,9 @@ interface BookDetailsModalProps {
   onSetReleaseDate?: (book: MonitoredBookRow) => void;
   hidden?: boolean;
   onToggleHidden?: () => void;
+  /** Called after a manual file attribution change so the parent can
+   *  refresh its books list (the has_*_available chips on book cards). */
+  onBookModified?: () => void;
 }
 
 type TabKey = 'details' | 'files' | 'history' | 'ebooks' | 'audiobooks';
@@ -37,7 +40,7 @@ const TAB_ORDER: readonly TabKey[] = ['details', 'files', 'history', 'ebooks', '
 
 const isEnabledFlag = (value: unknown): boolean => value === true || value === 1;
 
-export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, onAuthorClick, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate, hidden, onToggleHidden }: BookDetailsModalProps) => {
+export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEbook, monitorAudiobook, onClose, onToggleMonitor, onNavigateToSeries, onAuthorClick, renderEmbeddedSearch, previewBook, onMonitorBook, onSetReleaseDate, hidden, onToggleHidden, onBookModified }: BookDetailsModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
   const [tab, setTab] = useState<TabKey>('details');
   const [showHeaderThumb, setShowHeaderThumb] = useState(false);
@@ -52,8 +55,10 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
 
   const [files, setFiles] = useState<MonitoredBookFileRow[]>([]);
   const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<number>>(new Set());
-  const [fixMatchFileId, setFixMatchFileId] = useState<number | null>(null);
-  // Bumped after a successful Fix-match apply to retrigger the files-fetch effect.
+  const [fixMatchTarget, setFixMatchTarget] = useState<FixMatchTarget | null>(null);
+  // Bumped after a successful Fix-match apply to retrigger BOTH the files-fetch
+  // AND the book-row-fetch effects, since manual attribution changes the book's
+  // has_*_available flags too.
   const [filesReloadKey, setFilesReloadKey] = useState(0);
 
   // Reset evidence panel state when the modal targets a different book — file
@@ -155,7 +160,8 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
     return () => {
       cancelled = true;
     };
-  }, [entityId, provider, providerBookId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entityId, provider, providerBookId, filesReloadKey]);
 
   useEffect(() => {
     if (entityId == null || !provider || !providerBookId) {
@@ -871,7 +877,7 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                                     ) : null}
                                     <button
                                       type="button"
-                                      onClick={() => setFixMatchFileId(f.id)}
+                                      onClick={() => setFixMatchTarget({ mode: 'byFile', fileId: f.id })}
                                       className="text-blue-600 dark:text-blue-400 hover:underline focus:outline-none"
                                       title="Pick the correct book for this file"
                                     >
@@ -892,6 +898,33 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
                       })
                     )}
                   </div>
+                  {provider && providerBookId && (!hasEbookFile || !hasAudiobookFile) ? (
+                    <div className="px-4 py-3 border-t border-[var(--border-muted)] flex flex-wrap items-center gap-2 bg-black/5 dark:bg-white/5">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">Manually link a file:</span>
+                      {!hasEbookFile ? (
+                        <button
+                          type="button"
+                          onClick={() => setFixMatchTarget({
+                            mode: 'byBook', provider, providerBookId, fileType: 'ebook',
+                          })}
+                          className="text-xs px-2 py-1 rounded-lg border border-[var(--border-muted)] text-blue-700 dark:text-blue-300 hover:bg-blue-500/10"
+                        >
+                          + Ebook
+                        </button>
+                      ) : null}
+                      {!hasAudiobookFile ? (
+                        <button
+                          type="button"
+                          onClick={() => setFixMatchTarget({
+                            mode: 'byBook', provider, providerBookId, fileType: 'audiobook',
+                          })}
+                          className="text-xs px-2 py-1 rounded-lg border border-[var(--border-muted)] text-purple-700 dark:text-purple-300 hover:bg-purple-500/10"
+                        >
+                          + Audiobook
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
               ) : tab === 'history' ? (
@@ -919,12 +952,15 @@ export const BookDetailsModal = ({ entityId, provider, providerBookId, monitorEb
           </div>
         </div>
       </div>
-      {fixMatchFileId != null && entityId != null ? (
+      {fixMatchTarget && entityId != null ? (
         <FixMatchModal
           entityId={entityId}
-          fileId={fixMatchFileId}
-          onClose={() => setFixMatchFileId(null)}
-          onApplied={() => setFilesReloadKey((k) => k + 1)}
+          target={fixMatchTarget}
+          onClose={() => setFixMatchTarget(null)}
+          onApplied={() => {
+            setFilesReloadKey((k) => k + 1);
+            onBookModified?.();
+          }}
         />
       ) : null}
     </div>

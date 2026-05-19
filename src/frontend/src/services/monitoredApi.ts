@@ -296,7 +296,8 @@ export interface MonitoredBookFileRow {
 
 export interface MatchCandidate {
   file: {
-    id: number;
+    /** null for virtual candidates (live-fetched source items not yet in DB). */
+    id: number | null;
     path: string;
     source: string;
     ext: string | null;
@@ -374,9 +375,22 @@ export const listMonitoredBookFiles = async (entityId: number): Promise<{ files:
 };
 
 /**
+ * Identifies a candidate file in match-apply calls. Either a DB row id
+ * (existing matched files) or a (source, path, file_type) triple for
+ * virtual candidates live-fetched from integrations.
+ */
+export type ChosenCandidate =
+  | { fileId: number }
+  | { source: string; path: string; fileType: 'ebook' | 'audiobook' };
+
+const _candidateBody = (chosen: ChosenCandidate): Record<string, unknown> =>
+  'fileId' in chosen
+    ? { file_id: chosen.fileId }
+    : { source: chosen.source, path: chosen.path, file_type: chosen.fileType };
+
+/**
  * Fetch ranked candidate FILES that could match the book the anchor file is
- * currently attached to. Backs the "Fix match" UI: each candidate carries the
- * v2 evidence so the modal can render a per-row tooltip / why-this-rank.
+ * currently attached to. Backs the "Fix match" UI on an existing file row.
  */
 export const listMatchCandidates = async (
   entityId: number,
@@ -387,22 +401,57 @@ export const listMatchCandidates = async (
   );
 
 /**
- * Swap the anchor row's book attribution to a different file (by file id).
- * Sets ``manual_override=1`` on the chosen row so future scans/syncs leave it
- * alone. If ``chosenFileId === fileId`` this is a no-op swap that simply
- * marks the row as manually confirmed.
+ * Fetch ranked candidate FILES for a book that has no current attribution
+ * of the given file_type. Backs the "+ Add audiobook/ebook" flow.
+ */
+export const listMatchCandidatesForBook = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+  fileType: 'ebook' | 'audiobook',
+): Promise<MatchCandidatesResponse> => {
+  const params = new URLSearchParams({ file_type: fileType });
+  return fetchJSON<MatchCandidatesResponse>(
+    `${API_BASE}/monitored/${entityId}/books/${encodeURIComponent(provider)}/${encodeURIComponent(providerBookId)}/candidates?${params.toString()}`,
+  );
+};
+
+/**
+ * Swap the anchor row's book attribution to a different file. ``chosen``
+ * is either an existing file id or a virtual (source, path, file_type)
+ * for live-fetched candidates. Sets ``manual_override=1``.
  */
 export const setManualMatch = async (
   entityId: number,
   fileId: number,
-  chosenFileId: number,
+  chosen: ChosenCandidate,
 ): Promise<{ ok: boolean }> =>
   fetchJSON<{ ok: boolean }>(
     `${API_BASE}/monitored/${entityId}/files/${fileId}/match`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_id: chosenFileId }),
+      body: JSON.stringify(_candidateBody(chosen)),
+    },
+  );
+
+/**
+ * Attach a file to a book that has no existing attribution of that file_type.
+ * Same shape as setManualMatch but keyed by the target book rather than an
+ * anchor file row.
+ */
+export const attachBookFile = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+  chosen: ChosenCandidate,
+): Promise<{ ok: boolean }> =>
+  fetchJSON<{ ok: boolean }>(
+    `${API_BASE}/monitored/${entityId}/books/${encodeURIComponent(provider)}/${encodeURIComponent(providerBookId)}/match`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_candidateBody(chosen)),
     },
   );
 

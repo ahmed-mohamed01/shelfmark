@@ -1,15 +1,33 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  attachBookFile,
   detachMatch,
   listMatchCandidates,
+  listMatchCandidatesForBook,
   setManualMatch,
+  type ChosenCandidate,
   type MatchCandidate,
   type MatchCandidatesResponse,
 } from '../services/monitoredApi';
 
+/**
+ * Two modes:
+ *   - `byFile`: existing file row, swap which file is attached or detach.
+ *   - `byBook`: book has no attribution of the given file_type yet, pick
+ *     a file to attach (no detach option).
+ */
+export type FixMatchTarget =
+  | { mode: 'byFile'; fileId: number }
+  | {
+      mode: 'byBook';
+      provider: string;
+      providerBookId: string;
+      fileType: 'ebook' | 'audiobook';
+    };
+
 interface FixMatchModalProps {
   entityId: number;
-  fileId: number;
+  target: FixMatchTarget;
   onClose: () => void;
   /** Called after a successful set / detach so the parent refetches. */
   onApplied: () => void;
@@ -28,23 +46,42 @@ const sourceLabel = (s: string | null): string => {
   return s;
 };
 
-export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatchModalProps) => {
+/** Stable identifier for a candidate (DB id or source+path) used as the
+ *  radio selection key. Virtual candidates have id=null so we fall back. */
+const candidateKey = (c: MatchCandidate): string =>
+  c.file.id != null ? `id:${c.file.id}` : `sp:${c.file.source}|${c.file.path}`;
+
+const candidateToChosen = (c: MatchCandidate, fallbackFileType: 'ebook' | 'audiobook'): ChosenCandidate => {
+  if (c.file.id != null) return { fileId: c.file.id };
+  const ft = (c.file.file_type === 'audiobook' || c.file.file_type === 'ebook')
+    ? c.file.file_type
+    : fallbackFileType;
+  return { source: c.file.source, path: c.file.path, fileType: ft };
+};
+
+export const FixMatchModal = ({ entityId, target, onClose, onApplied }: FixMatchModalProps) => {
   const [data, setData] = useState<MatchCandidatesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const isAttach = target.mode === 'byBook';
+  const fallbackFileType: 'ebook' | 'audiobook' = isAttach ? target.fileType : 'ebook';
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    listMatchCandidates(entityId, fileId)
+    const loader = target.mode === 'byFile'
+      ? listMatchCandidates(entityId, target.fileId)
+      : listMatchCandidatesForBook(entityId, target.provider, target.providerBookId, target.fileType);
+    loader
       .then((resp) => {
         if (cancelled) return;
         setData(resp);
         const cur = resp.candidates.find((c) => c.is_current);
-        if (cur) setSelectedFileId(cur.file.id);
+        if (cur) setSelectedKey(candidateKey(cur));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -57,16 +94,26 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
     return () => {
       cancelled = true;
     };
-  }, [entityId, fileId]);
+  }, [entityId, target]);
 
-  const target = data?.target_book;
+  const selectedCandidate = useMemo(
+    () => data?.candidates.find((c) => candidateKey(c) === selectedKey) ?? null,
+    [data, selectedKey],
+  );
+
+  const targetBook = data?.target_book;
 
   const onApply = useCallback(async () => {
-    if (selectedFileId == null) return;
+    if (!selectedCandidate) return;
     setSubmitting(true);
     setError(null);
     try {
-      await setManualMatch(entityId, fileId, selectedFileId);
+      const chosen = candidateToChosen(selectedCandidate, fallbackFileType);
+      if (target.mode === 'byFile') {
+        await setManualMatch(entityId, target.fileId, chosen);
+      } else {
+        await attachBookFile(entityId, target.provider, target.providerBookId, chosen);
+      }
       onApplied();
       onClose();
     } catch (e: unknown) {
@@ -74,14 +121,15 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
     } finally {
       setSubmitting(false);
     }
-  }, [selectedFileId, entityId, fileId, onApplied, onClose]);
+  }, [selectedCandidate, fallbackFileType, target, entityId, onApplied, onClose]);
 
   const onDetach = useCallback(async () => {
+    if (target.mode !== 'byFile') return;
     if (!confirm('Detach this attribution? The book will have no file linked until the next scan.')) return;
     setSubmitting(true);
     setError(null);
     try {
-      await detachMatch(entityId, fileId);
+      await detachMatch(entityId, target.fileId);
       onApplied();
       onClose();
     } catch (e: unknown) {
@@ -89,7 +137,11 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
     } finally {
       setSubmitting(false);
     }
-  }, [entityId, fileId, onApplied, onClose]);
+  }, [target, entityId, onApplied, onClose]);
+
+  const headerTitle = isAttach
+    ? `Add ${target.fileType === 'audiobook' ? 'audiobook' : 'ebook'}`
+    : 'Fix match';
 
   return (
     <div
@@ -103,7 +155,7 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
         className="details-container w-full max-w-2xl h-auto settings-modal-enter"
         role="dialog"
         aria-modal="true"
-        aria-label="Fix match"
+        aria-label={headerTitle}
       >
         <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg)] sm:bg-[var(--bg-soft)] text-[var(--text)] shadow-2xl overflow-hidden">
         {/* Header */}
@@ -111,17 +163,17 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-                Fix match
+                {headerTitle}
               </h2>
-              {target ? (
+              {targetBook ? (
                 <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
                   Pick the file that represents{' '}
                   <span className="text-gray-800 dark:text-gray-200 font-medium">
-                    {target.title}
+                    {targetBook.title}
                   </span>
-                  {target.series_name ? (
+                  {targetBook.series_name ? (
                     <span className="text-gray-500 dark:text-gray-400">
-                      {' '}({target.series_name} {formatPosition(target.series_position)})
+                      {' '}({targetBook.series_name} {formatPosition(targetBook.series_position)})
                     </span>
                   ) : null}
                 </div>
@@ -157,14 +209,16 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
           ) : (
             <ul className="space-y-1">
               {data.candidates.map((c: MatchCandidate) => {
-                const checked = selectedFileId === c.file.id;
+                const key = candidateKey(c);
+                const checked = selectedKey === key;
                 const confPct = Math.round((c.confidence ?? 0) * 100);
                 const path = c.file.path || '';
                 const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
                 const fileName = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
                 const dirPath = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : '';
+                const isVirtual = c.file.id == null;
                 return (
-                  <li key={c.file.id}>
+                  <li key={key}>
                     <label className={`flex items-start gap-3 p-2 rounded-lg cursor-pointer ${
                       checked ? 'bg-blue-500/10 dark:bg-blue-500/20' : 'hover:bg-black/5 dark:hover:bg-white/5'
                     }`}>
@@ -173,7 +227,7 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
                         name="fix-match-candidate"
                         className="mt-1"
                         checked={checked}
-                        onChange={() => setSelectedFileId(c.file.id)}
+                        onChange={() => setSelectedKey(key)}
                       />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-900 dark:text-gray-100 break-words">
@@ -181,6 +235,14 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
                           {c.is_current ? (
                             <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-500/20 text-blue-700 dark:text-blue-300">
                               current
+                            </span>
+                          ) : null}
+                          {isVirtual ? (
+                            <span
+                              className="ml-2 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                              title="Discovered in the source but not yet attributed to any book"
+                            >
+                              unmatched
                             </span>
                           ) : null}
                         </div>
@@ -206,14 +268,16 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-[var(--border-muted)] flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onDetach}
-            disabled={submitting || loading}
-            className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50 dark:text-red-400 dark:hover:text-red-300"
-          >
-            Detach attribution
-          </button>
+          {target.mode === 'byFile' ? (
+            <button
+              type="button"
+              onClick={onDetach}
+              disabled={submitting || loading}
+              className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50 dark:text-red-400 dark:hover:text-red-300"
+            >
+              Detach attribution
+            </button>
+          ) : <span />}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -226,10 +290,10 @@ export const FixMatchModal = ({ entityId, fileId, onClose, onApplied }: FixMatch
             <button
               type="button"
               onClick={onApply}
-              disabled={submitting || loading || selectedFileId == null}
+              disabled={submitting || loading || !selectedCandidate}
               className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50"
             >
-              {submitting ? 'Setting…' : 'Set match'}
+              {submitting ? 'Setting…' : isAttach ? 'Add file' : 'Set match'}
             </button>
           </div>
         </div>

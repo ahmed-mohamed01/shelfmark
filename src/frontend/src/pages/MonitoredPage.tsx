@@ -4266,6 +4266,7 @@ export const MonitoredPage = ({
         onToggleMonitor={activeBookMonitorState.row ? (type) => void toggleSingleBookMonitor(activeBookMonitorState.row!, type) : undefined}
         hidden={activeBookMonitorState.row ? isEnabledMonitoredFlag(activeBookMonitorState.row.hidden) : false}
         onToggleHidden={activeBookMonitorState.row ? () => void toggleSingleBookHidden(activeBookMonitorState.row!) : undefined}
+        onBookModified={() => setMonitoredBooksReloadTick((t) => t + 1)}
         onAuthorClick={(authorName) => {
           const entity = monitored.find((e) => e.id === activeBookEntityId);
           navigateToAuthorPage({

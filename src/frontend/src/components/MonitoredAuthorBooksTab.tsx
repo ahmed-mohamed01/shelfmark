@@ -2147,6 +2147,7 @@ export const MonitoredAuthorBooksTab = ({
         monitorAudiobook={activeBookDetails ? getBookMonitorState(activeBookDetails).monitorAudiobook : undefined}
         hidden={activeBookDetails ? isBookHidden(activeBookDetails) : false}
         onToggleHidden={activeBookDetails && monitoredEntityId ? () => void toggleBookHidden(activeBookDetails) : undefined}
+        onBookModified={() => setRefreshKey((k) => k + 1)}
         onNavigateToSeries={handleNavigateToSeries}
         onSetReleaseDate={monitoredEntityId ? (row) => { setActiveBookDetails(null); setReleaseDateBook(row); } : undefined}
         renderEmbeddedSearch={(book, contentType, mEntityId) => {
