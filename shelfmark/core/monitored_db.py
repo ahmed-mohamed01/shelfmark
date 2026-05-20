@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
 CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
 ON monitored_book_files (entity_id, updated_at DESC);
 
+-- User-rejected (file, book) attribution pairs. When the user detaches an
+-- attribution via "Fix match → Detach", the (entity, source, path, book) tuple
+-- is recorded here so future syncs won't re-attribute the same file to the
+-- same book. Other books may still be considered for this file.
+CREATE TABLE IF NOT EXISTS monitored_file_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    path TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_book_id TEXT NOT NULL,
+    rejected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entity_id, source, path, provider, provider_book_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitored_file_rejections_lookup
+ON monitored_file_rejections (entity_id, source, path);
+
 CREATE TABLE IF NOT EXISTS monitored_book_download_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
@@ -2017,6 +2035,68 @@ class MonitoredDB:
                 )
                 conn.commit()
                 return (cur.rowcount or 0) > 0
+            finally:
+                conn.close()
+
+    def record_file_rejection(
+        self, *, user_ids: list[int], entity_id: int, source: str, path: str,
+        provider: str, provider_book_id: str,
+    ) -> bool:
+        """Record that the user rejected attributing ``(source, path)`` to
+        ``(provider, provider_book_id)``. Idempotent — duplicate rejections
+        update ``rejected_at`` but don't error.
+
+        Returns True on insert/update, False if the entity isn't visible to
+        ``user_ids`` or all required fields are empty.
+        """
+        path = (path or "").strip()
+        source = (source or "").strip()
+        provider = (provider or "").strip()
+        provider_book_id = (provider_book_id or "").strip()
+        if not (path and source and provider and provider_book_id):
+            return False
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    return False
+                conn.execute(
+                    """
+                    INSERT INTO monitored_file_rejections
+                        (entity_id, source, path, provider, provider_book_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(entity_id, source, path, provider, provider_book_id)
+                    DO UPDATE SET rejected_at = CURRENT_TIMESTAMP
+                    """,
+                    (entity_id, source, path, provider, provider_book_id),
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
+    def list_file_rejections_for_entity(
+        self, *, entity_id: int,
+    ) -> set[tuple[str, str, str, str]]:
+        """Return the set of rejected ``(source, path, provider, provider_book_id)``
+        tuples for an entity. Sync code consults this to skip re-attributing
+        a file to a book the user has previously rejected.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT source, path, provider, provider_book_id
+                    FROM monitored_file_rejections
+                    WHERE entity_id = ?
+                    """,
+                    (entity_id,),
+                ).fetchall()
+                return {
+                    (r["source"], r["path"], r["provider"], r["provider_book_id"])
+                    for r in rows
+                }
             finally:
                 conn.close()
 

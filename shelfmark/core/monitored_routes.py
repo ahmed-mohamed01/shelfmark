@@ -1462,6 +1462,21 @@ def register_monitored_routes(
             return jsonify({"error": "File not found"}), 404
 
         if payload.get("detach"):
+            # Record the (file, book) pair as user-rejected so future syncs
+            # won't re-attribute it. Other books can still be matched to this
+            # file. Done before delete so the row's provider/pbid are still
+            # available.
+            anchor_provider = (anchor_row.get("provider") or "").strip()
+            anchor_pbid = (anchor_row.get("provider_book_id") or "").strip()
+            anchor_path = (anchor_row.get("path") or "").strip()
+            anchor_source = (anchor_row.get("source") or "").strip()
+            if anchor_provider and anchor_pbid and anchor_path and anchor_source:
+                monitored_db.record_file_rejection(
+                    user_ids=visible_user_ids,
+                    entity_id=entity_id,
+                    source=anchor_source, path=anchor_path,
+                    provider=anchor_provider, provider_book_id=anchor_pbid,
+                )
             monitored_db.delete_monitored_book_file_by_id(
                 user_ids=visible_user_ids, entity_id=entity_id, file_id=file_id,
             )

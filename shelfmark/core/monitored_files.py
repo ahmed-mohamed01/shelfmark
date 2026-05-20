@@ -97,6 +97,7 @@ def _record_scan_match_v2(
     best_by_book_and_type: dict[tuple[str, str, str], float],
     matched: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
+    rejections: set[tuple[str, str, str, str]] | None = None,
 ) -> None:
     """Record a single scan result using the v2 attribution matcher.
 
@@ -110,9 +111,19 @@ def _record_scan_match_v2(
     path_str = str(file_path)
     embedded = metadata_cache.get(path_str)
 
+    # Drop books the user explicitly rejected for this (source=filesystem, path).
+    if rejections:
+        eligible_books = [
+            b for b in books
+            if ("filesystem", path_str,
+                (b.get("provider") or ""), (b.get("provider_book_id") or "")) not in rejections
+        ]
+    else:
+        eligible_books = books
+
     result = pick_best_attribution(
         path=path_str,
-        books=books,
+        books=eligible_books,
         author_name=author_name,
         embedded=embedded,
     )
@@ -709,6 +720,9 @@ def scan_monitored_author_files(
     best_by_book_and_type: dict[tuple[str, str, str], float] = {}
     seen_paths: set[str] = set()
 
+    # User-rejected (path, book) pairs — scanner must not re-attribute these.
+    rejections = monitored_db.list_file_rejections_for_entity(entity_id=entity_id)
+
     # Per-scan embedded-metadata cache (eager, per design). Filled lazily as we
     # encounter each file — keeps the call inline rather than re-walking.
     from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
@@ -757,6 +771,7 @@ def scan_monitored_author_files(
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,
+                rejections=rejections,
             )
 
     if audiobook_path is not None:
@@ -826,6 +841,7 @@ def scan_monitored_author_files(
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,
+                rejections=rejections,
             )
 
     scanned_roots = [p for p in [ebook_path, audiobook_path] if p is not None]

@@ -354,6 +354,9 @@ def sync_abs_availability_for_entity(
 
     books = monitored_db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
+    # User-rejected (path, book) pairs — sync must not re-attribute these.
+    rejections = monitored_db.list_file_rejections_for_entity(entity_id=entity_id)
+
     # Filter out items ABS itself marks as unavailable — these are never matchable.
     # isInvalid: files present but ABS considers the metadata/files broken.
     # isMissing: files are gone from disk.
@@ -375,10 +378,18 @@ def sync_abs_availability_for_entity(
     for item in candidate_items:
         meta = (item.get("media") or {}).get("metadata") or {}
         abs_title = (meta.get("title") or item.get("path") or "?").strip()
+        item_path = (item.get("path") or "").strip()
+
+        # Drop books the user explicitly rejected for this (source, path).
+        item_books = [
+            b for b in books
+            if ("audiobookshelf", item_path,
+                (b.get("provider") or ""), (b.get("provider_book_id") or "")) not in rejections
+        ] if item_path else books
 
         src_meta = _abs_item_to_source_metadata(item)
         result = pick_best_attribution(
-            path=None, books=books, author_name=entity_name,
+            path=None, books=item_books, author_name=entity_name,
             embedded=None, source_metadata=src_meta,
         )
         if result.book is None:

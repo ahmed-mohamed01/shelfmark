@@ -296,6 +296,9 @@ def sync_booklore_availability_for_entity(
 
     books = monitored_db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
+    # User-rejected (path, book) pairs — sync must not re-attribute these.
+    rejections = monitored_db.list_file_rejections_for_entity(entity_id=entity_id)
+
     matched = 0
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
@@ -346,6 +349,31 @@ def sync_booklore_availability_for_entity(
                 file_size = int(float(size_kb)) * 1024
         except Exception as fp_exc:
             logger.debug("Booklore: could not fetch file path for book %s: %s", bl_id, fp_exc)
+
+        # Now that we know the real path, check whether the user rejected
+        # this (path, book) pair. If so, re-pick on a book list that excludes
+        # all books rejected for this path. One pass is sufficient: the new
+        # pick_best either returns a non-rejected book or None.
+        rejected_for_path: set[tuple[str, str]] = {
+            (prov, pbid) for (src, p, prov, pbid) in rejections
+            if src == "booklore" and p == path
+        }
+        if rejected_for_path and result.book is not None and (
+            (result.book.get("provider") or ""),
+            (result.book.get("provider_book_id") or ""),
+        ) in rejected_for_path:
+            filtered_books = [
+                b for b in books
+                if ((b.get("provider") or ""), (b.get("provider_book_id") or ""))
+                   not in rejected_for_path
+            ]
+            result = pick_best_attribution(
+                path=None, books=filtered_books, author_name=entity_name,
+                embedded=None, source_metadata=src_meta,
+            )
+        if result.book is None:
+            unmatched_titles.append(bl_title)
+            continue
 
         file_type_raw = (item.get("primaryFileType") or "ebook").lower()
 
