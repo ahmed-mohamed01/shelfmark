@@ -12,6 +12,9 @@ import { MonitoredEventSessionRow, SessionLatestStatus } from './MonitoredEventS
 import { useRealtimeStatus } from '../hooks/useRealtimeStatus';
 import { Book } from '../types';
 import { showConfirm } from './ConfirmDialog';
+import { StackedThumbnails, StackedThumb } from './StackedThumbnails';
+import { STATUS_BADGE_STYLES } from './activity/activityStyles';
+import { ActivityVisualStatus } from './activity/activityTypes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -546,60 +549,77 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
                     const completeCount = item.sessions.filter(s => s.latestStatus === 'complete').length;
                     const failedCount = item.sessions.filter(s => s.latestStatus === 'failed').length;
                     const searchingCount = item.sessions.filter(s => s.latestStatus === 'searching').length;
-                    const triggerLabel = item.trigger === 'scheduled' ? 'Scheduled' : 'Manual';
-                    const accentClass = item.trigger === 'scheduled'
-                      ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-                      : 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
-                    const iconClass = item.trigger === 'scheduled' ? 'text-emerald-500' : 'text-amber-500';
                     const sessionsCount = item.sessions.length;
                     const headerCount = item.totalCandidates || sessionsCount;
+
+                    let runStatus: ActivityVisualStatus = 'pending';
+                    if (downloadingCount > 0) runStatus = 'downloading';
+                    else if (searchingCount > 0) runStatus = 'queued';
+                    else if (failedCount > 0) runStatus = 'error';
+                    else if (completeCount > 0) runStatus = 'complete';
+                    const runBadgeStyle = STATUS_BADGE_STYLES[runStatus];
+
+                    const bookThumbs: StackedThumb[] = item.sessions
+                      .map(s => {
+                        const evWithCover = s.events.find(e => !!e.book_cover_url);
+                        return {
+                          url: evWithCover?.book_cover_url ?? null,
+                          alt: s.bookTitle || 'Book',
+                          kind: 'book' as const,
+                        };
+                      });
+
+                    const triggerLabel = item.trigger === 'scheduled' ? 'Scheduled search' : 'Manual batch search';
+                    const titleSuffix = headerCount ? ` — ${headerCount} book${headerCount === 1 ? '' : 's'}` : '';
+
+                    const statusParts: string[] = [];
+                    if (completeCount > 0) statusParts.push(`${completeCount} complete`);
+                    if (downloadingCount > 0) statusParts.push(`${downloadingCount} downloading`);
+                    if (searchingCount > 0) statusParts.push(`${searchingCount} searching`);
+                    if (failedCount > 0) statusParts.push(`${failedCount} failed`);
+                    if (sessionsCount === 0) statusParts.push('No books processed yet');
+                    if (item.slot) statusParts.push(`@ ${item.slot}`);
+                    const metaLine = statusParts.join(' · ');
+
                     return (
                       <div key={`run-${item.runId}`}>
                         <button
                           type="button"
                           onClick={() => setExpandedRuns(prev => { const next = new Set(prev); if (next.has(item.runId)) next.delete(item.runId); else next.add(item.runId); return next; })}
-                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+                          className="w-full px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
                         >
-                          <div className={`mt-0.5 flex-shrink-0 ${iconClass}`}>
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5h18M3 12h18M3 16.5h18" />
-                            </svg>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${accentClass}`}>
-                                {triggerLabel}
-                              </span>
-                              <span className="text-[10px] text-gray-400">
-                                {sessionsCount}{headerCount && headerCount !== sessionsCount ? ` of ${headerCount}` : ''} book{sessionsCount === 1 ? '' : 's'}
-                              </span>
-                              {item.slot ? <span className="text-[10px] text-gray-400">@ {item.slot}</span> : null}
+                          <div className="flex gap-3 items-start">
+                            <StackedThumbnails thumbs={bookThumbs} defaultKind="book" />
+                            <div className="flex-1 min-w-0 py-0.5">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-sm truncate leading-tight min-w-0 flex-1">
+                                  <span className="font-semibold">{triggerLabel}</span>
+                                  {titleSuffix ? <span className="opacity-60 text-xs">{titleSuffix}</span> : null}
+                                </p>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(item.firstAt)}</span>
+                                  <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </div>
+                              </div>
+                              {metaLine ? (
+                                <p className="text-[11px] leading-tight opacity-60 truncate mt-0.5" title={metaLine}>
+                                  {metaLine}
+                                </p>
+                              ) : null}
+                              <div className="mt-1.5 flex items-center gap-2 min-w-0">
+                                <span className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${runBadgeStyle.bg} ${runBadgeStyle.text}`}>
+                                  {item.trigger === 'scheduled' ? 'Scheduled' : 'Manual'}
+                                </span>
+                              </div>
                             </div>
-                            <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
-                              <span className="font-medium">
-                                {item.trigger === 'scheduled' ? 'Scheduled search for monitored books' : 'Manual batch search'}
-                                {headerCount ? ` — ${headerCount} book${headerCount === 1 ? '' : 's'} to download` : ''}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 text-[11px] text-gray-500">
-                              {completeCount > 0 ? `${completeCount} complete` : ''}
-                              {downloadingCount > 0 ? `${completeCount > 0 ? ' · ' : ''}${downloadingCount} downloading` : ''}
-                              {searchingCount > 0 ? `${(completeCount > 0 || downloadingCount > 0) ? ' · ' : ''}${searchingCount} searching` : ''}
-                              {failedCount > 0 ? <span className="text-red-500">{(completeCount > 0 || downloadingCount > 0 || searchingCount > 0) ? ' · ' : ''}{failedCount} failed</span> : null}
-                              {sessionsCount === 0 ? 'No books processed yet' : ''}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(item.firstAt)}</span>
-                            <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                            </svg>
                           </div>
                         </button>
                         {isExpanded ? (
                           <div className="border-t border-gray-200/40 dark:border-gray-800/40 bg-black/[0.02] dark:bg-white/[0.02]">
                             {item.sessions.length === 0 ? (
-                              <div className="px-4 py-3 pl-11 text-[11px] text-gray-500">No sessions recorded for this run.</div>
+                              <div className="px-4 py-3 pl-19 text-[11px] text-gray-500">No sessions recorded for this run.</div>
                             ) : (
                               item.sessions.map(s => renderSession(s))
                             )}
@@ -612,37 +632,51 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
                     const isExpanded = expandedBatches.has(item.batchId);
                     const failCount = item.events.filter(e => e.event_type === 'author_sync_failed').length;
                     const successCount = item.events.length - failCount;
+                    const batchStatus: ActivityVisualStatus = failCount === item.events.length
+                      ? 'error'
+                      : failCount > 0
+                        ? 'queued'
+                        : 'complete';
+                    const batchBadgeStyle = STATUS_BADGE_STYLES[batchStatus];
+                    const authorThumbs: StackedThumb[] = item.events.map(ev => ({
+                      url: ev.author_photo_url,
+                      alt: ev.author_name || 'Author',
+                      kind: 'author' as const,
+                    }));
+                    const metaParts: string[] = [`${item.events.length} authors`];
+                    if (item.totalBooks > 0) metaParts.push(`${item.totalBooks} books tracked`);
+                    if (item.totalAdded > 0) metaParts.push(`+${item.totalAdded} new`);
+                    if (item.totalRemoved > 0) metaParts.push(`-${item.totalRemoved} removed`);
+                    const metaLine = metaParts.join(' · ');
                     return (
                       <div key={`batch-${item.batchId}`}>
                         <button
                           type="button"
                           onClick={() => setExpandedBatches(prev => { const next = new Set(prev); if (next.has(item.batchId)) next.delete(item.batchId); else next.add(item.batchId); return next; })}
-                          className="w-full px-4 py-3 flex items-start gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+                          className="w-full px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
                         >
-                          <div className="mt-0.5 flex-shrink-0 text-purple-500">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-purple-500/20 text-purple-700 dark:text-purple-300">
-                                Author Refresh
-                              </span>
-                              <span className="text-[10px] text-gray-400">{item.events.length} authors</span>
+                          <div className="flex gap-3 items-start">
+                            <StackedThumbnails thumbs={authorThumbs} defaultKind="author" />
+                            <div className="flex-1 min-w-0 py-0.5">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-sm truncate leading-tight min-w-0 flex-1">
+                                  <span className="font-semibold">
+                                    Refreshed {successCount} author{successCount !== 1 ? 's' : ''}
+                                  </span>
+                                  {failCount > 0 ? <span className="opacity-60 text-xs"> — {failCount} failed</span> : null}
+                                </p>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(item.events[0].created_at)}</span>
+                                  <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                                </div>
+                              </div>
+                              <p className="text-[11px] leading-tight opacity-60 truncate mt-0.5" title={metaLine}>{metaLine}</p>
+                              <div className="mt-1.5 flex items-center gap-2 min-w-0">
+                                <span className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${batchBadgeStyle.bg} ${batchBadgeStyle.text}`}>
+                                  Author Refresh
+                                </span>
+                              </div>
                             </div>
-                            <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
-                              <span className="font-medium">Refreshed {successCount} author{successCount !== 1 ? 's' : ''}</span>
-                              {failCount > 0 ? <span className="text-red-500"> · {failCount} failed</span> : null}
-                            </div>
-                            <div className="mt-0.5 text-[11px] text-gray-500">
-                              {item.totalBooks > 0 ? `${item.totalBooks} books tracked` : ''}
-                              {item.totalAdded > 0 ? ` · +${item.totalAdded} new` : ''}
-                              {item.totalRemoved > 0 ? ` · -${item.totalRemoved} removed` : ''}
-                              {item.totalBooks === 0 && item.totalAdded === 0 && item.totalRemoved === 0 ? 'No changes' : ''}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(item.events[0].created_at)}</span>
-                            <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                           </div>
                         </button>
                         {isExpanded ? (
@@ -651,7 +685,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
                               const meta = parseEventMeta(ev);
                               const isFail = ev.event_type === 'author_sync_failed';
                               return (
-                                <div key={ev.id} className={`px-4 py-2 pl-11 ${isFail ? 'bg-red-500/5' : ''}`}>
+                                <div key={ev.id} className={`px-4 py-2 pl-19 ${isFail ? 'bg-red-500/5' : ''}`}>
                                   <div className="flex items-center justify-between gap-2">
                                     <div className="text-xs text-gray-700 dark:text-gray-200">
                                       <span className={`font-medium ${isFail ? 'text-red-600 dark:text-red-400' : ''}`}>{ev.author_name || 'Unknown'}</span>

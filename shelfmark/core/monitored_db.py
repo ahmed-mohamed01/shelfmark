@@ -195,6 +195,8 @@ CREATE TABLE IF NOT EXISTS monitored_events (
     metadata_json TEXT,
     session_id TEXT,
     user_id INTEGER,
+    book_cover_url TEXT,
+    author_photo_url TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -384,6 +386,45 @@ def _migrate_monitored_book_files_v6(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_monitored_events_backfill_thumbnails(conn: sqlite3.Connection) -> None:
+    """Backfill ``book_cover_url`` / ``author_photo_url`` from current state.
+
+    Pre-existing event rows have NULL for these columns. Re-derive from
+    ``monitored_entities.settings_json`` and ``monitored_books.cover_url``
+    where the referenced rows still exist. Idempotent; safe to skip when
+    those rows have already been unmonitored.
+    """
+    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'").fetchone():
+        return
+    conn.execute(
+        """
+        UPDATE monitored_events
+        SET author_photo_url = (
+            SELECT json_extract(settings_json, '$.photo_url')
+            FROM monitored_entities
+            WHERE monitored_entities.id = monitored_events.entity_id
+        )
+        WHERE author_photo_url IS NULL AND entity_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE monitored_events
+        SET book_cover_url = (
+            SELECT cover_url FROM monitored_books
+            WHERE monitored_books.entity_id = monitored_events.entity_id
+              AND monitored_books.provider = monitored_events.book_provider
+              AND monitored_books.provider_book_id = monitored_events.book_provider_id
+        )
+        WHERE book_cover_url IS NULL
+          AND entity_id IS NOT NULL
+          AND book_provider IS NOT NULL
+          AND book_provider_id IS NOT NULL
+        """
+    )
+    conn.commit()
+
+
 def _migrate_monitored_events_backfill_user_id(conn: sqlite3.Connection) -> None:
     """Backfill ``user_id`` on events recorded before the column was populated.
 
@@ -546,6 +587,16 @@ class MonitoredDB:
                 except sqlite3.OperationalError:
                     pass
                 try:
+                    conn.execute("ALTER TABLE monitored_events ADD COLUMN book_cover_url TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_events ADD COLUMN author_photo_url TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
                     conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN session_id TEXT")
                     conn.commit()
                 except sqlite3.OperationalError:
@@ -558,6 +609,11 @@ class MonitoredDB:
                 # Create the session_id index now that the column is guaranteed to exist.
                 conn.executescript(_SESSION_ID_INDEX_SQL)
                 conn.commit()
+                # v7: backfill snapshotted thumbnails on pre-existing event rows.
+                if user_version < 7:
+                    _migrate_monitored_events_backfill_thumbnails(conn)
+                    conn.execute("PRAGMA user_version = 7")
+                    conn.commit()
             finally:
                 conn.close()
 
@@ -2430,24 +2486,50 @@ class MonitoredDB:
         session_id: str | None = None,
         user_id: int | None = None,
     ) -> int | None:
-        """Insert a history event and return its id."""
+        """Insert a history event and return its id.
+
+        Snapshots ``book_cover_url`` (from ``monitored_books.cover_url``) and
+        ``author_photo_url`` (from ``monitored_entities.settings_json.photo_url``)
+        at write time so the History UI keeps thumbnails even after the underlying
+        author/book is unmonitored.
+        """
         with self._lock:
             conn = self._connect()
             try:
+                book_cover_url: str | None = None
+                author_photo_url: str | None = None
+                if entity_id is not None:
+                    row = conn.execute(
+                        "SELECT json_extract(settings_json, '$.photo_url') AS photo_url "
+                        "FROM monitored_entities WHERE id = ?",
+                        (entity_id,),
+                    ).fetchone()
+                    if row and row["photo_url"]:
+                        author_photo_url = row["photo_url"]
+                    if book_provider and book_provider_id:
+                        book_row = conn.execute(
+                            "SELECT cover_url FROM monitored_books "
+                            "WHERE entity_id = ? AND provider = ? AND provider_book_id = ?",
+                            (entity_id, book_provider, book_provider_id),
+                        ).fetchone()
+                        if book_row and book_row["cover_url"]:
+                            book_cover_url = book_row["cover_url"]
                 cursor = conn.execute(
                     """
                     INSERT INTO monitored_events (
                         event_type, entity_id, book_provider, book_provider_id,
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
-                        metadata_json, session_id, user_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, session_id, user_id,
+                        book_cover_url, author_photo_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event_type, entity_id, book_provider, book_provider_id,
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
                         metadata_json, session_id, user_id,
+                        book_cover_url, author_photo_url,
                     ),
                 )
                 conn.commit()

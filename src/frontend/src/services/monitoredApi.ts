@@ -858,6 +858,8 @@ export interface MonitoredEvent {
   metadata_json: string | null;
   session_id: string | null;
   user_id: number | null;
+  book_cover_url: string | null;
+  author_photo_url: string | null;
   created_at: string;
 }
 

@@ -2,6 +2,9 @@ import { useMemo, useState } from 'react';
 import { MonitoredEvent } from '../services/monitoredApi';
 import { parseEventMeta, formatEventDate } from './MonitoredEventRow';
 import { ActivityProgressBar } from './activity/ActivityProgressBar';
+import { STATUS_BADGE_STYLES } from './activity/activityStyles';
+import { ActivityVisualStatus } from './activity/activityTypes';
+import { RowThumbnail } from './RowThumbnail';
 import { Book } from '../types';
 
 export type SessionLatestStatus = 'searching' | 'downloading' | 'complete' | 'failed';
@@ -79,15 +82,15 @@ function timelineMessage(ev: MonitoredEvent): string {
   }
 }
 
-function statusBadgeClass(latestStatus: SessionLatestStatus, isActive: boolean): string {
-  if (isActive) return 'bg-blue-500/20 text-blue-700 dark:text-blue-300';
-  if (latestStatus === 'complete') return 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300';
-  if (latestStatus === 'failed') return 'bg-red-500/20 text-red-700 dark:text-red-300';
-  if (latestStatus === 'downloading') return 'bg-blue-500/20 text-blue-700 dark:text-blue-300';
-  return 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
+function visualStatusFor(latestStatus: SessionLatestStatus, isActive: boolean): ActivityVisualStatus {
+  if (isActive) return 'downloading';
+  if (latestStatus === 'complete') return 'complete';
+  if (latestStatus === 'failed') return 'error';
+  if (latestStatus === 'downloading') return 'queued';
+  return 'pending';
 }
 
-function statusBadgeLabel(latestStatus: SessionLatestStatus, isActive: boolean): string {
+function statusLabel(latestStatus: SessionLatestStatus, isActive: boolean): string {
   if (isActive) return 'Active';
   if (latestStatus === 'complete') return 'Complete';
   if (latestStatus === 'failed') return 'Failed';
@@ -111,44 +114,81 @@ export const MonitoredEventSessionRow = ({
   const earliest = chronological[0];
   const latest = events[0];
 
+  // Pull the cover from any event in the session — the DB layer snapshots it
+  // at insert time on every event for the same book.
+  const coverUrl = useMemo(() => {
+    for (const ev of events) {
+      if (ev.book_cover_url) return ev.book_cover_url;
+    }
+    return null;
+  }, [events]);
+
   const livePct = liveBook && typeof liveBook.progress === 'number' ? liveBook.progress : null;
   const liveStatusDetail = liveBook?.status_message || null;
+
+  const visualStatus = visualStatusFor(latestStatus, isActive);
+  const badgeStyle = STATUS_BADGE_STYLES[visualStatus];
+
+  // Meta line — latest event message + event count
+  const latestMessage = latest ? timelineMessage(latest) : null;
+  const metaParts: string[] = [];
+  if (latestMessage) metaParts.push(latestMessage);
+  metaParts.push(`${events.length} event${events.length !== 1 ? 's' : ''}`);
+  const metaLine = metaParts.join(' · ');
 
   return (
     <div>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
-        className="w-full px-4 py-3 flex items-start gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+        className="w-full px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
       >
-        <div className={`mt-0.5 flex-shrink-0 ${latestStatus === 'failed' ? 'text-red-500' : isActive ? 'text-blue-500' : latestStatus === 'complete' ? 'text-emerald-500' : 'text-amber-500'}`}>
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-          </svg>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${statusBadgeClass(latestStatus, isActive)}`}>
-              {statusBadgeLabel(latestStatus, isActive)}
-            </span>
-            <span className="text-[10px] text-gray-400">{events.length} event{events.length !== 1 ? 's' : ''}</span>
-          </div>
-          <div className="mt-1 text-sm text-gray-700 dark:text-gray-200 truncate">
-            <span className="font-medium">{bookTitle || 'Unknown title'}</span>
-            {authorName ? <span className="text-gray-500"> · {authorName}</span> : null}
-          </div>
-          {isActive && livePct != null ? (
-            <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
-              {formatLiveProgress(livePct, liveBook?.size)}
-              {liveStatusDetail ? <span className="text-gray-400"> · {liveStatusDetail}</span> : null}
+        <div className="flex gap-3 items-start">
+          <RowThumbnail
+            url={coverUrl ?? undefined}
+            alt={bookTitle || undefined}
+            kind="book"
+            className="w-12 h-18 shrink-0"
+          />
+          <div className="flex-1 min-w-0 py-0.5">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-sm truncate leading-tight min-w-0 flex-1">
+                <span className="font-semibold">{bookTitle || 'Unknown title'}</span>
+                {authorName ? <span className="opacity-60 text-xs"> — {authorName}</span> : null}
+              </p>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(latest.created_at)}</span>
+                <svg
+                  className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
             </div>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-[10px] text-gray-400 whitespace-nowrap">{formatEventDate(latest.created_at)}</span>
-          <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+
+            {metaLine ? (
+              <p className="text-[11px] leading-tight opacity-60 truncate mt-0.5" title={metaLine}>
+                {metaLine}
+              </p>
+            ) : null}
+
+            {isActive && livePct != null ? (
+              <p className="text-[11px] leading-tight text-blue-600 dark:text-blue-300 truncate mt-0.5">
+                {formatLiveProgress(livePct, liveBook?.size)}
+                {liveStatusDetail ? <span className="text-gray-400"> · {liveStatusDetail}</span> : null}
+              </p>
+            ) : null}
+
+            <div className="mt-1.5 flex items-center gap-2 min-w-0">
+              <span className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${badgeStyle.bg} ${badgeStyle.text}`}>
+                {statusLabel(latestStatus, isActive)}
+              </span>
+            </div>
+          </div>
         </div>
       </button>
 
@@ -161,7 +201,7 @@ export const MonitoredEventSessionRow = ({
           {chronological.map(ev => {
             const isFailEv = ev.event_type === 'download_failed' || ev.status === 'error';
             return (
-              <div key={ev.id} className={`px-4 py-1.5 pl-11 ${isFailEv ? 'bg-red-500/5' : ''}`}>
+              <div key={ev.id} className={`px-4 py-1.5 pl-19 ${isFailEv ? 'bg-red-500/5' : ''}`}>
                 <div className="flex items-baseline gap-2 text-xs">
                   <span className="font-mono text-gray-500 dark:text-gray-400 flex-shrink-0">{fmtTime(ev.created_at)}</span>
                   <span className={`break-words ${isFailEv ? 'text-red-600 dark:text-red-300' : 'text-gray-700 dark:text-gray-200'}`}>
@@ -172,7 +212,7 @@ export const MonitoredEventSessionRow = ({
             );
           })}
           {isActive && livePct != null ? (
-            <div className="px-4 py-1.5 pl-11">
+            <div className="px-4 py-1.5 pl-19">
               <div className="flex items-baseline gap-2 text-xs">
                 <span className="font-mono text-gray-500 dark:text-gray-400 flex-shrink-0">{fmtTime(new Date().toISOString())}</span>
                 <span className="text-blue-600 dark:text-blue-300">
@@ -182,7 +222,7 @@ export const MonitoredEventSessionRow = ({
             </div>
           ) : null}
           {chronological.length === 0 && earliest == null ? (
-            <div className="px-4 py-2 pl-11 text-xs text-gray-500">No events recorded yet.</div>
+            <div className="px-4 py-2 pl-19 text-xs text-gray-500">No events recorded yet.</div>
           ) : null}
         </div>
       ) : null}
