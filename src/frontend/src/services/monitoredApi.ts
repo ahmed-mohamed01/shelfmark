@@ -1,5 +1,5 @@
 import { getApiBase } from '../utils/basePath';
-import { fetchJSON, ApiResponseError } from './api';
+import { fetchJSON, isApiResponseError } from './api';
 
 const API_BASE = getApiBase();
 
@@ -204,7 +204,7 @@ export const patchMonitoredEntity = async (
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    if (e instanceof ApiResponseError && e.status === 405) {
+    if (isApiResponseError(e) && e.status === 405) {
       return fetchJSON<MonitoredEntity>(`${API_BASE}/monitored/${entityId}`, {
         method: 'PUT',
         body: JSON.stringify(payload),

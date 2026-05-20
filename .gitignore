@@ -241,3 +241,6 @@ node_modules/
 # Test calibration data (25MB+ API dump, not for VCS)
 tests/core/author_books_data.json
 CLAUDE.md
+
+# Personal sync/planning notes (not for VCS)
+UPSTREAM_SYNC_NOTES.md

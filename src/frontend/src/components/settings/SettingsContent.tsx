@@ -6,6 +6,8 @@ import type {
   ActionResult,
   OrderableListItem,
   ShowWhenCondition,
+  CustomComponentFieldConfig,
+  HeadingFieldConfig,
 } from '../../types/settings';
 import type { CustomSettingsFieldLayout } from './customFields';
 import { getCustomSettingsFieldLayout, renderCustomSettingsField } from './customFields';

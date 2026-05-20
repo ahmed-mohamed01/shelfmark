@@ -60,7 +60,7 @@ export const OrderableListField = ({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dropPosition, setDropPosition] = useState<DropPosition>(null);
   const [chipDropIndex, setChipDropIndex] = useState<number | null>(null);
-  const dragNodeRef = useRef<HTMLDivElement | null>(null);
+  const dragNodeRef = useRef<HTMLElement | null>(null);
 
   const items = mergeValueWithOptions(value ?? [], field.options);
   const isFormatPriorityField =
@@ -100,7 +100,7 @@ export const OrderableListField = ({
     return true;
   };
 
-  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+  const handleDragStart = (e: React.DragEvent, index: number) => {
     const item = items[index];
     if (item?.isPinned) {
       e.preventDefault();
@@ -108,7 +108,7 @@ export const OrderableListField = ({
     }
 
     setDraggedIndex(index);
-    dragNodeRef.current = e.currentTarget;
+    dragNodeRef.current = e.currentTarget as HTMLElement;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(index));
     requestAnimationFrame(() => {
