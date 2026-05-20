@@ -59,6 +59,7 @@ class PendingDownload:
     post_process_retries: int = 0  # retries of the *same* release for post-proc failures
     session_id: Optional[str] = None  # links events for this download attempt
     task_id: Optional[str] = None  # current orchestrator task_id; updated each queue
+    triggered_by: Optional[str] = None  # "scheduled" or "manual" — origin of the search/queue that created this pending
 
 # Post-processing error types that should trigger a retry of the same release
 # rather than skipping to the next one. These are transient filesystem/network errors.
@@ -98,6 +99,7 @@ def _persist_pending(key: str, pending: PendingDownload) -> None:
             post_process_retries=pending.post_process_retries,
             session_id=pending.session_id,
             task_id=pending.task_id,
+            triggered_by=pending.triggered_by,
         )
     except Exception as exc:
         logger.warning("Failed to persist pending releases for %s: %s", key, exc)
@@ -150,6 +152,7 @@ def load_pending_releases_from_db() -> None:
                     post_process_retries=row.get("post_process_retries") or 0,
                     session_id=row.get("session_id"),
                     task_id=row.get("task_id"),
+                    triggered_by=row.get("triggered_by"),
                 )
                 restored += 1
         if restored:
@@ -306,6 +309,9 @@ def record_manual_download_queued_if_applicable(task_id: str, task: DownloadTask
             if _pending_releases.get(key) is not None:
                 return
 
+    ctx_trigger = hc.get("triggered_by")
+    triggered_by = ctx_trigger.strip() if isinstance(ctx_trigger, str) and ctx_trigger.strip() else "manual"
+
     try:
         from shelfmark.core.monitored_history import record_download_queued
         record_download_queued(
@@ -324,6 +330,7 @@ def record_manual_download_queued_if_applicable(task_id: str, task: DownloadTask
             size=str(getattr(task, "size", "") or ""),
             session_id=session_id,
             user_id=task.user_id,
+            triggered_by=triggered_by,
         )
     except Exception as exc:
         logger.debug("Failed to record manual download_queued for %s: %s", task_id, exc)
@@ -346,16 +353,27 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
         # history_context for the manual bulk-download path, which has no
         # PendingDownload but threads session_id through the queue payload.
         session_id: Optional[str] = None
+        triggered_by: Optional[str] = None
         key = _get_pending_key_from_task(task)
         if key:
             with _pending_lock:
                 pending = _pending_releases.get(key)
                 if pending is not None:
                     session_id = pending.session_id
+                    triggered_by = pending.triggered_by
         if session_id is None:
             ctx_session = hc.get("session_id")
             if isinstance(ctx_session, str) and ctx_session.strip():
                 session_id = ctx_session.strip()
+        if triggered_by is None:
+            ctx_trigger = hc.get("triggered_by")
+            if isinstance(ctx_trigger, str) and ctx_trigger.strip():
+                triggered_by = ctx_trigger.strip()
+        # Default monitored downloads with no upstream signal to "manual" so
+        # queued/complete/failed events on the same download share a value.
+        # `record_manual_download_queued_if_applicable` applies the same default.
+        if triggered_by is None:
+            triggered_by = "manual"
 
         common = dict(
             entity_id=int(hc["entity_id"]),
@@ -369,6 +387,7 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
             task_id=task.task_id,
             session_id=session_id,
             user_id=task.user_id,
+            triggered_by=triggered_by,
         )
         if outcome == "complete":
             record_download_complete(
@@ -441,6 +460,7 @@ def _on_recovery_complete(task_id: str, final_path: str) -> None:
             content_type=matched_pending.content_type,
             session_id=matched_pending.session_id,
             user_id=matched_pending.user_id,
+            triggered_by=matched_pending.triggered_by,
         )
         # Two distinct events: download_complete = client finished downloading,
         # file_imported = Shelfmark moved the file to the library. Recovery sees
@@ -722,6 +742,7 @@ def process_monitored_book(
     series_name: Optional[str] = None,
     series_position: Optional[float] = None,
     session_id: Optional[str] = None,
+    triggered_by: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Process releases for a monitored book: pre-process, queue best, auto-retry on failure.
     
@@ -791,6 +812,7 @@ def process_monitored_book(
             series_name=series_name,
             series_position=series_position,
             session_id=session_id,
+            triggered_by=triggered_by,
         )
         _pending_releases[key] = pending
         _persist_pending(key, pending)
@@ -837,6 +859,7 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             series_position = pending.series_position
             user_id = pending.user_id
             session_id = pending.session_id
+            triggered_by = pending.triggered_by
             remaining = len(pending.releases)
 
             # Persist updated state to DB while still holding the lock
@@ -878,6 +901,7 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
                     size=str(release.get("size", "")),
                     session_id=session_id,
                     user_id=user_id,
+                    triggered_by=triggered_by,
                 )
             except Exception as exc:
                 logger.debug("Failed to record download_queued event: %s", exc)
@@ -1019,6 +1043,7 @@ def write_monitored_book_attempt(
     book_title: str | None = None,
     session_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    triggered_by: str | None = None,
 ) -> str:
     """Record a monitored book search attempt and update its search status.
 
@@ -1085,6 +1110,7 @@ def write_monitored_book_attempt(
             session_id=session_id,
             user_id=user_id,
             metadata=metadata,
+            triggered_by=triggered_by,
         )
     except Exception as exc:
         logger.debug("Failed to record search_result event: %s", exc)

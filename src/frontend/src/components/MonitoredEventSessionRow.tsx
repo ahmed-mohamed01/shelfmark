@@ -187,6 +187,11 @@ export const MonitoredEventSessionRow = ({
               <span className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${badgeStyle.bg} ${badgeStyle.text}`}>
                 {statusLabel(latestStatus, isActive)}
               </span>
+              {events.some(e => e.triggered_by === 'scheduled') ? (
+                <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-blue-500/15 text-blue-700 dark:text-blue-300">
+                  Scheduled
+                </span>
+              ) : null}
             </div>
           </div>
         </div>

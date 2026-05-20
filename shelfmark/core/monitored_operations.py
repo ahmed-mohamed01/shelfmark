@@ -315,6 +315,7 @@ def _run_author_sync(
                 books_removed=sync_result.books_removed,
                 total_books=books_count,
                 user_id=user_id,
+                triggered_by="manual",
             )
         except Exception as exc:
             logger.debug("Failed to record author_synced event for %s: %s", entity_id, exc)
@@ -327,7 +328,7 @@ def _run_author_sync(
                    {"entity_id": entity_id, "error": error_msg, "error_type": exc.error_type})
         try:
             from shelfmark.core.monitored_history import record_author_sync_failed
-            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id)
+            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id, triggered_by="manual")
         except Exception as log_exc:
             logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
     except Exception as exc:
@@ -338,7 +339,7 @@ def _run_author_sync(
                    {"entity_id": entity_id, "error": error_msg, "error_type": "unknown"})
         try:
             from shelfmark.core.monitored_history import record_author_sync_failed
-            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id)
+            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id, triggered_by="manual")
         except Exception as log_exc:
             logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
 
@@ -389,6 +390,7 @@ def _record_sync_failure(
     exc: BaseException,
     user_id: int | None = None,
     batch_id: str | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     """Record a failed entity sync into *result* and DB."""
     error_msg = f"[{getattr(exc, 'error_type', 'unknown')}] {exc}"
@@ -403,7 +405,7 @@ def _record_sync_failure(
         from shelfmark.core.monitored_history import record_author_sync_failed
         record_author_sync_failed(
             entity_id=eid, author_name=ename, error_message=error_msg,
-            batch_id=batch_id, user_id=user_id,
+            batch_id=batch_id, user_id=user_id, triggered_by=triggered_by,
         )
     except Exception as log_exc:
         logger.debug("Failed to record author_sync_failed event for %s: %s", eid, log_exc)
@@ -417,6 +419,7 @@ def _record_sync_success(
     ename: str,
     user_id: int | None = None,
     batch_id: str | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     """Record a successful entity sync into *result*."""
     result.successful += 1
@@ -436,6 +439,7 @@ def _record_sync_success(
             total_books=sync_res.books_upserted,
             batch_id=batch_id,
             user_id=user_id,
+            triggered_by=triggered_by,
         )
     except Exception as log_exc:
         logger.debug("Failed to record author_synced event for %s: %s", eid, log_exc)
@@ -447,6 +451,7 @@ def run_batch_sync(
     ws_manager: Any,
     user_db: Any,
     batch_id: str,
+    triggered_by: str = "manual",
 ) -> BatchSyncResult:
     """Iterate *entities*, sync each, broadcast batch-level progress.
 
@@ -480,16 +485,16 @@ def run_batch_sync(
             sync_availability_sources(
                 db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
             )
-            _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
+            _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
         except MonitoredProviderError as exc:
             if is_transient_provider_error(exc):
                 error_msg = f"[{exc.error_type}] {exc}"
                 db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
                 retry_queue.append((idx, uid, entity))
             else:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
         except Exception as exc:
-            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
+            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
 
     # Retry transient failures once
     if retry_queue:
@@ -511,10 +516,10 @@ def run_batch_sync(
                 sync_availability_sources(
                     db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
                 )
-                _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id)
+                _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
                 result.retry_succeeded += 1
             except Exception as exc:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id)
+                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
 
     _broadcast(ws_manager, None, "monitored_batch_sync_complete", {
         "batch_id": batch_id,
@@ -868,6 +873,7 @@ def search_missing_books(
     content_type: str = "ebook",
     min_match_score: float | None = None,
     run_id: str | None = None,
+    triggered_by: str = "manual",
 ) -> SearchSummary:
     """Find monitored books with no existing file and queue downloads for them.
 
@@ -986,6 +992,7 @@ def search_missing_books(
                 session_id=session_id,
                 user_id=user_id,
                 metadata=run_metadata,
+                triggered_by=triggered_by,
             )
         except Exception as exc:
             logger.debug("Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc)
@@ -1030,6 +1037,7 @@ def search_missing_books(
                     status="no_match",
                     book_title=book_title,
                     session_id=session_id,
+                    triggered_by=triggered_by,
                 )
                 continue
 
@@ -1047,6 +1055,7 @@ def search_missing_books(
                 series_name=row.get("series_name") or None,
                 series_position=row.get("series_position"),
                 session_id=session_id,
+                triggered_by=triggered_by,
             )
 
             if success:
@@ -1058,6 +1067,7 @@ def search_missing_books(
                     status="queued", error_message=message,
                     book_title=book_title,
                     session_id=session_id,
+                    triggered_by=triggered_by,
                 )
             elif message == "Already in queue":
                 summary.queued += 1
@@ -1072,6 +1082,7 @@ def search_missing_books(
                     status="below_cutoff", error_message=message,
                     book_title=book_title,
                     session_id=session_id,
+                    triggered_by=triggered_by,
                 )
             else:
                 summary.failed += 1
@@ -1082,6 +1093,7 @@ def search_missing_books(
                     status="failed", error_message=message,
                     book_title=book_title,
                     session_id=session_id,
+                    triggered_by=triggered_by,
                 )
 
         except Exception as exc:
@@ -1093,6 +1105,7 @@ def search_missing_books(
                 status="error", error_message=str(exc),
                 book_title=book_title,
                 session_id=session_id,
+                triggered_by=triggered_by,
             )
 
     return summary

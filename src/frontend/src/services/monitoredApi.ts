@@ -860,6 +860,7 @@ export interface MonitoredEvent {
   user_id: number | null;
   book_cover_url: string | null;
   author_photo_url: string | null;
+  triggered_by: 'scheduled' | 'manual' | null;
   created_at: string;
 }
 

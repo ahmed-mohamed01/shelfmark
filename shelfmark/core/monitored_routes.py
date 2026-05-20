@@ -465,7 +465,7 @@ def register_monitored_routes(
                 if refresh_enabled:
                     batch_result = run_batch_sync(
                         ents, monitored_db, ws_manager, user_db,
-                        batch_id=bid,
+                        batch_id=bid, triggered_by="scheduled",
                     )
                     logger.info(
                         "Scheduled monitored refresh complete slot=%s total=%s successful=%s failed=%s retried=%s",
@@ -524,6 +524,7 @@ def register_monitored_routes(
                                 content_type=content_type,
                                 min_match_score=threshold,
                                 run_id=run_id,
+                                triggered_by="scheduled",
                             )
                             if result.total_candidates > 0:
                                 total_searched += result.total_candidates
@@ -1712,6 +1713,7 @@ def register_monitored_routes(
                     session_id=session_id,
                     user_id=int(entity["user_id"]),
                     metadata={"run_id": run_id} if run_id else None,
+                    triggered_by="manual",
                 )
             except Exception as exc:
                 logger.debug("Failed to record search_started for precheck %s/%s: %s", provider, provider_book_id, exc)

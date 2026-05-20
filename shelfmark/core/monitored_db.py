@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS monitored_pending_releases (
     post_process_retries INTEGER NOT NULL DEFAULT 0,
     session_id TEXT,
     task_id TEXT,
+    triggered_by TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -197,6 +198,7 @@ CREATE TABLE IF NOT EXISTS monitored_events (
     user_id INTEGER,
     book_cover_url TEXT,
     author_photo_url TEXT,
+    triggered_by TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -603,6 +605,16 @@ class MonitoredDB:
                     pass
                 try:
                     conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN task_id TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_events ADD COLUMN triggered_by TEXT")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN triggered_by TEXT")
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -2394,6 +2406,7 @@ class MonitoredDB:
         post_process_retries: int = 0,
         session_id: str | None = None,
         task_id: str | None = None,
+        triggered_by: str | None = None,
     ) -> None:
         """Insert or update a pending releases record."""
         with self._lock:
@@ -2406,15 +2419,16 @@ class MonitoredDB:
                         provider, provider_book_id, content_type,
                         destination_override, file_organization_override, template_override,
                         series_name, series_position, current_source_id,
-                        attempts, post_process_retries, session_id, task_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        attempts, post_process_retries, session_id, task_id, triggered_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(pending_key) DO UPDATE SET
                         release_data = excluded.release_data,
                         current_source_id = excluded.current_source_id,
                         attempts = excluded.attempts,
                         post_process_retries = excluded.post_process_retries,
                         session_id = COALESCE(monitored_pending_releases.session_id, excluded.session_id),
-                        task_id = excluded.task_id
+                        task_id = excluded.task_id,
+                        triggered_by = COALESCE(monitored_pending_releases.triggered_by, excluded.triggered_by)
                     """,
                     (
                         pending_key,
@@ -2434,6 +2448,7 @@ class MonitoredDB:
                         post_process_retries,
                         session_id,
                         task_id,
+                        triggered_by,
                     ),
                 )
                 conn.commit()
@@ -2485,6 +2500,7 @@ class MonitoredDB:
         metadata_json: str | None = None,
         session_id: str | None = None,
         user_id: int | None = None,
+        triggered_by: str | None = None,
     ) -> int | None:
         """Insert a history event and return its id.
 
@@ -2521,15 +2537,15 @@ class MonitoredDB:
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
                         metadata_json, session_id, user_id,
-                        book_cover_url, author_photo_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        book_cover_url, author_photo_url, triggered_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event_type, entity_id, book_provider, book_provider_id,
                         book_title, author_name, content_type,
                         source, source_display_name, status, message,
                         metadata_json, session_id, user_id,
-                        book_cover_url, author_photo_url,
+                        book_cover_url, author_photo_url, triggered_by,
                     ),
                 )
                 conn.commit()

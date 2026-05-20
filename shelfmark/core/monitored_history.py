@@ -33,6 +33,18 @@ def set_db(monitored_db: Any) -> None:
     _db = monitored_db
 
 
+def _normalize_triggered_by(value: str | None) -> str | None:
+    """Normalize trigger origin to ``"scheduled"`` / ``"manual"`` (or None).
+
+    Anything other than the two canonical values is dropped so callers can pass
+    raw config-derived strings without polluting the column.
+    """
+    if value is None:
+        return None
+    v = value.strip().lower()
+    return v if v in {"scheduled", "manual"} else None
+
+
 def _record(
     *,
     event_type: str,
@@ -49,6 +61,7 @@ def _record(
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     """Write an event to the monitored_events table."""
     if _db is None:
@@ -69,6 +82,7 @@ def _record(
             metadata_json=json.dumps(metadata) if metadata else None,
             session_id=session_id,
             user_id=user_id,
+            triggered_by=_normalize_triggered_by(triggered_by),
         )
     except Exception as exc:
         logger.debug("Failed to record monitored event %s: %s", event_type, exc)
@@ -96,6 +110,7 @@ def record_download_queued(
     size: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="download_queued",
@@ -120,6 +135,7 @@ def record_download_queued(
         } or None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -139,6 +155,7 @@ def record_download_complete(
     task_id: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="download_complete",
@@ -162,6 +179,7 @@ def record_download_complete(
         } or None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -181,6 +199,7 @@ def record_download_failed(
     task_id: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="download_failed",
@@ -204,6 +223,7 @@ def record_download_failed(
         } or None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -223,6 +243,7 @@ def record_search_started(
     session_id: str,
     user_id: int | None = None,
     metadata: dict[str, Any] | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     """Record the start of a search attempt for a book. Creates a session."""
     _record(
@@ -238,6 +259,7 @@ def record_search_started(
         metadata=metadata or None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -258,6 +280,7 @@ def record_search_result(
     session_id: str | None = None,
     user_id: int | None = None,
     metadata: dict[str, Any] | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     """Record a search outcome (queued, no_match, below_cutoff, not_released, error)."""
     status_map = {
@@ -304,6 +327,7 @@ def record_search_result(
         metadata=merged_metadata or None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -356,6 +380,7 @@ def record_author_synced(
     total_books: int | None = None,
     batch_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="author_synced",
@@ -376,6 +401,7 @@ def record_author_synced(
             }.items() if v is not None
         } or None,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -386,6 +412,7 @@ def record_author_sync_failed(
     error_message: str | None = None,
     batch_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="author_sync_failed",
@@ -400,6 +427,7 @@ def record_author_sync_failed(
             }.items() if v is not None
         } or None,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
 
 
@@ -440,6 +468,7 @@ def record_run_started(
             }.items() if v is not None
         } or None,
         user_id=user_id,
+        triggered_by=trigger,
     )
 
 
@@ -459,6 +488,7 @@ def record_file_imported(
     final_path: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    triggered_by: str | None = None,
 ) -> None:
     _record(
         event_type="file_imported",
@@ -473,4 +503,5 @@ def record_file_imported(
         metadata={"final_path": final_path} if final_path else None,
         session_id=session_id,
         user_id=user_id,
+        triggered_by=triggered_by,
     )
