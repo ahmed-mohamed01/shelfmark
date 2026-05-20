@@ -30,7 +30,12 @@ from shelfmark.core.monitored_operations import (
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_types import AvailabilitySyncResult, MonitoredEntityNotFound, MonitoredPathError
-from shelfmark.core.monitored_utils import extract_author_photo_url, normalize_preferred_languages, transform_cached_cover_urls
+from shelfmark.core.monitored_utils import (
+    extract_author_photo_url,
+    normalize_preferred_languages,
+    transform_cached_cover_urls,
+    transform_cached_event_thumbnail_urls,
+)
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.monitored_db import MonitoredDB
@@ -2977,6 +2982,7 @@ def register_monitored_routes(
             since=since,
             until=until,
         )
+        transform_cached_event_thumbnail_urls(events)
         return jsonify({"events": events, "total": total})
 
     @app.route("/api/monitored/<int:entity_id>/books/events", methods=["GET"])
@@ -3006,6 +3012,7 @@ def register_monitored_routes(
             limit=max(1, min(limit, 500)),
             offset=max(0, offset),
         )
+        transform_cached_event_thumbnail_urls(events)
         return jsonify({"events": events, "total": total})
 
     @app.route("/api/monitored/events/stats", methods=["GET"])

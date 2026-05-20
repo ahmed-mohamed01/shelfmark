@@ -135,6 +135,50 @@ def transform_cached_cover_urls(
                 row["cover_url"] = f"/api/covers/{cache_id}?url={encoded_url}"
 
 
+def transform_cached_event_thumbnail_urls(events: list[dict[str, Any]]) -> None:
+    """Rewrite ``book_cover_url`` on event rows to proxy through the image cache.
+
+    Event rows snapshot ``monitored_books.cover_url`` verbatim, which is the
+    raw external CDN URL. Same-origin CSP blocks those in the browser, so
+    rewrite to ``/api/covers/{book_provider}_{book_provider_id}?url=…`` when
+    the covers cache is enabled (same proxy that already serves author photos).
+    """
+    if not events:
+        return
+
+    from shelfmark.config.env import is_covers_cache_enabled
+    from shelfmark.core.config import config as app_config
+    from shelfmark.core.utils import normalize_base_path
+
+    if not is_covers_cache_enabled():
+        return
+
+    base_path = normalize_base_path(app_config.get("URL_BASE", ""))
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+
+        cover_url = row.get("book_cover_url")
+        if not isinstance(cover_url, str) or not cover_url:
+            continue
+        # Already a proxy URL — leave it alone.
+        if cover_url.startswith("/"):
+            continue
+
+        provider = str(row.get("book_provider") or "").strip()
+        provider_book_id = str(row.get("book_provider_id") or "").strip()
+        if not (provider and provider_book_id):
+            continue
+
+        cache_id = f"{provider}_{provider_book_id}"
+        encoded_url = base64.urlsafe_b64encode(cover_url.encode()).decode()
+        if base_path:
+            row["book_cover_url"] = f"{base_path}/api/covers/{cache_id}?url={encoded_url}"
+        else:
+            row["book_cover_url"] = f"/api/covers/{cache_id}?url={encoded_url}"
+
+
 # =============================================================================
 # Book popularity extraction
 # =============================================================================
