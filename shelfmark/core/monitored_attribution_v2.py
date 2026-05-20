@@ -57,6 +57,11 @@ P_POSITION_DISAGREE_HIGH = 0.50
 P_POSITION_DISAGREE_MED = 0.25
 P_EMBEDDED_POSITION_DISAGREE = 0.50
 P_WRONG_AUTHOR_FOLDER = 0.40
+# Title-mismatch penalty fires when both sides have a title and the fuzz is
+# below TITLE_CORE_MISMATCH. Without this, two books in the same series with
+# the same author folder collect ~1.6 net score (author_folder + series_folder)
+# and pass the floor even though their titles share almost nothing.
+P_TITLE_MISMATCH = 0.6
 
 # Thresholds
 # Lowered from 0.85 → 0.75 to handle dot/space variants like "DennisETaylor"
@@ -67,6 +72,15 @@ SERIES_NAME_FUZZ_THRESHOLD = 0.75
 TITLE_CORE_HIGH = 0.85
 TITLE_CORE_MED = 0.70
 TITLE_CORE_LOW = 0.55
+# Below this, the title is considered actively wrong (not just incomplete).
+# Aligned with TITLE_CORE_LOW so the regions are continuous: at or above LOW
+# means "similar enough to count as a positive signal", anything below means
+# "actively different — penalise." Without this, fuzz in [0.40, 0.55) fell in
+# a dead zone where no title evidence fired in either direction, letting
+# strong series+position signals push obviously-wrong matches above the floor
+# (e.g. "Daughters War (Unabridged)" vs "Thrice-Bound Fool" fuzz=0.41 — both
+# in the same Blacktongue series with mis-tagged position metadata).
+TITLE_CORE_MISMATCH = 0.55
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +898,15 @@ def _score_metadata_signals(
                 "detail": f"'{title}' fuzz={fuzz:.2f}",
             })
             evidence.net_score += W_EMBEDDED_TITLE_AGREE_LOW
+        elif fuzz < TITLE_CORE_MISMATCH:
+            # Source/embedded title is actively different from the book title —
+            # symmetric with the path-side title_mismatch penalty.
+            evidence.penalties.append({
+                "name": f"{label}_title_mismatch",
+                "weight": -P_TITLE_MISMATCH,
+                "detail": f"'{title}' vs '{book_title}' fuzz={fuzz:.2f}",
+            })
+            evidence.net_score -= P_TITLE_MISMATCH
 
     # ---- Author agreement ----
     # The metadata source carries an author name (e.g. ABS "authorName" or
@@ -1030,6 +1053,20 @@ def evaluate_match(
         evidence.positives.append({"name": "title_core_low", "weight": W_TITLE_CORE_LOW,
                                    "detail": f"'{evidence.title_core}' fuzz={evidence.title_core_fuzz:.2f}"})
         evidence.net_score += W_TITLE_CORE_LOW
+    elif (
+        evidence.title_core_fuzz < TITLE_CORE_MISMATCH
+        and evidence.title_core
+        and book_title
+    ):
+        # Both sides have a title to compare and they're actively different —
+        # prevents same-series same-author books from passing the floor on path
+        # signals alone.
+        evidence.penalties.append({
+            "name": "title_mismatch",
+            "weight": -P_TITLE_MISMATCH,
+            "detail": f"'{evidence.title_core}' vs '{book_title}' fuzz={evidence.title_core_fuzz:.2f}",
+        })
+        evidence.net_score -= P_TITLE_MISMATCH
 
     # ---- Author folder match ----
     if decomp.author_folder and author_name:
@@ -1193,6 +1230,22 @@ def evaluate_match(
             asin=source_metadata.asin,
             label=f"source_{source_metadata.source_label}" if source_metadata.source_label else "source",
         )
+
+    # ---- Identifier match overrides title-mismatch penalties ----
+    # An ISBN/ASIN match is a hard identity claim — if the file says it's
+    # this book, a differing title field is metadata weirdness, not a
+    # different book. Strip any title_mismatch penalties accumulated above.
+    has_identifier_positive = any(
+        p["name"].endswith("_identifier") for p in evidence.positives
+    )
+    if has_identifier_positive:
+        retained_penalties = []
+        for p in evidence.penalties:
+            if p["name"].endswith("title_mismatch"):
+                evidence.net_score -= p["weight"]  # weight is negative; subtracting un-applies it
+            else:
+                retained_penalties.append(p)
+        evidence.penalties = retained_penalties
 
     # ---- Final decision ----
     if evidence.hard_reject:
