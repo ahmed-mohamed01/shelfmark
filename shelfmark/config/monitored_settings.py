@@ -345,6 +345,25 @@ def monitoring_general_settings():
             ],
             default="ebook_interactive_search",
         ),
+        HeadingField(
+            key="monitoring_path_templates_heading",
+            title="Path Templates",
+            description="Path layout for monitored downloads. The template is appended to each entity's configured author folder (Author/Series folder per author, set when adding an author). Empty variables and the surrounding separators are collapsed automatically, so books without a series still land at a sensible path. These templates do not affect non-monitored downloads — those use the Downloads tab settings.",
+        ),
+        TextField(
+            key="MONITORED_EBOOK_TEMPLATE",
+            label="Ebook Path Template",
+            description="Use / for subfolders. Variables: {Series}, {SeriesPosition}, {Title}, {Author}, {Year}, {Subtitle}, {OriginalName} (source filename without extension). Leave empty to fall back to the global Downloads file-organization setting.",
+            default="{Series}/{SeriesPosition} - {Title}, ({Series} {SeriesPosition}) - {Author}",
+            placeholder="{Series}/{SeriesPosition} - {Title}, ({Series} {SeriesPosition}) - {Author}",
+        ),
+        TextField(
+            key="MONITORED_AUDIOBOOK_TEMPLATE",
+            label="Audiobook Path Template",
+            description="Use / for subfolders. End the template with /{OriginalName} to keep source filenames intact — recommended for audiobooks, since renaming can break chapter ordering. For multi-file audiobooks the {OriginalName} segment is automatically dropped and each source file is placed in the resulting book folder with its original name. Variables: {Series}, {SeriesPosition}, {Title}, {Author}, {Year}, {Subtitle}, {OriginalName}. Leave empty to fall back to the global Downloads file-organization setting.",
+            default="{Series}/{SeriesPosition} - {Title} ({Series} {SeriesPosition})/{OriginalName}",
+            placeholder="{Series}/{SeriesPosition} - {Title} ({Series} {SeriesPosition})/{OriginalName}",
+        ),
     ]
 
 

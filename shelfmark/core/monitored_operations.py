@@ -846,6 +846,42 @@ def resolve_book_auto_search_precheck(
     return bool(reason), reason, detail
 
 
+def resolve_monitored_output_overrides(
+    entity_settings: dict[str, Any] | None,
+    *,
+    content_type: str,
+    user_id: int | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve (destination_override, file_organization_override, template_override)
+    for a monitored download.
+
+    Combines the entity's configured author folder (ebook_author_dir /
+    audiobook_author_dir) with the user's MONITORED_<TYPE>_TEMPLATE setting.
+    When no template is configured but an author dir is set, the file is still
+    routed to the author folder and the global File Organization setting decides
+    layout. When neither is configured, all three overrides are None and the
+    download falls back to the global Downloads behaviour.
+    """
+    if not isinstance(entity_settings, dict):
+        entity_settings = {}
+    dir_key = "audiobook_author_dir" if content_type == "audiobook" else "ebook_author_dir"
+    author_dir = entity_settings.get(dir_key)
+    has_author_dir = isinstance(author_dir, str) and author_dir.strip().startswith("/")
+    dest_override = author_dir.strip().rstrip("/") if has_author_dir else None
+
+    from shelfmark.core.config import config as app_config
+    template_key = "MONITORED_AUDIOBOOK_TEMPLATE" if content_type == "audiobook" else "MONITORED_EBOOK_TEMPLATE"
+    template = str(app_config.get(template_key, "", user_id=user_id) or "").strip()
+
+    if not template:
+        return dest_override, None, None
+    if has_author_dir:
+        return dest_override, "organize", template
+    # No per-entity author folder configured — prepend {Author}/ so files still
+    # land under a per-author directory inside the default Downloads destination.
+    return None, "organize", f"{{Author}}/{template}"
+
+
 def filter_search_candidates(availability_books: list[dict], content_type: str) -> list[dict]:
     """Filter monitored books to those eligible for auto-search.
 
@@ -894,21 +930,11 @@ def search_missing_books(
     if entity is None or entity.get("kind") != "author":
         raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
 
-    # Resolve output overrides from entity settings so auto-downloads land in
-    # the correct author/series folder — mirrors enrich_release_for_monitored().
-    settings = entity.get("settings") if isinstance(entity, dict) else None
-    if not isinstance(settings, dict):
-        settings = {}
-    dest_override: str | None = None
-    org_override: str | None = "organize"
-    tmpl_override: str | None = None
-    dir_key = "audiobook_author_dir" if content_type == "audiobook" else "ebook_author_dir"
-    author_dir = settings.get(dir_key)
-    if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
-        dest_override = author_dir.strip().rstrip("/")
-        tmpl_override = "{Series}/{Title}/{Title} - {Author} ({Year})"
-    else:
-        tmpl_override = "{Author}/{Series}/{Title}/{Title} ({Year})"
+    dest_override, org_override, tmpl_override = resolve_monitored_output_overrides(
+        entity.get("settings") if isinstance(entity, dict) else None,
+        content_type=content_type,
+        user_id=user_id,
+    )
 
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
     candidates = filter_search_candidates(availability.books, content_type)

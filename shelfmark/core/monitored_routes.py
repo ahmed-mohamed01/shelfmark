@@ -23,6 +23,7 @@ from shelfmark.core.monitored_operations import (
     filter_search_candidates,
     record_scan_error,
     resolve_book_auto_search_precheck,
+    resolve_monitored_output_overrides,
     run_batch_sync,
     search_missing_books,
     start_author_background_sync,
@@ -215,18 +216,16 @@ def enrich_release_for_monitored(
             if not isinstance(settings, dict):
                 settings = {}
 
+            dest_override, org_override, tmpl_override = resolve_monitored_output_overrides(
+                settings, content_type=ct, user_id=db_user_id,
+            )
             release_payload = dict(release_payload)
-            release_payload["file_organization_override"] = "organize"
-
-            dir_key = "audiobook_author_dir" if ct == "audiobook" else "ebook_author_dir"
-            author_dir = settings.get(dir_key)
-            if isinstance(author_dir, str) and author_dir.strip().startswith("/"):
-                # Destination is already the author folder, so template starts at Series.
-                release_payload["destination_override"] = author_dir.strip().rstrip("/")
-                release_payload["template_override"] = "{Series}/{Title}/{Title} - {Author} ({Year})"
-            else:
-                # No explicit author dir — use default destination with full path template.
-                release_payload["template_override"] = "{Author}/{Series}/{Title}/{Title} ({Year})"
+            if dest_override is not None:
+                release_payload["destination_override"] = dest_override
+            if org_override is not None:
+                release_payload["file_organization_override"] = org_override
+            if tmpl_override is not None:
+                release_payload["template_override"] = tmpl_override
 
             # Inject the book's release_date from monitored DB so the orchestrator's
             # release-date precheck (queue_release) can block manual downloads of
