@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { getSelfUserEditContext } from '../services/api';
 import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, deleteMonitoredAuthorsByIds, fsListDirectories } from '../services/monitoredApi';
 import { FolderBrowserModal } from './FolderBrowserModal';
+import { showConfirm } from './ConfirmDialog';
 
 type MonitorMode = 'all' | 'missing' | 'upcoming';
 
@@ -162,11 +163,15 @@ export const EditAuthorModal = ({
   const handleDelete = useCallback(async () => {
     if (!entityId || deleting || saving) return;
 
-    const confirmed = window.confirm(
-      `Delete monitored author "${authorName || 'Unknown author'}"?\n\n` +
-      'This removes monitored author data from Shelfmark database only (books, file matches, and settings for this monitored author).\n' +
-      'Files on disk will NOT be deleted.'
-    );
+    const confirmed = await showConfirm({
+      title: 'Delete monitored author',
+      message:
+        `Delete monitored author "${authorName || 'Unknown author'}"?\n\n` +
+        'This removes monitored author data from Shelfmark database only (books, file matches, and settings for this monitored author).\n' +
+        'Files on disk will NOT be deleted.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setDeleting(true);

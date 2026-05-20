@@ -11,6 +11,7 @@ import { MonitoredEventRow, parseEventMeta, formatEventDate } from './MonitoredE
 import { MonitoredEventSessionRow, SessionLatestStatus } from './MonitoredEventSessionRow';
 import { useRealtimeStatus } from '../hooks/useRealtimeStatus';
 import { Book } from '../types';
+import { showConfirm } from './ConfirmDialog';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,7 +152,12 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
   }, [offset, filter, since]);
 
   const handleClearHistory = useCallback(async () => {
-    if (!confirm('Clear all monitored history? This cannot be undone.')) return;
+    if (!(await showConfirm({
+      title: 'Clear history',
+      message: 'Clear all monitored history? This cannot be undone.',
+      confirmLabel: 'Clear',
+      destructive: true,
+    }))) return;
     try {
       const result = await deleteMonitoredEvents();
       onShowToast?.(`Cleared ${result.deleted} event(s)`, 'success');

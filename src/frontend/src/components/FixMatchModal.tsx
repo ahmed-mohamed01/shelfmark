@@ -9,6 +9,7 @@ import {
   type MatchCandidate,
   type MatchCandidatesResponse,
 } from '../services/monitoredApi';
+import { showConfirm } from './ConfirmDialog';
 
 /**
  * Two modes:
@@ -125,7 +126,12 @@ export const FixMatchModal = ({ entityId, target, onClose, onApplied }: FixMatch
 
   const onDetach = useCallback(async () => {
     if (target.mode !== 'byFile') return;
-    if (!confirm('Detach this attribution? The book will have no file linked until the next scan.')) return;
+    if (!(await showConfirm({
+      title: 'Detach attribution',
+      message: 'Detach this attribution? Future syncs will not re-attribute this file to this book — other books in the entity may still be considered for it.',
+      confirmLabel: 'Detach',
+      destructive: true,
+    }))) return;
     setSubmitting(true);
     setError(null);
     try {

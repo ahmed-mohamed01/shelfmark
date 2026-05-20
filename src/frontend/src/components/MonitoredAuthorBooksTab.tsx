@@ -18,6 +18,7 @@ import { BookDetailsModal } from './BookDetailsModal';
 import { MonitoredBookCompactTile } from './MonitoredBookCompactTile';
 import { MonitoredBookTableRow } from './MonitoredBookTableRow';
 import { ViewModeToggle } from './ViewModeToggle';
+import { showConfirm } from './ConfirmDialog';
 import { FormatStatusBadge } from './FormatStatusBadge';
 import {
   isEnabledMonitoredFlag,
@@ -1531,8 +1532,13 @@ export const MonitoredAuthorBooksTab = ({
               return (
                 <>
                   <div className="my-1 border-t border-[var(--border-muted)]" />
-                  <button type="button" onClick={() => {
-                    if (!confirm(`Permanently delete "${book.title || 'this book'}" from your library?`)) return;
+                  <button type="button" onClick={async () => {
+                    if (!(await showConfirm({
+                      title: 'Delete book',
+                      message: `Permanently delete "${book.title || 'this book'}" from your library?`,
+                      confirmLabel: 'Delete',
+                      destructive: true,
+                    }))) return;
                     close();
                     void deleteMonitoredBook(monitoredEntityId!, p, pid).then(() => {
                       setMonitoredBookRows((prev) => prev.filter((b) => !(b.provider === p && b.provider_book_id === pid)));
