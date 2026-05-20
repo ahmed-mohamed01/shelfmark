@@ -4,15 +4,20 @@ import base64
 import importlib
 import os
 import re
-from threading import Lock
-from types import ModuleType
+import sqlite3
 from pathlib import Path
-from typing import Optional
+from threading import Lock
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+from shelfmark.core.request_helpers import normalize_optional_text
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 
 def normalize_http_url(
-    url: Optional[str],
+    url: str | None,
     *,
     default_scheme: str = "http",
     strip_trailing_slash: bool = True,
@@ -26,7 +31,7 @@ def normalize_http_url(
     if not normalized:
         return ""
 
-    if (normalized.startswith("\"") and normalized.endswith("\"")) or (
+    if (normalized.startswith('"') and normalized.endswith('"')) or (
         normalized.startswith("'") and normalized.endswith("'")
     ):
         normalized = normalized[1:-1].strip()
@@ -34,11 +39,7 @@ def normalize_http_url(
             return ""
 
     if allow_special:
-        special_map = {
-            value.lower(): value
-            for value in allow_special
-            if isinstance(value, str)
-        }
+        special_map = {value.lower(): value for value in allow_special if isinstance(value, str)}
         special_match = special_map.get(normalized.lower())
         if special_match is not None:
             return special_match
@@ -59,6 +60,7 @@ def normalize_http_url(
 
 _xmlrpc_patch_lock = Lock()
 _xmlrpc_patch_applied = False
+_XMLRPC_PATCH_ERRORS = (ImportError, AttributeError, OSError, RuntimeError)
 
 
 def get_hardened_xmlrpc_client() -> ModuleType:
@@ -72,14 +74,14 @@ def get_hardened_xmlrpc_client() -> ModuleType:
 
                     monkey_patch()
                     _xmlrpc_patch_applied = True
-                except Exception:
+                except _XMLRPC_PATCH_ERRORS:
                     # Keep runtime behavior unchanged if defusedxml is unavailable.
                     _xmlrpc_patch_applied = False
 
     return importlib.import_module("xmlrpc.client")
 
 
-def normalize_base_path(value: Optional[str]) -> str:
+def normalize_base_path(value: str | None) -> str:
     """Normalize a URL base path for reverse proxy subpath deployments."""
     if not isinstance(value, str):
         return ""
@@ -101,7 +103,7 @@ def normalize_base_path(value: Optional[str]) -> str:
     return path.rstrip("/")
 
 
-def is_audiobook(content_type: Optional[str]) -> bool:
+def is_audiobook(content_type: str | None) -> bool:
     """Check if content type indicates an audiobook."""
     return bool(content_type and "audiobook" in content_type.lower())
 
@@ -156,8 +158,8 @@ def _sanitize_user_for_path(username: str) -> str:
 
 
 def _resolve_destination_username(
-    user_id: Optional[int] = None,
-    username: Optional[str] = None,
+    user_id: int | None = None,
+    username: str | None = None,
 ) -> str:
     explicit = str(username or "").strip()
     if explicit:
@@ -169,20 +171,20 @@ def _resolve_destination_username(
     try:
         from shelfmark.core.user_db import UserDB
 
-        user_db = UserDB(os.path.join(os.environ.get("CONFIG_DIR", "/config"), "users.db"))
+        user_db = UserDB(str(Path(os.environ.get("CONFIG_DIR", "/config")) / "users.db"))
         user_db.initialize()
         user = user_db.get_user(user_id=user_id)
         if not user:
             return ""
         return str(user.get("username") or "").strip()
-    except Exception:
+    except ImportError, OSError, sqlite3.Error:
         return ""
 
 
 def _expand_user_destination_placeholder(
     path_value: str,
-    user_id: Optional[int] = None,
-    username: Optional[str] = None,
+    user_id: int | None = None,
+    username: str | None = None,
 ) -> str:
     """Expand `{User}` placeholders in destination paths."""
     if not isinstance(path_value, str):
@@ -198,9 +200,10 @@ def _expand_user_destination_placeholder(
 
 
 def get_destination(
+    *,
     is_audiobook: bool = False,
-    user_id: Optional[int] = None,
-    username: Optional[str] = None,
+    user_id: int | None = None,
+    username: str | None = None,
 ) -> Path:
     """Get base destination directory. Audiobooks fall back to main destination."""
     from shelfmark.core.config import config
@@ -219,7 +222,9 @@ def get_destination(
 
     # Main destination (also fallback for audiobooks)
     # Check new setting first, then legacy INGEST_DIR
-    destination = config.get("DESTINATION", "", user_id=user_id) or config.get("INGEST_DIR", "/books")
+    destination = config.get("DESTINATION", "", user_id=user_id) or config.get(
+        "INGEST_DIR", "/books"
+    )
     return Path(
         _expand_user_destination_placeholder(
             str(destination),
@@ -229,12 +234,14 @@ def get_destination(
     )
 
 
-def get_aa_content_type_dir(content_type: Optional[str] = None) -> Optional[Path]:
+def get_aa_content_type_dir(content_type: str | None = None) -> Path | None:
     """Get override directory for AA content-type routing if configured."""
     from shelfmark.core.config import config
 
     # Check if content-type routing is enabled (new or legacy setting)
-    if not config.get("AA_CONTENT_TYPE_ROUTING", False) and not config.get("USE_CONTENT_TYPE_DIRECTORIES", False):
+    if not config.get("AA_CONTENT_TYPE_ROUTING", False) and not config.get(
+        "USE_CONTENT_TYPE_DIRECTORIES", False
+    ):
         return None
 
     if not content_type:
@@ -246,19 +253,23 @@ def get_aa_content_type_dir(content_type: Optional[str] = None) -> Optional[Path
     for mapping in (_AA_CONTENT_TYPE_TO_CONFIG_KEY, _LEGACY_CONTENT_TYPE_TO_CONFIG_KEY):
         config_key = mapping.get(content_type_lower)
         if config_key:
-            custom_dir = config.get(config_key, "")
-            if custom_dir:
-                return Path(custom_dir)
+            custom_dir = _coerce_config_path(config.get(config_key, ""))
+            if custom_dir is not None:
+                return custom_dir
 
     return None
 
 
-def get_ingest_dir(content_type: Optional[str] = None) -> Path:
-    """DEPRECATED: Use get_destination() and get_aa_content_type_dir() instead."""
+def get_ingest_dir(content_type: str | None = None) -> Path:
+    """Return the legacy ingest directory for a content type."""
     from shelfmark.core.config import config
 
     # Check new DESTINATION setting first, then legacy INGEST_DIR
-    default_ingest_dir = Path(config.get("DESTINATION", "") or config.get("INGEST_DIR", "/books"))
+    default_ingest_dir = _coerce_config_path(config.get("DESTINATION", "")) or _coerce_config_path(
+        config.get("INGEST_DIR", "/books")
+    )
+    if default_ingest_dir is None:
+        default_ingest_dir = Path("/books")
 
     if not content_type:
         return default_ingest_dir
@@ -271,17 +282,18 @@ def get_ingest_dir(content_type: Optional[str] = None) -> Path:
     return default_ingest_dir
 
 
-def transform_cover_url(cover_url: Optional[str], cache_id: str) -> Optional[str]:
+def transform_cover_url(cover_url: str | None, cache_id: str) -> str | None:
     """Transform external cover URL to local proxy URL when caching is enabled."""
     if not cover_url:
         return cover_url
 
     # Skip if already a local URL (starts with /)
-    if cover_url.startswith('/'):
+    if cover_url.startswith("/"):
         return cover_url
 
     # Check if cover caching is enabled
     from shelfmark.config.env import is_covers_cache_enabled
+
     if not is_covers_cache_enabled():
         return cover_url
 
@@ -289,7 +301,26 @@ def transform_cover_url(cover_url: Optional[str], cache_id: str) -> Optional[str
 
     # Encode the original URL and create a proxy URL
     encoded_url = base64.urlsafe_b64encode(cover_url.encode()).decode()
-    base_path = normalize_base_path(app_config.get("URL_BASE", ""))
+    base_path = normalize_base_path(normalize_optional_text(app_config.get("URL_BASE", "")))
     if base_path:
         return f"{base_path}/api/covers/{cache_id}?url={encoded_url}"
     return f"/api/covers/{cache_id}?url={encoded_url}"
+
+
+def _coerce_config_path(value: object) -> Path | None:
+    if isinstance(value, os.PathLike):
+        path_value = os.fspath(value)
+        if isinstance(path_value, str):
+            normalized = path_value.strip()
+            if normalized:
+                return Path(normalized)
+        return None
+
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    return Path(normalized)

@@ -1,47 +1,184 @@
 """Direct download source - Anna's Archive/Libgen with fallback cascade."""
 
-from dataclasses import replace
 import itertools
 import json
 import re
 import time
-from pathlib import Path
-from threading import Event
-from typing import Callable, Dict, List, Optional
-from urllib.parse import quote
+from dataclasses import replace
+from http import HTTPStatus
+from typing import TYPE_CHECKING, ClassVar, NoReturn, TypedDict
+from urllib.parse import quote, urlparse
 
 import requests
+from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString
 
-from bs4 import BeautifulSoup, NavigableString, Tag
-
-from shelfmark.download import http as downloader
-from shelfmark.download import network
 from shelfmark.config.env import DEBUG_SKIP_SOURCES, TMP_DIR
 from shelfmark.core.config import config
-from shelfmark.core.utils import CONTENT_TYPES, get_aa_content_type_dir, is_audiobook as check_audiobook
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import SearchFilters, DownloadTask, build_filename
-from shelfmark.metadata_providers import BookMetadata, group_languages_by_localized_title
+from shelfmark.core.models import DownloadTask, SearchFilters, build_filename
+from shelfmark.core.utils import CONTENT_TYPES, get_aa_content_type_dir
+from shelfmark.core.utils import is_audiobook as check_audiobook
+from shelfmark.download import http as downloader
+from shelfmark.download import network
 from shelfmark.release_sources import (
     BrowseRecord,
-    Release,
-    ReleaseProtocol,
-    ReleaseSource,
-    DownloadHandler,
-    SourceUnavailableError,
-    register_source,
-    register_handler,
-    ReleaseColumnConfig,
-    ColumnSchema,
-    ColumnRenderType,
     ColumnAlign,
     ColumnColorHint,
+    ColumnRenderType,
+    ColumnSchema,
+    DownloadHandler,
+    Release,
+    ReleaseColumnConfig,
+    ReleaseProtocol,
+    ReleaseSource,
+    SourceUnavailableError,
+    register_handler,
+    register_source,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from pathlib import Path
+    from threading import Event
+
+    from shelfmark.core.search_plan import ReleaseSearchPlan
+    from shelfmark.metadata_providers import BookMetadata
 
 logger = setup_logger(__name__)
 
+
+class SourcePriorityEntry(TypedDict):
+    """Normalized source priority entry from config."""
+
+    id: str
+    enabled: bool
+
+
+def _raise_runtime_error(message: str) -> NoReturn:
+    raise RuntimeError(message)
+
+
+def _coerce_str_list(value: object) -> list[str]:
+    """Return only string items from a config value."""
+    if not isinstance(value, list | tuple):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _get_supported_formats() -> list[str]:
+    """Return configured supported formats as a clean string list."""
+    return _coerce_str_list(config.SUPPORTED_FORMATS)
+
+
+def _parse_source_priority_entries(
+    value: object,
+    *,
+    allowed_ids: set[str] | None = None,
+    excluded_ids: set[str] | None = None,
+) -> list[SourcePriorityEntry]:
+    """Normalize orderable-list config values into typed source entries."""
+    if not isinstance(value, list):
+        return []
+
+    entries: list[SourcePriorityEntry] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+
+        source_id = item.get("id")
+        if not isinstance(source_id, str):
+            continue
+
+        if allowed_ids is not None and source_id not in allowed_ids:
+            continue
+        if excluded_ids is not None and source_id in excluded_ids:
+            continue
+
+        entries.append({"id": source_id, "enabled": bool(item.get("enabled", True))})
+
+    return entries
+
+
+def _html_response_text(response: str | tuple[str, str]) -> str:
+    """Extract the HTML body from downloader responses."""
+    if isinstance(response, tuple):
+        return response[0]
+    return response
+
+
+def _attr_to_str(value: object) -> str | None:
+    """Convert a BeautifulSoup attribute value to a plain string."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                return item
+    return None
+
+
+def _get_attr(tag: Tag, attr: str) -> str | None:
+    """Safely fetch a tag attribute as a string."""
+    return _attr_to_str(tag.get(attr))
+
+
+def _first_stripped_text(tag: Tag | None) -> str | None:
+    """Return the first non-empty stripped string from a tag."""
+    if tag is None:
+        return None
+
+    for text in tag.stripped_strings:
+        return text
+    return None
+
+
+def _iter_child_tags(tag: Tag) -> Iterable[Tag]:
+    """Iterate only over child tags, skipping text nodes."""
+    for child in tag.children:
+        if isinstance(child, Tag):
+            yield child
+
+
+def _find_first_anchor_with_text(
+    container: BeautifulSoup | Tag,
+    text: str,
+    *,
+    contains: bool = False,
+) -> Tag | None:
+    """Find the first anchor whose text matches the requested value."""
+    expected = text.lower()
+    for anchor in container.find_all("a", href=True):
+        anchor_text = anchor.get_text(strip=True)
+        if not anchor_text:
+            continue
+        candidate = anchor_text.lower()
+        if candidate == expected or (contains and expected in candidate):
+            return anchor
+    return None
+
+
+def _find_text_node(container: BeautifulSoup | Tag, needle: str) -> NavigableString | None:
+    """Find a text node containing a case-insensitive substring."""
+    expected = needle.lower()
+    for text_node in container.find_all(string=True):
+        if isinstance(text_node, NavigableString) and expected in text_node.strip().lower():
+            return text_node
+    return None
+
+
+def _tag_has_class_containing(tag: Tag, needle: str) -> bool:
+    """Check whether a tag has a CSS class containing a substring."""
+    class_values = tag.get("class")
+    if isinstance(class_values, str):
+        return needle in class_values
+    if isinstance(class_values, list):
+        return any(isinstance(value, str) and needle in value for value in class_values)
+    return False
+
+
 _aa_slow_rotation = itertools.count()
-_url_source_types: Dict[str, str] = {}
+_url_source_types: dict[str, str] = {}
 
 if DEBUG_SKIP_SOURCES:
     logger.warning("DEBUG_SKIP_SOURCES active: skipping sources %s", DEBUG_SKIP_SOURCES)
@@ -58,6 +195,7 @@ _DOWNLOAD_SOURCES = [
 
 _SOURCE_FAILURE_THRESHOLD = 4
 _MIN_VALID_FILE_SIZE = 10 * 1024
+_AA_COUNTDOWN_MAX_SECONDS = 300
 
 # Sources that require Cloudflare bypass
 _CF_BYPASS_REQUIRED = frozenset({"aa-slow-nowait", "aa-slow-wait", "zlib", "welib"})
@@ -65,57 +203,88 @@ _CF_BYPASS_REQUIRED = frozenset({"aa-slow-nowait", "aa-slow-wait", "zlib", "weli
 # Sources whose URLs come from AA page (multiple mirrors)
 _AA_PAGE_SOURCES = frozenset({"aa-slow-nowait", "aa-slow-wait"})
 
-def _get_md5_url_template(source_id: str) -> Optional[str]:
+
+def _is_configured_zlib_link(url: str) -> bool:
+    """Return True when a URL belongs to a configured Z-Library mirror."""
+    from shelfmark.core.mirrors import get_zlib_cookie_domains
+
+    hostname = (urlparse(url).hostname or "").lower()
+    if not hostname:
+        return False
+
+    base_domain = ".".join(hostname.split(".")[-2:]) if "." in hostname else hostname
+
+    for domain in get_zlib_cookie_domains():
+        candidate = str(domain).lower()
+        if hostname == candidate or hostname.endswith(f".{candidate}") or base_domain == candidate:
+            return True
+
+    return False
+
+
+def _get_md5_url_template(source_id: str) -> str | None:
     """Get URL template for MD5-based sources from centralized config."""
     from shelfmark.core import mirrors
 
     if source_id == "zlib":
         return mirrors.get_zlib_url_template()
-    elif source_id == "welib":
+    if source_id == "welib":
         return mirrors.get_welib_url_template()
     return None
 
 
-def _get_libgen_domains() -> List[str]:
+def _get_libgen_domains() -> list[str]:
     """Get LibGen domains from centralized config."""
     from shelfmark.core import mirrors
+
     return mirrors.get_libgen_mirrors()
 
+
 _LIBGEN_GET_PATTERNS = [
-    re.compile(r'<a\s+href=["\']([^"\']*get\.php\?md5=[^"\']+&key=[^"\']+)["\'][^>]*>\s*<h2[^>]*>GET</h2>\s*</a>', re.IGNORECASE),
-    re.compile(r'<a[^>]+href=["\']([^"\']*get\.php\?md5=[^"\']+&(?:amp;)?key=[^"\']+)["\']', re.IGNORECASE),
-    re.compile(r'<a\s+href=["\']([^"\']*get\.php[^"\']*)["\'][^>]*>[\s\S]*?<h2[^>]*>GET</h2>', re.IGNORECASE),
-    re.compile(r'href=["\']([^"\']*get\.php\?[^"\']*md5=[^"\']*&[^"\']*key=[^"\']+)["\']', re.IGNORECASE),
+    re.compile(
+        r'<a\s+href=["\']([^"\']*get\.php\?md5=[^"\']+&key=[^"\']+)["\'][^>]*>\s*<h2[^>]*>GET</h2>\s*</a>',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'<a[^>]+href=["\']([^"\']*get\.php\?md5=[^"\']+&(?:amp;)?key=[^"\']+)["\']', re.IGNORECASE
+    ),
+    re.compile(
+        r'<a\s+href=["\']([^"\']*get\.php[^"\']*)["\'][^>]*>[\s\S]*?<h2[^>]*>GET</h2>',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'href=["\']([^"\']*get\.php\?[^"\']*md5=[^"\']*&[^"\']*key=[^"\']+)["\']', re.IGNORECASE
+    ),
 ]
 
-def _get_source_priority() -> List[Dict]:
+
+def _get_source_priority() -> list[SourcePriorityEntry]:
     """Get the full source priority list.
 
     Fast sources come from user config (FAST_SOURCES_DISPLAY).
     Slow sources come from user config.
     """
-    # Fast sources - always first, configurable via settings/env
-    fast_sources: List[Dict] = []
-    configured_fast = config.get("FAST_SOURCES_DISPLAY") or []
+    from shelfmark.core import mirrors
+
+    fast_sources = _parse_source_priority_entries(
+        config.get("FAST_SOURCES_DISPLAY"),
+        allowed_ids={"aa-fast", "libgen"},
+    )
     has_donator_key = bool(config.get("AA_DONATOR_KEY"))
 
-    if isinstance(configured_fast, list):
-        for item in configured_fast:
-            if not isinstance(item, dict):
-                continue
-            source_id = item.get("id")
-            if source_id not in ("aa-fast", "libgen"):
-                continue
-            enabled = bool(item.get("enabled", True))
-            if source_id == "aa-fast" and not has_donator_key:
-                enabled = False
-            fast_sources.append({"id": source_id, "enabled": enabled})
+    for source in fast_sources:
+        if (not mirrors.has_download_source_mirror_configuration(source["id"])) or (
+            source["id"] == "aa-fast" and not has_donator_key
+        ):
+            source["enabled"] = False
 
-    # User's configured slow sources (config won't contain fast sources)
-    slow_sources = config.get("SOURCE_PRIORITY") or []
-
-    # Filter out any legacy fast source entries from old configs
-    slow_sources = [s for s in slow_sources if s["id"] not in ("aa-fast", "libgen")]
+    slow_sources = _parse_source_priority_entries(
+        config.get("SOURCE_PRIORITY"),
+        excluded_ids={"aa-fast", "libgen"},
+    )
+    for source in slow_sources:
+        if not mirrors.has_download_source_mirror_configuration(source["id"]):
+            source["enabled"] = False
 
     return fast_sources + slow_sources
 
@@ -131,7 +300,32 @@ def _is_source_enabled(source_id: str) -> bool:
     return False
 
 
-_SIZE_UNIT_PATTERN = re.compile(r'(kb|mb|gb|tb)', re.IGNORECASE)
+def _get_direct_download_unavailable_reason() -> str | None:
+    """Return a user-facing reason when Direct Download cannot be used."""
+    from shelfmark.core import mirrors
+
+    if not config.get("DIRECT_DOWNLOAD_ENABLED", False):
+        return (
+            "Direct Download is disabled. Enable the source in Settings and add your mirror URLs."
+        )
+
+    if not mirrors.has_aa_mirror_configuration():
+        return (
+            "Direct Download is not configured. Add at least one Anna's Archive mirror URL in "
+            "Settings."
+        )
+
+    return None
+
+
+def _ensure_direct_download_available() -> None:
+    """Raise a source-unavailable error when Direct Download is disabled or unconfigured."""
+    reason = _get_direct_download_unavailable_reason()
+    if reason:
+        raise SearchUnavailableError(reason)
+
+
+_SIZE_UNIT_PATTERN = re.compile(r"(kb|mb|gb|tb)", re.IGNORECASE)
 
 
 def _normalize_size(size_str: str) -> str:
@@ -139,11 +333,11 @@ def _normalize_size(size_str: str) -> str:
     return _SIZE_UNIT_PATTERN.sub(lambda m: m.group(1).upper(), size_str.strip())
 
 
-class SearchUnavailable(SourceUnavailableError):
+class SearchUnavailableError(SourceUnavailableError):
     """Raised when Anna's Archive cannot be reached via any mirror/DNS."""
 
 
-def search_books(query: str, filters: SearchFilters) -> List[BrowseRecord]:
+def search_books(query: str, filters: SearchFilters) -> list[BrowseRecord]:
     """Search for books matching the query.
 
     Args:
@@ -154,15 +348,14 @@ def search_books(query: str, filters: SearchFilters) -> List[BrowseRecord]:
         List[BrowseRecord]: List of matching books
 
     Raises:
-        SearchUnavailable: If Anna's Archive cannot be reached
+        SearchUnavailableError: If Anna's Archive cannot be reached
         Exception: If parsing fails
+
     """
     query_html = quote(query)
 
     if filters.isbn:
-        isbns = " || ".join(
-            [f"('isbn13:{isbn}' || 'isbn10:{isbn}')" for isbn in filters.isbn]
-        )
+        isbns = " || ".join([f"('isbn13:{isbn}' || 'isbn10:{isbn}')" for isbn in filters.isbn])
         query_html = quote(f"({isbns}) {query}")
 
     filters_query = ""
@@ -178,7 +371,7 @@ def search_books(query: str, filters: SearchFilters) -> List[BrowseRecord]:
         for value in filters.content:
             filters_query += f"&content={quote(value)}"
 
-    formats_to_use = filters.format if filters.format else config.SUPPORTED_FORMATS
+    formats_to_use = filters.format or _get_supported_formats()
 
     index = 1
     for filter_type, filter_values in vars(filters).items():
@@ -201,41 +394,44 @@ def search_books(query: str, filters: SearchFilters) -> List[BrowseRecord]:
     html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=False)
     if not html:
         # Network/mirror exhaustion path bubbles up so API can notify clients
-        raise SearchUnavailable("Unable to reach download source. Network restricted or mirrors are blocked.")
+        msg = "Unable to reach download source. Network restricted or mirrors are blocked."
+        raise SearchUnavailableError(msg)
 
     if "No files found." in html:
-        logger.info(f"No books found for query: {query}")
+        logger.info("No books found for query: %s", query)
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
-    tbody: Tag | NavigableString | None = soup.find("table")
+    soup = BeautifulSoup(_html_response_text(html), "html.parser")
+    tbody = soup.find("table")
 
-    if not tbody:
-        logger.warning(f"No results table found for query: {query}")
-        raise Exception("No books found. Please try another query.")
+    if tbody is None:
+        logger.warning("No results table found for query: %s", query)
+        msg = "No books found. Please try another query."
+        raise RuntimeError(msg)
+    if not isinstance(tbody, Tag):
+        msg = f"Expected results table tag, got {type(tbody).__name__}"
+        raise TypeError(msg)
 
     books = []
-    if isinstance(tbody, Tag):
-        for line_tr in tbody.find_all("tr"):
-            try:
-                book = _parse_search_result_row(line_tr)
-                if book:
-                    books.append(book)
-            except Exception as e:
-                logger.error_trace(f"Failed to parse search result row: {e}")
+    for line_tr in tbody.find_all("tr"):
+        book = _parse_search_result_row(line_tr)
+        if book:
+            books.append(book)
+
+    supported_formats = _get_supported_formats()
 
     books.sort(
         key=lambda x: (
-            config.SUPPORTED_FORMATS.index(x.format)
-            if x.format in config.SUPPORTED_FORMATS
-            else len(config.SUPPORTED_FORMATS)
+            supported_formats.index(x.format)
+            if x.format in supported_formats
+            else len(supported_formats)
         )
     )
 
     return books
 
 
-def get_book_info(book_id: str, fetch_download_count: bool = True) -> BrowseRecord:
+def get_book_info(book_id: str, *, fetch_download_count: bool = True) -> BrowseRecord:
     """Get detailed information for a specific book.
 
     Args:
@@ -245,28 +441,39 @@ def get_book_info(book_id: str, fetch_download_count: bool = True) -> BrowseReco
 
     Returns:
         BrowseRecord: Detailed book information including download URLs
+
     """
     url = f"{network.get_aa_base_url()}/md5/{book_id}"
     selector = network.AAMirrorSelector()
     html = downloader.html_get_page(url, selector=selector, allow_bypasser_fallback=False)
 
     if not html:
-        raise SearchUnavailable("Unable to reach download source. Network restricted or mirrors are blocked.")
+        msg = "Unable to reach download source. Network restricted or mirrors are blocked."
+        raise SearchUnavailableError(msg)
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_html_response_text(html), "html.parser")
 
-    return _parse_book_info_page(soup, book_id, fetch_download_count)
+    return _parse_book_info_page(soup, book_id, fetch_download_count=fetch_download_count)
 
 
-def _parse_search_result_row(row: Tag) -> Optional[BrowseRecord]:
+def _parse_search_result_row(row: Tag) -> BrowseRecord | None:
     """Parse a single search result row into a browse record."""
     try:
         if row.text.strip().lower().startswith("your ad here"):
             return None
+
         cells = row.find_all("td")
+        anchors = row.find_all("a", href=True)
+        if len(cells) < 11 or not anchors:
+            return None
+
+        record_id = (_get_attr(anchors[0], "href") or "").split("/")[-1]
+        if not record_id:
+            return None
+
         preview_img = cells[0].find("img")
-        if preview_img:
-            raw_src = preview_img["src"]
+        if isinstance(preview_img, Tag):
+            raw_src = _get_attr(preview_img, "src")
             preview = (
                 f"{network.get_aa_base_url()}{raw_src}"
                 if isinstance(raw_src, str) and raw_src.startswith("/")
@@ -275,45 +482,81 @@ def _parse_search_result_row(row: Tag) -> Optional[BrowseRecord]:
         else:
             preview = None
 
+        title = _first_stripped_text(cells[1].find("span"))
+        author = _first_stripped_text(cells[2].find("span"))
+        publisher = _first_stripped_text(cells[3].find("span"))
+        year = _first_stripped_text(cells[4].find("span"))
+        language = _first_stripped_text(cells[7].find("span"))
+        content = _first_stripped_text(cells[8].find("span"))
+        file_format = _first_stripped_text(cells[9].find("span"))
+        size = _first_stripped_text(cells[10].find("span"))
+
+        if (
+            title is None
+            or author is None
+            or publisher is None
+            or year is None
+            or language is None
+            or content is None
+            or file_format is None
+            or size is None
+        ):
+            return None
+
         return BrowseRecord(
-            id=row.find_all("a")[0]["href"].split("/")[-1],
-            title=cells[1].find("span").next,
+            id=record_id,
+            title=title,
             source="direct_download",
             preview=preview,
-            author=cells[2].find("span").next,
-            publisher=cells[3].find("span").next,
-            year=cells[4].find("span").next,
-            language=cells[7].find("span").next,
-            content=cells[8].find("span").next.lower(),
-            format=cells[9].find("span").next.lower(),
-            size=cells[10].find("span").next,
+            author=author,
+            publisher=publisher,
+            year=year,
+            language=language,
+            content=content.lower() if content else None,
+            format=file_format.lower() if file_format else None,
+            size=size,
         )
-    except Exception as e:
+    except (AttributeError, IndexError, KeyError, TypeError) as e:
         logger.error_trace(f"Error parsing search result row: {e}")
         return None
 
 
-def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_count: bool = True) -> BrowseRecord:
+def _parse_book_info_page(
+    soup: BeautifulSoup,
+    book_id: str,
+    *,
+    fetch_download_count: bool = True,
+) -> BrowseRecord:
     """Parse the book info page HTML into a browse record."""
     data = soup.select_one("body > main > div:nth-of-type(1)")
 
     if not data:
-        raise Exception(f"Failed to parse book info for ID: {book_id}")
+        msg = f"Failed to parse book info for ID: {book_id}"
+        raise RuntimeError(msg)
 
     preview: str = ""
 
     node = data.select_one("div:nth-of-type(1) > img")
-    if node:
-        preview_value = node.get("src", "")
-        if isinstance(preview_value, list):
-            preview = preview_value[0]
-        else:
-            preview = preview_value
+    if isinstance(node, Tag):
+        preview = _get_attr(node, "src") or ""
         if isinstance(preview, str) and preview.startswith("/"):
             preview = f"{network.get_aa_base_url()}{preview}"
 
-    data = soup.find_all("div", {"class": "main-inner"})[0].find_next("div")
-    divs = list(data.children)
+    main_inner = next(
+        (tag for tag in soup.find_all("div", {"class": "main-inner"}) if isinstance(tag, Tag)),
+        None,
+    )
+    if main_inner is None:
+        msg = f"Failed to parse book details for ID: {book_id}"
+        raise RuntimeError(msg)
+
+    details_container = main_inner.find_next("div")
+    if not isinstance(details_container, Tag):
+        msg = f"Expected details container tag for book ID {book_id}, got {type(details_container).__name__}"
+        raise TypeError(msg)
+
+    original_nodes = list(details_container.children)
+    divs = [node for node in original_nodes if isinstance(node, Tag)]
 
     slow_urls_no_waitlist: set[str] = set()
     slow_urls_with_waitlist: set[str] = set()
@@ -321,20 +564,27 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
     for anchor in soup.find_all("a"):
         try:
             text = anchor.text.strip().lower()
-            href = anchor.get("href", "")
+            href = _get_attr(anchor, "href")
             if not href:
                 continue
 
             next_text = ""
-            if anchor.next and anchor.next.next:
-                next_text = getattr(anchor.next.next, 'text', str(anchor.next.next)).strip().lower()
+            next_elements = anchor.next_elements
+            next(next_elements, None)
+            second_next = next(next_elements, None)
+            if second_next is not None:
+                next_text = (
+                    second_next.get_text(strip=True).lower()
+                    if isinstance(second_next, Tag)
+                    else str(second_next).strip().lower()
+                )
 
             if text.startswith("slow partner server") and "waitlist" in next_text:
                 if "no waitlist" in next_text:
                     slow_urls_no_waitlist.add(href)
                 else:
                     slow_urls_with_waitlist.add(href)
-        except Exception:
+        except AttributeError, TypeError:
             pass
 
     logger.debug(
@@ -360,19 +610,20 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
             urls.append(abs_url)
             _url_source_types[abs_url] = "aa-slow-wait"
 
-    original_divs = divs
-    divs = [div for div in divs if div.text.strip() != ""]
+    divs = [div for div in divs if div.get_text(strip=True)]
 
     all_details = _find_in_divs(divs, " · ")
-    format = ""
+    file_format = ""
     size = ""
     content = ""
+    supported_formats = _get_supported_formats()
 
     for _details in all_details:
         _details = _details.split(" · ")
         for f in _details:
-            if format == "" and f.strip().lower() in config.SUPPORTED_FORMATS:
-                format = f.strip().lower()
+            stripped_lower = f.strip().lower()
+            if file_format == "" and stripped_lower in supported_formats:
+                file_format = f.strip().lower()
             if size == "" and any(u in f.strip().lower() for u in ("mb", "kb", "gb")):
                 size = _normalize_size(f)
             if content == "":
@@ -380,11 +631,11 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
                     if ct in f.strip().lower():
                         content = ct
                         break
-        if format == "" or size == "":
+        if file_format == "" or size == "":
             for f in _details:
                 stripped = f.strip().lower()
-                if format == "" and stripped and " " not in stripped:
-                    format = stripped
+                if file_format == "" and stripped and " " not in stripped:
+                    file_format = stripped
                 if size == "" and "." in stripped:
                     size = _normalize_size(f)
 
@@ -401,25 +652,38 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
         content=content,
         publisher=(_find_in_divs(divs, "icon-[mdi--company]", is_class=True) or [""])[0],
         author=(_find_in_divs(divs, "icon-[mdi--user-edit]", is_class=True) or [""])[0],
-        format=format,
+        format=file_format,
         size=size,
         description=description,
         download_urls=urls,
     )
 
     # Extract additional metadata
-    info = _extract_book_metadata(original_divs[-6])
+    metadata_node = original_nodes[-6]
+    if not isinstance(metadata_node, Tag):
+        msg = f"Expected metadata container tag for book ID {book_id}, got {type(metadata_node).__name__}"
+        raise TypeError(msg)
+    info = _extract_book_metadata(metadata_node)
 
     if fetch_download_count:
         try:
             summary_url = f"{network.get_aa_base_url()}/dyn/md5/summary/{book_id}"
-            summary_response = downloader.html_get_page(summary_url, selector=network.AAMirrorSelector(), allow_bypasser_fallback=False)
+            summary_response = downloader.html_get_page(
+                summary_url, selector=network.AAMirrorSelector(), allow_bypasser_fallback=False
+            )
             if summary_response:
-                summary_data = json.loads(summary_response)
+                summary_data = json.loads(_html_response_text(summary_response))
                 if "downloads_total" in summary_data:
                     info["Downloads"] = [str(summary_data["downloads_total"])]
-        except Exception as e:
-            logger.debug(f"Failed to fetch download count for {book_id}: {e}")
+        except (
+            SearchUnavailableError,
+            RuntimeError,
+            json.JSONDecodeError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ) as e:
+            logger.debug("Failed to fetch download count for %s: %s", book_id, e)
 
     book_info.info = info
 
@@ -435,9 +699,9 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str, fetch_download_coun
     return book_info
 
 
-def _find_in_divs(divs: List, text: str, is_class: bool = False) -> List[str]:
+def _find_in_divs(divs: list[Tag], text: str, *, is_class: bool = False) -> list[str]:
     """Find divs containing text or having a specific class."""
-    results = []
+    results: list[str] = []
     for div in divs:
         if is_class:
             if div.find(class_=text):
@@ -447,7 +711,7 @@ def _find_in_divs(divs: List, text: str, is_class: bool = False) -> List[str]:
     return results
 
 
-def _get_next_value_div(label_div: Tag) -> Optional[Tag]:
+def _get_next_value_div(label_div: Tag) -> Tag | None:
     """Find the next sibling div that holds the value for a metadata label."""
     sibling = label_div.next_sibling
     while sibling:
@@ -457,14 +721,13 @@ def _get_next_value_div(label_div: Tag) -> Optional[Tag]:
     return None
 
 
-def _extract_book_description(soup: BeautifulSoup) -> Optional[str]:
+def _extract_book_description(soup: BeautifulSoup) -> str | None:
     """Extract the primary or alternative description from the book page."""
     container = soup.select_one(".js-md5-top-box-description")
     if not container:
         return None
 
-    description: Optional[str] = None
-    alternative: Optional[str] = None
+    alternative: str | None = None
 
     label_divs = container.select("div.text-xs.text-gray-500.uppercase")
     for label_div in label_divs:
@@ -495,17 +758,17 @@ def _extract_book_description(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
-def _extract_book_metadata(metadata_divs) -> Dict[str, List[str]]:
+def _extract_book_metadata(metadata_divs: Tag) -> dict[str, list[str]]:
     """Extract metadata from book info divs."""
-    info: Dict[str, set[str]] = {}
+    info: dict[str, set[str]] = {}
 
     sub_datas = metadata_divs.find_all("div")[0]
-    for sub_data in sub_datas.children:
-        if sub_data.text.strip() == "":
+    for sub_data in _iter_child_tags(sub_datas):
+        if sub_data.get_text(strip=True) == "":
             continue
-        children = list(sub_data.children)
-        key = children[0].text.strip()
-        value = children[1].text.strip()
+        children = list(_iter_child_tags(sub_data))
+        key = children[0].get_text(strip=True)
+        value = children[1].get_text(strip=True)
         if key not in info:
             info[key] = set()
         info[key].add(value)
@@ -518,7 +781,7 @@ def _extract_book_metadata(metadata_divs) -> Dict[str, List[str]]:
     }
 
 
-def _parse_series_number_from_text(value: str) -> Optional[float]:
+def _parse_series_number_from_text(value: str) -> float | None:
     text = (value or "").strip().lower()
     if not text:
         return None
@@ -541,7 +804,7 @@ def _parse_series_number_from_text(value: str) -> Optional[float]:
     return None
 
 
-def _extract_series_from_info(info: Optional[Dict[str, List[str]]]) -> tuple[Optional[str], Optional[float]]:
+def _extract_series_from_info(info: dict[str, list[str]] | None) -> tuple[str | None, float | None]:
     if not isinstance(info, dict):
         return None, None
 
@@ -582,6 +845,7 @@ def _get_source_info(link: str) -> tuple[str, str]:
 
     Returns:
         Tuple of (log_label, friendly_name)
+
     """
     # Check detailed source type mapping first (for AA slow distinction)
     if link in _url_source_types:
@@ -601,7 +865,7 @@ def _friendly_source_name(link: str) -> str:
     return _get_source_info(link)[1]
 
 
-def _group_urls_by_source(urls: List[str], urls_by_source: Dict[str, List[str]]) -> None:
+def _group_urls_by_source(urls: list[str], urls_by_source: dict[str, list[str]]) -> None:
     """Group URLs into urls_by_source dict by their source type."""
     for url in urls:
         source_type = _url_source_types.get(url)
@@ -609,7 +873,7 @@ def _group_urls_by_source(urls: List[str], urls_by_source: Dict[str, List[str]])
             urls_by_source.setdefault(source_type, []).append(url)
 
 
-def _fetch_aa_page_urls(book_info: BrowseRecord, urls_by_source: Dict[str, List[str]]) -> None:
+def _fetch_aa_page_urls(book_info: BrowseRecord, urls_by_source: dict[str, list[str]]) -> None:
     """Fetch and parse AA page, populating urls_by_source dict.
 
     Groups existing book_info.download_urls by source type. If book_info
@@ -622,18 +886,18 @@ def _fetch_aa_page_urls(book_info: BrowseRecord, urls_by_source: Dict[str, List[
     try:
         fresh_book_info = get_book_info(book_info.id, fetch_download_count=False)
         _group_urls_by_source(fresh_book_info.download_urls, urls_by_source)
-    except Exception as e:
-        logger.warning(f"Failed to fetch AA page: {e}")
+    except (SearchUnavailableError, RuntimeError, TypeError, AttributeError) as e:
+        logger.warning("Failed to fetch AA page: %s", e)
 
 
 def _get_urls_for_source(
     source_id: str,
     book_info: BrowseRecord,
     selector: network.AAMirrorSelector,
-    cancel_flag: Optional[Event],
-    status_callback: Optional[Callable[[str, Optional[str]], None]],
-    urls_by_source: Dict[str, List[str]],
-) -> List[str]:
+    cancel_flag: Event | None,
+    status_callback: Callable[[str, str | None], None] | None,
+    urls_by_source: dict[str, list[str]],
+) -> list[str]:
     """Get URLs for a specific source, fetching lazily if needed."""
     # AA Fast - generate URL dynamically
     if source_id == "aa-fast":
@@ -665,7 +929,12 @@ def _get_urls_for_source(
     if source_id == "welib":
         if status_callback:
             status_callback("resolving", "Fetching welib sources")
-        return _get_download_urls_from_welib(book_info.id, selector=selector, cancel_flag=cancel_flag, status_callback=status_callback)
+        return _get_download_urls_from_welib(
+            book_info.id,
+            selector=selector,
+            cancel_flag=cancel_flag,
+            status_callback=status_callback,
+        )
 
     # AA page sources - fetch AA page if not already done
     if source_id in _AA_PAGE_SOURCES:
@@ -684,92 +953,122 @@ def _try_download_url(
     source_id: str,
     book_info: BrowseRecord,
     book_path: Path,
-    progress_callback: Optional[Callable[[float], None]],
-    cancel_flag: Optional[Event],
-    status_callback: Optional[Callable[[str, Optional[str]], None]],
+    progress_callback: Callable[[float], None] | None,
+    cancel_flag: Event | None,
+    status_callback: Callable[[str, str | None], None] | None,
     selector: network.AAMirrorSelector,
-    source_context: str
-) -> Optional[str]:
+    source_context: str,
+) -> str | None:
     """Attempt to download from a single URL.
 
     Returns: download URL on success, None on failure.
     """
     try:
-        logger.info(f"Trying download source [{source_id}]: {url}")
+        logger.info("Trying download source [%s]: %s", source_id, url)
 
         if status_callback:
             status_callback("resolving", f"Trying {source_context}")
 
-        download_url = _get_download_url(url, book_info.title, cancel_flag, status_callback, selector, source_context)
+        download_url = _get_download_url(
+            url, book_info.title, cancel_flag, status_callback, selector, source_context
+        )
         if not download_url:
-            raise Exception("No download URL resolved")
+            _raise_runtime_error("No download URL resolved")
 
-        logger.info(f"Resolved download URL [{source_id}]: {download_url}")
+        logger.info("Resolved download URL [%s]: %s", source_id, download_url)
 
         data = downloader.download_url(
-            download_url, book_info.size or "",
-            progress_callback, cancel_flag, selector,
-            status_callback, referer=url
+            download_url,
+            book_info.size or "",
+            progress_callback,
+            cancel_flag,
+            selector,
+            status_callback,
+            referer=url,
         )
 
         if not data:
-            raise Exception("No data received from download")
+            _raise_runtime_error("No data received from download")
 
         file_size = data.tell()
         if file_size < _MIN_VALID_FILE_SIZE:
-            logger.warning(f"Downloaded file too small ({file_size} bytes), likely an error page")
-            raise Exception(f"File too small ({file_size} bytes)")
+            logger.warning("Downloaded file too small (%s bytes), likely an error page", file_size)
+            _raise_runtime_error(f"File too small ({file_size} bytes)")
 
-        logger.debug(f"Download finished ({file_size} bytes). Writing to {book_path}")
+        logger.debug("Download finished (%s bytes). Writing to %s", file_size, book_path)
         data.seek(0)
-        with open(book_path, "wb") as f:
+        with book_path.open("wb") as f:
             f.write(data.getbuffer())
 
-        return download_url
-
-    except Exception as e:
-        logger.warning(f"Failed to download from {url} (source={source_id}): {e}")
+    except (
+        RuntimeError,
+        requests.exceptions.RequestException,
+        OSError,
+        KeyError,
+        ValueError,
+        TypeError,
+        AttributeError,
+    ) as e:
+        logger.warning("Failed to download from %s (source=%s): %s", url, source_id, e)
         return None
+    else:
+        return download_url
 
 
 def _get_download_urls_from_welib(
     book_id: str,
-    selector: Optional[network.AAMirrorSelector] = None,
-    cancel_flag: Optional[Event] = None,
-    status_callback: Optional[Callable[[str, Optional[str]], None]] = None
-) -> List[str]:
+    selector: network.AAMirrorSelector | None = None,
+    cancel_flag: Event | None = None,
+    status_callback: Callable[[str, str | None], None] | None = None,
+) -> list[str]:
     """Get download URLs from welib.org (bypasser required)."""
     from shelfmark.core import mirrors
 
     if not _is_source_enabled("welib"):
         return []
-    url = mirrors.get_welib_url_template().format(md5=book_id)
-    logger.info(f"Fetching welib download URLs for {book_id}")
+    template = mirrors.get_welib_url_template()
+    if not template:
+        return []
+    url = template.format(md5=book_id)
+    logger.info("Fetching welib download URLs for %s", book_id)
     try:
-        html = downloader.html_get_page(url, use_bypasser=True, selector=selector or network.AAMirrorSelector(), cancel_flag=cancel_flag, status_callback=status_callback)
-    except Exception as exc:
+        html = downloader.html_get_page(
+            url,
+            use_bypasser=True,
+            selector=selector or network.AAMirrorSelector(),
+            cancel_flag=cancel_flag,
+            status_callback=status_callback,
+        )
+    except (
+        SearchUnavailableError,
+        requests.exceptions.RequestException,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        AttributeError,
+    ) as exc:
         logger.error_trace(f"Welib fetch failed for {book_id}: {exc}")
         return []
     if not html:
-        logger.warning(f"Welib page empty for {book_id}")
+        logger.warning("Welib page empty for %s", book_id)
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_html_response_text(html), "html.parser")
     links = [
-        downloader.get_absolute_url(url, a["href"])
+        downloader.get_absolute_url(url, href)
         for a in soup.find_all("a", href=True)
-        if "/slow_download/" in a["href"]
+        if (href := _get_attr(a, "href")) and "/slow_download/" in href
     ]
     return list(dict.fromkeys(links))  # Dedupe while preserving order
 
 
-def _extract_libgen_download_url(link: str, cancel_flag: Optional[Event] = None) -> str:
+def _extract_libgen_download_url(link: str, cancel_flag: Event | None = None) -> str:
     """Extract download URL from Libgen ads.php page using direct HTTP."""
     if cancel_flag and cancel_flag.is_set():
         return ""
 
     base_url = "/".join(link.split("/")[:3])
-    logger.debug(f"Libgen fast: trying {link}")
+    logger.debug("Libgen fast: trying %s", link)
 
     try:
         response = requests.get(
@@ -781,52 +1080,54 @@ def _extract_libgen_download_url(link: str, cancel_flag: Optional[Event] = None)
             verify=network.get_ssl_verify(link),
         )
 
-        if response.status_code != 200:
-            logger.debug(f"Libgen fast: {link} returned {response.status_code}")
+        if response.status_code != HTTPStatus.OK:
+            logger.debug("Libgen fast: %s returned %s", link, response.status_code)
             return ""
 
         html = response.text
         final_url = response.url
 
         if "libgen" not in final_url.lower() and "ads.php" not in final_url.lower():
-            logger.debug(f"Libgen fast: redirected away to {final_url}")
+            logger.debug("Libgen fast: redirected away to %s", final_url)
             return ""
 
         if "get.php" not in html:
-            logger.debug(f"Libgen fast: page doesn't contain get.php")
+            logger.debug("Libgen fast: page doesn't contain get.php")
             return ""
 
         download_url = None
         for pattern in _LIBGEN_GET_PATTERNS:
             match = pattern.search(html)
             if match:
-                download_url = match.group(1).replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<")
+                download_url = (
+                    match.group(1).replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<")
+                )
                 break
 
         if not download_url:
-            logger.debug(f"Libgen fast: couldn't extract GET link")
+            logger.debug("Libgen fast: couldn't extract GET link")
             return ""
         if not download_url.startswith("http"):
             download_url = f"{base_url}/{download_url.lstrip('/')}"
 
-        logger.debug(f"Libgen fast: extracted {download_url}")
-        return download_url
-
+        logger.debug("Libgen fast: extracted %s", download_url)
     except requests.exceptions.RequestException as e:
-        logger.debug(f"Libgen fast: request failed: {e}")
+        logger.debug("Libgen fast: request failed: %s", e)
         return ""
-    except Exception as e:
-        logger.warning(f"Libgen fast: unexpected error: {e}")
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Libgen fast: unexpected error: %s", e)
         return ""
+    else:
+        return download_url
 
 
 def _download_book(
     book_info: BrowseRecord,
     book_path: Path,
-    progress_callback: Optional[Callable[[float], None]] = None,
-    cancel_flag: Optional[Event] = None,
-    status_callback: Optional[Callable[[str, Optional[str]], None]] = None
-) -> Optional[str]:
+    progress_callback: Callable[[float], None] | None = None,
+    cancel_flag: Event | None = None,
+    status_callback: Callable[[str, str | None], None] | None = None,
+) -> str | None:
     """Download a book using sources in configured priority order.
 
     Returns: Download URL if successful, None otherwise.
@@ -852,17 +1153,21 @@ def _download_book(
 
         # Skip if source requires CF bypass and it's not enabled
         if source_id in _CF_BYPASS_REQUIRED and not config.USE_CF_BYPASS:
-            logger.debug(f"Skipping {source_id} - requires CF bypass")
+            logger.debug("Skipping %s - requires CF bypass", source_id)
             continue
 
         # Skip if source has failed too many times
         if source_failures.get(source_id, 0) >= _SOURCE_FAILURE_THRESHOLD:
-            logger.debug(f"Skipping {source_id} - too many failures")
+            logger.debug("Skipping %s - too many failures", source_id)
             continue
 
         # Get URLs for this source (lazy-loads as needed)
         urls_to_try = _get_urls_for_source(
-            source_id, book_info, selector, cancel_flag, status_callback,
+            source_id,
+            book_info,
+            selector,
+            cancel_flag,
+            status_callback,
             urls_by_source,
         )
 
@@ -875,7 +1180,7 @@ def _download_book(
             rotation = rotation_value % len(urls_to_try)
             urls_to_try = urls_to_try[rotation:] + urls_to_try[:rotation]
             if rotation:
-                logger.debug(f"Rotated {source_id} URLs by {rotation}")
+                logger.debug("Rotated %s URLs by %s", source_id, rotation)
 
         # Try each URL for this source
         for url in urls_to_try:
@@ -890,9 +1195,15 @@ def _download_book(
                 source_context = f"{friendly_name} (Server #{url_attempt_counter})"
 
             result = _try_download_url(
-                url, source_id, book_info, book_path,
-                progress_callback, cancel_flag, status_callback, selector,
-                source_context
+                url,
+                source_id,
+                book_info,
+                book_path,
+                progress_callback,
+                cancel_flag,
+                status_callback,
+                selector,
+                source_context,
             )
 
             if result:
@@ -902,7 +1213,7 @@ def _download_book(
 
             # Check if we've hit the failure threshold
             if source_failures[source_id] >= _SOURCE_FAILURE_THRESHOLD:
-                logger.info(f"Source {source_id} hit failure threshold, moving to next source")
+                logger.info("Source %s hit failure threshold, moving to next source", source_id)
                 break
 
     if status_callback:
@@ -913,10 +1224,10 @@ def _download_book(
 def _get_download_url(
     link: str,
     title: str,
-    cancel_flag: Optional[Event] = None,
-    status_callback: Optional[Callable[[str, Optional[str]], None]] = None,
-    selector: Optional[network.AAMirrorSelector] = None,
-    source_context: Optional[str] = None
+    cancel_flag: Event | None = None,
+    status_callback: Callable[[str, str | None], None] | None = None,
+    selector: network.AAMirrorSelector | None = None,
+    source_context: str | None = None,
 ) -> str:
     """Extract actual download URL from various source pages.
 
@@ -927,17 +1238,20 @@ def _get_download_url(
         status_callback: Optional callback for status updates
         selector: Optional AA mirror selector
         source_context: Optional context string like "Welib (1/12)" for status messages
+
     """
     sel = selector or network.AAMirrorSelector()
 
     # AA fast download API (JSON response)
-    if "/dyn/api/fast_download.json" in link:
-        page = downloader.html_get_page(link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback)
+    if link.startswith(f"{network.get_aa_base_url()}/dyn/api/fast_download.json"):
+        page = downloader.html_get_page(
+            link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback
+        )
         if not page:
             logger.warning("AA fast download: empty response")
             return ""
         try:
-            data = json.loads(page)
+            data = json.loads(_html_response_text(page))
         except (json.JSONDecodeError, TypeError) as exc:
             logger.warning("AA fast download: invalid JSON response: %s", exc)
             return ""
@@ -947,8 +1261,10 @@ def _get_download_url(
                 status_callback("resolving", f"AA fast: {data['error']}")
             return ""
         download_url = data.get("download_url", "")
-        if not download_url:
-            logger.warning("AA fast download: response missing download_url (keys: %s)", list(data.keys()))
+        if not isinstance(download_url, str) or not download_url:
+            logger.warning(
+                "AA fast download: response missing download_url (keys: %s)", list(data.keys())
+            )
             return ""
         logger.info("AA fast download: resolved download URL")
         return downloader.get_absolute_url(link, download_url)
@@ -956,35 +1272,43 @@ def _get_download_url(
     if "/ads.php?md5=" in link and any(domain in link for domain in _get_libgen_domains()):
         return _extract_libgen_download_url(link, cancel_flag)
 
-    html = downloader.html_get_page(link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback)
+    html = downloader.html_get_page(
+        link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback
+    )
     if not html:
         return ""
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_html_response_text(html), "html.parser")
     url = ""
 
     # Z-Library
-    if link.startswith("https://z-lib."):
+    if _is_configured_zlib_link(link):
         dl = soup.find("a", href=True, class_="addDownloadedBook")
         if not dl:
             # Retry after delay if page not fully loaded
             time.sleep(2)
-            html = downloader.html_get_page(link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback)
+            html = downloader.html_get_page(
+                link, selector=sel, cancel_flag=cancel_flag, status_callback=status_callback
+            )
             if html:
-                soup = BeautifulSoup(html, "html.parser")
+                soup = BeautifulSoup(_html_response_text(html), "html.parser")
                 dl = soup.find("a", href=True, class_="addDownloadedBook")
-        url = dl["href"] if dl else ""
+        url = (_get_attr(dl, "href") or "") if isinstance(dl, Tag) else ""
 
     # AA slow download / partner servers
     elif "/slow_download/" in link:
-        url = _extract_slow_download_url(soup, link, title, cancel_flag, status_callback, sel, source_context)
+        url = _extract_slow_download_url(
+            soup, link, title, cancel_flag, status_callback, sel, source_context
+        )
 
     else:
-        get_btn = soup.find("a", string="GET") or soup.find("a", string="Download")
+        get_btn = _find_first_anchor_with_text(soup, "GET") or _find_first_anchor_with_text(
+            soup, "Download"
+        )
         if get_btn:
-            url = get_btn.get("href", "")
+            url = _get_attr(get_btn, "href") or ""
         else:
-            logger.warning(f"Unknown source type, couldn't find download link: {link}")
+            logger.warning("Unknown source type, couldn't find download link: %s", link)
             url = ""
 
     return downloader.get_absolute_url(link, url)
@@ -994,10 +1318,10 @@ def _extract_slow_download_url(
     soup: BeautifulSoup,
     link: str,
     title: str,
-    cancel_flag: Optional[Event],
-    status_callback,
-    selector,
-    source_context: Optional[str] = None
+    cancel_flag: Event | None,
+    status_callback: Callable[[str, str | None], None] | None,
+    selector: network.AAMirrorSelector,
+    source_context: str | None = None,
 ) -> str:
     """Extract download URL from AA slow download pages."""
     html_str = str(soup)
@@ -1008,24 +1332,30 @@ def _extract_slow_download_url(
         if url.startswith("http") and "/slow_download/" not in url:
             return url
 
-    dl_link = soup.find("a", href=True, string="📚 Download now")
-    if not dl_link:
-        dl_link = soup.find("a", href=True, string=lambda s: s and "Download now" in s)
+    dl_link = _find_first_anchor_with_text(soup, "📚 Download now") or _find_first_anchor_with_text(
+        soup, "Download now", contains=True
+    )
     if dl_link:
-        return dl_link["href"]
+        return _get_attr(dl_link, "href") or ""
 
     for a_tag in soup.find_all("a", href=True):
         if a_tag.has_attr("download"):
-            href = a_tag["href"]
+            href = _get_attr(a_tag, "href")
+            if not href:
+                continue
             if href.startswith("http") and "/slow_download/" not in href:
                 return href
 
-    for span in soup.find_all("span", class_=lambda c: c and "whitespace-normal" in c):
+    for span in soup.find_all("span"):
+        if not _tag_has_class_containing(span, "whitespace-normal"):
+            continue
         text = span.get_text(strip=True)
         if text.startswith(("http://", "https://")) and "/slow_download/" not in text:
             return text
 
-    for span in soup.find_all("span", class_=lambda c: c and "bg-gray-200" in c):
+    for span in soup.find_all("span"):
+        if not _tag_has_class_containing(span, "bg-gray-200"):
+            continue
         text = span.get_text(strip=True)
         if text.startswith(("http://", "https://")):
             return text
@@ -1036,106 +1366,129 @@ def _extract_slow_download_url(
         if url.startswith("http") and "/slow_download/" not in url:
             return url
 
-    copy_text = soup.find(string=lambda s: s and "copy this url" in s.lower())
+    copy_text = _find_text_node(soup, "copy this url")
     if copy_text and copy_text.parent:
         parent = copy_text.parent
         next_link = parent.find_next("a", href=True)
-        if next_link and next_link.get("href"):
-            return next_link["href"]
+        if isinstance(next_link, Tag):
+            next_href = _get_attr(next_link, "href")
+            if next_href:
+                return next_href
         code_elem = parent.find_next("code")
-        if code_elem:
+        if isinstance(code_elem, Tag):
             return code_elem.get_text(strip=True)
         for sibling in parent.find_next_siblings():
-            text = sibling.get_text(strip=True) if hasattr(sibling, 'get_text') else str(sibling).strip()
+            text = (
+                sibling.get_text(strip=True) if isinstance(sibling, Tag) else str(sibling).strip()
+            )
             if text.startswith("http"):
                 return text
 
     countdown_seconds = _extract_countdown_seconds(soup, html_str)
     if countdown_seconds > 0:
-        MAX_COUNTDOWN_SECONDS = 600
-        sleep_time = min(countdown_seconds, MAX_COUNTDOWN_SECONDS)
-        if countdown_seconds > MAX_COUNTDOWN_SECONDS:
-            logger.warning(f"Countdown {countdown_seconds}s exceeds max, capping at {MAX_COUNTDOWN_SECONDS}s")
-        logger.info(f"AA waitlist: {sleep_time}s for {title}")
+        max_countdown_seconds = 600
+        sleep_time = min(countdown_seconds, max_countdown_seconds)
+        if countdown_seconds > max_countdown_seconds:
+            logger.warning(
+                "Countdown %ss exceeds max, capping at %ss",
+                countdown_seconds,
+                max_countdown_seconds,
+            )
+        logger.info("AA waitlist: %ss for %s", sleep_time, title)
 
         # Live countdown with status updates
         for remaining in range(sleep_time, 0, -1):
-            wait_msg = f"{source_context} - Waiting {remaining}s" if source_context else f"Waiting {remaining}s"
+            wait_msg = (
+                f"{source_context} - Waiting {remaining}s"
+                if source_context
+                else f"Waiting {remaining}s"
+            )
             if status_callback:
                 status_callback("resolving", wait_msg)
 
             # Wait 1 second (or until cancelled)
             if cancel_flag and cancel_flag.wait(timeout=1):
-                logger.info(f"Cancelled wait for {title}")
+                logger.info("Cancelled wait for %s", title)
                 return ""
 
         # After countdown, update status and re-fetch
         if status_callback and source_context:
             status_callback("resolving", f"{source_context} - Fetching")
 
-        return _get_download_url(link, title, cancel_flag, status_callback, selector, source_context)
+        return _get_download_url(
+            link, title, cancel_flag, status_callback, selector, source_context
+        )
 
     link_texts = [a.get_text(strip=True)[:50] for a in soup.find_all("a", href=True)[:10]]
-    logger.warning(f"No download URL found. First 10 links: {link_texts}")
+    logger.warning("No download URL found. First 10 links: %s", link_texts)
     return ""
 
 
 def _extract_countdown_seconds(soup: BeautifulSoup, html_str: str) -> int:
     """Extract countdown timer seconds from AA slow download page."""
     countdown_elem = soup.find("span", class_="js-partner-countdown")
-    if countdown_elem:
-        try:
-            seconds = int(countdown_elem.get_text(strip=True))
-            if 0 < seconds < 300:
-                return seconds
-        except (ValueError, TypeError):
-            pass
+    if isinstance(countdown_elem, Tag):
+        seconds = _parse_countdown_seconds_from_element(countdown_elem)
+        if seconds is not None:
+            return seconds
 
-    for elem in soup.find_all(["span", "div"], class_=lambda c: c and ("timer" in c.lower() or "countdown" in c.lower())):
-        try:
-            seconds = int(elem.get_text(strip=True))
-            if 0 < seconds < 300:
-                return seconds
-        except (ValueError, TypeError):
-            pass
+    for elem in soup.find_all(["span", "div"]):
+        if not (
+            _tag_has_class_containing(elem, "timer") or _tag_has_class_containing(elem, "countdown")
+        ):
+            continue
+        seconds = _parse_countdown_seconds_from_element(elem)
+        if seconds is not None:
+            return seconds
 
     countdown_attr = re.search(r'data-countdown=["\'](\d+)["\']', html_str)
     if countdown_attr:
         seconds = int(countdown_attr.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
 
-    js_countdown = re.search(r'countdown:\s*(\d+)', html_str)
+    js_countdown = re.search(r"countdown:\s*(\d+)", html_str)
     if js_countdown:
         seconds = int(js_countdown.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
-
-    js_var = re.search(r'(?:var|let|const)\s+countdown\s*=\s*(\d+)', html_str)
+    js_var = re.search(r"(?:var|let|const)\s+countdown\s*=\s*(\d+)", html_str)
     if js_var:
         seconds = int(js_var.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
 
-    countdown_secs = re.search(r'countdownSeconds\s*=\s*(\d+)', html_str)
+    countdown_secs = re.search(r"countdownSeconds\s*=\s*(\d+)", html_str)
     if countdown_secs:
         seconds = int(countdown_secs.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
 
     json_countdown = re.search(r'["\']countdown[_-]?seconds["\']\s*:\s*(\d+)', html_str)
     if json_countdown:
         seconds = int(json_countdown.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
 
-    wait_text = re.search(r'wait\s+(\d+)\s+seconds', html_str, re.IGNORECASE)
+    wait_text = re.search(r"wait\s+(\d+)\s+seconds", html_str, re.IGNORECASE)
     if wait_text:
         seconds = int(wait_text.group(1))
-        if 0 < seconds < 300:
+        if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
             return seconds
 
     return 0
+
+
+def _parse_countdown_seconds_from_element(element: Tag) -> int | None:
+    """Parse an integer countdown from a tag, returning None when invalid."""
+    try:
+        seconds = int(element.get_text(strip=True))
+    except ValueError, TypeError:
+        return None
+
+    if 0 < seconds < _AA_COUNTDOWN_MAX_SECONDS:
+        return seconds
+    return None
 
 
 def _browse_record_to_release(record: BrowseRecord) -> Release:
@@ -1166,23 +1519,24 @@ def _browse_record_to_release(record: BrowseRecord) -> Release:
             "description": record.description,
             "download_urls": record.download_urls,
             "info": record.info,
-        }
+        },
     )
 
 
 @register_source("direct_download")
 class DirectDownloadSource(ReleaseSource):
-    """
-    Direct download source - searches web sources for books.
+    """Direct download source - searches web sources for books.
 
     This wraps the search_books() functionality to provide releases
     via the plugin interface.
     """
+
     name = "direct_download"
     display_name = "Direct Download"
-    supported_content_types = ["ebook"]  # Direct downloads only support ebooks
+    supported_content_types: ClassVar[list[str]] = ["ebook"]  # Direct downloads only support ebooks
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize per-instance search state for direct downloads."""
         # Tracks which search method was used in the last search() call
         # "isbn" = ISBN search returned results, "title_author" = title+author was used
         self._last_search_type: str = "title_author"
@@ -1238,15 +1592,16 @@ class DirectDownloadSource(ReleaseSource):
         record_id: str,
         *,
         fetch_download_count: bool = True,
-    ) -> Optional[BrowseRecord]:
+    ) -> BrowseRecord | None:
         """Resolve a direct-download record for direct-mode info/download flows."""
+        _ensure_direct_download_available()
         return get_book_info(record_id, fetch_download_count=fetch_download_count)
 
     def search_results_are_releases(self) -> bool:
         """Direct search results already represent concrete downloadable releases."""
         return True
 
-    def get_destination_override(self, task: DownloadTask) -> Optional[Path]:
+    def get_destination_override(self, task: DownloadTask) -> Path | None:
         """Apply Anna's Archive content-type routing when configured."""
         if check_audiobook(task.content_type):
             return None
@@ -1258,36 +1613,41 @@ class DirectDownloadSource(ReleaseSource):
         filters: SearchFilters,
         *,
         search_label: str,
-    ) -> List[BrowseRecord]:
+    ) -> list[BrowseRecord]:
         """Retry AA queries without a language filter when filtered search returns nothing."""
         results = search_books(query, filters)
         if results or not filters.lang:
             return results
 
         logger.debug(
-            f"No {search_label} results with langs={filters.lang}, retrying without language filter"
+            "No %s results with langs=%s, retrying without language filter",
+            search_label,
+            filters.lang,
         )
         return search_books(query, replace(filters, lang=None))
 
     def search(
         self,
         book: BookMetadata,
-        plan: "ReleaseSearchPlan",  # noqa: F821
+        plan: ReleaseSearchPlan,
+        *,
         expand_search: bool = False,
-        content_type: str = "ebook"
-    ) -> List[Release]:
-        """
-        Search for releases using the book's metadata.
+        content_type: str = "ebook",
+    ) -> list[Release]:
+        """Search for releases using the book's metadata.
 
         Priority: ISBN search first (most precise), then title+author fallback.
         For non-English languages, uses localized titles from book.titles_by_language.
 
         Args:
             book: Book metadata from provider
+            plan: Precomputed search plan with normalized queries and filters.
             expand_search: If True, skip ISBN and use title+author directly
             languages: Language codes to filter by (overrides book.language/config)
             content_type: Ignored - Direct download uses format filtering instead
+
         """
+        _ensure_direct_download_available()
         lang_filter = plan.languages
 
         # Reset search type tracking
@@ -1295,10 +1655,14 @@ class DirectDownloadSource(ReleaseSource):
 
         if plan.source_filters is not None:
             query = plan.manual_query or ""
-            logger.debug(f"Searching direct_download: source_query='{query}', langs={lang_filter}")
+            logger.debug(
+                "Searching direct_download: source_query='%s', langs=%s", query, lang_filter
+            )
             filters = plan.source_filters or SearchFilters()
             filters.lang = lang_filter if lang_filter is not None else (filters.lang or [])
-            results = self._search_books_with_language_fallback(query, filters, search_label="manual")
+            results = self._search_books_with_language_fallback(
+                query, filters, search_label="manual"
+            )
             self._last_search_type = "manual" if query else "title_author"
             return [_browse_record_to_release(record) for record in results]
 
@@ -1309,20 +1673,20 @@ class DirectDownloadSource(ReleaseSource):
         if not expand_search:
             isbn = plan.isbn_candidates[0] if plan.isbn_candidates else None
             if isbn:
-                logger.debug(f"Searching direct_download: isbn='{isbn}', langs={lang_filter}")
+                logger.debug("Searching direct_download: isbn='%s', langs=%s", isbn, lang_filter)
                 filters = SearchFilters(isbn=[isbn])
                 filters.lang = lang_filter if lang_filter is not None else []
                 try:
                     results = search_books(isbn, filters)
                     if results:
-                        logger.info(f"Found {len(results)} releases via ISBN")
+                        logger.info("Found %s releases via ISBN", len(results))
                         self._last_search_type = "isbn"
                         return [_browse_record_to_release(record) for record in results]
                     logger.debug("No ISBN results, falling back to title+author")
-                except SearchUnavailable:
+                except SearchUnavailableError:
                     raise
-                except Exception as e:
-                    logger.warning(f"ISBN search failed: {e}")
+                except (ValueError, TypeError, AttributeError, RuntimeError) as e:
+                    logger.warning("ISBN search failed: %s", e)
 
         # Title + author fallback
         author = plan.author
@@ -1330,55 +1694,56 @@ class DirectDownloadSource(ReleaseSource):
 
         # Execute searches with deduplication
         seen_ids: set = set()
-        all_results: List[BrowseRecord] = []
+        all_results: list[BrowseRecord] = []
 
         for title, langs in searches:
             query = f"{title} {author}".strip()
             if not query:
                 continue
 
-            logger.debug(f"Searching direct_download: title_author='{query}', langs={langs}")
+            logger.debug("Searching direct_download: title_author='%s', langs=%s", query, langs)
             filters = SearchFilters(lang=langs if langs is not None else [])
             try:
                 for bi in search_books(query, filters):
                     if bi.id not in seen_ids:
                         seen_ids.add(bi.id)
                         all_results.append(bi)
-            except SearchUnavailable:
+            except SearchUnavailableError:
                 raise
-            except Exception as e:
-                logger.error(f"Search error: {e}")
+            except Exception:
+                logger.exception("Search error")
 
         if not all_results and any(langs for _, langs in searches):
-            logger.debug("No title+author results with language filter, retrying without language filter")
+            logger.debug(
+                "No title+author results with language filter, retrying without language filter"
+            )
             for title, _langs in searches:
                 query = f"{title} {author}".strip()
                 if not query:
                     continue
 
-                logger.debug(f"Searching direct_download: title_author='{query}', langs=[]")
+                logger.debug("Searching direct_download: title_author='%s', langs=[]", query)
                 try:
                     for bi in search_books(query, SearchFilters()):
                         if bi.id not in seen_ids:
                             seen_ids.add(bi.id)
                             all_results.append(bi)
-                except SearchUnavailable:
+                except SearchUnavailableError:
                     raise
-                except Exception as e:
-                    logger.error(f"Search error: {e}")
+                except Exception:
+                    logger.exception("Search error")
 
-        logger.info(f"Found {len(all_results)} releases via title+author")
+        logger.info("Found %s releases via title+author", len(all_results))
         return [_browse_record_to_release(record) for record in all_results]
 
     def is_available(self) -> bool:
-        """Direct download is always available."""
-        return True
+        """Check if Direct Download has been explicitly enabled and configured."""
+        return _get_direct_download_unavailable_reason() is None
 
 
 @register_handler("direct_download")
 class DirectDownloadHandler(DownloadHandler):
-    """
-    Handler for direct HTTP downloads from Anna's Archive, Libgen, etc.
+    """Handler for direct HTTP downloads from Anna's Archive, Libgen, etc.
 
     Receives a DownloadTask with task_id (AA MD5 hash) and cascades through
     sources in priority order. The AA page is only fetched if AA slow sources
@@ -1390,10 +1755,9 @@ class DirectDownloadHandler(DownloadHandler):
         task: DownloadTask,
         cancel_flag: Event,
         progress_callback: Callable[[float], None],
-        status_callback: Callable[[str, Optional[str]], None]
-    ) -> Optional[str]:
-        """
-        Execute a direct HTTP download.
+        status_callback: Callable[[str, str | None], None],
+    ) -> str | None:
+        """Execute a direct HTTP download.
 
         Uses task.task_id (AA MD5 hash) to cascade through sources in priority
         order. The AA page is only fetched if AA slow sources are enabled.
@@ -1406,11 +1770,12 @@ class DirectDownloadHandler(DownloadHandler):
 
         Returns:
             Path to downloaded file if successful, None otherwise
+
         """
         try:
             # Check for cancellation before starting
             if cancel_flag.is_set():
-                logger.info(f"Download cancelled before starting: {task.task_id}")
+                logger.info("Download cancelled before starting: %s", task.task_id)
                 status_callback("cancelled", "Cancelled")
                 return None
 
@@ -1429,18 +1794,15 @@ class DirectDownloadHandler(DownloadHandler):
             )
 
             return self._execute_download(
-                book_info,
-                cancel_flag,
-                progress_callback,
-                status_callback
+                book_info, cancel_flag, progress_callback, status_callback
             )
 
         except Exception as e:
             if cancel_flag.is_set():
-                logger.info(f"Download cancelled during error handling: {task.task_id}")
+                logger.info("Download cancelled during error handling: %s", task.task_id)
                 status_callback("cancelled", "Cancelled")
             else:
-                logger.error(f"Error downloading book: {e}")
+                logger.exception("Error downloading book")
                 status_callback("error", str(e))
             return None
 
@@ -1449,10 +1811,9 @@ class DirectDownloadHandler(DownloadHandler):
         book_info: BrowseRecord,
         cancel_flag: Event,
         progress_callback: Callable[[float], None],
-        status_callback: Callable[[str, Optional[str]], None]
-    ) -> Optional[str]:
-        """
-        Internal method to execute the download with fetched browse record.
+        status_callback: Callable[[str, str | None], None],
+    ) -> str | None:
+        """Execute the direct-download flow with a fetched browse record.
 
         This contains the core download logic: cascade through sources,
         handle bypass, move to final location.
@@ -1476,23 +1837,19 @@ class DirectDownloadHandler(DownloadHandler):
 
             # Check cancellation before download
             if cancel_flag.is_set():
-                logger.info(f"Download cancelled before download call: {book_info.id}")
+                logger.info("Download cancelled before download call: %s", book_info.id)
                 status_callback("cancelled", "Cancelled")
                 return None
 
             # Execute download via _download_book (handles cascade and bypass)
             status_callback("resolving", "Finding download source")
             success_url = _download_book(
-                book_info,
-                book_path,
-                progress_callback,
-                cancel_flag,
-                status_callback
+                book_info, book_path, progress_callback, cancel_flag, status_callback
             )
 
             # Check for cancellation after download
             if cancel_flag.is_set():
-                logger.info(f"Download cancelled during download: {book_info.id}")
+                logger.info("Download cancelled during download: %s", book_info.id)
                 if book_path.exists():
                     book_path.unlink()
                 status_callback("cancelled", "Cancelled")
@@ -1505,12 +1862,12 @@ class DirectDownloadHandler(DownloadHandler):
             # Return temp path - orchestrator handles post-processing (archive extraction, ingest)
             return str(book_path)
 
-        except Exception as e:
+        except Exception:
             if cancel_flag.is_set():
-                logger.info(f"Download cancelled during error handling: {book_info.id}")
+                logger.info("Download cancelled during error handling: %s", book_info.id)
                 status_callback("cancelled", "Cancelled")
             else:
-                logger.error(f"Error downloading book: {e}")
+                logger.exception("Error downloading book")
             return None
 
     def cancel(self, task_id: str) -> bool:

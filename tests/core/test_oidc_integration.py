@@ -2,10 +2,12 @@
 
 import sqlite3
 
+import pytest
+
 from shelfmark.core.auth_modes import (
     determine_auth_mode,
-    get_settings_tab_from_path,
     get_auth_check_admin_status,
+    get_settings_tab_from_path,
     is_settings_or_onboarding_path,
     load_active_auth_mode,
     requires_admin_for_settings_access,
@@ -63,9 +65,37 @@ class TestDetermineAuthMode:
         }
         assert determine_auth_mode(config, cwa_db_path=None, has_local_admin=False) == "none"
 
+    @pytest.mark.parametrize(
+        ("auth_mode", "config"),
+        [
+            ("builtin", {"AUTH_METHOD": "builtin"}),
+            (
+                "oidc",
+                {
+                    "AUTH_METHOD": "oidc",
+                    "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
+                    "OIDC_CLIENT_ID": "shelfmark",
+                },
+            ),
+        ],
+    )
+    def test_disable_local_auth_keeps_configured_mode_without_admin(self, auth_mode, config):
+        assert (
+            determine_auth_mode(
+                config,
+                cwa_db_path=None,
+                has_local_admin=False,
+                disable_local_auth=True,
+            )
+            == auth_mode
+        )
+
     def test_load_active_auth_mode_reads_env_backed_cwa_setting(self, monkeypatch, tmp_path):
+        from shelfmark.core.config import config as app_config
+
         monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("AUTH_METHOD", "cwa")
+        app_config.refresh(force=True)
 
         cwa_db_path = tmp_path / "app.db"
         conn = sqlite3.connect(cwa_db_path)
@@ -73,7 +103,26 @@ class TestDetermineAuthMode:
         conn.commit()
         conn.close()
 
-        assert load_active_auth_mode(cwa_db_path) == "cwa"
+        try:
+            assert load_active_auth_mode(cwa_db_path) == "cwa"
+        finally:
+            monkeypatch.delenv("AUTH_METHOD", raising=False)
+            app_config.refresh(force=True)
+
+    def test_load_active_auth_mode_reads_env_backed_proxy_setting(self, monkeypatch, tmp_path):
+        from shelfmark.core.config import config as app_config
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AUTH_METHOD", "proxy")
+        monkeypatch.setenv("PROXY_AUTH_USER_HEADER", "X-Forwarded-User")
+        app_config.refresh(force=True)
+
+        try:
+            assert load_active_auth_mode(cwa_db_path=None) == "proxy"
+        finally:
+            monkeypatch.delenv("AUTH_METHOD", raising=False)
+            monkeypatch.delenv("PROXY_AUTH_USER_HEADER", raising=False)
+            app_config.refresh(force=True)
 
 
 class TestSettingsRestrictionPolicy:
@@ -100,14 +149,20 @@ class TestSettingsRestrictionPolicy:
         assert requires_admin_for_settings_access("/api/settings/users", users_config) is True
 
     def test_other_tabs_also_require_admin(self):
-        assert requires_admin_for_settings_access(
-            "/api/settings/general",
-            {"RESTRICT_SETTINGS_TO_ADMIN": False},
-        ) is True
-        assert requires_admin_for_settings_access(
-            "/api/settings/general",
-            {"RESTRICT_SETTINGS_TO_ADMIN": True},
-        ) is True
+        assert (
+            requires_admin_for_settings_access(
+                "/api/settings/general",
+                {"RESTRICT_SETTINGS_TO_ADMIN": False},
+            )
+            is True
+        )
+        assert (
+            requires_admin_for_settings_access(
+                "/api/settings/general",
+                {"RESTRICT_SETTINGS_TO_ADMIN": True},
+            )
+            is True
+        )
 
 
 class TestAuthCheckAdminStatus:

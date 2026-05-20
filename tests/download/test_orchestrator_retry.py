@@ -1,13 +1,27 @@
 from __future__ import annotations
 
-from threading import Event
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock
 
 import pytest
 
 from shelfmark.core.models import DownloadTask, QueueStatus
 from shelfmark.core.queue import BookQueue
+
+
+class _AvailableSource:
+    display_name = "Test Source"
+
+    def is_available(self):
+        return True
+
+
+@pytest.fixture(autouse=True)
+def source_available_by_default(monkeypatch):
+    import shelfmark.download.orchestrator as orchestrator
+
+    monkeypatch.setattr(orchestrator, "get_source", lambda _source: _AvailableSource())
 
 
 def test_retry_download_requeues_error_task(monkeypatch):
@@ -60,6 +74,36 @@ def test_retry_download_rejects_request_linked_tasks(monkeypatch):
     assert ok is False
     assert error == "Request-linked downloads must be retried from requests"
     mock_queue.enqueue_existing.assert_not_called()
+
+
+def test_can_retry_download_task_allows_request_postprocess_retry_when_staged_file_exists(tmp_path):
+    import shelfmark.download.orchestrator as orchestrator
+
+    staged_file = tmp_path / "requested-staged.epub"
+    staged_file.write_text("staged")
+    task = DownloadTask(
+        task_id="task-request-staged-1",
+        source="prowlarr",
+        title="Requested Retryable",
+        request_id=123,
+        staged_path=str(staged_file),
+    )
+
+    assert orchestrator.can_retry_download_task(task, QueueStatus.ERROR) is True
+
+
+def test_can_retry_download_task_blocks_request_error_retry_without_staged_file():
+    import shelfmark.download.orchestrator as orchestrator
+
+    task = DownloadTask(
+        task_id="task-request-staged-2",
+        source="prowlarr",
+        title="Requested Not Retryable",
+        request_id=123,
+        staged_path="/tmp/does-not-exist.epub",
+    )
+
+    assert orchestrator.can_retry_download_task(task, QueueStatus.ERROR) is False
 
 
 def test_finalize_download_failure_sets_terminal_error(monkeypatch):
@@ -219,3 +263,25 @@ def test_output_stage_retry_falls_back_to_download_when_staged_file_missing(monk
     handler.download.assert_called_once()
     assert seen_temp_files == [downloaded_file]
     assert task.staged_path is None
+
+
+def test_get_book_data_clears_download_path_when_file_read_fails(monkeypatch, tmp_path):
+    import shelfmark.download.orchestrator as orchestrator
+
+    missing_file = tmp_path / "missing.epub"
+    task = DownloadTask(
+        task_id="task-book-data-1",
+        source="direct_download",
+        title="Missing File",
+        download_path=str(missing_file),
+    )
+
+    mock_queue = MagicMock()
+    mock_queue.get_task.return_value = task
+    monkeypatch.setattr(orchestrator, "book_queue", mock_queue)
+
+    file_data, returned_task = orchestrator.get_book_data(task.task_id)
+
+    assert file_data is None
+    assert returned_task is task
+    assert task.download_path is None

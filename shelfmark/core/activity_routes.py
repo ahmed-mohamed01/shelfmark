@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, NamedTuple
+import sqlite3
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, Response, jsonify, request, session
 
 from shelfmark.core.activity_view_state_service import (
     ADMIN_VIEWER_SCOPE,
@@ -12,22 +13,36 @@ from shelfmark.core.activity_view_state_service import (
     ActivityViewStateService,
     user_viewer_scope,
 )
-from shelfmark.core.download_history_service import ACTIVE_DOWNLOAD_STATUS, DownloadHistoryService, VALID_TERMINAL_STATUSES
+from shelfmark.core.download_history_service import (
+    ACTIVE_DOWNLOAD_STATUS,
+    VALID_TERMINAL_STATUSES,
+    DownloadHistoryService,
+)
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import ACTIVE_QUEUE_STATUSES, QueueStatus, TERMINAL_QUEUE_STATUSES
-from shelfmark.core.request_validation import RequestStatus
+from shelfmark.core.models import (
+    ACTIVE_QUEUE_STATUSES,
+    TERMINAL_QUEUE_STATUSES,
+    QueueStatus,
+)
 from shelfmark.core.request_helpers import (
     emit_ws_event,
     extract_release_source_id,
     normalize_positive_int,
     populate_request_usernames,
 )
-from shelfmark.core.user_db import UserDB
+from shelfmark.core.request_validation import RequestStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
+_USER_DB_IDENTITY_ERRORS = (sqlite3.Error, OSError)
+type ActivityRouteResponse = tuple[Response, int]
 
 
-def _normalize_log_field(value: Any) -> str:
+def _normalize_log_field(value: object) -> str:
     if value is None:
         return "-"
     text = str(value).strip()
@@ -39,15 +54,15 @@ def _log_activity_rejection(
     *,
     status_code: int,
     reason: str,
-    auth_mode: Any = None,
-    viewer_scope: Any = None,
-    item_type: Any = None,
-    item_key: Any = None,
+    auth_mode: object = None,
+    viewer_scope: object = None,
+    item_type: object = None,
+    item_key: object = None,
     item_count: int | None = None,
     missing_item_keys: list[str] | None = None,
-    owner_user_id: Any = None,
-    final_status: Any = None,
-    request_id: Any = None,
+    owner_user_id: object = None,
+    final_status: object = None,
+    request_id: object = None,
 ) -> None:
     parts = [
         f"Activity {action} rejected",
@@ -86,16 +101,16 @@ def _activity_error_response(
     status_code: int,
     error: str,
     code: str | None = None,
-    auth_mode: Any = None,
-    viewer_scope: Any = None,
-    item_type: Any = None,
-    item_key: Any = None,
+    auth_mode: object = None,
+    viewer_scope: object = None,
+    item_type: object = None,
+    item_key: object = None,
     item_count: int | None = None,
     missing_item_keys: list[str] | None = None,
-    owner_user_id: Any = None,
-    final_status: Any = None,
-    request_id: Any = None,
-):
+    owner_user_id: object = None,
+    final_status: object = None,
+    request_id: object = None,
+) -> tuple[Response, int]:
     _log_activity_rejection(
         action,
         status_code=status_code,
@@ -119,7 +134,9 @@ def _activity_error_response(
     return jsonify(payload), status_code
 
 
-def _require_authenticated(resolve_auth_mode: Callable[[], str], *, action: str):
+def _require_authenticated(
+    resolve_auth_mode: Callable[[], str], *, action: str
+) -> tuple[Response, int] | None:
     auth_mode = resolve_auth_mode()
     if auth_mode == "none":
         return None
@@ -134,12 +151,12 @@ def _require_authenticated(resolve_auth_mode: Callable[[], str], *, action: str)
 
 
 def _resolve_db_user_id(
-    require_in_auth_mode: bool = True,
     *,
+    require_in_auth_mode: bool = True,
     user_db: UserDB | None = None,
     action: str | None = None,
     auth_mode: str | None = None,
-):
+) -> tuple[int | None, tuple[Response, int] | None]:
     raw_db_user_id = session.get("db_user_id")
     if raw_db_user_id is None:
         if not require_in_auth_mode:
@@ -153,7 +170,7 @@ def _resolve_db_user_id(
         )
     try:
         parsed_db_user_id = int(raw_db_user_id)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         if not require_in_auth_mode:
             return None, None
         return None, _activity_error_response(
@@ -178,7 +195,7 @@ def _resolve_db_user_id(
     if user_db is not None:
         try:
             db_user = user_db.get_user(user_id=parsed_db_user_id)
-        except Exception as exc:
+        except _USER_DB_IDENTITY_ERRORS as exc:
             logger.warning("Failed to validate activity db identity %s: %s", parsed_db_user_id, exc)
             db_user = None
         if db_user is None:
@@ -203,12 +220,23 @@ class _ActorContext(NamedTuple):
     viewer_scope: str
 
 
+type ActivityActorResolution = tuple[_ActorContext, None] | tuple[None, ActivityRouteResponse]
+
+
+def _require_activity_actor(actor: _ActorContext | None, *, action: str) -> _ActorContext:
+    """Convert a resolved actor into the non-optional form route handlers expect."""
+    if actor is None:
+        msg = f"Activity actor missing after successful resolution for {action}"
+        raise RuntimeError(msg)
+    return actor
+
+
 def _resolve_activity_actor(
     *,
     user_db: UserDB,
     resolve_auth_mode: Callable[[], str],
     action: str,
-) -> tuple[_ActorContext | None, Any | None]:
+) -> ActivityActorResolution:
     """Resolve acting user identity for activity mutations.
 
     Returns (actor, error_response). On success actor is non-None.
@@ -229,6 +257,9 @@ def _resolve_activity_actor(
         auth_mode=auth_mode,
     )
     if db_user_id is None:
+        if db_gate is None:
+            msg = f"Activity actor resolution failed without an error response for {action}"
+            raise RuntimeError(msg)
         return None, db_gate
 
     is_admin = bool(session.get("is_admin"))
@@ -251,7 +282,7 @@ def _activity_ws_room(actor: _ActorContext) -> str:
     return "admins"
 
 
-def _check_item_ownership(actor: _ActorContext, row: dict[str, Any]) -> Any | None:
+def _check_item_ownership(actor: _ActorContext, row: dict[str, Any]) -> str | None:
     """Return an error string if the actor doesn't own the item, else None."""
     if actor.is_admin:
         return None
@@ -261,14 +292,14 @@ def _check_item_ownership(actor: _ActorContext, row: dict[str, Any]) -> Any | No
     return None
 
 
-def _check_terminal_download(row: dict[str, Any]) -> Any | None:
+def _check_terminal_download(row: dict[str, Any]) -> str | None:
     final_status = str(row.get("final_status") or "").strip().lower()
     if final_status not in VALID_TERMINAL_STATUSES:
         return "Only terminal downloads can be dismissed"
     return None
 
 
-def _check_terminal_request(row: dict[str, Any]) -> Any | None:
+def _check_terminal_request(row: dict[str, Any]) -> str | None:
     if _request_terminal_status(row) is None:
         return "Only terminal requests can be dismissed"
     return None
@@ -289,7 +320,9 @@ def _request_row_log_context(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _list_visible_requests(user_db: UserDB, *, is_admin: bool, db_user_id: int | None) -> list[dict[str, Any]]:
+def _list_visible_requests(
+    user_db: UserDB, *, is_admin: bool, db_user_id: int | None
+) -> list[dict[str, Any]]:
     if is_admin:
         request_rows = user_db.list_requests()
         populate_request_usernames(request_rows, user_db)
@@ -300,7 +333,7 @@ def _list_visible_requests(user_db: UserDB, *, is_admin: bool, db_user_id: int |
     return user_db.list_requests(user_id=db_user_id)
 
 
-def _parse_item_key(item_key: Any, prefix: str) -> str | None:
+def _parse_item_key(item_key: object, prefix: str) -> str | None:
     """Extract the value after 'prefix:' from an item_key string."""
     if not isinstance(item_key, str) or not item_key.startswith(f"{prefix}:"):
         return None
@@ -311,7 +344,9 @@ def _parse_item_key(item_key: Any, prefix: str) -> str | None:
 _ALL_BUCKET_KEYS = (*ACTIVE_QUEUE_STATUSES, *TERMINAL_QUEUE_STATUSES)
 
 
-def _build_queue_index(queue_status: dict[str, dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
+def _build_queue_index(
+    queue_status: dict[str, dict[str, Any]],
+) -> dict[str, tuple[str, dict[str, Any]]]:
     """Index live queue entries by task id for fast activity lookups."""
     queue_index: dict[str, tuple[str, dict[str, Any]]] = {}
     for bucket_key in _ALL_BUCKET_KEYS:
@@ -319,7 +354,9 @@ def _build_queue_index(queue_status: dict[str, dict[str, Any]]) -> dict[str, tup
         if not isinstance(bucket, dict):
             continue
         for task_id, payload in bucket.items():
-            normalized_bucket_key = bucket_key.value if isinstance(bucket_key, QueueStatus) else str(bucket_key)
+            normalized_bucket_key = (
+                bucket_key.value if isinstance(bucket_key, QueueStatus) else str(bucket_key)
+            )
             queue_index[str(task_id)] = (normalized_bucket_key, payload)
     return queue_index
 
@@ -336,6 +373,7 @@ def _effective_download_row_for_activity(
 
     effective_row = dict(row)
     effective_row["final_status"] = QueueStatus.ERROR.value
+    effective_row["retry_final_status"] = final_status
 
     status_message = effective_row.get("status_message")
     if not isinstance(status_message, str) or not status_message.strip():
@@ -364,9 +402,9 @@ def _build_download_status_from_db(
             continue
 
         final_status = row.get("final_status")
+        queue_entry = queue_index.pop(task_id, None)
 
         if final_status == ACTIVE_DOWNLOAD_STATUS:
-            queue_entry = queue_index.pop(task_id, None)
             if queue_entry is not None:
                 bucket_key, queue_payload = queue_entry
                 status[bucket_key][task_id] = queue_payload
@@ -379,6 +417,10 @@ def _build_download_status_from_db(
                 status[QueueStatus.ERROR][task_id] = download_payload
         elif final_status in VALID_TERMINAL_STATUSES:
             download_payload = DownloadHistoryService.to_download_payload(row)
+            if queue_entry is not None:
+                _, queue_payload = queue_entry
+                if isinstance(queue_payload, dict) and "retry_available" in queue_payload:
+                    download_payload["retry_available"] = bool(queue_payload.get("retry_available"))
             # For complete/cancelled the saved status_message is a stale
             # progress string (e.g. "Fetching download sources") — clear it
             # so the frontend only shows its own status label.  Error rows
@@ -469,12 +511,12 @@ def register_activity_routes(
     queue_status: Callable[..., dict[str, dict[str, Any]]],
     sync_request_delivery_states: Callable[..., list[dict[str, Any]]],
     emit_request_updates: Callable[[list[dict[str, Any]]], None],
-    ws_manager: Any | None = None,
+    ws_manager: object | None = None,
 ) -> None:
     """Register activity routes."""
 
     @app.route("/api/activity/snapshot", methods=["GET"])
-    def api_activity_snapshot():
+    def api_activity_snapshot() -> Response | tuple[Response, int]:
         auth_gate = _require_authenticated(resolve_auth_mode, action="snapshot")
         if auth_gate is not None:
             return auth_gate
@@ -486,6 +528,7 @@ def register_activity_routes(
         )
         if actor_error is not None:
             return actor_error
+        actor = _require_activity_actor(actor, action="snapshot")
 
         hidden_rows = activity_view_state_service.list_hidden(viewer_scope=actor.viewer_scope)
         hidden_item_keys = {str(row.get("item_key") or "").strip() for row in hidden_rows}
@@ -543,7 +586,7 @@ def register_activity_routes(
         )
 
     @app.route("/api/activity/dismiss", methods=["POST"])
-    def api_activity_dismiss():
+    def api_activity_dismiss() -> Response | tuple[Response, int]:
         auth_gate = _require_authenticated(resolve_auth_mode, action="dismiss")
         if auth_gate is not None:
             return auth_gate
@@ -555,6 +598,7 @@ def register_activity_routes(
         )
         if actor_error is not None:
             return actor_error
+        actor = _require_activity_actor(actor, action="dismiss")
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -625,7 +669,10 @@ def register_activity_routes(
                 item_type="download",
                 item_key=f"download:{task_id}",
             )
-            dismissal_item = {"item_type": "download", "item_key": f"download:{task_id}"}
+            dismissal_item = {
+                "item_type": "download",
+                "item_key": f"download:{task_id}",
+            }
 
         elif item_type == "request":
             request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
@@ -683,7 +730,10 @@ def register_activity_routes(
                 item_type="request",
                 item_key=f"request:{request_id}",
             )
-            dismissal_item = {"item_type": "request", "item_key": f"request:{request_id}"}
+            dismissal_item = {
+                "item_type": "request",
+                "item_key": f"request:{request_id}",
+            }
         else:
             return _activity_error_response(
                 "dismiss",
@@ -710,7 +760,7 @@ def register_activity_routes(
         return jsonify({"status": "dismissed", "item": dismissal_item})
 
     @app.route("/api/activity/dismiss-many", methods=["POST"])
-    def api_activity_dismiss_many():
+    def api_activity_dismiss_many() -> Response | tuple[Response, int]:
         auth_gate = _require_authenticated(resolve_auth_mode, action="dismiss_many")
         if auth_gate is not None:
             return auth_gate
@@ -722,6 +772,7 @@ def register_activity_routes(
         )
         if actor_error is not None:
             return actor_error
+        actor = _require_activity_actor(actor, action="dismiss_many")
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -855,7 +906,9 @@ def register_activity_routes(
                         item_count=len(items),
                         **_request_row_log_context(request_row),
                     )
-                dismissal_items.append({"item_type": "request", "item_key": f"request:{request_id}"})
+                dismissal_items.append(
+                    {"item_type": "request", "item_key": f"request:{request_id}"}
+                )
                 continue
 
             return _activity_error_response(
@@ -899,7 +952,7 @@ def register_activity_routes(
         return jsonify({"status": "dismissed", "count": dismissed_count})
 
     @app.route("/api/activity/history", methods=["GET"])
-    def api_activity_history():
+    def api_activity_history() -> Response | tuple[Response, int]:
         auth_gate = _require_authenticated(resolve_auth_mode, action="history")
         if auth_gate is not None:
             return auth_gate
@@ -911,6 +964,7 @@ def register_activity_routes(
         )
         if actor_error is not None:
             return actor_error
+        actor = _require_activity_actor(actor, action="history")
 
         limit = request.args.get("limit", type=int, default=50)
         offset = request.args.get("offset", type=int, default=0)
@@ -919,9 +973,15 @@ def register_activity_routes(
         if offset is None:
             offset = 0
         if limit < 1:
-            return _activity_error_response("history", status_code=400, error="limit must be a positive integer")
+            return _activity_error_response(
+                "history", status_code=400, error="limit must be a positive integer"
+            )
         if offset < 0:
-            return _activity_error_response("history", status_code=400, error="offset must be a non-negative integer")
+            return _activity_error_response(
+                "history",
+                status_code=400,
+                error="offset must be a non-negative integer",
+            )
 
         history_rows = activity_view_state_service.list_history(
             viewer_scope=actor.viewer_scope,
@@ -937,21 +997,25 @@ def register_activity_routes(
             dismissed_at = history_row.get("dismissed_at")
 
             if not isinstance(dismissed_at, str) or not dismissed_at.strip():
-                raise RuntimeError(f"Activity history state missing dismissed_at for {item_key}")
+                msg = f"Activity history state missing dismissed_at for {item_key}"
+                raise RuntimeError(msg)
 
             if item_type == "download":
                 task_id = _parse_item_key(item_key, "download")
                 if task_id is None:
-                    raise RuntimeError(f"Invalid activity history item_key: {item_key}")
+                    msg = f"Invalid activity history item_key: {item_key}"
+                    raise RuntimeError(msg)
 
                 download_row = download_history_service.get_by_task_id(task_id)
                 if download_row is None:
-                    raise RuntimeError(f"Download history row not found for {item_key}")
+                    msg = f"Download history row not found for {item_key}"
+                    raise RuntimeError(msg)
 
                 if not actor.is_admin:
                     owner_user_id = normalize_positive_int(download_row.get("user_id"))
                     if owner_user_id != actor.db_user_id:
-                        raise RuntimeError(f"Viewer state out of scope for {item_key}")
+                        msg = f"Viewer state out of scope for {item_key}"
+                        raise RuntimeError(msg)
 
                 effective_download_row = _effective_download_row_for_activity(
                     download_row,
@@ -968,16 +1032,19 @@ def register_activity_routes(
             if item_type == "request":
                 request_id = normalize_positive_int(_parse_item_key(item_key, "request"))
                 if request_id is None:
-                    raise RuntimeError(f"Invalid activity history item_key: {item_key}")
+                    msg = f"Invalid activity history item_key: {item_key}"
+                    raise RuntimeError(msg)
 
                 request_row = user_db.get_request(request_id)
                 if request_row is None:
-                    raise RuntimeError(f"Request row not found for {item_key}")
+                    msg = f"Request row not found for {item_key}"
+                    raise RuntimeError(msg)
 
                 if not actor.is_admin:
                     owner_user_id = normalize_positive_int(request_row.get("user_id"))
                     if owner_user_id != actor.db_user_id:
-                        raise RuntimeError(f"Viewer state out of scope for {item_key}")
+                        msg = f"Viewer state out of scope for {item_key}"
+                        raise RuntimeError(msg)
 
                 populate_request_usernames([request_row], user_db)
                 entry = _request_history_entry(
@@ -985,16 +1052,18 @@ def register_activity_routes(
                     dismissed_at=dismissed_at,
                 )
                 if entry is None:
-                    raise RuntimeError(f"Failed to build request history entry for {item_key}")
+                    msg = f"Failed to build request history entry for {item_key}"
+                    raise RuntimeError(msg)
                 payload.append(entry)
                 continue
 
-            raise RuntimeError(f"Unknown activity history item_type: {item_type}")
+            msg = f"Unknown activity history item_type: {item_type}"
+            raise RuntimeError(msg)
 
         return jsonify(payload)
 
     @app.route("/api/activity/history", methods=["DELETE"])
-    def api_activity_history_clear():
+    def api_activity_history_clear() -> Response | tuple[Response, int]:
         auth_gate = _require_authenticated(resolve_auth_mode, action="history_clear")
         if auth_gate is not None:
             return auth_gate
@@ -1006,6 +1075,7 @@ def register_activity_routes(
         )
         if actor_error is not None:
             return actor_error
+        actor = _require_activity_actor(actor, action="history_clear")
 
         cleared_count = activity_view_state_service.clear_history(
             viewer_scope=actor.viewer_scope,

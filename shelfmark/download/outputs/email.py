@@ -1,21 +1,35 @@
+"""Email output integration for delivering completed downloads as attachments."""
+
 from __future__ import annotations
 
 import mimetypes
 import smtplib
 import ssl
+from contextlib import suppress
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
-from pathlib import Path
-from threading import Event
-from typing import Any, Dict, Mapping, Optional
+from typing import TYPE_CHECKING, Any
 
 import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import DownloadTask
+from shelfmark.core.naming import derive_primary_title
 from shelfmark.core.utils import is_audiobook as check_audiobook
 from shelfmark.download.outputs import register_output
-from shelfmark.download.staging import STAGE_COPY, STAGE_MOVE, STAGE_NONE, build_staging_dir, get_staging_dir
+from shelfmark.download.staging import (
+    STAGE_COPY,
+    STAGE_MOVE,
+    STAGE_NONE,
+    build_staging_dir,
+    get_staging_dir,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+    from pathlib import Path
+    from threading import Event
+
+    from shelfmark.core.models import DownloadTask
 
 logger = setup_logger(__name__)
 
@@ -33,6 +47,8 @@ class EmailOutputError(Exception):
 
 @dataclass(frozen=True)
 class EmailSmtpConfig:
+    """SMTP connection settings for the email output."""
+
     host: str
     port: int
     security: str
@@ -46,36 +62,48 @@ class EmailSmtpConfig:
 
 def _parse_int(value: Any, label: str, *, minimum: int = 1) -> int:
     if value is None or value == "":
-        raise EmailOutputError(f"{label} is required")
+        msg = f"{label} is required"
+        raise EmailOutputError(msg)
+    if not isinstance(value, (int, float, str)):
+        msg = f"{label} must be a number"
+        raise EmailOutputError(msg)
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
-        raise EmailOutputError(f"{label} must be a number") from exc
+        msg = f"{label} must be a number"
+        raise EmailOutputError(msg) from exc
     if parsed < minimum:
-        raise EmailOutputError(f"{label} must be >= {minimum}")
+        msg = f"{label} must be >= {minimum}"
+        raise EmailOutputError(msg)
     return parsed
 
 
 def build_email_smtp_config(values: Mapping[str, Any]) -> EmailSmtpConfig:
+    """Build and validate SMTP settings for the email output."""
     host = str(values.get("EMAIL_SMTP_HOST", "") or "").strip()
     port = _parse_int(values.get("EMAIL_SMTP_PORT", 587), "SMTP port", minimum=1)
 
     security = str(values.get("EMAIL_SMTP_SECURITY", SECURITY_STARTTLS) or "").strip().lower()
     if security not in ALLOWED_SECURITY:
-        raise EmailOutputError(f"SMTP security must be one of: {', '.join(sorted(ALLOWED_SECURITY))}")
+        msg = f"SMTP security must be one of: {', '.join(sorted(ALLOWED_SECURITY))}"
+        raise EmailOutputError(msg)
 
     username = str(values.get("EMAIL_SMTP_USERNAME", "") or "").strip()
     password = values.get("EMAIL_SMTP_PASSWORD", "") or ""
 
     from_addr = str(values.get("EMAIL_FROM", "") or "").strip()
     subject_template = str(values.get("EMAIL_SUBJECT_TEMPLATE", "{Title}") or "").strip()
-    timeout_seconds = _parse_int(values.get("EMAIL_SMTP_TIMEOUT_SECONDS", 60), "SMTP timeout (seconds)", minimum=1)
+    timeout_seconds = _parse_int(
+        values.get("EMAIL_SMTP_TIMEOUT_SECONDS", 60), "SMTP timeout (seconds)", minimum=1
+    )
     allow_unverified_tls = bool(values.get("EMAIL_ALLOW_UNVERIFIED_TLS", False))
 
     if not host:
-        raise EmailOutputError("SMTP host is required")
+        msg = "SMTP host is required"
+        raise EmailOutputError(msg)
     if username and not password:
-        raise EmailOutputError("SMTP password is required when username is set")
+        msg = "SMTP password is required when username is set"
+        raise EmailOutputError(msg)
 
     if not from_addr:
         # If From is not configured, fall back to the SMTP username if it is an email address.
@@ -83,7 +111,8 @@ def build_email_smtp_config(values: Mapping[str, Any]) -> EmailSmtpConfig:
         if username_email and "@" in username_email:
             from_addr = f"Shelfmark <{username_email}>"
         else:
-            raise EmailOutputError("From address is required (or set SMTP username to an email address).")
+            msg = "From address is required (or set SMTP username to an email address)."
+            raise EmailOutputError(msg)
 
     return EmailSmtpConfig(
         host=host,
@@ -98,7 +127,7 @@ def build_email_smtp_config(values: Mapping[str, Any]) -> EmailSmtpConfig:
     )
 
 
-def _get_email_settings() -> Dict[str, Any]:
+def _get_email_settings() -> dict[str, Any]:
     return {
         "EMAIL_SMTP_HOST": core_config.config.get("EMAIL_SMTP_HOST", ""),
         "EMAIL_SMTP_PORT": core_config.config.get("EMAIL_SMTP_PORT", 587),
@@ -112,10 +141,21 @@ def _get_email_settings() -> Dict[str, Any]:
     }
 
 
+def _parse_attachment_limit_mb(value: object) -> int:
+    if not isinstance(value, (int, float, str)):
+        return 25
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        return 25
+
+
 def _render_subject(template: str, task: DownloadTask) -> str:
+    primary_title = derive_primary_title(task.title, task.subtitle)
     mapping = {
         "Author": task.author or "",
         "Title": task.title or "",
+        "PrimaryTitle": primary_title,
         "Year": task.year or "",
         "Series": task.series_name or "",
         "SeriesPosition": task.series_position or "",
@@ -124,7 +164,7 @@ def _render_subject(template: str, task: DownloadTask) -> str:
     }
     try:
         rendered = template.format(**mapping)
-    except Exception:
+    except IndexError, KeyError, ValueError:
         rendered = template
 
     rendered = " ".join(str(rendered).split()).strip()
@@ -132,11 +172,8 @@ def _render_subject(template: str, task: DownloadTask) -> str:
 
 
 def _msgid_domain(from_addr: str) -> str:
-    try:
-        from_email = parseaddr(from_addr)[1]
-        domain = (from_email.partition("@")[2] or "").strip().rstrip(">")
-    except Exception:
-        domain = ""
+    from_email = parseaddr(from_addr)[1]
+    domain = (from_email.partition("@")[2] or "").strip().rstrip(">")
     return domain or "shelfmark.local"
 
 
@@ -147,6 +184,7 @@ def compose_email_message(
     recipient: str,
     files: list[Path],
 ) -> EmailMessage:
+    """Compose the outbound email message for a completed download."""
     message = EmailMessage()
     message["From"] = smtp_config.from_addr
     message["To"] = recipient
@@ -171,7 +209,7 @@ def compose_email_message(
     return message
 
 
-def _create_tls_context(allow_unverified: bool) -> ssl.SSLContext:
+def _create_tls_context(*, allow_unverified: bool) -> ssl.SSLContext:
     context = ssl.create_default_context()
     if allow_unverified:
         context.check_hostname = False
@@ -181,11 +219,10 @@ def _create_tls_context(allow_unverified: bool) -> ssl.SSLContext:
 
 def test_smtp_connection(smtp_config: EmailSmtpConfig) -> None:
     """Connect and (optionally) authenticate to the SMTP server. Does not send mail."""
-
-    smtp: Optional[smtplib.SMTP] = None
+    smtp: smtplib.SMTP | None = None
     try:
         if smtp_config.security == SECURITY_SSL:
-            context = _create_tls_context(smtp_config.allow_unverified_tls)
+            context = _create_tls_context(allow_unverified=smtp_config.allow_unverified_tls)
             smtp = smtplib.SMTP_SSL(
                 smtp_config.host,
                 smtp_config.port,
@@ -193,37 +230,39 @@ def test_smtp_connection(smtp_config: EmailSmtpConfig) -> None:
                 context=context,
             )
         else:
-            smtp = smtplib.SMTP(smtp_config.host, smtp_config.port, timeout=smtp_config.timeout_seconds)
+            smtp = smtplib.SMTP(
+                smtp_config.host, smtp_config.port, timeout=smtp_config.timeout_seconds
+            )
 
         smtp.ehlo()
 
         if smtp_config.security == SECURITY_STARTTLS:
-            context = _create_tls_context(smtp_config.allow_unverified_tls)
+            context = _create_tls_context(allow_unverified=smtp_config.allow_unverified_tls)
             smtp.starttls(context=context)
             smtp.ehlo()
 
         if smtp_config.username:
             smtp.login(smtp_config.username, smtp_config.password)
     except smtplib.SMTPAuthenticationError as exc:
-        raise EmailOutputError("SMTP authentication failed") from exc
+        msg = "SMTP authentication failed"
+        raise EmailOutputError(msg) from exc
     except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, TimeoutError, OSError) as exc:
-        raise EmailOutputError(f"Could not connect to SMTP server: {exc}") from exc
+        msg = f"Could not connect to SMTP server: {exc}"
+        raise EmailOutputError(msg) from exc
     finally:
         if smtp is not None:
-            try:
+            with suppress(Exception):
                 smtp.quit()
-            except Exception:
-                try:
-                    smtp.close()
-                except Exception:
-                    pass
+            with suppress(Exception):
+                smtp.close()
 
 
 def send_email_message(smtp_config: EmailSmtpConfig, message: EmailMessage) -> None:
-    smtp: Optional[smtplib.SMTP] = None
+    """Send a prepared email message using the configured SMTP transport."""
+    smtp: smtplib.SMTP | None = None
     try:
         if smtp_config.security == SECURITY_SSL:
-            context = _create_tls_context(smtp_config.allow_unverified_tls)
+            context = _create_tls_context(allow_unverified=smtp_config.allow_unverified_tls)
             smtp = smtplib.SMTP_SSL(
                 smtp_config.host,
                 smtp_config.port,
@@ -231,12 +270,14 @@ def send_email_message(smtp_config: EmailSmtpConfig, message: EmailMessage) -> N
                 context=context,
             )
         else:
-            smtp = smtplib.SMTP(smtp_config.host, smtp_config.port, timeout=smtp_config.timeout_seconds)
+            smtp = smtplib.SMTP(
+                smtp_config.host, smtp_config.port, timeout=smtp_config.timeout_seconds
+            )
 
         smtp.ehlo()
 
         if smtp_config.security == SECURITY_STARTTLS:
-            context = _create_tls_context(smtp_config.allow_unverified_tls)
+            context = _create_tls_context(allow_unverified=smtp_config.allow_unverified_tls)
             smtp.starttls(context=context)
             smtp.ehlo()
 
@@ -245,18 +286,17 @@ def send_email_message(smtp_config: EmailSmtpConfig, message: EmailMessage) -> N
 
         smtp.send_message(message)
     except smtplib.SMTPAuthenticationError as exc:
-        raise EmailOutputError("SMTP authentication failed") from exc
+        msg = "SMTP authentication failed"
+        raise EmailOutputError(msg) from exc
     except (smtplib.SMTPException, TimeoutError, OSError) as exc:
-        raise EmailOutputError(f"Failed to send email: {exc}") from exc
+        msg = f"Failed to send email: {exc}"
+        raise EmailOutputError(msg) from exc
     finally:
         if smtp is not None:
-            try:
+            with suppress(Exception):
                 smtp.quit()
-            except Exception:
-                try:
-                    smtp.close()
-                except Exception:
-                    pass
+            with suppress(Exception):
+                smtp.close()
 
 
 def _supports_email(task: DownloadTask) -> bool:
@@ -267,9 +307,10 @@ def _post_process_email(
     temp_file: Path,
     task: DownloadTask,
     cancel_flag: Event,
-    status_callback,
+    status_callback: Callable[[str, str | None], None],
+    *,
     preserve_source_on_failure: bool = False,
-) -> Optional[str]:
+) -> str | None:
     from shelfmark.download.postprocess.pipeline import (
         CustomScriptContext,
         OutputPlan,
@@ -309,7 +350,11 @@ def _post_process_email(
     stage_action = STAGE_NONE
     if is_managed_workspace_path(temp_file):
         stage_action = STAGE_COPY if preserve_source_on_failure else STAGE_MOVE
-    staging_dir = build_staging_dir("email", task.task_id) if stage_action != STAGE_NONE else get_staging_dir()
+    staging_dir = (
+        build_staging_dir("email", task.task_id)
+        if stage_action != STAGE_NONE
+        else get_staging_dir()
+    )
 
     output_plan = OutputPlan(
         mode=EMAIL_OUTPUT_MODE,
@@ -332,10 +377,7 @@ def _post_process_email(
     success = False
     try:
         limit_mb_raw = core_config.config.get("EMAIL_ATTACHMENT_SIZE_LIMIT_MB", 25)
-        try:
-            attachment_limit_mb = int(limit_mb_raw)
-        except (TypeError, ValueError):
-            attachment_limit_mb = 25
+        attachment_limit_mb = _parse_attachment_limit_mb(limit_mb_raw)
 
         if attachment_limit_mb > 0:
             limit_bytes = attachment_limit_mb * 1024 * 1024
@@ -406,16 +448,18 @@ def _post_process_email(
 
         status_callback("complete", f"Sent to {label}")
         success = True
-        return f"email://{task.task_id}"
+        output_path = f"email://{task.task_id}"
 
     except EmailOutputError as exc:
         logger.warning("Task %s: email send failed: %s", task.task_id, exc)
         status_callback("error", str(exc))
         return None
-    except Exception as exc:
+    except (OSError, TypeError, ValueError) as exc:
         logger.error_trace("Task %s: unexpected error sending email: %s", task.task_id, exc)
         status_callback("error", f"Email send failed: {exc}")
         return None
+    else:
+        return output_path
     finally:
         cleanup_output_staging(
             prepared.output_plan,
@@ -432,9 +476,11 @@ def process_email_output(
     temp_file: Path,
     task: DownloadTask,
     cancel_flag: Event,
-    status_callback,
+    status_callback: Callable[[str, str | None], None],
+    *,
     preserve_source_on_failure: bool = False,
-) -> Optional[str]:
+) -> str | None:
+    """Process a completed download through the email output."""
     return _post_process_email(
         temp_file,
         task,

@@ -1,18 +1,38 @@
+"""Output registry and shared types for post-download delivery handlers."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from threading import Event
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Protocol
 
-from shelfmark.core.models import DownloadTask
+if TYPE_CHECKING:
+    from pathlib import Path
+    from threading import Event
 
-StatusCallback = Callable[[str, Optional[str]], None]
-OutputHandler = Callable[[Path, DownloadTask, Event, StatusCallback, bool], Optional[str]]
+    from shelfmark.core.models import DownloadTask
+
+StatusCallback = Callable[[str, str | None], None]
+
+
+class OutputHandler(Protocol):
+    """Callable contract for post-download output handlers."""
+
+    def __call__(
+        self,
+        temp_file: Path,
+        task: DownloadTask,
+        cancel_flag: Event,
+        status_callback: StatusCallback,
+        *,
+        preserve_source_on_failure: bool = False,
+    ) -> str | None: ...
 
 
 @dataclass(frozen=True)
 class OutputRegistration:
+    """Registered output handler with support checks and priority metadata."""
+
     mode: str
     supports_task: Callable[[DownloadTask], bool]
     handler: OutputHandler
@@ -28,6 +48,8 @@ def register_output(
     supports_task: Callable[[DownloadTask], bool],
     priority: int = 0,
 ) -> Callable[[OutputHandler], OutputHandler]:
+    """Register an output handler for a named delivery mode."""
+
     def decorator(handler: OutputHandler) -> OutputHandler:
         _OUTPUT_REGISTRY.append(
             OutputRegistration(
@@ -44,13 +66,14 @@ def register_output(
 
 
 def load_output_handlers() -> None:
+    """Load built-in output handlers exactly once."""
     global _OUTPUTS_LOADED
     if _OUTPUTS_LOADED:
         return
 
-    from . import booklore  # noqa: F401
-    from . import email  # noqa: F401
-    from . import folder  # noqa: F401
+    from . import booklore as booklore
+    from . import email as email
+    from . import folder as folder
 
     _OUTPUTS_LOADED = True
 
@@ -65,7 +88,6 @@ def _derive_output_mode(task: DownloadTask) -> str:
     Prefer the mode captured at queue time. Fall back to current config for
     legacy tasks that do not have `output_mode` populated.
     """
-
     mode = _normalize_output_mode(getattr(task, "output_mode", None))
     if mode:
         return mode
@@ -80,7 +102,8 @@ def _derive_output_mode(task: DownloadTask) -> str:
     return _normalize_output_mode(config.get("BOOKS_OUTPUT_MODE", "folder")) or "folder"
 
 
-def resolve_output_handler(task: DownloadTask) -> Optional[OutputRegistration]:
+def resolve_output_handler(task: DownloadTask) -> OutputRegistration | None:
+    """Resolve the best output handler for a download task."""
     load_output_handlers()
     desired_mode = _derive_output_mode(task)
 

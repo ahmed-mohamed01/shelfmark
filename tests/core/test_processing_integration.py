@@ -1,7 +1,9 @@
 """Integration tests for real filesystem processing flows."""
 
+import errno
 import os
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
@@ -46,8 +48,19 @@ def _sync_config(mock_config, mock_core):
     mock_core.CUSTOM_SCRIPT = mock_config.CUSTOM_SCRIPT
 
 
+def _hardlink_support_patch(supported: bool):
+    if supported:
+        return nullcontext()
+    return patch(
+        "shelfmark.download.fs.os.link",
+        side_effect=OSError(errno.EXDEV, "Invalid cross-device link"),
+    )
+
+
 def test_direct_download_rename_moves_file(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -69,8 +82,10 @@ def test_direct_download_rename_moves_file(tmp_path):
     statuses = []
     status_cb = lambda status, message: statuses.append((status, message))
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(ingest, organization="rename")
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -88,7 +103,9 @@ def test_direct_download_rename_moves_file(tmp_path):
 
 @pytest.mark.parametrize("source_kind", ["direct", "torrent"])
 def test_original_name_rename_single_file_for_direct_and_torrent(tmp_path, source_kind: str):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     downloads = tmp_path / "downloads"
@@ -111,8 +128,10 @@ def test_original_name_rename_single_file_for_direct_and_torrent(tmp_path, sourc
         original_download_path=str(input_path) if source_kind == "torrent" else None,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="rename",
@@ -137,7 +156,9 @@ def test_original_name_rename_single_file_for_direct_and_torrent(tmp_path, sourc
 
 
 def test_torrent_hardlink_preserves_source(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     ingest = tmp_path / "ingest"
@@ -159,8 +180,10 @@ def test_torrent_hardlink_preserves_source(tmp_path):
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", tmp_path / "staging"):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", tmp_path / "staging"),
+    ):
         mock_config.get = _build_config(ingest, organization="organize", hardlink=True)
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -175,7 +198,9 @@ def test_torrent_hardlink_preserves_source(tmp_path):
 
 
 def test_archive_extraction_rename_single_file_can_use_original_name(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -195,8 +220,10 @@ def test_archive_extraction_rename_single_file_can_use_original_name(tmp_path):
         search_mode=SearchMode.DIRECT,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="rename",
@@ -216,7 +243,9 @@ def test_archive_extraction_rename_single_file_can_use_original_name(tmp_path):
 
 
 def test_torrent_hardlink_enabled_archive_is_hardlinked_without_extraction(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     ingest = tmp_path / "ingest"
@@ -239,8 +268,10 @@ def test_torrent_hardlink_enabled_archive_is_hardlinked_without_extraction(tmp_p
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", tmp_path / "staging"):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", tmp_path / "staging"),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="none",
@@ -268,7 +299,9 @@ def test_torrent_hardlink_enabled_archive_is_hardlinked_without_extraction(tmp_p
 
 
 def test_multifile_rename_ignores_template_even_with_original_name(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -290,8 +323,10 @@ def test_multifile_rename_ignores_template_even_with_original_name(tmp_path):
         search_mode=SearchMode.DIRECT,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="rename",
@@ -311,7 +346,9 @@ def test_multifile_rename_ignores_template_even_with_original_name(tmp_path):
 
 
 def test_torrent_hardlink_enabled_copy_fallback_does_not_extract_archives(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -337,9 +374,11 @@ def test_torrent_hardlink_enabled_copy_fallback_does_not_extract_archives(tmp_pa
     statuses = []
     status_cb = lambda status, message: statuses.append((status, message))
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging), \
-         patch("shelfmark.download.postprocess.transfer.same_filesystem", return_value=False):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+        _hardlink_support_patch(False),
+    ):
         mock_config.get = _build_config(ingest, organization="none", hardlink=True)
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -357,11 +396,13 @@ def test_torrent_hardlink_enabled_copy_fallback_does_not_extract_archives(tmp_pa
     # Most importantly: hardlink-setting-enabled fallback to copy should NOT extract.
     assert list(ingest.glob("*.epub")) == []
 
-    assert any(msg.startswith("Copying") for _, msg in statuses)
+    assert any(msg.startswith("Hardlinking") for _, msg in statuses)
 
 
 def test_torrent_hardlink_enabled_copy_fallback_directory_archive_kept_when_zip_supported(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -389,9 +430,11 @@ def test_torrent_hardlink_enabled_copy_fallback_directory_archive_kept_when_zip_
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging), \
-         patch("shelfmark.download.postprocess.transfer.same_filesystem", return_value=False):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+        _hardlink_support_patch(False),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="none",
@@ -417,7 +460,9 @@ def test_torrent_hardlink_enabled_copy_fallback_directory_archive_kept_when_zip_
 
 
 def test_torrent_copy_when_hardlink_disabled(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -441,8 +486,10 @@ def test_torrent_copy_when_hardlink_disabled(tmp_path):
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(ingest, organization="none", hardlink=False)
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -459,7 +506,9 @@ def test_torrent_copy_when_hardlink_disabled(tmp_path):
 
 
 def test_archive_extraction_flow(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -481,8 +530,10 @@ def test_archive_extraction_flow(tmp_path):
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(ingest, organization="rename")
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -496,7 +547,9 @@ def test_archive_extraction_flow(tmp_path):
 
 
 def test_archive_extraction_organize_creates_directories(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -518,8 +571,10 @@ def test_archive_extraction_organize_creates_directories(tmp_path):
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(ingest, organization="organize")
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -533,8 +588,125 @@ def test_archive_extraction_organize_creates_directories(tmp_path):
     assert result_path.name == "Archive Test.epub"
 
 
+def test_legacy_ingest_dir_still_routes_books_when_destination_is_unset(tmp_path):
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
+
+    staging = tmp_path / "staging"
+    ingest = tmp_path / "ingest"
+    staging.mkdir()
+    ingest.mkdir()
+
+    temp_file = staging / "book.epub"
+    temp_file.write_text("content")
+
+    task = DownloadTask(
+        task_id="legacy-ingest-book",
+        source="direct_download",
+        title="Legacy Book",
+        author="Legacy Author",
+        format="epub",
+        search_mode=SearchMode.DIRECT,
+    )
+
+    values = {
+        "DESTINATION": "",
+        "INGEST_DIR": str(ingest),
+        "DESTINATION_AUDIOBOOK": "",
+        "FILE_ORGANIZATION": "rename",
+        "FILE_ORGANIZATION_AUDIOBOOK": "rename",
+        "TEMPLATE_RENAME": "{Author} - {Title}",
+        "TEMPLATE_ORGANIZE": "{Author}/{Title}",
+        "TEMPLATE_AUDIOBOOK_RENAME": "{Author} - {Title}",
+        "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}{ - PartNumber}",
+        "SUPPORTED_FORMATS": ["epub"],
+        "SUPPORTED_AUDIOBOOK_FORMATS": ["mp3"],
+        "HARDLINK_TORRENTS": False,
+        "HARDLINK_TORRENTS_AUDIOBOOK": False,
+    }
+
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: values.get(key, default)
+        )
+        mock_config.CUSTOM_SCRIPT = None
+        _sync_config(mock_config, mock_config)
+
+        result = _post_process_download(temp_file, task, Event(), lambda *_args: None)
+
+    assert result is not None
+    result_path = Path(result)
+    assert result_path.exists()
+    assert result_path.parent == ingest
+    assert result_path.name == "Legacy Author - Legacy Book.epub"
+
+
+def test_legacy_ingest_dir_still_routes_audiobooks_when_destinations_are_unset(tmp_path):
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
+
+    staging = tmp_path / "staging"
+    ingest = tmp_path / "ingest"
+    staging.mkdir()
+    ingest.mkdir()
+
+    temp_file = staging / "audio.mp3"
+    temp_file.write_text("content")
+
+    task = DownloadTask(
+        task_id="legacy-ingest-audio",
+        source="direct_download",
+        title="Legacy Audio",
+        author="Legacy Narrator",
+        format="mp3",
+        content_type="audiobook",
+        search_mode=SearchMode.DIRECT,
+    )
+
+    values = {
+        "DESTINATION": "",
+        "INGEST_DIR": str(ingest),
+        "DESTINATION_AUDIOBOOK": "",
+        "FILE_ORGANIZATION": "rename",
+        "FILE_ORGANIZATION_AUDIOBOOK": "rename",
+        "TEMPLATE_RENAME": "{Author} - {Title}",
+        "TEMPLATE_ORGANIZE": "{Author}/{Title}",
+        "TEMPLATE_AUDIOBOOK_RENAME": "{Author} - {Title}",
+        "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}{ - PartNumber}",
+        "SUPPORTED_FORMATS": ["epub"],
+        "SUPPORTED_AUDIOBOOK_FORMATS": ["mp3"],
+        "HARDLINK_TORRENTS": False,
+        "HARDLINK_TORRENTS_AUDIOBOOK": False,
+    }
+
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: values.get(key, default)
+        )
+        mock_config.CUSTOM_SCRIPT = None
+        _sync_config(mock_config, mock_config)
+
+        result = _post_process_download(temp_file, task, Event(), lambda *_args: None)
+
+    assert result is not None
+    result_path = Path(result)
+    assert result_path.exists()
+    assert result_path.parent == ingest
+    assert result_path.name == "Legacy Narrator - Legacy Audio.mp3"
+
+
 def test_archive_extraction_organize_multifile_preserves_audiobook_filenames(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -558,8 +730,10 @@ def test_archive_extraction_organize_multifile_preserves_audiobook_filenames(tmp
 
     status_cb = lambda *_args: None
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(ingest, organization="organize")
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
@@ -577,7 +751,9 @@ def test_archive_extraction_organize_multifile_preserves_audiobook_filenames(tmp
 
 def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
     """Multipart audiobooks in organize mode preserve original filenames automatically."""
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -616,9 +792,13 @@ def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
         "HARDLINK_TORRENTS_AUDIOBOOK": False,
     }
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
-        mock_config.get = MagicMock(side_effect=lambda key, default=None, **_kwargs: values.get(key, default))
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: values.get(key, default)
+        )
         mock_config.CUSTOM_SCRIPT = None
         _sync_config(mock_config, mock_config)
 
@@ -632,7 +812,9 @@ def test_archive_extraction_organize_multifile_can_use_original_name(tmp_path):
 
 
 def test_booklore_mode_uploads_and_cleans_staging(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -666,11 +848,15 @@ def test_booklore_mode_uploads_and_cleans_staging(tmp_path):
         "BOOKLORE_PATH_ID": 2,
     }
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.download.outputs.booklore.booklore_login", return_value="token"), \
-         patch("shelfmark.download.outputs.booklore.booklore_upload_file", side_effect=_upload_stub), \
-         patch("shelfmark.config.env.TMP_DIR", staging):
-        mock_config.get = MagicMock(side_effect=lambda key, default=None, **_kwargs: booklore_values.get(key, default))
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.download.outputs.booklore.booklore_login", return_value="token"),
+        patch("shelfmark.download.outputs.booklore.booklore_upload_file", side_effect=_upload_stub),
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: booklore_values.get(key, default)
+        )
 
         result = _post_process_download(temp_file, task, Event(), status_cb)
 
@@ -682,7 +868,9 @@ def test_booklore_mode_uploads_and_cleans_staging(tmp_path):
 
 
 def test_booklore_mode_rejects_unsupported_files(tmp_path):
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -710,11 +898,15 @@ def test_booklore_mode_rejects_unsupported_files(tmp_path):
         "BOOKLORE_PATH_ID": 2,
     }
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.download.outputs.booklore.booklore_login") as mock_login, \
-         patch("shelfmark.download.outputs.booklore.booklore_upload_file") as mock_upload, \
-         patch("shelfmark.config.env.TMP_DIR", staging):
-        mock_config.get = MagicMock(side_effect=lambda key, default=None, **_kwargs: booklore_values.get(key, default))
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.download.outputs.booklore.booklore_login") as mock_login,
+        patch("shelfmark.download.outputs.booklore.booklore_upload_file") as mock_upload,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: booklore_values.get(key, default)
+        )
 
         result = _post_process_download(temp_file, task, Event(), status_cb)
 
@@ -733,7 +925,6 @@ def test_booklore_mode_rejects_unsupported_files(tmp_path):
 @pytest.mark.parametrize("input_kind", ["file", "directory", "archive"])
 @pytest.mark.parametrize("source_kind", ["direct", "usenet"])
 @pytest.mark.parametrize("content_kind", ["book", "audiobook"])
-
 def test_postprocess_folder_blackbox_matrix(
     tmp_path,
     source_kind: str,
@@ -751,7 +942,9 @@ def test_postprocess_folder_blackbox_matrix(
     This intentionally avoids mocking internal pipeline helpers.
     """
 
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     staging = tmp_path / "staging"
     ingest = tmp_path / "ingest"
@@ -805,7 +998,10 @@ def test_postprocess_folder_blackbox_matrix(
     supported_formats = [extension] if extension != "mp3" else ["epub"]
     supported_audiobook_formats = [extension] if extension == "mp3" else ["mp3"]
 
-    with patch("shelfmark.core.config.config") as mock_config, patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization=organization,
@@ -846,21 +1042,20 @@ def test_postprocess_folder_blackbox_matrix(
 @pytest.mark.parametrize("content_kind", ["book", "audiobook"])
 @pytest.mark.parametrize("organization", ["none", "organize"])
 @pytest.mark.parametrize("hardlink_enabled", [False, True])
-@pytest.mark.parametrize("same_filesystem", [True, False])
-
+@pytest.mark.parametrize("hardlink_supported", [True, False])
 def test_postprocess_torrent_blackbox_matrix(
     tmp_path,
     input_kind: str,
     content_kind: str,
     organization: str,
     hardlink_enabled: bool,
-    same_filesystem: bool,
+    hardlink_supported: bool,
 ):
     """Torrent-like (original_download_path set) black-box test matrix.
 
     This exercises:
     - hardlink enabled/disabled
-    - same-filesystem hardlink vs copy fallback
+    - successful hardlink vs copy fallback
     - content type differences (book vs audiobook)
 
     Assertions focus on invariants:
@@ -870,7 +1065,9 @@ def test_postprocess_torrent_blackbox_matrix(
     - TMP workspace stays clean
     """
 
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -904,7 +1101,7 @@ def test_postprocess_torrent_blackbox_matrix(
         source_file.write_text("content")
 
     task = DownloadTask(
-        task_id=f"torrent-matrix-{input_kind}-{content_kind}-{organization}-{hardlink_enabled}-{same_filesystem}",
+        task_id=f"torrent-matrix-{input_kind}-{content_kind}-{organization}-{hardlink_enabled}-{hardlink_supported}",
         source="prowlarr",
         title=title,
         author=author,
@@ -914,9 +1111,11 @@ def test_postprocess_torrent_blackbox_matrix(
         original_download_path=str(input_path),
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging), \
-         patch("shelfmark.download.postprocess.transfer.same_filesystem", return_value=same_filesystem):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+        _hardlink_support_patch(hardlink_supported),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization=organization,
@@ -944,8 +1143,8 @@ def test_postprocess_torrent_blackbox_matrix(
         assert result_path.parent == ingest
         assert result_path.name == f"random.{extension}"
 
-    # Hardlink only when enabled and same filesystem.
-    if hardlink_enabled and same_filesystem:
+    # Hardlink only when enabled and supported by the filesystem.
+    if hardlink_enabled and hardlink_supported:
         assert os.stat(source_file).st_ino == os.stat(result_path).st_ino
     else:
         assert os.stat(source_file).st_ino != os.stat(result_path).st_ino
@@ -954,11 +1153,12 @@ def test_postprocess_torrent_blackbox_matrix(
     assert list(staging.iterdir()) == []
 
 
-
 def test_custom_script_external_source_stages_copy_and_preserves_source(tmp_path):
     """Custom script should run against the final imported file; external source must be preserved."""
 
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -980,9 +1180,11 @@ def test_custom_script_external_source_stages_copy_and_preserves_source(tmp_path
         original_download_path=None,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, \
-         patch("shelfmark.config.env.TMP_DIR", staging), \
-         patch("subprocess.run") as mock_run:
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+        patch("subprocess.run") as mock_run,
+    ):
         mock_config.get = _build_config(ingest, organization="none")
         mock_config.CUSTOM_SCRIPT = "/path/to/script.sh"
         _sync_config(mock_config, mock_config)
@@ -1008,16 +1210,18 @@ def test_custom_script_external_source_stages_copy_and_preserves_source(tmp_path
     assert list(staging.iterdir()) == []
 
 
-
 @pytest.mark.parametrize("content_kind", ["book", "audiobook"])
-
-def test_external_directory_multiple_archives_extracts_all_and_keeps_source(tmp_path, content_kind: str):
+def test_external_directory_multiple_archives_extracts_all_and_keeps_source(
+    tmp_path, content_kind: str
+):
     """External directories with only archives should extract into TMP and not touch source archives."""
 
     # This case is meant to model a usenet-like client "completed" directory containing
     # one or more archive releases, where Shelfmark must treat the source as read-only.
 
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -1059,7 +1263,10 @@ def test_external_directory_multiple_archives_extracts_all_and_keeps_source(tmp_
         original_download_path=None,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="none",
@@ -1086,15 +1293,18 @@ def test_external_directory_multiple_archives_extracts_all_and_keeps_source(tmp_
 
 
 @pytest.mark.parametrize("content_kind", ["book", "audiobook"])
-
-def test_external_directory_prefers_files_over_archives_and_keeps_source(tmp_path, content_kind: str):
+def test_external_directory_prefers_files_over_archives_and_keeps_source(
+    tmp_path, content_kind: str
+):
     """If supported files exist in an external directory, archives are ignored.
 
     This models a usenet-like client directory that contains both a usable file and
     an archive. Shelfmark should import the usable file and leave the archive alone.
     """
 
-    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+    from shelfmark.download.postprocess.router import (
+        post_process_download as _post_process_download,
+    )
 
     downloads = tmp_path / "downloads"
     staging = tmp_path / "staging"
@@ -1135,7 +1345,10 @@ def test_external_directory_prefers_files_over_archives_and_keeps_source(tmp_pat
         original_download_path=None,
     )
 
-    with patch("shelfmark.core.config.config") as mock_config, patch("shelfmark.config.env.TMP_DIR", staging):
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+    ):
         mock_config.get = _build_config(
             ingest,
             organization="none",

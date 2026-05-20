@@ -31,18 +31,18 @@ set -e
 # Check if EXT_BYPASSER_URL is defined
 if [ -n "$EXT_BYPASSER_URL" ]; then
     echo "Extracting hostname and ip from bypasser into /etc/hosts"
-    
+
     # Extract hostname
     hostname=$(echo "$EXT_BYPASSER_URL" | cut -d'/' -f3 | cut -d':' -f1)
-    
+
     # Resolve to IP (using current DNS before switching to TOR)
     ip=$(getent hosts "$hostname" 2>/dev/null | awk '{print $1}')
-    
+
     # If getent fails, try dig
     if [ -z "$ip" ]; then
         ip=$(dig +short "$hostname" 2>/dev/null | head -n1)
     fi
-    
+
     # Only proceed if we got an IP and hostname is not already an IP
     if [ -n "$ip" ] && [ "$ip" != "$hostname" ]; then
         # Add to /etc/hosts (remove existing entry first to avoid duplicates)
@@ -155,11 +155,14 @@ wait_for_tor() {
     return 1
 }
 
+tor_is_healthy() {
+    supervisorctl status tor | grep -q "RUNNING" &&
+        grep -q "Bootstrapped 100%" /var/log/tor/notices.log 2>/dev/null
+}
+
 FAIL_COUNT=0
 while true; do
-    # Try to resolve/connect to google.com (timeout 10s)
-    if curl -s --head --max-time 10 https://google.com > /dev/null; then
-        # Success
+    if tor_is_healthy; then
         FAIL_COUNT=0
     else
         FAIL_COUNT=$((FAIL_COUNT+1))
@@ -202,7 +205,7 @@ while true; do
         exit 1
     fi
 
-    CURRENT_LOG=$(tail -n 1 /var/log/tor/notices.log 2>/dev/null)
+    CURRENT_LOG=$(tail -n 1 /var/log/tor/notices.log 2>/dev/null || true)
     printf "\r\033[K[%ds] %s" "$ELAPSED" "$CURRENT_LOG"
     sleep 1
 done
@@ -213,19 +216,28 @@ echo "[*] Setting up iptables rules..."
 
 iptables -F
 iptables -t nat -F
+TOR_UID=$(id -u debian-tor)
 
 # Allow loopback
 iptables -t nat -A OUTPUT -o lo -j RETURN
 
-# Redirect all TCP to Tor's TransPort
-iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports 9040
+# Allow Tor itself to reach the network
+iptables -t nat -A OUTPUT -m owner --uid-owner "$TOR_UID" -j RETURN
 
 # For UDP DNS queries
 iptables -t nat -A OUTPUT -p udp --dport 53 ! -d 127.0.0.1 -j DNAT --to-destination 127.0.0.1:53
 
-
 # For TCP DNS queries (some DNS queries may use TCP)
 iptables -t nat -A OUTPUT -p tcp --dport 53 ! -d 127.0.0.1 -j DNAT --to-destination 127.0.0.1:53
+
+# Bypass Tor for local/private networks
+iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
+iptables -t nat -A OUTPUT -d 10.0.0.0/8 -j RETURN
+iptables -t nat -A OUTPUT -d 172.16.0.0/12 -j RETURN
+iptables -t nat -A OUTPUT -d 192.168.0.0/16 -j RETURN
+
+# Redirect all TCP to Tor's TransPort
+iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports 9040
 
 echo "[✓] Transparent Tor routing enabled."
 

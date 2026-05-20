@@ -2,11 +2,13 @@ from shelfmark.metadata_providers.hardcover import HardcoverProvider
 
 
 class TestHardcoverFieldOptions:
-    def test_search_fields_enable_typeahead_for_series_only(self):
+    def test_search_fields_enable_typeahead_for_author_and_series(self):
         provider = HardcoverProvider(api_key="test-token")
         fields_by_key = {field.key: field for field in provider.search_fields}
 
-        assert fields_by_key["author"].suggestions_endpoint is None
+        assert fields_by_key["author"].suggestions_endpoint == (
+            "/api/metadata/field-options?provider=hardcover&field=author"
+        )
         assert fields_by_key["title"].suggestions_endpoint is None
         assert fields_by_key["series"].suggestions_endpoint == (
             "/api/metadata/field-options?provider=hardcover&field=series"
@@ -19,25 +21,28 @@ class TestHardcoverFieldOptions:
         monkeypatch.setattr(
             provider,
             "_execute_query",
-            lambda query, variables: captured.update({"query": query, "variables": variables}) or {
-                "search": {
-                    "results": {
-                        "hits": [
-                            {"document": {"name": "Brandon Sanderson"}},
-                            {"document": {"name": "Brandon Sanderson"}},
-                            {"document": {"name": "Brian Sanderson"}},
-                        ],
-                        "found": 3,
+            lambda query, variables: (
+                captured.update({"query": query, "variables": variables})
+                or {
+                    "search": {
+                        "results": {
+                            "hits": [
+                                {"document": {"id": 1, "name": "Brandon Sanderson"}},
+                                {"document": {"id": 1, "name": "Brandon Sanderson"}},
+                                {"document": {"id": 2, "name": "Brian Sanderson"}},
+                            ],
+                            "found": 3,
+                        }
                     }
                 }
-            },
+            ),
         )
 
         options = provider.get_search_field_options("author", query="sand")
 
         assert options == [
-            {"value": "Brandon Sanderson", "label": "Brandon Sanderson"},
-            {"value": "Brian Sanderson", "label": "Brian Sanderson"},
+            {"value": "id:1", "label": "Brandon Sanderson"},
+            {"value": "id:2", "label": "Brian Sanderson"},
         ]
         assert captured["variables"] == {
             "query": "sand",
@@ -64,50 +69,53 @@ class TestHardcoverFieldOptions:
         monkeypatch.setattr(
             provider,
             "_execute_query",
-            lambda query, variables: captured.update({"query": query, "variables": variables}) or {
-                "search": {
-                    "results": {
-                        "hits": [
-                            {
-                                "document": {
-                                    "title": "Mistborn: The Final Empire",
-                                    "compilation": False,
-                                    "release_year": 2006,
-                                }
-                            },
-                            {
-                                "document": {
-                                    "title": "Mistborn Trilogy",
-                                    "compilation": True,
-                                    "release_year": 2001,
-                                }
-                            },
-                            {
-                                "document": {
-                                    "title": "Ghostbloods 1",
-                                    "compilation": False,
-                                    "release_year": 2028,
-                                }
-                            },
-                            {
-                                "document": {
-                                    "title": "Mistborn: The Final Empire",
-                                    "compilation": False,
-                                    "release_year": 2006,
-                                }
-                            },
-                            {
-                                "document": {
-                                    "title": "Mistborn: Secret History",
-                                    "compilation": False,
-                                    "release_year": 2016,
-                                }
-                            },
-                        ],
-                        "found": 5,
+            lambda query, variables: (
+                captured.update({"query": query, "variables": variables})
+                or {
+                    "search": {
+                        "results": {
+                            "hits": [
+                                {
+                                    "document": {
+                                        "title": "Mistborn: The Final Empire",
+                                        "compilation": False,
+                                        "release_year": 2006,
+                                    }
+                                },
+                                {
+                                    "document": {
+                                        "title": "Mistborn Trilogy",
+                                        "compilation": True,
+                                        "release_year": 2001,
+                                    }
+                                },
+                                {
+                                    "document": {
+                                        "title": "Ghostbloods 1",
+                                        "compilation": False,
+                                        "release_year": 2028,
+                                    }
+                                },
+                                {
+                                    "document": {
+                                        "title": "Mistborn: The Final Empire",
+                                        "compilation": False,
+                                        "release_year": 2006,
+                                    }
+                                },
+                                {
+                                    "document": {
+                                        "title": "Mistborn: Secret History",
+                                        "compilation": False,
+                                        "release_year": 2016,
+                                    }
+                                },
+                            ],
+                            "found": 5,
+                        }
                     }
                 }
-            },
+            ),
         )
 
         options = provider.get_search_field_options("title", query="mistborn")

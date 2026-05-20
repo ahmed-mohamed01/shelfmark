@@ -17,16 +17,15 @@ The generated documentation includes:
 
 import argparse
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 
-def get_field_type_name(field) -> str:
+def get_field_type_name(field: Any) -> str:
     """Get a human-readable type name for a field."""
     from shelfmark.core.settings_registry import (
         CheckboxField,
@@ -35,54 +34,55 @@ def get_field_type_name(field) -> str:
         OrderableListField,
         PasswordField,
         SelectField,
+        TagListField,
         TextField,
     )
 
     if isinstance(field, CheckboxField):
         return "boolean"
-    elif isinstance(field, NumberField):
+    if isinstance(field, NumberField):
         return "number"
-    elif isinstance(field, SelectField):
+    if isinstance(field, SelectField):
         return "string (choice)"
-    elif isinstance(field, MultiSelectField):
+    if isinstance(field, MultiSelectField):
         return "string (comma-separated)"
-    elif isinstance(field, OrderableListField):
+    if isinstance(field, TagListField):
+        return "string (comma-separated)"
+    if isinstance(field, OrderableListField):
         return "JSON array"
-    elif isinstance(field, PasswordField):
+    if isinstance(field, PasswordField):
         return "string (secret)"
-    elif isinstance(field, TextField):
+    if isinstance(field, TextField):
         return "string"
-    else:
-        return "string"
+    return "string"
 
 
-def format_default_value(field) -> str:
+def format_default_value(field: Any) -> str:
     """Format the default value for display."""
     default = field.default
 
     if default is None:
         return "_none_"
-    elif isinstance(default, bool):
+    if isinstance(default, bool):
         return f"`{str(default).lower()}`"
-    elif isinstance(default, (int, float)):
+    if isinstance(default, (int, float)):
         return f"`{default}`"
-    elif isinstance(default, str):
+    if isinstance(default, str):
         if default == "":
             return "_empty string_"
         return f"`{default}`"
-    elif isinstance(default, list):
+    if isinstance(default, list):
         if not default:
             return "_empty list_"
         # For simple lists, show comma-separated values
         if all(isinstance(item, str) for item in default):
             return f"`{','.join(default)}`"
         # For complex lists (e.g., OrderableListField defaults), summarize
-        return f"_see UI for defaults_"
-    else:
-        return f"`{default}`"
+        return "_see UI for defaults_"
+    return f"`{default}`"
 
 
-def get_select_options(field) -> Optional[List[str]]:
+def get_select_options(field: Any) -> list[str] | None:
     """Get the available options for a SelectField.
 
     Returns options formatted as 'value (label)' or just 'value' if they match,
@@ -119,7 +119,7 @@ def get_select_options(field) -> Optional[List[str]]:
     return result
 
 
-def _generate_bootstrap_env_docs() -> List[str]:
+def _generate_bootstrap_env_docs() -> list[str]:
     """Generate documentation for bootstrap environment variables from env.py."""
     # These are environment variables defined in env.py that are used before
     # the settings registry is available
@@ -173,6 +173,24 @@ def _generate_bootstrap_env_docs() -> List[str]:
             "default": "/auth/app.db",
         },
         {
+            "name": "HIDE_LOCAL_AUTH",
+            "description": "Hide the username/password login form when OIDC is active.",
+            "type": "boolean",
+            "default": "false",
+        },
+        {
+            "name": "DISABLE_LOCAL_AUTH",
+            "description": "Disable username/password login and remove the local-admin prerequisite for OIDC. Implies HIDE_LOCAL_AUTH; with AUTH_METHOD=builtin, everyone is locked out until auth env vars are changed.",
+            "type": "boolean",
+            "default": "false",
+        },
+        {
+            "name": "OIDC_AUTO_REDIRECT",
+            "description": "Automatically redirect to the OIDC provider instead of showing the login page.",
+            "type": "boolean",
+            "default": "false",
+        },
+        {
             "name": "DOCKERMODE",
             "description": "Indicates the application is running inside a Docker container.",
             "type": "boolean",
@@ -189,14 +207,16 @@ def _generate_bootstrap_env_docs() -> List[str]:
     lines = [
         "## Bootstrap Configuration",
         "",
-        "These environment variables are used at startup before the settings system loads. They typically configure paths and server settings.",
+        "These environment variables are used at startup before the settings system loads. They typically configure paths, server settings, and authentication startup behavior.",
         "",
         "| Variable | Description | Type | Default |",
         "|----------|-------------|------|---------|",
     ]
 
-    for var in bootstrap_vars:
-        lines.append(f"| `{var['name']}` | {var['description']} | {var['type']} | `{var['default']}` |")
+    lines.extend(
+        f"| `{var['name']}` | {var['description']} | {var['type']} | `{var['default']}` |"
+        for var in bootstrap_vars
+    )
 
     lines.append("")
     lines.append("<details>")
@@ -221,17 +241,14 @@ def _generate_bootstrap_env_docs() -> List[str]:
 def generate_env_docs() -> str:
     """Generate markdown documentation for all environment variables."""
     # Import settings modules to ensure all settings are registered
-    import shelfmark.config.settings  # noqa: F401
-    import shelfmark.config.security  # noqa: F401
-    import shelfmark.release_sources.irc.settings  # noqa: F401
+    import shelfmark.config.security
+    import shelfmark.config.settings
+    import shelfmark.metadata_providers.googlebooks
+    import shelfmark.metadata_providers.hardcover
+    import shelfmark.metadata_providers.openlibrary
+    import shelfmark.release_sources.irc.settings
     import shelfmark.release_sources.prowlarr.settings  # noqa: F401
-    import shelfmark.metadata_providers.hardcover  # noqa: F401
-    import shelfmark.metadata_providers.openlibrary  # noqa: F401
-    import shelfmark.metadata_providers.googlebooks  # noqa: F401
-
     from shelfmark.core.settings_registry import (
-        ActionButton,
-        HeadingField,
         get_all_groups,
         get_all_settings_tabs,
     )
@@ -240,7 +257,7 @@ def generate_env_docs() -> str:
     groups = {g.name: g for g in get_all_groups()}
 
     # Organize tabs by group
-    grouped_tabs: Dict[Optional[str], List] = {None: []}
+    grouped_tabs: dict[str | None, list] = {None: []}
     for group_name in groups:
         grouped_tabs[group_name] = []
 
@@ -309,33 +326,24 @@ def generate_env_docs() -> str:
     return "\n".join(lines)
 
 
-def _generate_tab_docs(tab, group_prefix: Optional[str] = None) -> List[str]:
+def _generate_tab_docs(tab: Any, group_prefix: str | None = None) -> list[str]:
     """Generate documentation for a single settings tab."""
-    from shelfmark.core.settings_registry import ActionButton, CustomComponentField, HeadingField
+    from shelfmark.core.settings_registry import iter_value_fields
 
     lines = []
 
     # Section header
     if group_prefix:
         lines.append(f"### {group_prefix}: {tab.display_name}")
-        anchor_id = f"{group_prefix}-{tab.display_name}".lower().replace(" ", "-")
     else:
         lines.append(f"## {tab.display_name}")
 
     lines.append("")
 
     # Collect env-supported fields
-    env_fields = []
-    for field in tab.fields:
-        # Skip non-value fields
-        if isinstance(field, (ActionButton, CustomComponentField, HeadingField)):
-            continue
-
-        # Skip fields that don't support ENV vars
-        if not getattr(field, "env_supported", True):
-            continue
-
-        env_fields.append(field)
+    env_fields = [
+        field for field in iter_value_fields(tab) if getattr(field, "env_supported", True)
+    ]
 
     if not env_fields:
         lines.append("_No environment variables for this section._")
@@ -391,6 +399,7 @@ def _generate_tab_docs(tab, group_prefix: Optional[str] = None) -> List[str]:
 
         # Show constraints for NumberField
         from shelfmark.core.settings_registry import NumberField
+
         if isinstance(field, NumberField):
             constraints = []
             if field.min_value is not None:
@@ -408,7 +417,7 @@ def _generate_tab_docs(tab, group_prefix: Optional[str] = None) -> List[str]:
     return lines
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate markdown documentation for environment variables"
     )

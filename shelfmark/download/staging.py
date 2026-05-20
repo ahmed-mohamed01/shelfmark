@@ -1,13 +1,17 @@
+"""Helpers for staging downloaded files before post-processing."""
+
 from __future__ import annotations
 
 import hashlib
 import shutil
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from shelfmark.config import env as env_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.download.fs import run_blocking_io
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = setup_logger(__name__)
 
@@ -27,7 +31,7 @@ def get_staging_dir() -> Path:
 def get_staging_path(task_id: str, extension: str) -> Path:
     """Get a staging path for a download."""
     staging_dir = get_staging_dir()
-    safe_id = hashlib.md5(task_id.encode()).hexdigest()[:16]
+    safe_id = hashlib.blake2b(task_id.encode(), digest_size=8).hexdigest()
     return staging_dir / f"{safe_id}.{extension.lstrip('.')}"
 
 
@@ -37,7 +41,7 @@ def build_staging_dir(prefix: str | None, task_id: str) -> Path:
     if not prefix:
         return base_dir
 
-    safe_id = hashlib.md5(task_id.encode()).hexdigest()[:8]
+    safe_id = hashlib.blake2b(task_id.encode(), digest_size=4).hexdigest()
     staging_dir = base_dir / f"{prefix}_{safe_id}"
     counter = 1
 
@@ -49,7 +53,7 @@ def build_staging_dir(prefix: str | None, task_id: str) -> Path:
     return staging_dir
 
 
-def stage_file(source_path: Path, task_id: str, copy: bool = False) -> Path:
+def stage_file(source_path: Path, task_id: str, *, copy: bool = False) -> Path:
     """Stage a file for ingest processing. Use copy=True for torrents to preserve seeding."""
     staging_dir = get_staging_dir()
     return stage_path(source_path, staging_dir, STAGE_COPY if copy else STAGE_MOVE)

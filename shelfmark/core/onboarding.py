@@ -1,5 +1,4 @@
-"""
-Onboarding wizard configuration.
+"""Onboarding wizard configuration.
 
 Defines the steps and fields for the first-run onboarding experience.
 Reuses field definitions from the settings registry where possible.
@@ -8,27 +7,32 @@ Reuses field definitions from the settings registry where possible.
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.settings_registry import (
     HeadingField,
+    MultiSelectField,
     SettingsField,
-    get_settings_tab,
-    serialize_field,
-    save_config_file,
     get_setting_value,
+    get_settings_field_map,
+    get_settings_tab,
+    save_config_file,
+    serialize_field,
 )
 
 logger = setup_logger(__name__)
 
 
 ONBOARDING_STORAGE_KEY = "onboarding_complete"
+ONBOARDING_RELEASE_SOURCES_KEY = "ONBOARDING_RELEASE_SOURCES"
+_ONBOARDING_VIRTUAL_KEYS = {ONBOARDING_RELEASE_SOURCES_KEY}
 
 
 def _get_config_dir() -> Path:
     """Get the config directory path."""
     from shelfmark.config.env import CONFIG_DIR
+
     return Path(CONFIG_DIR)
 
 
@@ -45,11 +49,11 @@ def is_onboarding_complete() -> bool:
         return False
 
     try:
-        with open(config_file, 'r') as f:
+        with config_file.open() as f:
             config = json.load(f)
             return config.get(ONBOARDING_STORAGE_KEY, False)
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Could not read onboarding status from settings.json: {e}")
+        logger.warning("Could not read onboarding status from settings.json: %s", e)
         return False
 
 
@@ -57,14 +61,13 @@ def mark_onboarding_complete() -> bool:
     """Mark onboarding as complete."""
     try:
         return save_config_file("general", {ONBOARDING_STORAGE_KEY: True})
-    except Exception as e:
-        logger.error(f"Failed to mark onboarding complete: {e}")
+    except Exception:
+        logger.exception("Failed to mark onboarding complete")
         return False
 
 
-def _get_field_from_tab(tab_name: str, field_key: str) -> Optional[SettingsField]:
-    """
-    Extract a specific field from a registered settings tab.
+def _get_field_from_tab(tab_name: str, field_key: str) -> SettingsField | None:
+    """Extract a specific field from a registered settings tab.
 
     Args:
         tab_name: Name of the settings tab (e.g., 'search_mode', 'hardcover')
@@ -72,27 +75,135 @@ def _get_field_from_tab(tab_name: str, field_key: str) -> Optional[SettingsField
 
     Returns:
         The field if found, None otherwise
+
     """
     tab = get_settings_tab(tab_name)
     if not tab:
-        logger.warning(f"Settings tab not found: {tab_name}")
+        logger.warning("Settings tab not found: %s", tab_name)
         return None
 
     for field in tab.fields:
-        if hasattr(field, 'key') and field.key == field_key:
+        if hasattr(field, "key") and field.key == field_key:
             return field
 
-    logger.warning(f"Field {field_key} not found in tab {tab_name}")
+    logger.warning("Field %s not found in tab %s", field_key, tab_name)
     return None
 
 
-def _clone_field_with_overrides(field: SettingsField, **overrides) -> SettingsField:
-    """
-    Clone a field with optional attribute overrides.
+def _get_field_tab_name(field: SettingsField, fallback_tab_name: str) -> str:
+    """Return the owning settings tab for a value field."""
+    field_key = getattr(field, "key", None)
+    if not field_key:
+        return fallback_tab_name
+
+    field_map = get_settings_field_map()
+    field_entry = field_map.get(field_key)
+    if field_entry is None:
+        return fallback_tab_name
+
+    return field_entry[1]
+
+
+def _clone_field_with_overrides(field: SettingsField, **overrides: object) -> SettingsField:
+    """Clone a field with optional attribute overrides.
 
     Useful for customizing labels, descriptions, or defaults for onboarding context.
     """
     return replace(field, **overrides)
+
+
+def _get_fields_from_tab(
+    tab_name: str,
+    field_keys: list[str],
+    *,
+    strip_show_when_keys: set[str] | None = None,
+) -> list[SettingsField]:
+    """Return the requested fields from a settings tab in the supplied order."""
+    fields: list[SettingsField] = []
+    for field_key in field_keys:
+        field = _get_field_from_tab(tab_name, field_key)
+        if field:
+            show_when = getattr(field, "show_when", None)
+            stripped_show_when = _strip_show_when_keys(show_when, strip_show_when_keys or set())
+            if stripped_show_when != show_when:
+                field = replace(field, show_when=stripped_show_when)
+            fields.append(field)
+    return fields
+
+
+def _strip_show_when_keys(
+    show_when: dict[str, Any] | list[dict[str, Any]] | None,
+    field_keys: set[str],
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Remove conditions tied to fields that onboarding handles implicitly."""
+    if not show_when or not field_keys:
+        return show_when
+
+    if isinstance(show_when, list):
+        remaining = [
+            condition for condition in show_when if condition.get("field") not in field_keys
+        ]
+        return remaining or None
+
+    if show_when.get("field") in field_keys:
+        return None
+
+    return show_when
+
+
+def _is_release_source_selected(values: dict[str, Any], source_name: str) -> bool:
+    """Return True when a release source has been chosen during onboarding."""
+    raw_sources = values.get(ONBOARDING_RELEASE_SOURCES_KEY, [])
+    if not isinstance(raw_sources, list):
+        return False
+    return source_name in raw_sources
+
+
+def _evaluate_show_when_condition(condition: dict[str, Any], values: dict[str, Any]) -> bool:
+    """Evaluate one onboarding show_when condition against submitted values."""
+    current_value = values.get(condition["field"])
+    expected_value = condition.get("value")
+
+    if condition.get("notEmpty"):
+        if isinstance(current_value, list):
+            return len(current_value) > 0
+        return current_value not in (None, "")
+
+    if isinstance(current_value, list):
+        if isinstance(expected_value, list):
+            return all(item in current_value for item in expected_value)
+        return expected_value in current_value
+
+    if isinstance(expected_value, list):
+        return current_value in expected_value
+
+    return current_value == expected_value
+
+
+def _is_step_visible(step_config: dict[str, Any], values: dict[str, Any]) -> bool:
+    """Return True when a step should be included for the provided values."""
+    show_when = step_config.get("show_when")
+    if not show_when:
+        return True
+    return all(_evaluate_show_when_condition(condition, values) for condition in show_when)
+
+
+def _is_field_visible(field: SettingsField, values: dict[str, Any]) -> bool:
+    """Return True when a field should be included in the onboarding save."""
+    if getattr(field, "hidden_in_ui", False):
+        return False
+
+    if getattr(field, "universal_only", False) and values.get("SEARCH_MODE") != "universal":
+        return False
+
+    show_when = getattr(field, "show_when", None)
+    if not show_when:
+        return True
+
+    if isinstance(show_when, list):
+        return all(_evaluate_show_when_condition(condition, values) for condition in show_when)
+
+    return _evaluate_show_when_condition(show_when, values)
 
 
 # =============================================================================
@@ -100,9 +211,9 @@ def _clone_field_with_overrides(field: SettingsField, **overrides) -> SettingsFi
 # =============================================================================
 
 
-def get_search_mode_fields() -> List[SettingsField]:
+def get_search_mode_fields() -> list[SettingsField]:
     """Step 1: Choose search mode - uses actual SEARCH_MODE field from settings."""
-    fields: List[SettingsField] = [
+    fields: list[SettingsField] = [
         HeadingField(
             key="welcome_heading",
             title="Welcome to Shelfmark",
@@ -114,17 +225,19 @@ def get_search_mode_fields() -> List[SettingsField]:
     search_mode_field = _get_field_from_tab("search_mode", "SEARCH_MODE")
     if search_mode_field:
         # Clone with onboarding-specific description
-        fields.append(_clone_field_with_overrides(
-            search_mode_field,
-            description="Choose how you want to find books.",
-        ))
+        fields.append(
+            _clone_field_with_overrides(
+                search_mode_field,
+                description="Choose how you want to find books.",
+            )
+        )
 
     return fields
 
 
-def get_metadata_provider_fields() -> List[SettingsField]:
+def get_metadata_provider_fields() -> list[SettingsField]:
     """Step 2: Choose metadata provider - uses actual METADATA_PROVIDER field."""
-    fields: List[SettingsField] = [
+    fields: list[SettingsField] = [
         HeadingField(
             key="metadata_heading",
             title="Metadata Provider",
@@ -155,18 +268,20 @@ def get_metadata_provider_fields() -> List[SettingsField]:
         ]
 
         # Clone with onboarding-specific options and default
-        fields.append(_clone_field_with_overrides(
-            provider_field,
-            default="hardcover",
-            options=onboarding_options,
-        ))
+        fields.append(
+            _clone_field_with_overrides(
+                provider_field,
+                default="hardcover",
+                options=onboarding_options,
+            )
+        )
 
     return fields
 
 
-def get_hardcover_setup_fields() -> List[SettingsField]:
+def get_hardcover_setup_fields() -> list[SettingsField]:
     """Step 3a: Configure Hardcover - uses actual API key and test connection fields."""
-    fields: List[SettingsField] = [
+    fields: list[SettingsField] = [
         HeadingField(
             key="hardcover_setup_heading",
             title="Hardcover Setup",
@@ -189,9 +304,9 @@ def get_hardcover_setup_fields() -> List[SettingsField]:
     return fields
 
 
-def get_googlebooks_setup_fields() -> List[SettingsField]:
+def get_googlebooks_setup_fields() -> list[SettingsField]:
     """Step 3b: Configure Google Books - uses actual API key and test connection fields."""
-    fields: List[SettingsField] = [
+    fields: list[SettingsField] = [
         HeadingField(
             key="googlebooks_setup_heading",
             title="Google Books Setup",
@@ -214,129 +329,270 @@ def get_googlebooks_setup_fields() -> List[SettingsField]:
     return fields
 
 
-def get_prowlarr_fields() -> List[SettingsField]:
-    """Step 4: Configure Prowlarr connection - uses actual Prowlarr fields."""
-    fields: List[SettingsField] = [
+def get_release_source_selection_fields() -> list[SettingsField]:
+    """Choose which release sources to configure during onboarding."""
+    fields: list[SettingsField] = [
         HeadingField(
-            key="prowlarr_heading",
-            title="Prowlarr Integration (Optional)",
-            description="Connect to Prowlarr to search your indexers for torrents and NZBs. Skip this step if you only want to use Direct Download.",
+            key="release_sources_heading",
+            title="Release Sources",
+            description=(
+                "Choose the release sources you want to configure now. You can always add or "
+                "change sources later in Settings."
+            ),
+        ),
+        MultiSelectField(
+            key=ONBOARDING_RELEASE_SOURCES_KEY,
+            label="Sources to Set Up",
+            description="Select one or more release sources to configure now.",
+            default=[],
+            variant="dropdown",
+            env_supported=False,
+            options=[
+                {
+                    "value": "direct_download",
+                    "label": "Direct Download",
+                    "description": "Configure your own Anna's Archive mirror URLs for direct ebook downloads.",
+                },
+                {
+                    "value": "prowlarr",
+                    "label": "Prowlarr",
+                    "description": "Search your torrent and Usenet indexers through Prowlarr.",
+                },
+                {
+                    "value": "audiobookbay",
+                    "label": "AudiobookBay",
+                    "description": "Search AudiobookBay directly for audiobook releases.",
+                },
+                {
+                    "value": "irc",
+                    "label": "IRC",
+                    "description": "Connect to IRC for ebook and audiobook release searches.",
+                },
+            ],
         ),
     ]
-
-    # Get actual Prowlarr connection fields
-    prowlarr_fields = ["PROWLARR_ENABLED", "PROWLARR_URL", "PROWLARR_API_KEY", "test_prowlarr"]
-    for field_key in prowlarr_fields:
-        field = _get_field_from_tab("prowlarr_config", field_key)
-        if field:
-            fields.append(field)
-
     return fields
 
 
-def get_prowlarr_indexers_fields() -> List[SettingsField]:
-    """Step 5: Select Prowlarr indexers to search."""
-    fields: List[SettingsField] = [
+def get_direct_download_setup_fields() -> list[SettingsField]:
+    """Render trimmed direct-download essentials for onboarding."""
+    fields: list[SettingsField] = [
         HeadingField(
-            key="prowlarr_indexers_heading",
-            title="Select Indexers",
-            description="Choose which indexers to search for books. Leave empty to search all available indexers.",
-        ),
+            key="direct_download_setup_onboarding_heading",
+            title="Direct Download Setup",
+            description=(
+                "Add at least one Anna's Archive mirror URL to enable Direct Download. If you "
+                "have an Anna's Archive donator key, you can add it here too. You can configure "
+                "alternative mirrors later in Settings."
+            ),
+        )
     ]
-
-    # Get the indexers multi-select field
-    indexers_field = _get_field_from_tab("prowlarr_config", "PROWLARR_INDEXERS")
-    if indexers_field:
-        fields.append(indexers_field)
-
+    fields.extend(_get_fields_from_tab("download_sources", ["AA_DONATOR_KEY"]))
+    fields.extend(_get_fields_from_tab("mirrors", ["AA_MIRROR_URLS"]))
     return fields
 
 
-# =============================================================================
-# Step Configuration
-# =============================================================================
-
-
-ONBOARDING_STEPS = [
-    {
-        "id": "search_mode",
-        "title": "Search Mode",
-        "tab": "search_mode",
-        "get_fields": get_search_mode_fields,
-    },
-    {
-        "id": "metadata_provider",
-        "title": "Metadata Provider",
-        "tab": "search_mode",
-        "get_fields": get_metadata_provider_fields,
-        "show_when": [{"field": "SEARCH_MODE", "value": "universal"}],
-    },
-    {
-        "id": "hardcover_setup",
-        "title": "Hardcover Setup",
-        "tab": "hardcover",
-        "get_fields": get_hardcover_setup_fields,
-        # Must be universal mode AND hardcover selected
-        "show_when": [
-            {"field": "SEARCH_MODE", "value": "universal"},
-            {"field": "METADATA_PROVIDER", "value": "hardcover"},
+def get_direct_download_bypass_fields() -> list[SettingsField]:
+    """Render only the core Cloudflare bypass fields for onboarding."""
+    return _get_fields_from_tab(
+        "cloudflare_bypass",
+        [
+            "USE_CF_BYPASS",
+            "USING_EXTERNAL_BYPASSER",
+            "EXT_BYPASSER_URL",
+            "EXT_BYPASSER_PATH",
         ],
-    },
-    {
-        "id": "googlebooks_setup",
-        "title": "Google Books Setup",
-        "tab": "googlebooks",
-        "get_fields": get_googlebooks_setup_fields,
-        # Must be universal mode AND googlebooks selected
-        "show_when": [
-            {"field": "SEARCH_MODE", "value": "universal"},
-            {"field": "METADATA_PROVIDER", "value": "googlebooks"},
-        ],
-    },
-    {
-        "id": "prowlarr",
-        "title": "Prowlarr",
-        "tab": "prowlarr_config",
-        "get_fields": get_prowlarr_fields,
-        "show_when": [{"field": "SEARCH_MODE", "value": "universal"}],
-        "optional": True,
-    },
-    {
-        "id": "prowlarr_indexers",
-        "title": "Indexers",
-        "tab": "prowlarr_config",
-        "get_fields": get_prowlarr_indexers_fields,
-        # Only show when Prowlarr is enabled
-        "show_when": [
-            {"field": "SEARCH_MODE", "value": "universal"},
-            {"field": "PROWLARR_ENABLED", "value": True},
-        ],
-        "optional": True,
-    },
-]
+    )
 
 
-def get_onboarding_config() -> Dict[str, Any]:
-    """
-    Get the full onboarding configuration including steps and current values.
-    """
+def get_prowlarr_fields() -> list[SettingsField]:
+    """Render trimmed Prowlarr setup fields for onboarding."""
+    return _get_fields_from_tab(
+        "prowlarr_config",
+        [
+            "prowlarr_heading",
+            "PROWLARR_URL",
+            "PROWLARR_API_KEY",
+            "test_prowlarr",
+            "PROWLARR_INDEXERS",
+        ],
+        strip_show_when_keys={"PROWLARR_ENABLED"},
+    )
+
+
+def get_audiobookbay_fields() -> list[SettingsField]:
+    """Render trimmed AudiobookBay setup fields for onboarding."""
+    return [
+        HeadingField(
+            key="audiobookbay_onboarding_heading",
+            title="AudiobookBay",
+            description="Add the AudiobookBay domain you want Shelfmark to search.",
+        ),
+        *_get_fields_from_tab(
+            "audiobookbay_config",
+            ["ABB_HOSTNAME"],
+            strip_show_when_keys={"ABB_ENABLED"},
+        ),
+    ]
+
+
+def get_irc_fields() -> list[SettingsField]:
+    """Render trimmed IRC setup fields for onboarding."""
+    return _get_fields_from_tab(
+        "irc",
+        [
+            "heading",
+            "IRC_SERVER",
+            "IRC_PORT",
+            "IRC_USE_TLS",
+            "IRC_CHANNEL",
+            "IRC_NICK",
+            "IRC_SEARCH_BOT",
+        ],
+    )
+
+
+def get_onboarding_steps() -> list[dict[str, Any]]:
+    """Return the full onboarding step configuration."""
+    return [
+        {
+            "id": "search_mode",
+            "title": "Search Mode",
+            "tab": "search_mode",
+            "get_fields": get_search_mode_fields,
+        },
+        {
+            "id": "metadata_provider",
+            "title": "Metadata Provider",
+            "tab": "search_mode",
+            "get_fields": get_metadata_provider_fields,
+            "show_when": [{"field": "SEARCH_MODE", "value": "universal"}],
+        },
+        {
+            "id": "hardcover_setup",
+            "title": "Hardcover Setup",
+            "tab": "hardcover",
+            "get_fields": get_hardcover_setup_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": "METADATA_PROVIDER", "value": "hardcover"},
+            ],
+        },
+        {
+            "id": "googlebooks_setup",
+            "title": "Google Books Setup",
+            "tab": "googlebooks",
+            "get_fields": get_googlebooks_setup_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": "METADATA_PROVIDER", "value": "googlebooks"},
+            ],
+        },
+        {
+            "id": "release_sources",
+            "title": "Release Sources",
+            "tab": "search_mode",
+            "get_fields": get_release_source_selection_fields,
+            "show_when": [{"field": "SEARCH_MODE", "value": "universal"}],
+            "optional": True,
+        },
+        {
+            "id": "direct_download_setup_direct_mode",
+            "title": "Direct Download Setup",
+            "tab": "download_sources",
+            "get_fields": get_direct_download_setup_fields,
+            "show_when": [{"field": "SEARCH_MODE", "value": "direct"}],
+        },
+        {
+            "id": "direct_download_cloudflare_bypass_direct_mode",
+            "title": "Cloudflare Bypass",
+            "tab": "cloudflare_bypass",
+            "get_fields": get_direct_download_bypass_fields,
+            "show_when": [{"field": "SEARCH_MODE", "value": "direct"}],
+        },
+        {
+            "id": "direct_download_setup",
+            "title": "Direct Download Setup",
+            "tab": "download_sources",
+            "get_fields": get_direct_download_setup_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": ONBOARDING_RELEASE_SOURCES_KEY, "value": "direct_download"},
+            ],
+            "optional": True,
+        },
+        {
+            "id": "direct_download_cloudflare_bypass",
+            "title": "Cloudflare Bypass",
+            "tab": "cloudflare_bypass",
+            "get_fields": get_direct_download_bypass_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": ONBOARDING_RELEASE_SOURCES_KEY, "value": "direct_download"},
+            ],
+            "optional": True,
+        },
+        {
+            "id": "prowlarr",
+            "title": "Prowlarr",
+            "tab": "prowlarr_config",
+            "get_fields": get_prowlarr_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": ONBOARDING_RELEASE_SOURCES_KEY, "value": "prowlarr"},
+            ],
+            "optional": True,
+        },
+        {
+            "id": "audiobookbay",
+            "title": "AudiobookBay",
+            "tab": "audiobookbay_config",
+            "get_fields": get_audiobookbay_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": ONBOARDING_RELEASE_SOURCES_KEY, "value": "audiobookbay"},
+            ],
+            "optional": True,
+        },
+        {
+            "id": "irc",
+            "title": "IRC",
+            "tab": "irc",
+            "get_fields": get_irc_fields,
+            "show_when": [
+                {"field": "SEARCH_MODE", "value": "universal"},
+                {"field": ONBOARDING_RELEASE_SOURCES_KEY, "value": "irc"},
+            ],
+            "optional": True,
+        },
+    ]
+
+
+def get_onboarding_config() -> dict[str, Any]:
+    """Get the full onboarding configuration including steps and current values."""
     steps = []
     all_values = {}
 
-    for step_config in ONBOARDING_STEPS:
+    for step_config in get_onboarding_steps():
         fields = step_config["get_fields"]()
         tab_name = step_config["tab"]
 
         # Serialize fields with current values
         serialized_fields = []
         for field in fields:
-            serialized = serialize_field(field, tab_name, include_value=True)
+            field_tab_name = _get_field_tab_name(field, tab_name)
+            serialized = serialize_field(field, field_tab_name, include_value=True)
             serialized_fields.append(serialized)
 
             # Collect values (skip HeadingFields)
-            if hasattr(field, 'key') and field.key and not isinstance(field, HeadingField):
-                value = get_setting_value(field, tab_name)
-                all_values[field.key] = value if value is not None else getattr(field, 'default', '')
+            if hasattr(field, "env_supported") and getattr(field, "key", None):
+                if field.key in _ONBOARDING_VIRTUAL_KEYS:
+                    value = getattr(field, "default", "")
+                else:
+                    value = get_setting_value(field, field_tab_name)
+                all_values[field.key] = (
+                    value if value is not None else getattr(field, "default", "")
+                )
 
         step = {
             "id": step_config["id"],
@@ -359,22 +615,24 @@ def get_onboarding_config() -> Dict[str, Any]:
     }
 
 
-def save_onboarding_settings(values: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Save onboarding settings and mark as complete.
+def save_onboarding_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """Save onboarding settings and mark as complete.
 
     Args:
         values: Dict of field key -> value
 
     Returns:
         Dict with success status and message
+
     """
     try:
         # Group values by their target tab
-        tab_values: Dict[str, Dict[str, Any]] = {}
+        tab_values: dict[str, dict[str, Any]] = {}
 
-        for step_config in ONBOARDING_STEPS:
-            tab_name = step_config["tab"]
+        for step_config in get_onboarding_steps():
+            if not _is_step_visible(step_config, values):
+                continue
+
             fields = step_config["get_fields"]()
 
             for field in fields:
@@ -382,7 +640,12 @@ def save_onboarding_settings(values: Dict[str, Any]) -> Dict[str, Any]:
                     continue
 
                 key = field.key
+                if key in _ONBOARDING_VIRTUAL_KEYS:
+                    continue
+                if not _is_field_visible(field, values):
+                    continue
                 if key in values:
+                    tab_name = _get_field_tab_name(field, step_config["tab"])
                     if tab_name not in tab_values:
                         tab_values[tab_name] = {}
                     tab_values[tab_name][key] = values[key]
@@ -391,10 +654,9 @@ def save_onboarding_settings(values: Dict[str, Any]) -> Dict[str, Any]:
         for tab_name, tab_data in tab_values.items():
             if tab_data:
                 save_config_file(tab_name, tab_data)
-                logger.info(f"Saved onboarding settings to {tab_name}: {list(tab_data.keys())}")
+                logger.info("Saved onboarding settings to %s: %s", tab_name, list(tab_data.keys()))
 
-        # Enable the selected metadata provider
-        search_mode = values.get("SEARCH_MODE", "direct")
+        search_mode = values.get("SEARCH_MODE", "universal")
         if search_mode == "universal":
             provider = values.get("METADATA_PROVIDER", "hardcover")
             if provider:
@@ -416,7 +678,52 @@ def save_onboarding_settings(values: Dict[str, Any]) -> Dict[str, Any]:
                     provider_config["GOOGLEBOOKS_API_KEY"] = values["GOOGLEBOOKS_API_KEY"]
 
                 save_config_file(provider, provider_config)
-                logger.info(f"Enabled metadata provider: {provider} with keys: {list(provider_config.keys())}")
+                logger.info(
+                    "Enabled metadata provider: %s with keys: %s",
+                    provider,
+                    list(provider_config.keys()),
+                )
+
+        selected_release_sources = values.get(ONBOARDING_RELEASE_SOURCES_KEY, [])
+        if not isinstance(selected_release_sources, list):
+            selected_release_sources = []
+
+        source_updates: dict[str, dict[str, Any]] = {}
+
+        if search_mode == "direct":
+            source_updates.setdefault("download_sources", {})["DIRECT_DOWNLOAD_ENABLED"] = True
+        else:
+            if _is_release_source_selected(values, "direct_download"):
+                source_updates.setdefault("download_sources", {})["DIRECT_DOWNLOAD_ENABLED"] = True
+            if _is_release_source_selected(values, "prowlarr"):
+                source_updates.setdefault("prowlarr_config", {})["PROWLARR_ENABLED"] = True
+            if _is_release_source_selected(values, "audiobookbay"):
+                source_updates.setdefault("audiobookbay_config", {})["ABB_ENABLED"] = True
+
+            if not values.get("DEFAULT_RELEASE_SOURCE"):
+                for source_name in selected_release_sources:
+                    if source_name in {"direct_download", "prowlarr", "irc"}:
+                        source_updates.setdefault("search_mode", {})["DEFAULT_RELEASE_SOURCE"] = (
+                            source_name
+                        )
+                        break
+
+            if not values.get("DEFAULT_RELEASE_SOURCE_AUDIOBOOK"):
+                for source_name in selected_release_sources:
+                    if source_name in {"prowlarr", "audiobookbay", "irc"}:
+                        source_updates.setdefault("search_mode", {})[
+                            "DEFAULT_RELEASE_SOURCE_AUDIOBOOK"
+                        ] = source_name
+                        break
+
+        for tab_name, tab_data in source_updates.items():
+            if tab_data:
+                save_config_file(tab_name, tab_data)
+                logger.info(
+                    "Enabled onboarding release source settings for %s: %s",
+                    tab_name,
+                    list(tab_data.keys()),
+                )
 
         # Mark onboarding as complete
         mark_onboarding_complete()
@@ -424,12 +731,13 @@ def save_onboarding_settings(values: Dict[str, Any]) -> Dict[str, Any]:
         # Refresh config
         try:
             from shelfmark.core.config import config
+
             config.refresh()
         except ImportError as e:
-            logger.debug(f"Could not refresh config after onboarding: {e}")
-
-        return {"success": True, "message": "Onboarding complete!"}
+            logger.debug("Could not refresh config after onboarding: %s", e)
 
     except Exception as e:
-        logger.error(f"Failed to save onboarding settings: {e}")
+        logger.exception("Failed to save onboarding settings")
         return {"success": False, "message": str(e)}
+    else:
+        return {"success": True, "message": "Onboarding complete!"}

@@ -6,50 +6,69 @@ Requires a free API key from Google Cloud Console (~1000 requests/day quota).
 API Documentation: https://developers.google.com/books/docs/v1/using
 """
 
+from contextlib import suppress
+from http import HTTPStatus
+from typing import Any, ClassVar
+
 import requests
-from typing import Any, Dict, List, Optional
 
 from shelfmark.core.cache import cacheable
+from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.request_helpers import normalize_optional_text
 from shelfmark.core.settings_registry import (
-    register_settings,
+    ActionButton,
     CheckboxField,
+    HeadingField,
     PasswordField,
     SelectField,
-    ActionButton,
-    HeadingField,
+    SettingsField,
+    register_settings,
 )
-from shelfmark.core.config import config as app_config
 from shelfmark.download.network import get_ssl_verify
 from shelfmark.metadata_providers import (
     BookMetadata,
     DisplayField,
     MetadataProvider,
     MetadataSearchOptions,
+    SearchField,
     SearchType,
     SortOrder,
+    TextSearchField,
     register_provider,
     register_provider_kwargs,
-    TextSearchField,
 )
-
 
 logger = setup_logger(__name__)
 
+_HTTP_STATUS_FORBIDDEN = HTTPStatus.FORBIDDEN
+_HTTP_STATUS_BAD_REQUEST = HTTPStatus.BAD_REQUEST
+_HTTP_STATUS_NOT_FOUND = HTTPStatus.NOT_FOUND
+
 GOOGLE_BOOKS_BASE_URL = "https://www.googleapis.com/books/v1"
 
+
+class _GoogleBooksRequestError(Exception):
+    """Raised when Google Books does not return a usable API response."""
+
+
 # Sort mapping - Google only supports "relevance" and "newest"
-SORT_MAPPING: Dict[SortOrder, Optional[str]] = {
+SORT_MAPPING: dict[SortOrder, str | None] = {
     SortOrder.RELEVANCE: None,  # Default, no param needed
     SortOrder.NEWEST: "newest",
     # POPULARITY, RATING, OLDEST not supported - fall back to relevance
 }
 
 
+def _normalize_googlebooks_api_key(value: object) -> str:
+    """Normalize Google Books API keys loaded from config or form values."""
+    return normalize_optional_text(value) or ""
+
+
 @register_provider_kwargs("googlebooks")
-def _googlebooks_kwargs() -> Dict[str, Any]:
+def _googlebooks_kwargs() -> dict[str, Any]:
     """Provide Google Books-specific constructor kwargs."""
-    return {"api_key": app_config.get("GOOGLEBOOKS_API_KEY", "")}
+    return {"api_key": _normalize_googlebooks_api_key(app_config.get("GOOGLEBOOKS_API_KEY", ""))}
 
 
 @register_provider("googlebooks")
@@ -59,8 +78,11 @@ class GoogleBooksProvider(MetadataProvider):
     name = "googlebooks"
     display_name = "Google Books"
     requires_auth = True
-    supported_sorts = [SortOrder.RELEVANCE, SortOrder.NEWEST]
-    search_fields = [
+    supported_sorts: ClassVar[tuple[SortOrder, ...]] = (
+        SortOrder.RELEVANCE,
+        SortOrder.NEWEST,
+    )
+    search_fields: ClassVar[tuple[SearchField, ...]] = (
         TextSearchField(
             key="author",
             label="Author",
@@ -71,18 +93,19 @@ class GoogleBooksProvider(MetadataProvider):
             label="Title",
             description="Search by book title",
         ),
-    ]
+    )
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None) -> None:
         """Initialize provider with optional API key (falls back to config)."""
-        self.api_key = api_key or app_config.get("GOOGLEBOOKS_API_KEY", "")
+        raw_key = api_key or app_config.get("GOOGLEBOOKS_API_KEY", "")
+        self.api_key = _normalize_googlebooks_api_key(raw_key)
         self.session = requests.Session()
 
     def is_available(self) -> bool:
         """Check if provider is configured with an API key."""
         return bool(self.api_key)
 
-    def search(self, options: MetadataSearchOptions) -> List[BookMetadata]:
+    def search(self, options: MetadataSearchOptions) -> list[BookMetadata]:
         """Search for books using Google Books API."""
         if not self.api_key:
             logger.warning("Google Books API key not configured")
@@ -99,17 +122,18 @@ class GoogleBooksProvider(MetadataProvider):
             f"{options.query}:{options.search_type.value}:{options.sort.value}:"
             f"{options.language}:{options.limit}:{options.page}:{fields_key}"
         )
-        return self._search_cached(cache_key, options)
+        try:
+            return self._search_cached(cache_key, options)
+        except _GoogleBooksRequestError:
+            return []
 
     @cacheable(
         ttl_key="METADATA_CACHE_SEARCH_TTL",
         ttl_default=300,
         key_prefix="googlebooks:search",
     )
-    def _search_cached(
-        self, cache_key: str, options: MetadataSearchOptions
-    ) -> List[BookMetadata]:
-        """Cached search implementation."""
+    def _search_cached(self, cache_key: str, options: MetadataSearchOptions) -> list[BookMetadata]:
+        """Return cached search results for Google Books."""
         # Build query string with Google Books operators
         author_value = options.fields.get("author", "").strip()
         title_value = options.fields.get("title", "").strip()
@@ -134,7 +158,7 @@ class GoogleBooksProvider(MetadataProvider):
         query = "+".join(query_parts)
 
         # Build request params
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "q": query,
             "maxResults": min(options.limit, 40),  # Google max is 40
             "startIndex": (options.page - 1) * options.limit,
@@ -150,32 +174,31 @@ class GoogleBooksProvider(MetadataProvider):
         if options.language:
             params["langRestrict"] = options.language
 
+        result = self._make_request("/volumes", params)
+        if result is None:
+            raise _GoogleBooksRequestError
+
+        books: list[BookMetadata] = []
         try:
-            result = self._make_request("/volumes", params)
-            if not result:
-                return []
-
             items = result.get("items", [])
-            books = []
-
             for item in items:
                 book = self._parse_volume(item)
                 if book:
                     books.append(book)
 
-            logger.info(f"Google Books search '{query}' returned {len(books)} results")
-            return books
+            logger.info("Google Books search '%s' returned %s results", query, len(books))
 
-        except Exception as e:
-            logger.error(f"Google Books search error: {e}")
+        except Exception:
+            logger.exception("Google Books search error")
             return []
+        return books
 
     @cacheable(
         ttl_key="METADATA_CACHE_BOOK_TTL",
         ttl_default=600,
         key_prefix="googlebooks:book",
     )
-    def get_book(self, book_id: str) -> Optional[BookMetadata]:
+    def get_book(self, book_id: str) -> BookMetadata | None:
         """Get book details by Google Books volume ID."""
         try:
             result = self._make_request(f"/volumes/{book_id}", {})
@@ -184,8 +207,8 @@ class GoogleBooksProvider(MetadataProvider):
 
             return self._parse_volume(result)
 
-        except Exception as e:
-            logger.error(f"Google Books get_book error: {e}")
+        except Exception:
+            logger.exception("Google Books get_book error")
             return None
 
     @cacheable(
@@ -193,13 +216,13 @@ class GoogleBooksProvider(MetadataProvider):
         ttl_default=600,
         key_prefix="googlebooks:isbn",
     )
-    def search_by_isbn(self, isbn: str) -> Optional[BookMetadata]:
+    def search_by_isbn(self, isbn: str) -> BookMetadata | None:
         """Search for a book by ISBN-10 or ISBN-13."""
         # Clean ISBN (remove hyphens and spaces)
         clean_isbn = isbn.replace("-", "").replace(" ", "").strip()
 
         # Use ISBN operator for precise lookup
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "q": f"isbn:{clean_isbn}",
             "maxResults": 1,
         }
@@ -211,18 +234,16 @@ class GoogleBooksProvider(MetadataProvider):
 
             items = result.get("items", [])
             if not items:
-                logger.debug(f"No Google Books result for ISBN: {isbn}")
+                logger.debug("No Google Books result for ISBN: %s", isbn)
                 return None
 
             return self._parse_volume(items[0])
 
-        except Exception as e:
-            logger.error(f"Google Books ISBN search error: {e}")
+        except Exception:
+            logger.exception("Google Books ISBN search error")
             return None
 
-    def _make_request(
-        self, endpoint: str, params: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    def _make_request(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any] | None:
         """Make authenticated API request to endpoint."""
         if not self.api_key:
             logger.warning("Google Books API key not configured")
@@ -243,25 +264,25 @@ class GoogleBooksProvider(MetadataProvider):
             return None
         except requests.HTTPError as e:
             if e.response is not None:
-                if e.response.status_code == 403:
+                if e.response.status_code == _HTTP_STATUS_FORBIDDEN:
                     # Quota exceeded or invalid API key
-                    logger.error(
+                    logger.exception(
                         "Google Books API: quota exceeded or invalid API key (HTTP 403)"
                     )
-                elif e.response.status_code == 400:
-                    logger.warning(f"Google Books API: bad request - {e}")
-                elif e.response.status_code == 404:
+                elif e.response.status_code == _HTTP_STATUS_BAD_REQUEST:
+                    logger.warning("Google Books API: bad request - %s", e)
+                elif e.response.status_code == _HTTP_STATUS_NOT_FOUND:
                     logger.debug("Google Books: volume not found")
                 else:
-                    logger.error(f"Google Books API HTTP error: {e}")
+                    logger.exception("Google Books API HTTP error")
             else:
-                logger.error(f"Google Books API HTTP error: {e}")
+                logger.exception("Google Books API HTTP error")
             return None
-        except Exception as e:
-            logger.error(f"Google Books API request failed: {e}")
+        except Exception:
+            logger.exception("Google Books API request failed")
             return None
 
-    def _parse_volume(self, volume: Dict[str, Any]) -> Optional[BookMetadata]:
+    def _parse_volume(self, volume: dict[str, Any]) -> BookMetadata | None:
         """Parse a volume object into BookMetadata."""
         try:
             volume_id = volume.get("id")
@@ -271,7 +292,6 @@ class GoogleBooksProvider(MetadataProvider):
             if not volume_id or not title:
                 return None
 
-            # Authors (list)
             authors = volume_info.get("authors", [])
 
             # ISBNs - extract from industryIdentifiers
@@ -296,9 +316,7 @@ class GoogleBooksProvider(MetadataProvider):
             )
             # Remove edge=curl parameter and upgrade to https
             if cover_url:
-                cover_url = cover_url.replace("&edge=curl", "").replace(
-                    "http://", "https://"
-                )
+                cover_url = cover_url.replace("&edge=curl", "").replace("http://", "https://")
 
             # Publisher
             publisher = volume_info.get("publisher")
@@ -307,10 +325,8 @@ class GoogleBooksProvider(MetadataProvider):
             publish_year = None
             published_date = volume_info.get("publishedDate", "")
             if published_date:
-                try:
+                with suppress(ValueError, TypeError):
                     publish_year = int(published_date[:4])
-                except (ValueError, TypeError):
-                    pass
 
             # Language
             language = volume_info.get("language")
@@ -325,7 +341,7 @@ class GoogleBooksProvider(MetadataProvider):
             source_url = volume_info.get("infoLink")
 
             # Build display fields - rating only
-            display_fields: List[DisplayField] = []
+            display_fields: list[DisplayField] = []
 
             average_rating = volume_info.get("averageRating")
             ratings_count = volume_info.get("ratingsCount")
@@ -333,9 +349,7 @@ class GoogleBooksProvider(MetadataProvider):
                 rating_str = f"{average_rating:.1f}"
                 if ratings_count:
                     rating_str += f" ({ratings_count:,})"
-                display_fields.append(
-                    DisplayField(label="Rating", value=rating_str, icon="star")
-                )
+                display_fields.append(DisplayField(label="Rating", value=rating_str, icon="star"))
 
             return BookMetadata(
                 provider="googlebooks",
@@ -355,17 +369,20 @@ class GoogleBooksProvider(MetadataProvider):
                 display_fields=display_fields,
             )
 
-        except Exception as e:
-            logger.debug(f"Failed to parse Google Books volume: {e}")
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Failed to parse Google Books volume: %s", e)
             return None
 
 
-def _test_googlebooks_connection(current_values: Dict[str, Any] = None) -> Dict[str, Any]:
+def _test_googlebooks_connection(
+    current_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Test the Google Books API connection using current form values."""
     current_values = current_values or {}
 
     # Use current form values first, fall back to saved config
-    api_key = current_values.get("GOOGLEBOOKS_API_KEY") or app_config.get("GOOGLEBOOKS_API_KEY", "")
+    raw_key = current_values.get("GOOGLEBOOKS_API_KEY") or app_config.get("GOOGLEBOOKS_API_KEY", "")
+    api_key = _normalize_googlebooks_api_key(raw_key)
 
     if not api_key:
         return {
@@ -377,25 +394,25 @@ def _test_googlebooks_connection(current_values: Dict[str, Any] = None) -> Dict[
         provider = GoogleBooksProvider(api_key=api_key)
         # Simple test search
         result = provider._make_request("/volumes", {"q": "test", "maxResults": 1})
+        test_result = {
+            "success": False,
+            "message": "API request failed - check your API key",
+        }
 
         if result is not None and "items" in result:
-            return {
+            test_result = {
                 "success": True,
                 "message": "Successfully connected to Google Books API",
             }
         elif result is not None:
-            return {
+            test_result = {
                 "success": True,
                 "message": "API connected but returned no results for test query",
             }
-        else:
-            return {
-                "success": False,
-                "message": "API request failed - check your API key",
-            }
     except Exception as e:
         logger.exception("Google Books connection test failed")
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    return test_result
 
 
 # Sort options for settings UI
@@ -405,10 +422,8 @@ _GOOGLEBOOKS_SORT_OPTIONS = [
 ]
 
 
-@register_settings(
-    "googlebooks", "Google Books", icon="book", order=53, group="metadata_providers"
-)
-def googlebooks_settings():
+@register_settings("googlebooks", "Google Books", icon="book", order=53, group="metadata_providers")
+def googlebooks_settings() -> list[SettingsField]:
     """Google Books metadata provider settings."""
     return [
         HeadingField(
@@ -431,8 +446,7 @@ def googlebooks_settings():
             key="GOOGLEBOOKS_API_KEY",
             label="API Key",
             description=(
-                "Get your API key from Google Cloud Console "
-                "(APIs & Services > Credentials)"
+                "Get your API key from Google Cloud Console (APIs & Services > Credentials)"
             ),
             required=True,
         ),

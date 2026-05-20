@@ -57,23 +57,29 @@ def test_remaps_completed_path_when_remote_path_missing():
                 ]
             return default
 
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value={
-                "protocol": "torrent",
-                "magnetUrl": "magnet:?xt=urn:btih:abc123",
-            },
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.get_client",
-            return_value=mock_client,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.remove_release",
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.config.get",
-            side_effect=config_get,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
-            0.01,
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
+            ),
         ):
             handler = ProwlarrHandler()
             task = DownloadTask(task_id="poll-mapping-test", source="prowlarr", title="Test Book")
@@ -129,23 +135,29 @@ def test_remap_prefers_mapping_when_original_exists():
                 ]
             return default
 
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value={
-                "protocol": "torrent",
-                "magnetUrl": "magnet:?xt=urn:btih:abc123",
-            },
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.get_client",
-            return_value=mock_client,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.remove_release",
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.config.get",
-            side_effect=config_get,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
-            0.01,
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
+            ),
         ):
             handler = ProwlarrHandler()
             task = DownloadTask(task_id="poll-mapping-prefer", source="prowlarr", title="Test Book")
@@ -199,26 +211,34 @@ def test_remap_fails_when_mapping_exists_but_path_missing():
                 ]
             return default
 
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value={
-                "protocol": "torrent",
-                "magnetUrl": "magnet:?xt=urn:btih:abc123",
-            },
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.get_client",
-            return_value=mock_client,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.remove_release",
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.config.get",
-            side_effect=config_get,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
-            0.01,
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
+            ),
         ):
             handler = ProwlarrHandler()
-            task = DownloadTask(task_id="poll-mapping-missing", source="prowlarr", title="Test Book")
+            task = DownloadTask(
+                task_id="poll-mapping-missing", source="prowlarr", title="Test Book"
+            )
             cancel_flag = Event()
             recorder = ProgressRecorder()
 
@@ -270,23 +290,29 @@ def test_remaps_windows_path_to_linux():
                 ]
             return default
 
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value={
-                "protocol": "torrent",
-                "magnetUrl": "magnet:?xt=urn:btih:abc123",
-            },
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.get_client",
-            return_value=mock_client,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.remove_release",
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.config.get",
-            side_effect=config_get,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
-            0.01,
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
+            ),
         ):
             handler = ProwlarrHandler()
             task = DownloadTask(task_id="windows-path-test", source="prowlarr", title="Test Book")
@@ -344,26 +370,34 @@ def test_windows_path_case_insensitive_matching():
                 ]
             return default
 
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value={
-                "protocol": "torrent",
-                "magnetUrl": "magnet:?xt=urn:btih:abc123",
-            },
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.get_client",
-            return_value=mock_client,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.remove_release",
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.config.get",
-            side_effect=config_get,
-        ), patch(
-            "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
-            0.01,
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
+            ),
         ):
             handler = ProwlarrHandler()
-            task = DownloadTask(task_id="case-insensitive-test", source="prowlarr", title="Test Book")
+            task = DownloadTask(
+                task_id="case-insensitive-test", source="prowlarr", title="Test Book"
+            )
             cancel_flag = Event()
             recorder = ProgressRecorder()
 
@@ -376,3 +410,83 @@ def test_windows_path_case_insensitive_matching():
 
             assert result == str(local_file)
             assert task.original_download_path == str(local_file)
+
+
+def test_resolve_download_path_rejects_unsafe_mapping_remainder_even_if_original_exists(
+    tmp_path,
+):
+    remote_dir = tmp_path / "remote" / "downloads"
+    local_dir = tmp_path / "local" / "downloads"
+    escaped_file = tmp_path / "escape" / "book.epub"
+    remote_dir.mkdir(parents=True)
+    local_dir.mkdir(parents=True)
+    escaped_file.parent.mkdir(parents=True)
+    escaped_file.write_text("escaped content")
+
+    raw_path = f"{remote_dir}/../../escape/book.epub"
+
+    mock_client = MagicMock()
+    mock_client.name = "qbittorrent"
+    mock_client.get_download_path.return_value = raw_path
+
+    def config_get(key: str, default=""):
+        if key == "PROWLARR_REMOTE_PATH_MAPPINGS":
+            return [
+                {
+                    "host": "qbittorrent",
+                    "remotePath": str(remote_dir),
+                    "localPath": str(local_dir),
+                }
+            ]
+        return default
+
+    with patch("shelfmark.download.clients.base_handler.config.get", side_effect=config_get):
+        handler = ProwlarrHandler()
+
+        resolved_path, error = handler._resolve_download_path_once(
+            mock_client,
+            "download_id",
+            log_details=False,
+        )
+
+    assert Path(raw_path).exists()
+    assert resolved_path is None
+    assert error is not None
+    assert "rejected unsafe path" in error
+
+
+def test_delete_local_download_data_skips_unsafe_mapping_remainder_even_if_original_exists(
+    tmp_path,
+):
+    remote_dir = tmp_path / "remote" / "downloads"
+    local_dir = tmp_path / "local" / "downloads"
+    escaped_file = tmp_path / "escape" / "book.epub"
+    remote_dir.mkdir(parents=True)
+    local_dir.mkdir(parents=True)
+    escaped_file.parent.mkdir(parents=True)
+    escaped_file.write_text("escaped content")
+
+    raw_path = f"{remote_dir}/../../escape/book.epub"
+
+    mock_client = MagicMock()
+    mock_client.name = "nzbget"
+    mock_client.get_download_path.return_value = raw_path
+
+    def config_get(key: str, default=""):
+        if key == "PROWLARR_REMOTE_PATH_MAPPINGS":
+            return [
+                {
+                    "host": "nzbget",
+                    "remotePath": str(remote_dir),
+                    "localPath": str(local_dir),
+                }
+            ]
+        return default
+
+    with patch("shelfmark.download.clients.base_handler.config.get", side_effect=config_get):
+        handler = ProwlarrHandler()
+        handler._delete_local_download_data(mock_client, "download_id")
+
+    assert Path(raw_path).exists()
+    assert escaped_file.exists()
+    assert escaped_file.read_text() == "escaped content"

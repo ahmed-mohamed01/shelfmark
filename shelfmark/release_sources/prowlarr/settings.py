@@ -1,25 +1,51 @@
 """Prowlarr settings registration."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import requests
+
+from shelfmark.core.request_helpers import normalize_optional_text
 from shelfmark.core.settings_registry import (
-    register_settings,
+    ActionButton,
     CheckboxField,
     HeadingField,
-    TextField,
-    PasswordField,
-    ActionButton,
     MultiSelectField,
+    PasswordField,
+    SettingsField,
+    TextField,
+    register_settings,
 )
 from shelfmark.core.utils import normalize_http_url
 
-
 # ==================== Dynamic Options Loaders ====================
 
+_PROWLARR_SETTINGS_ERRORS = (
+    requests.exceptions.RequestException,
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
-def _get_indexer_options() -> List[Dict[str, str]]:
-    """
-    Fetch available indexers from Prowlarr for the multi-select field.
+
+def _resolve_setting_text(current_values: dict[str, Any], key: str, *, default: str = "") -> str:
+    """Prefer current form values, then fall back to persisted config text."""
+    from shelfmark.core.config import config
+
+    current_value = normalize_optional_text(current_values.get(key))
+    if current_value is not None:
+        return current_value
+
+    config_value = normalize_optional_text(config.get(key, default))
+    if config_value is not None:
+        return config_value
+
+    return default
+
+
+def _get_indexer_options() -> list[dict[str, str]]:
+    """Fetch available indexers from Prowlarr for the multi-select field.
 
     Returns list of {value: "id", label: "name (protocol)"} options.
     """
@@ -28,8 +54,8 @@ def _get_indexer_options() -> List[Dict[str, str]]:
 
     logger = setup_logger(__name__)
 
-    raw_url = config.get("PROWLARR_URL", "")
-    api_key = config.get("PROWLARR_API_KEY", "")
+    raw_url = normalize_optional_text(config.get("PROWLARR_URL", "")) or ""
+    api_key = normalize_optional_text(config.get("PROWLARR_API_KEY", "")) or ""
 
     if not raw_url or not api_key:
         return []
@@ -56,30 +82,32 @@ def _get_indexer_options() -> List[Dict[str, str]]:
             if has_books:
                 label += " 📚"
 
-            options.append({
-                "value": str(idx_id),
-                "label": label,
-            })
+            options.append(
+                {
+                    "value": str(idx_id),
+                    "label": label,
+                }
+            )
 
-        return options
-
-    except Exception as e:
-        logger.error(f"Failed to fetch Prowlarr indexers: {e}")
+    except _PROWLARR_SETTINGS_ERRORS:
+        logger.exception("Failed to fetch Prowlarr indexers")
         return []
+
+    else:
+        return options
 
 
 # ==================== Test Connection Callback ====================
 
 
-def _test_prowlarr_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_prowlarr_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the Prowlarr connection using current form values."""
-    from shelfmark.core.config import config
     from shelfmark.release_sources.prowlarr.api import ProwlarrClient
 
     current_values = current_values or {}
 
-    raw_url = current_values.get("PROWLARR_URL") or config.get("PROWLARR_URL", "")
-    api_key = current_values.get("PROWLARR_API_KEY") or config.get("PROWLARR_API_KEY", "")
+    raw_url = _resolve_setting_text(current_values, "PROWLARR_URL")
+    api_key = _resolve_setting_text(current_values, "PROWLARR_API_KEY")
 
     if not raw_url:
         return {"success": False, "message": "Prowlarr URL is required"}
@@ -93,9 +121,10 @@ def _test_prowlarr_connection(current_values: Optional[Dict[str, Any]] = None) -
     try:
         client = ProwlarrClient(url, api_key)
         success, message = client.test_connection()
+    except _PROWLARR_SETTINGS_ERRORS as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
         return {"success": success, "message": message}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
 
 
 # ==================== Configuration Tab ====================
@@ -107,7 +136,7 @@ def _test_prowlarr_connection(current_values: Optional[Dict[str, Any]] = None) -
     icon="download",
     order=41,
 )
-def prowlarr_config_settings():
+def prowlarr_config_settings() -> list[SettingsField]:
     """Prowlarr connection and indexer settings."""
     return [
         HeadingField(
@@ -159,6 +188,13 @@ def prowlarr_config_settings():
             label="Auto-expand search on no results",
             default=False,
             description="Automatically retry search without category filtering if no results are found",
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
+        CheckboxField(
+            key="PROWLARR_USE_SEED_PREFERENCES",
+            label="Use Prowlarr seed preferences",
+            default=False,
+            description="Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client",
             show_when={"field": "PROWLARR_ENABLED", "value": True},
         ),
     ]

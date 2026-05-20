@@ -1,4 +1,5 @@
-import { ReactNode } from 'react';
+import type { ReactNode } from 'react';
+
 import { Dropdown } from './Dropdown';
 
 export interface DropdownListOption {
@@ -25,6 +26,7 @@ interface DropdownListProps {
   summaryFormatter?: (selected: DropdownListOption[], placeholder: string) => ReactNode;
   keepOpenOnSelect?: boolean;
   triggerChrome?: 'default' | 'minimal';
+  positionStrategy?: 'absolute' | 'fixed';
   renderTrigger?: (props: { isOpen: boolean; toggle: () => void }) => ReactNode;
   onOpenChange?: (isOpen: boolean) => void;
 }
@@ -44,11 +46,12 @@ export const DropdownList = ({
   summaryFormatter,
   keepOpenOnSelect,
   triggerChrome = 'default',
+  positionStrategy,
   renderTrigger,
   onOpenChange,
 }: DropdownListProps) => {
   const selectedValues = normalizeValue(value, multiple);
-  const selectedOptions = options.filter(opt => selectedValues.includes(opt.value));
+  const selectedOptions = options.filter((opt) => selectedValues.includes(opt.value));
   const checkboxEnabled = showCheckboxes ?? multiple;
   const stayOpenOnSelect = keepOpenOnSelect ?? multiple;
 
@@ -60,7 +63,7 @@ export const DropdownList = ({
     if (selectedOptions.length === 0) {
       // For single select with empty string value, find and show the empty value option label
       if (!multiple) {
-        const emptyOption = options.find(opt => opt.value === '');
+        const emptyOption = options.find((opt) => opt.value === '');
         if (emptyOption) {
           return emptyOption.label;
         }
@@ -76,7 +79,7 @@ export const DropdownList = ({
       return selectedOptions[0].label;
     }
 
-    const [first, second, ...rest] = selectedOptions.map(opt => opt.label);
+    const [first, second, ...rest] = selectedOptions.map((opt) => opt.label);
     const suffix = rest.length > 0 ? ` +${rest.length}` : '';
     return `${first}, ${second ?? ''}${suffix}`.trim();
   };
@@ -86,7 +89,7 @@ export const DropdownList = ({
 
     if (multiple) {
       const next = selectedValues.includes(option.value)
-        ? selectedValues.filter(v => v !== option.value)
+        ? selectedValues.filter((v) => v !== option.value)
         : [...selectedValues, option.value];
       onChange(next);
       if (!stayOpenOnSelect) {
@@ -113,6 +116,7 @@ export const DropdownList = ({
       buttonClassName={buttonClassName}
       panelClassName={panelClassName}
       triggerChrome={triggerChrome}
+      positionStrategy={positionStrategy}
       renderTrigger={renderTrigger}
       onOpenChange={onOpenChange}
     >
@@ -120,20 +124,20 @@ export const DropdownList = ({
         let lastGroup: string | undefined;
         return (
           <div role="listbox" aria-multiselectable={multiple}>
-            {options.map(option => {
+            {options.map((option) => {
               const showGroupHeader = option.group != null && option.group !== lastGroup;
               if (option.group != null) lastGroup = option.group;
               return (
                 <div key={option.value}>
                   {showGroupHeader && (
-                    <div className="px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wide opacity-60 select-none">
+                    <div className="px-3 pt-2 pb-1 text-xs font-medium tracking-wide uppercase opacity-60 select-none">
                       {option.group}
                     </div>
                   )}
                   <button
                     type="button"
-                    className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover-surface ${
-                      option.disabled ? 'opacity-50 cursor-not-allowed' : ''
+                    className={`hover-surface flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                      option.disabled ? 'cursor-not-allowed opacity-50' : ''
                     }`}
                     onClick={() => handleOptionClick(option, close)}
                     disabled={option.disabled}
@@ -143,7 +147,7 @@ export const DropdownList = ({
                         type="checkbox"
                         checked={selectedValues.includes(option.value)}
                         readOnly
-                        className="h-4 w-4 rounded-sm border-gray-300 text-sky-600 focus:ring-sky-500 pointer-events-none"
+                        className="pointer-events-none h-4 w-4 rounded-sm border-gray-300 text-sky-600 focus:ring-sky-500"
                       />
                     )}
                     {option.icon}
@@ -164,7 +168,10 @@ export const DropdownList = ({
   );
 };
 
-const normalizeValue = (value: string[] | string | null | undefined, multiple: boolean): string[] => {
+const normalizeValue = (
+  value: string[] | string | null | undefined,
+  multiple: boolean,
+): string[] => {
   if (multiple) {
     if (Array.isArray(value)) {
       return value;

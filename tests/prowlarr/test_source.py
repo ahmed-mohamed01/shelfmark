@@ -4,18 +4,33 @@ Tests for the Prowlarr source module.
 Tests the utility functions for parsing release metadata.
 """
 
+# Import the functions to test
 import pytest
 
-# Import the functions to test
+from shelfmark.metadata_providers import BookMetadata
+from shelfmark.release_sources.prowlarr.api import ProwlarrClient
 from shelfmark.release_sources.prowlarr.source import (
     ProwlarrSource,
-    _parse_size,
-    _extract_format,
     _detect_content_type_from_categories,
+    _extract_format,
+    _parse_size,
     _prowlarr_result_to_release,
 )
 from shelfmark.release_sources.prowlarr.utils import get_protocol_display, sanitize_download_url
-from shelfmark.metadata_providers import BookMetadata
+
+
+class _AvailableSource:
+    display_name = "Prowlarr"
+
+    def is_available(self):
+        return True
+
+
+@pytest.fixture(autouse=True)
+def source_available_by_default(monkeypatch):
+    import shelfmark.download.orchestrator as orchestrator
+
+    monkeypatch.setattr(orchestrator, "get_source", lambda _source: _AvailableSource())
 
 
 class TestParseSize:
@@ -177,7 +192,9 @@ class TestSanitizeDownloadUrl:
     def test_sanitizes_multiple_query_params(self):
         """Sanitize all query pairs while keeping params."""
         url = "http://prowlarr:9696/5/download?apikey = 12345&indexer = 7"
-        assert sanitize_download_url(url) == "http://prowlarr:9696/5/download?apikey=12345&indexer=7"
+        assert (
+            sanitize_download_url(url) == "http://prowlarr:9696/5/download?apikey=12345&indexer=7"
+        )
 
     def test_leaves_non_http_urls_untouched(self):
         """Do not modify magnet or other non-http URLs."""
@@ -188,6 +205,7 @@ class TestSanitizeDownloadUrl:
         """Return clean URLs as-is."""
         url = "https://prowlarr:9696/5/download?apikey=12345"
         assert sanitize_download_url(url) == url
+
 
 class TestDetectContentType:
     """Tests for the _detect_content_type_from_categories function."""
@@ -210,9 +228,12 @@ class TestDetectContentType:
 
 
 class FakeTorznabClient:
-    def __init__(self):
+    def __init__(self, search_results=None, seed_settings=None):
         self.calls: list[tuple[str, object]] = []
         self.queries: list[str] = []
+        self.seed_settings_calls: list[object] = []
+        self.search_results = search_results or []
+        self.seed_settings = seed_settings or {}
 
     def get_enabled_indexers_detailed(self):
         return [
@@ -228,15 +249,59 @@ class FakeTorznabClient:
             }
         ]
 
-    def torznab_search(self, *, indexer_id: int, query: str, categories=None, search_type="book", limit=100, offset=0):
+    def torznab_search(
+        self,
+        *,
+        indexer_id: int,
+        query: str,
+        categories=None,
+        search_type="book",
+        limit=100,
+        offset=0,
+    ):
         del indexer_id, search_type, limit, offset
         self.calls.append((query, categories))
         self.queries.append(query)
-        return []
+        return self.search_results
 
     def get_enriched_indexer_ids(self, restrict_to=None):
         del restrict_to
         return []
+
+    def get_indexer_seed_settings(self, restrict_to=None):
+        self.seed_settings_calls.append(restrict_to)
+        return self.seed_settings
+
+
+class TestProwlarrIndexerSeedSettings:
+    def test_get_indexer_seed_settings_reads_prowlarr_minutes_field(self, monkeypatch):
+        client = ProwlarrClient("http://prowlarr:9696", "apikey")
+        monkeypatch.setattr(
+            client,
+            "get_enabled_indexers_detailed",
+            lambda: [
+                {
+                    "id": 13,
+                    "protocol": "torrent",
+                    "fields": [
+                        {"name": "torrentBaseSettings.seedRatio", "value": "2.5"},
+                        {"name": "torrentBaseSettings.seedTime", "value": "7200"},
+                    ],
+                },
+                {
+                    "id": 14,
+                    "protocol": "usenet",
+                    "fields": [
+                        {"name": "torrentBaseSettings.seedRatio", "value": "3"},
+                        {"name": "torrentBaseSettings.seedTime", "value": "9999"},
+                    ],
+                },
+            ],
+        )
+
+        assert client.get_indexer_seed_settings() == {
+            13: {"ratio_limit": 2.5, "seeding_time_limit_minutes": 7200}
+        }
 
 
 class TestProwlarrLocalizedQueries:
@@ -299,6 +364,163 @@ class TestProwlarrLocalizedQueries:
         source.search(book, plan, expand_search=True, content_type="audiobook")
 
         assert fake_client.calls == [("my custom", None)]
+
+    def test_search_attaches_configured_seed_time_minutes_to_release(self, monkeypatch):
+        import shelfmark.release_sources.prowlarr.source as prowlarr_source
+
+        def fake_get(key: str, default=None):
+            values = {
+                "PROWLARR_INDEXERS": "",
+                "PROWLARR_AUTO_EXPAND": False,
+                "PROWLARR_USE_SEED_PREFERENCES": True,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(prowlarr_source.config, "get", fake_get)
+
+        fake_client = FakeTorznabClient(
+            search_results=[
+                {
+                    "guid": "mam-result-1",
+                    "protocol": "torrent",
+                    "title": "Test Release",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                    "indexerId": 1,
+                    "indexer": "MyAnonamouse",
+                    "minimumSeedTime": 259200,
+                    "minimumRatio": 1,
+                }
+            ],
+            seed_settings={1: {"ratio_limit": 2.0, "seeding_time_limit_minutes": 7200}},
+        )
+        source = ProwlarrSource()
+        monkeypatch.setattr(source, "_get_client", lambda: fake_client)
+
+        book = BookMetadata(
+            provider="hardcover",
+            provider_id="123",
+            title="Anything",
+            authors=["Someone"],
+        )
+
+        from shelfmark.core.search_plan import build_release_search_plan
+
+        plan = build_release_search_plan(book, languages=["en"])
+        releases = source.search(book, plan, content_type="ebook")
+
+        assert len(releases) == 1
+        assert fake_client.seed_settings_calls == [None]
+        assert releases[0].extra["configured_ratio_limit"] == 2.0
+        assert releases[0].extra["configured_seed_time_minutes"] == 7200
+        assert "minimum_seed_time" not in releases[0].extra
+        assert "minimum_ratio" not in releases[0].extra
+
+    def test_search_ignores_configured_seed_time_when_disabled(self, monkeypatch):
+        import shelfmark.release_sources.prowlarr.source as prowlarr_source
+
+        def fake_get(key: str, default=None):
+            values = {
+                "PROWLARR_INDEXERS": "",
+                "PROWLARR_AUTO_EXPAND": False,
+                "PROWLARR_USE_SEED_PREFERENCES": False,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(prowlarr_source.config, "get", fake_get)
+
+        fake_client = FakeTorznabClient(
+            search_results=[
+                {
+                    "guid": "mam-result-1",
+                    "protocol": "torrent",
+                    "title": "Test Release",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                    "indexerId": 1,
+                    "indexer": "MyAnonamouse",
+                }
+            ],
+            seed_settings={1: {"ratio_limit": 2.0, "seeding_time_limit_minutes": 7200}},
+        )
+        source = ProwlarrSource()
+        monkeypatch.setattr(source, "_get_client", lambda: fake_client)
+
+        book = BookMetadata(
+            provider="hardcover",
+            provider_id="123",
+            title="Anything",
+            authors=["Someone"],
+        )
+
+        from shelfmark.core.search_plan import build_release_search_plan
+
+        plan = build_release_search_plan(book, languages=["en"])
+        releases = source.search(book, plan, content_type="ebook")
+
+        assert len(releases) == 1
+        assert fake_client.seed_settings_calls == []
+        assert releases[0].extra["configured_ratio_limit"] is None
+        assert releases[0].extra["configured_seed_time_minutes"] is None
+
+    def test_redacted_search_result_still_builds_private_retry_payload(self, monkeypatch):
+        import shelfmark.download.orchestrator as orchestrator
+        import shelfmark.release_sources.prowlarr.source as prowlarr_source
+
+        secret_download_url = "https://prowlarr.example.com/1/download?apikey=secret"
+
+        def fake_get(key: str, default=None, user_id=None):
+            values = {
+                "PROWLARR_INDEXERS": "",
+                "PROWLARR_AUTO_EXPAND": False,
+                "PROWLARR_USE_SEED_PREFERENCES": False,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(prowlarr_source.config, "get", fake_get)
+        monkeypatch.setattr(orchestrator.config, "get", fake_get)
+
+        fake_client = FakeTorznabClient(
+            search_results=[
+                {
+                    "guid": "secret-prowlarr-release",
+                    "protocol": "usenet",
+                    "title": "Secret Bearing Release",
+                    "downloadUrl": secret_download_url,
+                }
+            ]
+        )
+        source = ProwlarrSource()
+        monkeypatch.setattr(source, "_get_client", lambda: fake_client)
+
+        book = BookMetadata(
+            provider="hardcover",
+            provider_id="123",
+            title="Anything",
+            authors=["Someone"],
+        )
+
+        from shelfmark.core.search_plan import build_release_search_plan
+
+        plan = build_release_search_plan(book, languages=["en"])
+        releases = source.search(book, plan, content_type="ebook")
+
+        assert len(releases) == 1
+        assert releases[0].download_url is None
+
+        captured_tasks = []
+
+        def fake_add(task):
+            captured_tasks.append(task)
+            return True
+
+        monkeypatch.setattr(orchestrator.book_queue, "add", fake_add)
+
+        success, error = orchestrator.queue_release(releases[0].__dict__)
+
+        assert success is True
+        assert error is None
+        assert captured_tasks[0].retry_download_url == secret_download_url
+        assert captured_tasks[0].retry_download_protocol == "usenet"
+        assert "retry_download_url" not in orchestrator._task_to_dict(captured_tasks[0])
 
     def test_search_uses_localized_titles_when_available(self, monkeypatch):
         import shelfmark.release_sources.prowlarr.source as prowlarr_source
@@ -370,6 +592,83 @@ class TestProwlarrLocalizedQueries:
         assert "The Final Empire" in fake_client.queries
         assert "A végső birodalom" in fake_client.queries
         assert "Mistborn: The Final Empire" not in fake_client.queries
+
+    def test_auto_expand_logs_query_argument(self, monkeypatch):
+        import shelfmark.release_sources.prowlarr.source as prowlarr_source
+
+        def fake_get(key: str, default=None):
+            values = {
+                "PROWLARR_INDEXERS": "",
+                "PROWLARR_AUTO_EXPAND": True,
+            }
+            return values.get(key, default)
+
+        info_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        monkeypatch.setattr(prowlarr_source.config, "get", fake_get)
+        monkeypatch.setattr(
+            prowlarr_source.logger,
+            "info",
+            lambda message, *args: info_calls.append((str(message), args)),
+        )
+
+        fake_client = FakeTorznabClient()
+        source = ProwlarrSource()
+        monkeypatch.setattr(source, "_get_client", lambda: fake_client)
+
+        book = BookMetadata(
+            provider="hardcover",
+            provider_id="123",
+            title="Anything",
+            authors=["Someone"],
+        )
+
+        from shelfmark.core.search_plan import build_release_search_plan
+
+        plan = build_release_search_plan(book, languages=["en"])
+        source.search(book, plan, content_type="ebook")
+
+        query = fake_client.calls[0][0]
+        assert fake_client.calls == [(query, [7000]), (query, None)]
+        assert info_calls == [
+            (
+                "Prowlarr: no results for query '%s' with category filter, auto-expanding search",
+                (query,),
+            )
+        ]
+
+    def test_get_column_config_ignores_indexer_lookup_failure(self, monkeypatch):
+        source = ProwlarrSource()
+
+        class FailingClient:
+            def get_enabled_indexers_detailed(self):
+                raise RuntimeError("indexers unavailable")
+
+        monkeypatch.setattr(source, "_get_client", lambda: FailingClient())
+        monkeypatch.setattr(source, "_get_selected_indexer_ids", lambda: None)
+
+        config = source.get_column_config()
+
+        assert config.available_indexers is None
+        assert config.default_indexers is None
+
+    def test_resolve_indexer_ids_from_names_returns_none_on_lookup_failure(self):
+        source = ProwlarrSource()
+
+        class FailingClient:
+            def get_enabled_indexers_detailed(self):
+                raise RuntimeError("indexers unavailable")
+
+        assert source._resolve_indexer_ids_from_names(FailingClient(), ["Alpha"]) is None
+
+    def test_get_search_indexer_ids_returns_empty_on_lookup_failure(self):
+        source = ProwlarrSource()
+
+        class FailingClient:
+            def get_enabled_indexers_detailed(self):
+                raise RuntimeError("indexers unavailable")
+
+        assert source._get_search_indexer_ids(FailingClient(), None, [7000]) == []
 
 
 class TestProwlarrReleaseMetadataMapping:

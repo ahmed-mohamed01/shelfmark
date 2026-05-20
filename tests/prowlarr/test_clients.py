@@ -3,16 +3,17 @@ Tests for the download client infrastructure.
 """
 
 import pytest
+import requests
 
 from shelfmark.download.clients import (
-    DownloadStatus,
-    DownloadState,
-    DownloadClient,
-    register_client,
-    get_client,
-    list_configured_clients,
-    get_all_clients,
     _CLIENTS,
+    DownloadClient,
+    DownloadState,
+    DownloadStatus,
+    get_all_clients,
+    get_client,
+    register_client,
+    with_retry,
 )
 
 
@@ -181,6 +182,41 @@ class TestDownloadStatus:
         assert status.download_speed == 1048576
         assert status.eta == 300
         assert status.message == "Downloading at 1 MB/s"
+
+
+class TestWithRetry:
+    """Tests for the retry decorator."""
+
+    def test_logs_single_retry_message_per_failed_attempt(self, monkeypatch):
+        import shelfmark.download.clients as clients_module
+
+        debug_calls = []
+
+        monkeypatch.setattr(clients_module.random, "uniform", lambda _a, _b: 0.0)
+        monkeypatch.setattr(clients_module.time, "sleep", lambda _delay: None)
+        monkeypatch.setattr(
+            clients_module._logger,
+            "debug",
+            lambda *args, **kwargs: debug_calls.append((args, kwargs)),
+        )
+
+        attempts = {"count": 0}
+
+        @with_retry(max_attempts=2, base_delay=1.0, max_delay=10.0, jitter=0.0)
+        def flaky_call():
+            attempts["count"] += 1
+            raise requests.exceptions.ConnectionError("boom")
+
+        with pytest.raises(requests.exceptions.ConnectionError, match="boom"):
+            flaky_call()
+
+        assert attempts["count"] == 2
+        assert len(debug_calls) == 1
+        args, kwargs = debug_calls[0]
+        assert kwargs == {}
+        assert args[:5] == ("Retry %s/%s for %s after %.1fs (error: %s)", 1, 2, "flaky_call", 1.0)
+        assert isinstance(args[5], requests.exceptions.ConnectionError)
+        assert str(args[5]) == "boom"
 
 
 class TestClientRegistry:

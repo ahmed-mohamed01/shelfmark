@@ -7,11 +7,16 @@ import re
 import socket
 import struct
 from dataclasses import dataclass
-from pathlib import Path
-from threading import Event
-from typing import Callable, Optional
+from ipaddress import ip_address
+from pathlib import PureWindowsPath
+from typing import TYPE_CHECKING
 
 from shelfmark.core.logger import setup_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+    from threading import Event
 
 logger = setup_logger(__name__)
 
@@ -28,6 +33,7 @@ BUFFER_SIZE = 4096
 @dataclass
 class DCCOffer:
     """Parsed DCC SEND offer."""
+
     filename: str
     ip: str
     port: int
@@ -41,71 +47,112 @@ class DCCOffer:
 
 class DCCError(Exception):
     """Base exception for DCC operations."""
-    pass
 
 
 class DCCParseError(DCCError):
     """Failed to parse DCC SEND string."""
-    pass
 
 
 class DCCSizeError(DCCError):
     """Downloaded size doesn't match expected size."""
-    pass
 
 
 class DCCConnectionError(DCCError):
     """Failed to connect to DCC sender."""
-    pass
+
+
+class DCCSecurityError(DCCError):
+    """Rejected unsafe DCC offer metadata."""
 
 
 def int_to_ip(ip_int: int) -> str:
     """Convert 32-bit integer (DCC format) to dotted IP notation."""
-    packed = struct.pack('>I', ip_int)
-    return '.'.join(str(b) for b in packed)
+    packed = struct.pack(">I", ip_int)
+    return ".".join(str(b) for b in packed)
 
 
 def parse_dcc_send(text: str) -> DCCOffer:
     """Parse a DCC SEND message into a DCCOffer. Raises DCCParseError on failure."""
     match = DCC_REGEX.search(text)
     if not match:
-        raise DCCParseError(f"Invalid DCC SEND format: {text[:100]}")
+        msg = f"Invalid DCC SEND format: {text[:100]}"
+        raise DCCParseError(msg)
 
     filename = match.group(1).strip('"')
     ip_int = int(match.group(2))
     port = int(match.group(3))
     size = int(match.group(4))
+    try:
+        ip = int_to_ip(ip_int)
+    except struct.error as e:
+        msg = f"Invalid DCC IP integer: {ip_int}"
+        raise DCCParseError(msg) from e
 
     return DCCOffer(
-        filename=filename,
-        ip=int_to_ip(ip_int),
+        filename=safe_dcc_filename(filename),
+        ip=ip,
         port=port,
         size=size,
     )
 
 
+def safe_dcc_filename(filename: str) -> str:
+    """Return a DCC filename that cannot escape its destination directory."""
+    safe_name = filename.strip()
+    windows_path = PureWindowsPath(safe_name)
+    if (
+        not safe_name
+        or safe_name in {".", ".."}
+        or "/" in safe_name
+        or "\\" in safe_name
+        or windows_path.drive
+    ):
+        msg = f"Rejected unsafe DCC filename: {filename!r}"
+        raise DCCSecurityError(msg)
+    return safe_name
+
+
+def validate_dcc_endpoint(offer: DCCOffer) -> None:
+    """Reject DCC endpoints that can target local/internal network services."""
+    if not 1 <= offer.port <= 65535:
+        msg = f"Rejected invalid DCC port: {offer.port}"
+        raise DCCSecurityError(msg)
+
+    try:
+        address = ip_address(offer.ip)
+    except ValueError as e:
+        msg = f"Rejected invalid DCC IP address: {offer.ip}"
+        raise DCCSecurityError(msg) from e
+
+    if not address.is_global:
+        msg = f"Rejected non-public DCC endpoint: {offer.ip}"
+        raise DCCSecurityError(msg)
+
+
 def download_dcc(
     offer: DCCOffer,
     dest_path: Path,
-    progress_callback: Optional[Callable[[float], None]] = None,
-    cancel_flag: Optional[Event] = None,
+    progress_callback: Callable[[float], None] | None = None,
+    cancel_flag: Event | None = None,
     timeout: float = 30.0,
 ) -> None:
     """Download file via DCC protocol to dest_path. Raises DCCError on failure."""
-    logger.info(f"DCC connecting to {offer.ip}:{offer.port} for {offer.filename}")
+    validate_dcc_endpoint(offer)
+    logger.info("DCC connecting to %s:%s for %s", offer.ip, offer.port, offer.filename)
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect(offer.address)
-    except socket.error as e:
-        raise DCCConnectionError(f"Failed to connect to {offer.ip}:{offer.port}: {e}")
+    except OSError as e:
+        msg = f"Failed to connect to {offer.ip}:{offer.port}: {e}"
+        raise DCCConnectionError(msg) from e
 
     try:
         received = 0
         last_progress = -1
 
-        with open(dest_path, 'wb') as f:
+        with dest_path.open("wb") as f:
             while received < offer.size:
                 # Check for cancellation
                 if cancel_flag and cancel_flag.is_set():
@@ -115,8 +162,9 @@ def download_dcc(
                 # Read chunk
                 try:
                     chunk = sock.recv(BUFFER_SIZE)
-                except socket.timeout:
-                    raise DCCError(f"Timeout reading from {offer.ip}:{offer.port}")
+                except TimeoutError as e:
+                    msg = f"Timeout reading from {offer.ip}:{offer.port}"
+                    raise DCCError(msg) from e
 
                 if not chunk:
                     # Connection closed prematurely
@@ -134,11 +182,10 @@ def download_dcc(
 
         # Verify downloaded size matches expected
         if received != offer.size:
-            raise DCCSizeError(
-                f"Size mismatch: expected {offer.size} bytes, got {received}"
-            )
+            msg = f"Size mismatch: expected {offer.size} bytes, got {received}"
+            raise DCCSizeError(msg)
 
-        logger.info(f"DCC download complete: {received} bytes")
+        logger.info("DCC download complete: %s bytes", received)
 
     finally:
         sock.close()

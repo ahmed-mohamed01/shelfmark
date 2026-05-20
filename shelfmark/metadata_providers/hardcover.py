@@ -1,45 +1,54 @@
 """Hardcover.app metadata provider. Requires API key."""
 
 import re
-import requests
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from http import HTTPStatus
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+import requests
+
 from shelfmark.core.cache import cache_key, cacheable, get_metadata_cache
+from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.request_helpers import coerce_bool, coerce_int, normalize_optional_text
 from shelfmark.core.settings_registry import (
-    register_settings,
+    ActionButton,
     CheckboxField,
+    HeadingField,
     PasswordField,
     SelectField,
-    ActionButton,
-    HeadingField,
+    SettingsField,
+    register_settings,
 )
-from shelfmark.core.config import config as app_config
-from shelfmark.core.request_helpers import coerce_int
 from shelfmark.download.network import get_ssl_verify
 from shelfmark.metadata_providers import (
     BookMetadata,
     DisplayField,
+    DynamicSelectSearchField,
     MetadataCapability,
     MetadataProvider,
     MetadataSearchOptions,
+    SearchField,
     SearchResult,
     SearchType,
     SortOrder,
+    TextSearchField,
     normalize_language_code,
     register_provider,
     register_provider_kwargs,
-    DynamicSelectSearchField,
-    TextSearchField,
 )
 
 logger = setup_logger(__name__)
 
 HARDCOVER_API_URL = "https://api.hardcover.app/v1/graphql"
 HARDCOVER_PAGE_SIZE = 25  # Hardcover API returns max 25 results per page
+HARDCOVER_MIN_AUTHOR_PARTS = 2
+HARDCOVER_MIN_TYPEAHEAD_QUERY_LENGTH = 2
+HARDCOVER_MAX_SERIES_OPTIONS = 7
+HARDCOVER_API_KEY_MIN_LENGTH = 100
 HARDCOVER_LIST_URL_PATTERN = re.compile(
     r"^/(?:@([\w.-]+)/)?lists?/([\w-]+)/?$",
     re.IGNORECASE,
@@ -387,12 +396,92 @@ query GetSeriesBooks($seriesId: Int!) {
 }
 """
 
+AUTHOR_BOOKS_BY_ID_QUERY = """
+query GetAuthorBooks($authorId: Int!, $limit: Int!, $offset: Int!) {
+    authors(where: {id: {_eq: $authorId}}, limit: 1) {
+        name
+        contributions(
+            where: {
+                contributable_type: {_eq: "Book"},
+                book: {
+                    canonical_id: {_is_null: true},
+                    state: {_in: ["normalized", "normalizing"]}
+                }
+            },
+            order_by: [
+                {book: {users_count: desc_nulls_last}},
+                {book: {ratings_count: desc_nulls_last}},
+                {book: {release_date: asc_nulls_last}},
+                {book: {id: asc}}
+            ],
+            limit: $limit,
+            offset: $offset
+        ) {
+            contribution
+            book {
+                id
+                title
+                subtitle
+                slug
+                release_date
+                headline
+                description
+                pages
+                rating
+                ratings_count
+                users_count
+                compilation
+                editions_count
+                cached_image
+                cached_contributors
+                contributions(where: {contribution: {_eq: "Author"}}) {
+                    author {
+                        name
+                    }
+                }
+                featured_book_series {
+                    position
+                    series {
+                        id
+                        name
+                        primary_books_count
+                    }
+                }
+            }
+        }
+        contributions_aggregate(
+            where: {
+                contributable_type: {_eq: "Book"},
+                book: {
+                    canonical_id: {_is_null: true},
+                    state: {_in: ["normalized", "normalizing"]}
+                }
+            }
+        ) {
+            aggregate {
+                count
+            }
+        }
+    }
+}
+"""
+
 HARDCOVER_STATUS_PREFIX = "status:"
 HARDCOVER_STATUSES: list[dict] = [
     {"id": 1, "label": "Want to Read", "slug": "want-to-read", "query_key": "want_to_read_count"},
-    {"id": 2, "label": "Currently Reading", "slug": "currently-reading", "query_key": "currently_reading_count"},
+    {
+        "id": 2,
+        "label": "Currently Reading",
+        "slug": "currently-reading",
+        "query_key": "currently_reading_count",
+    },
     {"id": 3, "label": "Read", "slug": "read", "query_key": "read_count"},
-    {"id": 5, "label": "Did Not Finish", "slug": "did-not-finish", "query_key": "did_not_finish_count"},
+    {
+        "id": 5,
+        "label": "Did Not Finish",
+        "slug": "did-not-finish",
+        "query_key": "did_not_finish_count",
+    },
 ]
 HARDCOVER_STATUS_URL_SLUGS: dict[int, str] = {s["id"]: s["slug"] for s in HARDCOVER_STATUSES}
 HARDCOVER_STATUS_GROUP = "Reading Status"
@@ -403,13 +492,18 @@ HARDCOVER_WRITABLE_TARGET_GROUPS = {HARDCOVER_STATUS_GROUP, "My Lists"}
 @dataclass(frozen=True)
 class HardcoverBookTargetState:
     """Current Hardcover target state for a specific book."""
-    user_book_id: Optional[int]
-    status_id: Optional[int]
-    list_book_ids: Dict[int, int]
+
+    user_book_id: int | None
+    status_id: int | None
+    list_book_ids: dict[int, int]
 
 
 class HardcoverGraphQLError(ValueError):
     """GraphQL request was rejected by Hardcover."""
+
+
+class HardcoverTargetPayloadError(RuntimeError):
+    """Hardcover returned an invalid payload while loading book targets."""
 
 
 def _extract_graphql_error_message(payload: Any) -> str:
@@ -421,7 +515,7 @@ def _extract_graphql_error_message(payload: Any) -> str:
     if not isinstance(errors, list):
         return ""
 
-    messages: List[str] = []
+    messages: list[str] = []
     for error in errors:
         if not isinstance(error, dict):
             continue
@@ -434,7 +528,7 @@ def _extract_graphql_error_message(payload: Any) -> str:
 
 # Mapping from abstract sort order to Hardcover sort parameter
 # Note: release_year is more consistently populated than release_date_i
-SORT_MAPPING: Dict[SortOrder, str] = {
+SORT_MAPPING: dict[SortOrder, str] = {
     SortOrder.RELEVANCE: "_text_match:desc,users_count:desc",
     SortOrder.POPULARITY: "users_count:desc",
     SortOrder.RATING: "rating:desc",
@@ -443,7 +537,7 @@ SORT_MAPPING: Dict[SortOrder, str] = {
 }
 
 # Mapping from abstract search type to Hardcover fields parameter
-SEARCH_TYPE_FIELDS: Dict[SearchType, str] = {
+SEARCH_TYPE_FIELDS: dict[SearchType, str] = {
     SearchType.GENERAL: "title,isbns,series_names,author_names,alternative_titles",
     SearchType.TITLE: "title,alternative_titles",
     SearchType.AUTHOR: "author_names",
@@ -461,14 +555,14 @@ TITLE_SUGGESTION_WEIGHTS = "5,2"
 TITLE_SUGGESTION_SORT = "_text_match:desc,users_count:desc"
 
 
-def _combine_headline_description(headline: Optional[str], description: Optional[str]) -> Optional[str]:
+def _combine_headline_description(headline: str | None, description: str | None) -> str | None:
     """Combine headline (tagline) and description into a single description."""
     if headline and description:
         return f"{headline}\n\n{description}"
     return headline or description
 
 
-def _extract_cover_url(data: Dict, *keys: str) -> Optional[str]:
+def _extract_cover_url(data: dict, *keys: str) -> str | None:
     """Extract cover URL from data dict, trying multiple keys.
 
     Handles both string URLs and dict with 'url' key.
@@ -483,7 +577,7 @@ def _extract_cover_url(data: Dict, *keys: str) -> Optional[str]:
     return None
 
 
-def _extract_publish_year(data: Dict) -> Optional[int]:
+def _extract_publish_year(data: dict) -> int | None:
     """Extract publish year from release_year or release_date fields."""
     if data.get("release_year"):
         try:
@@ -498,7 +592,7 @@ def _extract_publish_year(data: Dict) -> Optional[int]:
     return None
 
 
-def _extract_release_date(data: Dict) -> Optional[str]:
+def _extract_release_date(data: dict) -> str | None:
     """Extract full release date text when available (e.g., YYYY-MM-DD)."""
     value = data.get("release_date")
     if value is None:
@@ -507,7 +601,7 @@ def _extract_release_date(data: Dict) -> Optional[str]:
     return normalized or None
 
 
-def _extract_language_from_search_item(item: Dict) -> Optional[str]:
+def _extract_language_from_search_item(item: dict) -> str | None:
     for key in ("language", "language_code", "language_code2", "lang"):
         normalized = normalize_language_code(item.get(key))
         if normalized:
@@ -522,7 +616,7 @@ def _extract_language_from_search_item(item: Dict) -> Optional[str]:
     return None
 
 
-def _parse_release_date(value: Any) -> Optional[datetime]:
+def _parse_release_date(value: Any) -> datetime | None:
     """Parse Hardcover release dates stored as YYYY-MM-DD strings."""
     if not value:
         return None
@@ -537,7 +631,7 @@ def _parse_release_date(value: Any) -> Optional[datetime]:
         return None
 
 
-def _normalize_series_position(value: Any) -> Optional[float]:
+def _normalize_series_position(value: Any) -> float | None:
     """Normalize a series position to a float for sorting and grouping."""
     if value is None:
         return None
@@ -548,12 +642,18 @@ def _normalize_series_position(value: Any) -> Optional[float]:
         return None
 
 
+def _normalize_hardcover_api_key(value: object) -> str:
+    """Normalize Hardcover API keys, stripping copied auth-header prefixes."""
+    normalized_value = normalize_optional_text(value) or ""
+    return normalized_value.removeprefix("Bearer ").strip()
+
+
 def _normalize_search_text(value: str) -> str:
     """Normalize free-text search input for matching and caching."""
     return " ".join(value.split()).strip()
 
 
-def _unwrap_hit_document(hit: Any) -> Optional[Dict[str, Any]]:
+def _unwrap_hit_document(hit: Any) -> dict[str, Any] | None:
     """Extract the document dict from a Typesense hit, or return None."""
     if not isinstance(hit, dict):
         return None
@@ -561,7 +661,7 @@ def _unwrap_hit_document(hit: Any) -> Optional[Dict[str, Any]]:
     return item if isinstance(item, dict) else None
 
 
-def _search_tokens(value: str) -> List[str]:
+def _search_tokens(value: str) -> list[str]:
     """Tokenize search text for lightweight prefix matching."""
     return re.findall(r"[a-z0-9']+", value.casefold())
 
@@ -589,7 +689,7 @@ def _query_matches_author_name(query: str, author_name: str) -> bool:
     )
 
 
-def _split_part_base_title(title: str) -> Optional[str]:
+def _split_part_base_title(title: str) -> str | None:
     """Extract the base title from segmented part releases like ', Part 2'."""
     normalized_title = _normalize_search_text(title)
     if not normalized_title:
@@ -620,7 +720,7 @@ def _series_allows_split_parts(series_name: str) -> bool:
     return any(marker in normalized_name for marker in markers)
 
 
-def _extract_typesense_hits(result: Dict[str, Any]) -> tuple[List[Dict[str, Any]], int]:
+def _extract_typesense_hits(result: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
     """Extract hit documents + total count from Hardcover search output."""
     root = result.get("search", result) if isinstance(result, dict) else {}
     results_obj = root.get("results", {}) if isinstance(root, dict) else {}
@@ -633,7 +733,7 @@ def _extract_typesense_hits(result: Dict[str, Any]) -> tuple[List[Dict[str, Any]
     return hits, found_count
 
 
-def _build_source_url(slug: str) -> Optional[str]:
+def _build_source_url(slug: str) -> str | None:
     """Build Hardcover source URL from book slug."""
     return f"https://hardcover.app/books/{slug}" if slug else None
 
@@ -642,7 +742,10 @@ def _is_probably_series_position(subtitle: str) -> bool:
     normalized = subtitle.strip().lower()
 
     # Common patterns: "Book One", "Book 1", "Part 2", "Volume III", etc.
-    if re.match(r"^(book|part|volume|vol\.?|episode)\s+([0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\b", normalized):
+    if re.match(
+        r"^(book|part|volume|vol\.?|episode)\s+([0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        normalized,
+    ):
         return True
 
     # e.g. "A Novel", "An Epic Fantasy", etc. These add noise to indexer queries.
@@ -651,15 +754,23 @@ def _is_probably_series_position(subtitle: str) -> bool:
 
     # Descriptive subtitles like "A [Name] Novel", "An [Name] Mystery", etc.
     genre_words = (
-        "novel", "novella", "story", "memoir", "tale", "thriller", "mystery",
-        "romance", "adventure", "epic", "saga", "chronicle", "fantasy",
+        "novel",
+        "novella",
+        "story",
+        "memoir",
+        "tale",
+        "thriller",
+        "mystery",
+        "romance",
+        "adventure",
+        "epic",
+        "saga",
+        "chronicle",
+        "fantasy",
         "novel-in-stories",
     )
     genre_pattern = "|".join(re.escape(w) for w in genre_words)
-    if re.match(rf"^an?\s+.+\s+({genre_pattern})$", normalized):
-        return True
-
-    return False
+    return bool(re.match(rf"^an?\s+.+\s+({genre_pattern})$", normalized))
 
 
 def _strip_parenthetical_suffix(title: str) -> str:
@@ -667,7 +778,7 @@ def _strip_parenthetical_suffix(title: str) -> str:
     return re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
 
 
-def _simplify_author_for_search(author: str) -> Optional[str]:
+def _simplify_author_for_search(author: str) -> str | None:
     """Return a looser author string for indexer searches.
 
     Primary goal: reduce mismatch between metadata providers and indexers.
@@ -689,11 +800,11 @@ def _simplify_author_for_search(author: str) -> Optional[str]:
     # Handle "Last, First ..." -> "First ... Last"
     if "," in normalized:
         parts = [p.strip() for p in normalized.split(",") if p.strip()]
-        if len(parts) >= 2:
-            normalized = " ".join(parts[1:] + [parts[0]]).strip()
+        if len(parts) >= HARDCOVER_MIN_AUTHOR_PARTS:
+            normalized = " ".join([*parts[1:], parts[0]]).strip()
 
     tokens = normalized.split(" ")
-    if len(tokens) < 2:
+    if len(tokens) < HARDCOVER_MIN_AUTHOR_PARTS:
         return None
 
     keep_suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
@@ -728,10 +839,10 @@ def _simplify_author_for_search(author: str) -> Optional[str]:
 
 def _compute_search_title(
     title: str,
-    subtitle: Optional[str],
+    subtitle: str | None,
     *,
-    series_name: Optional[str] = None,
-) -> Optional[str]:
+    series_name: str | None = None,
+) -> str | None:
     """Compute a provider-specific, *looser* title for indexer searching.
 
     Goal: produce a string that maximizes recall in downstream sources (Prowlarr,
@@ -753,7 +864,9 @@ def _compute_search_title(
     normalized_title = _strip_parenthetical_suffix(original_title)
 
     normalized_subtitle = " ".join(subtitle.split()).strip() if subtitle else ""
-    normalized_subtitle = _strip_parenthetical_suffix(normalized_subtitle) if normalized_subtitle else ""
+    normalized_subtitle = (
+        _strip_parenthetical_suffix(normalized_subtitle) if normalized_subtitle else ""
+    )
 
     if normalized_subtitle and normalized_subtitle.lower() == normalized_title.lower():
         normalized_subtitle = ""
@@ -765,7 +878,10 @@ def _compute_search_title(
         match = re.match(r"^(.+?)\s*:\s*(.+)$", normalized_title)
         if match:
             suffix = _strip_parenthetical_suffix(match.group(2).strip())
-            if normalized_subtitle.lower() == suffix.lower() or normalized_subtitle.lower() in suffix.lower():
+            if (
+                normalized_subtitle.lower() == suffix.lower()
+                or normalized_subtitle.lower() in suffix.lower()
+            ):
                 return None
 
     # Prefer subtitle when it looks like the real title.
@@ -787,7 +903,10 @@ def _compute_search_title(
                 return prefix
 
             # Otherwise assume "Series: Book Title" and prefer the subtitle.
-            if normalized_subtitle.lower() == suffix.lower() or normalized_subtitle.lower() in suffix.lower():
+            if (
+                normalized_subtitle.lower() == suffix.lower()
+                or normalized_subtitle.lower() in suffix.lower()
+            ):
                 return normalized_subtitle
 
         # Fallback: if title contains the subtitle, this is likely "Series: Subtitle".
@@ -801,7 +920,7 @@ def _compute_search_title(
             # Common Hardcover format: "Series: Book Title".
             prefix = f"{series_normalized}:"
             if normalized_title.lower().startswith(prefix.lower()):
-                candidate = normalized_title[len(prefix):].strip()
+                candidate = normalized_title[len(prefix) :].strip()
                 candidate = _strip_parenthetical_suffix(candidate)
                 if candidate and candidate.lower() != normalized_title.lower():
                     return candidate
@@ -814,7 +933,7 @@ def _compute_search_title(
 
 
 @register_provider_kwargs("hardcover")
-def _hardcover_kwargs() -> Dict[str, Any]:
+def _hardcover_kwargs() -> dict[str, Any]:
     """Provide Hardcover-specific constructor kwargs."""
     return {"api_key": app_config.get("HARDCOVER_API_KEY", "")}
 
@@ -826,27 +945,28 @@ class HardcoverProvider(MetadataProvider):
     name = "hardcover"
     display_name = "Hardcover"
     requires_auth = True
-    supported_sorts = [
+    supported_sorts: ClassVar[tuple[SortOrder, ...]] = (
         SortOrder.RELEVANCE,
         SortOrder.POPULARITY,
         SortOrder.RATING,
         SortOrder.NEWEST,
         SortOrder.OLDEST,
         SortOrder.SERIES_ORDER,
-    ]
-    capabilities = [
+    )
+    capabilities: ClassVar[tuple[MetadataCapability, ...]] = (
         MetadataCapability(
             key="view_series",
             field_key="series",
             sort=SortOrder.SERIES_ORDER,
         ),
-    ]
-    search_fields = [
+    )
+    search_fields: ClassVar[tuple[SearchField, ...]] = (
         TextSearchField(
             key="author",
             label="Author",
             placeholder="Search author...",
             description="Search by author name",
+            suggestions_endpoint="/api/metadata/field-options?provider=hardcover&field=author",
         ),
         TextSearchField(
             key="title",
@@ -868,19 +988,20 @@ class HardcoverProvider(MetadataProvider):
             placeholder="Browse a list...",
             description="Browse books from a Hardcover list",
         ),
-    ]
+    )
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None) -> None:
         """Initialize provider with optional API key (falls back to config)."""
         raw_key = api_key or app_config.get("HARDCOVER_API_KEY", "")
-        # Strip "Bearer " prefix if user pasted the full auth header from Hardcover
-        self.api_key = raw_key.removeprefix("Bearer ").strip() if raw_key else ""
+        self.api_key = _normalize_hardcover_api_key(raw_key)
         self.session = requests.Session()
         if self.api_key:
-            self.session.headers.update({
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            })
+            self.session.headers.update(
+                {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                }
+            )
 
     def is_available(self) -> bool:
         """Check if provider is configured with an API key."""
@@ -888,20 +1009,20 @@ class HardcoverProvider(MetadataProvider):
 
     def _build_search_params(
         self, default_query: str, author: str, title: str, series: str
-    ) -> tuple[str, Optional[str], Optional[str]]:
+    ) -> tuple[str, str | None, str | None]:
         """Build search query, fields, and weights based on provided values.
 
         Returns (query, fields, weights) tuple. Fields/weights are None for general search.
         """
         if author and not title and not series:
-            return author, "author_names", "1"
+            return author, None, None
         if title and not author and not series:
             return title, "title,alternative_titles", "5,1"
         if author and title and not series:
             return f"{title} {author}", "title,alternative_titles,author_names", "5,1,3"
         return default_query, None, None
 
-    def _detect_list_url(self, query: str) -> Optional[tuple[Optional[str], str]]:
+    def _detect_list_url(self, query: str) -> tuple[str | None, str] | None:
         """Detect and extract optional owner username + list slug from a URL string."""
         candidate = query.strip()
         if not candidate:
@@ -958,7 +1079,9 @@ class HardcoverProvider(MetadataProvider):
         source_title = str(list_data.get("name") or "").strip() or None
         list_slug = str(list_data.get("slug") or "").strip()
         user_data = list_data.get("user", {})
-        owner_username = str(user_data.get("username") or "").strip() if isinstance(user_data, dict) else ""
+        owner_username = (
+            str(user_data.get("username") or "").strip() if isinstance(user_data, dict) else ""
+        )
         if list_slug and owner_username:
             source_url = f"https://hardcover.app/@{owner_username}/lists/{list_slug}"
 
@@ -967,7 +1090,7 @@ class HardcoverProvider(MetadataProvider):
         except (TypeError, ValueError):
             books_count = 0
 
-        books: List[BookMetadata] = []
+        books: list[BookMetadata] = []
         for item in list_books:
             if not isinstance(item, dict):
                 continue
@@ -978,14 +1101,25 @@ class HardcoverProvider(MetadataProvider):
                 parsed_book = self._parse_book(book_data)
                 if parsed_book:
                     books.append(parsed_book)
-            except Exception as exc:
-                logger.debug(f"Failed to parse Hardcover list book for list_id={list_id}: {exc}")
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                logger.debug("Failed to parse Hardcover list book for list_id=%s: %s", list_id, exc)
 
         has_more = offset + len(list_books) < books_count
-        return SearchResult(books=books, page=page, total_found=books_count, has_more=has_more, source_url=source_url, source_title=source_title)
+        return SearchResult(
+            books=books,
+            page=page,
+            total_found=books_count,
+            has_more=has_more,
+            source_url=source_url,
+            source_title=source_title,
+        )
 
-    @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:list:slug")
-    def _fetch_list_books(self, slug: str, owner_username: Optional[str], page: int, limit: int) -> SearchResult:
+    @cacheable(
+        ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:list:slug"
+    )
+    def _fetch_list_books(
+        self, slug: str, owner_username: str | None, page: int, limit: int
+    ) -> SearchResult:
         """Fetch list books by slug, optionally disambiguating by owner username."""
         if not self.api_key:
             return SearchResult(books=[], page=page, total_found=0, has_more=False)
@@ -998,7 +1132,7 @@ class HardcoverProvider(MetadataProvider):
         if not isinstance(lists, list) or not lists:
             return SearchResult(books=[], page=page, total_found=0, has_more=False)
 
-        selected: Optional[Dict[str, Any]] = None
+        selected: dict[str, Any] | None = None
         normalized_owner = owner_username.lower() if owner_username else None
         if normalized_owner:
             for item in lists:
@@ -1019,15 +1153,13 @@ class HardcoverProvider(MetadataProvider):
         if not selected:
             return SearchResult(books=[], page=page, total_found=0, has_more=False)
 
-        list_id_raw = selected.get("id")
-        try:
-            list_id = int(list_id_raw)
-        except (TypeError, ValueError):
+        list_id = coerce_int(selected.get("id"), 0)
+        if list_id < 1:
             return SearchResult(books=[], page=page, total_found=0, has_more=False)
 
         return self._fetch_list_books_by_id(list_id, page, limit)
 
-    def _resolve_current_user_id(self) -> Optional[str]:
+    def _resolve_current_user_id(self) -> str | None:
         """Resolve current Hardcover user id from saved settings or API me query."""
         connected_user_id = _get_connected_user_id()
         if connected_user_id:
@@ -1053,7 +1185,7 @@ class HardcoverProvider(MetadataProvider):
         _save_connected_user(user_id, username)
         return user_id
 
-    def get_user_lists(self) -> List[Dict[str, str]]:
+    def get_user_lists(self) -> list[dict[str, str]]:
         """Get authenticated user's own and followed Hardcover lists."""
         if not self.api_key:
             return []
@@ -1067,8 +1199,8 @@ class HardcoverProvider(MetadataProvider):
     def get_search_field_options(
         self,
         field_key: str,
-        query: Optional[str] = None,
-    ) -> List[Dict[str, str]]:
+        query: str | None = None,
+    ) -> list[dict[str, str]]:
         """Provide dynamic options for Hardcover-specific advanced fields."""
         if field_key == "author":
             return self._search_author_options(query or "")
@@ -1086,13 +1218,13 @@ class HardcoverProvider(MetadataProvider):
         query: str,
         query_type: str,
         limit: int,
-        sort: Optional[str],
-        fields: Optional[str],
-        weights: Optional[str],
-    ) -> List[Dict[str, Any]]:
+        sort: str | None,
+        fields: str | None,
+        weights: str | None,
+    ) -> list[dict[str, Any]]:
         """Run a Hardcover search request for field-level typeahead options."""
         normalized_query = _normalize_search_text(query)
-        if not self.api_key or len(normalized_query) < 2:
+        if not self.api_key or len(normalized_query) < HARDCOVER_MIN_TYPEAHEAD_QUERY_LENGTH:
             return []
 
         result = self._execute_query(
@@ -1113,7 +1245,7 @@ class HardcoverProvider(MetadataProvider):
         hits, _found_count = _extract_typesense_hits(result)
         return hits
 
-    def _search_series_by_matching_author(self, query: str) -> List[Dict[str, Any]]:
+    def _search_series_by_matching_author(self, query: str) -> list[dict[str, Any]]:
         """Return direct series rows when the query clearly matches an author."""
         author_hits = self._search_field_hits(
             query=query,
@@ -1124,7 +1256,7 @@ class HardcoverProvider(MetadataProvider):
             weights=AUTHOR_SUGGESTION_WEIGHTS,
         )
 
-        author_ids: List[int] = []
+        author_ids: list[int] = []
         for hit in author_hits:
             item = _unwrap_hit_document(hit)
             if item is None:
@@ -1134,9 +1266,8 @@ class HardcoverProvider(MetadataProvider):
             if not _query_matches_author_name(query, author_name):
                 continue
 
-            try:
-                author_id = int(item.get("id"))
-            except (TypeError, ValueError):
+            author_id = coerce_int(item.get("id"), 0)
+            if author_id < 1:
                 continue
 
             if author_id not in author_ids:
@@ -1159,7 +1290,7 @@ class HardcoverProvider(MetadataProvider):
         return [row for row in series_rows if isinstance(row, dict)]
 
     @cacheable(ttl=120, key_prefix="hardcover:author:options")
-    def _search_author_options(self, query: str) -> List[Dict[str, str]]:
+    def _search_author_options(self, query: str) -> list[dict[str, str]]:
         """Return typeahead options for Hardcover author search."""
         hits = self._search_field_hits(
             query=query,
@@ -1169,7 +1300,7 @@ class HardcoverProvider(MetadataProvider):
             fields=AUTHOR_SUGGESTION_FIELDS,
             weights=AUTHOR_SUGGESTION_WEIGHTS,
         )
-        options: List[Dict[str, str]] = []
+        options: list[dict[str, str]] = []
         seen_labels: set[str] = set()
 
         for hit in hits:
@@ -1177,18 +1308,19 @@ class HardcoverProvider(MetadataProvider):
             if item is None:
                 continue
 
+            author_id = coerce_int(item.get("id"), 0)
             label = str(item.get("name") or "").strip()
             normalized_label = label.casefold()
-            if not label or normalized_label in seen_labels:
+            if author_id < 1 or not label or normalized_label in seen_labels:
                 continue
 
             seen_labels.add(normalized_label)
-            options.append({"value": label, "label": label})
+            options.append({"value": f"id:{author_id}", "label": label})
 
         return options
 
     @cacheable(ttl=120, key_prefix="hardcover:title:options")
-    def _search_title_options(self, query: str) -> List[Dict[str, str]]:
+    def _search_title_options(self, query: str) -> list[dict[str, str]]:
         """Return typeahead options for Hardcover title search."""
         hits = self._search_field_hits(
             query=query,
@@ -1199,11 +1331,17 @@ class HardcoverProvider(MetadataProvider):
             weights=TITLE_SUGGESTION_WEIGHTS,
         )
 
-        exclude_compilations = app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False)
-        exclude_unreleased = app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False)
-        current_year = datetime.now().year
+        exclude_compilations = coerce_bool(
+            app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False),
+            default=False,
+        )
+        exclude_unreleased = coerce_bool(
+            app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False),
+            default=False,
+        )
+        current_year = datetime.now(UTC).year
 
-        options: List[Dict[str, str]] = []
+        options: list[dict[str, str]] = []
         seen_labels: set[str] = set()
 
         for hit in hits:
@@ -1232,7 +1370,7 @@ class HardcoverProvider(MetadataProvider):
 
         return options
 
-    def _format_series_option_description(self, item: Dict[str, Any]) -> Optional[str]:
+    def _format_series_option_description(self, item: dict[str, Any]) -> str | None:
         """Build a short description for a series suggestion option."""
         author_name = item.get("author_name")
         if not author_name:
@@ -1240,7 +1378,7 @@ class HardcoverProvider(MetadataProvider):
             if isinstance(author_data, dict):
                 author_name = author_data.get("name")
 
-        parts: List[str] = []
+        parts: list[str] = []
         if author_name:
             parts.append(f"by {author_name}")
 
@@ -1258,9 +1396,9 @@ class HardcoverProvider(MetadataProvider):
         return " • ".join(parts) if parts else None
 
     @cacheable(ttl=120, key_prefix="hardcover:series:options")
-    def _search_series_options(self, query: str) -> List[Dict[str, str]]:
+    def _search_series_options(self, query: str) -> list[dict[str, str]]:
         """Return typeahead options for Hardcover series search."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             author_future = executor.submit(self._search_series_by_matching_author, query)
@@ -1276,18 +1414,14 @@ class HardcoverProvider(MetadataProvider):
 
         author_series = author_future.result()
         hits = series_future.result()
-        options: List[Dict[str, str]] = []
+        options: list[dict[str, str]] = []
         seen_values: set[str] = set()
 
-        series_items: List[Dict[str, Any]] = []
+        series_items: list[dict[str, Any]] = []
         series_items.extend(author_series)
-        series_items.extend(
-            doc for hit in hits
-            if (doc := _unwrap_hit_document(hit)) is not None
-        )
+        series_items.extend(doc for hit in hits if (doc := _unwrap_hit_document(hit)) is not None)
 
         for item in series_items:
-
             series_id = item.get("id")
             name = str(item.get("name") or "").strip()
             if series_id is None or not name:
@@ -1298,7 +1432,7 @@ class HardcoverProvider(MetadataProvider):
                 continue
             seen_values.add(value)
 
-            option: Dict[str, str] = {
+            option: dict[str, str] = {
                 "value": value,
                 "label": name,
             }
@@ -1306,12 +1440,12 @@ class HardcoverProvider(MetadataProvider):
             if description:
                 option["description"] = description
             options.append(option)
-            if len(options) >= 7:
+            if len(options) >= HARDCOVER_MAX_SERIES_OPTIONS:
                 break
 
         return options
 
-    def _resolve_series_search_value(self, series_value: str) -> Optional[Dict[str, Any]]:
+    def _resolve_series_search_value(self, series_value: str) -> dict[str, Any] | None:
         """Resolve a series field value to a canonical Hardcover series."""
         normalized_value = _normalize_search_text(series_value)
         if not normalized_value:
@@ -1321,7 +1455,7 @@ class HardcoverProvider(MetadataProvider):
             try:
                 return {"id": self._parse_prefixed_int(normalized_value, "series id")}
             except ValueError:
-                logger.debug(f"Invalid Hardcover series id field value: {normalized_value}")
+                logger.debug("Invalid Hardcover series id field value: %s", normalized_value)
                 return None
 
         result = self._execute_query(
@@ -1344,14 +1478,13 @@ class HardcoverProvider(MetadataProvider):
             return None
 
         normalized_lookup = normalized_value.lower()
-        candidates: List[Dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for hit in hits:
             item = _unwrap_hit_document(hit)
             if item is None:
                 continue
-            try:
-                series_id = int(item.get("id"))
-            except (TypeError, ValueError):
+            series_id = coerce_int(item.get("id"), 0)
+            if series_id < 1:
                 continue
             name = str(item.get("name") or "").strip()
             if not name:
@@ -1362,20 +1495,27 @@ class HardcoverProvider(MetadataProvider):
             return None
 
         exact_match = next(
-            (candidate for candidate in candidates if candidate["name"].lower() == normalized_lookup),
+            (
+                candidate
+                for candidate in candidates
+                if candidate["name"].lower() == normalized_lookup
+            ),
             None,
         )
         return exact_match or candidates[0]
 
-    @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:series:rows:v4")
+    @cacheable(
+        ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:series:rows:v4"
+    )
     def _fetch_series_ordered_rows(
         self,
         series_id: int,
+        *,
         exclude_compilations: bool,
         exclude_unreleased: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Fetch and process all books for a series (cached independently of page)."""
-        empty: Dict[str, Any] = {"rows": [], "series_name": "", "total": 0}
+        empty: dict[str, Any] = {"rows": [], "series_name": "", "total": 0}
         if not self.api_key:
             return empty
 
@@ -1391,12 +1531,16 @@ class HardcoverProvider(MetadataProvider):
             return empty
 
         series_data = series_items[0] if isinstance(series_items[0], dict) else {}
-        series_name = str(series_data.get("name") or "").strip() if isinstance(series_data, dict) else ""
+        series_name = (
+            str(series_data.get("name") or "").strip() if isinstance(series_data, dict) else ""
+        )
         allow_split_parts = _series_allows_split_parts(series_name)
-        today = datetime.now().date()
+        today = datetime.now(UTC).date()
 
-        book_series_rows = series_data.get("book_series", []) if isinstance(series_data, dict) else []
-        rows_by_position: Dict[float, Dict[str, Any]] = {}
+        book_series_rows = (
+            series_data.get("book_series", []) if isinstance(series_data, dict) else []
+        )
+        rows_by_position: dict[float, dict[str, Any]] = {}
         for row in book_series_rows:
             if not isinstance(row, dict):
                 continue
@@ -1442,19 +1586,24 @@ class HardcoverProvider(MetadataProvider):
         series_id: int,
         page: int,
         limit: int,
+        *,
         exclude_compilations: bool,
         exclude_unreleased: bool,
     ) -> SearchResult:
         """Fetch books for a Hardcover series in canonical series order."""
-        cached = self._fetch_series_ordered_rows(series_id, exclude_compilations, exclude_unreleased)
+        cached = self._fetch_series_ordered_rows(
+            series_id,
+            exclude_compilations=exclude_compilations,
+            exclude_unreleased=exclude_unreleased,
+        )
         ordered_rows = cached["rows"]
         series_name = cached["series_name"]
         total_found = cached["total"]
 
         offset = (page - 1) * limit
-        page_rows = ordered_rows[offset:offset + limit]
+        page_rows = ordered_rows[offset : offset + limit]
 
-        books: List[BookMetadata] = []
+        books: list[BookMetadata] = []
         for row in page_rows:
             book_data = row.get("book", {})
             if not isinstance(book_data, dict) or not book_data:
@@ -1469,18 +1618,88 @@ class HardcoverProvider(MetadataProvider):
                 parsed_book.series_position = row.get("position")
                 parsed_book.series_count = total_found
                 books.append(parsed_book)
-            except Exception as exc:
-                logger.debug(f"Failed to parse Hardcover series book for series_id={series_id}: {exc}")
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Failed to parse Hardcover series book for series_id=%s: %s", series_id, exc
+                )
 
         has_more = offset + len(page_rows) < total_found
         return SearchResult(books=books, page=page, total_found=total_found, has_more=has_more)
 
+    def _fetch_author_books_by_id(
+        self,
+        author_id: int,
+        page: int,
+        limit: int,
+        *,
+        exclude_compilations: bool,
+        exclude_unreleased: bool,
+    ) -> SearchResult:
+        """Fetch books for a selected Hardcover author."""
+        if not self.api_key:
+            return SearchResult(books=[], page=page, total_found=0, has_more=False)
+
+        offset = (page - 1) * limit
+        result = self._execute_query(
+            AUTHOR_BOOKS_BY_ID_QUERY,
+            {"authorId": author_id, "limit": limit, "offset": offset},
+        )
+        if not result:
+            return SearchResult(books=[], page=page, total_found=0, has_more=False)
+
+        author_items = result.get("authors", [])
+        if not isinstance(author_items, list) or not author_items:
+            return SearchResult(books=[], page=page, total_found=0, has_more=False)
+
+        author_data = author_items[0] if isinstance(author_items[0], dict) else {}
+        contributions = (
+            author_data.get("contributions", []) if isinstance(author_data, dict) else []
+        )
+        aggregate = (
+            author_data.get("contributions_aggregate", {}) if isinstance(author_data, dict) else {}
+        )
+        total_found = coerce_int(
+            aggregate.get("aggregate", {}).get("count") if isinstance(aggregate, dict) else 0,
+            0,
+        )
+        today = datetime.now(UTC).date()
+
+        books: list[BookMetadata] = []
+        for row in contributions:
+            if not isinstance(row, dict):
+                continue
+            contribution = str(row.get("contribution") or "").strip()
+            if contribution and "author" not in contribution.casefold():
+                continue
+            book_data = row.get("book", {})
+            if not isinstance(book_data, dict) or not book_data:
+                continue
+            if exclude_compilations and book_data.get("compilation"):
+                continue
+            release_date = _parse_release_date(book_data.get("release_date"))
+            if exclude_unreleased and (release_date is None or release_date.date() > today):
+                continue
+            try:
+                parsed_book = self._parse_book(book_data)
+                books.append(parsed_book)
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Failed to parse Hardcover author book for author_id=%s: %s",
+                    author_id,
+                    exc,
+                )
+
+        has_more = offset + len(contributions) < total_found
+        return SearchResult(books=books, page=page, total_found=total_found, has_more=has_more)
+
     @cacheable(ttl=120, key_prefix="hardcover:user_lists")
-    def _get_user_lists_cached(self, _cache_user_id: str) -> List[Dict[str, str]]:
-        """Cached wrapper keyed by Hardcover user id to avoid cross-user cache leakage."""
+    def _get_user_lists_cached(self, _cache_user_id: str) -> list[dict[str, str]]:
+        """Return cached user lists keyed by Hardcover user id."""
         return self._fetch_user_lists()
 
-    def _fetch_current_user_books_by_status(self, status_id: int, page: int, limit: int) -> SearchResult:
+    def _fetch_current_user_books_by_status(
+        self, status_id: int, page: int, limit: int
+    ) -> SearchResult:
         """Fetch the current user's Hardcover books for a specific status shelf."""
         if not self.api_key:
             return SearchResult(books=[], page=page, total_found=0, has_more=False)
@@ -1491,7 +1710,11 @@ class HardcoverProvider(MetadataProvider):
 
         return self._fetch_user_books_by_status_cached(connected_user_id, status_id, page, limit)
 
-    @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:user_books:status")
+    @cacheable(
+        ttl_key="METADATA_CACHE_SEARCH_TTL",
+        ttl_default=300,
+        key_prefix="hardcover:user_books:status",
+    )
     def _fetch_user_books_by_status_cached(
         self,
         _cache_user_id: str,
@@ -1499,7 +1722,7 @@ class HardcoverProvider(MetadataProvider):
         page: int,
         limit: int,
     ) -> SearchResult:
-        """Cached wrapper keyed by Hardcover user id and status shelf."""
+        """Return cached status-shelf books keyed by user id and shelf."""
         return self._fetch_user_books_by_status(status_id, page, limit)
 
     def _fetch_user_books_by_status(self, status_id: int, page: int, limit: int) -> SearchResult:
@@ -1535,7 +1758,7 @@ class HardcoverProvider(MetadataProvider):
         except (TypeError, ValueError):
             total_found = 0
 
-        books: List[BookMetadata] = []
+        books: list[BookMetadata] = []
         for item in status_books:
             if not isinstance(item, dict):
                 continue
@@ -1546,8 +1769,10 @@ class HardcoverProvider(MetadataProvider):
                 parsed_book = self._parse_book(book_data)
                 if parsed_book:
                     books.append(parsed_book)
-            except Exception as exc:
-                logger.debug(f"Failed to parse Hardcover status book for status_id={status_id}: {exc}")
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Failed to parse Hardcover status book for status_id=%s: %s", status_id, exc
+                )
 
         has_more = offset + len(status_books) < total_found
 
@@ -1558,9 +1783,15 @@ class HardcoverProvider(MetadataProvider):
         if url_slug and username:
             source_url = f"https://hardcover.app/@{username}/books/{url_slug}"
 
-        return SearchResult(books=books, page=page, total_found=total_found, has_more=has_more, source_url=source_url)
+        return SearchResult(
+            books=books,
+            page=page,
+            total_found=total_found,
+            has_more=has_more,
+            source_url=source_url,
+        )
 
-    def _fetch_user_lists(self) -> List[Dict[str, str]]:
+    def _fetch_user_lists(self) -> list[dict[str, str]]:
         """Fetch raw list options from Hardcover me query."""
         result = self._execute_query(USER_LISTS_QUERY, {})
         if not result:
@@ -1572,7 +1803,7 @@ class HardcoverProvider(MetadataProvider):
         if not isinstance(me_data, dict):
             return []
 
-        options: List[Dict[str, str]] = []
+        options: list[dict[str, str]] = []
         seen_values: set[str] = set()
         current_username = str(me_data.get("username") or "").strip()
 
@@ -1584,16 +1815,8 @@ class HardcoverProvider(MetadataProvider):
 
         for status in HARDCOVER_STATUSES:
             count_data = me_data.get(status["query_key"], {})
-            aggregate = (
-                count_data.get("aggregate", {})
-                if isinstance(count_data, dict)
-                else {}
-            )
-            count = (
-                aggregate.get("count")
-                if isinstance(aggregate, dict)
-                else None
-            )
+            aggregate = count_data.get("aggregate", {}) if isinstance(count_data, dict) else {}
+            count = aggregate.get("count") if isinstance(aggregate, dict) else None
             value = f"{HARDCOVER_STATUS_PREFIX}{status['id']}"
             seen_values.add(value)
             options.append(
@@ -1638,7 +1861,7 @@ class HardcoverProvider(MetadataProvider):
                 continue
             seen_values.add(value)
 
-            option: Dict[str, str] = {
+            option: dict[str, str] = {
                 "value": value,
                 "label": _format_label(name, list_item.get("books_count")),
                 "group": "Followed Lists",
@@ -1654,17 +1877,18 @@ class HardcoverProvider(MetadataProvider):
 
         return options
 
-    def get_book_targets(self, book_id: str) -> List[Dict[str, Any]]:
+    def get_book_targets(self, book_id: str) -> list[dict[str, Any]]:
         """Get writable Hardcover list/status targets for a specific book."""
         if not self.api_key:
             return []
 
         book_id_int = coerce_int(book_id, 0)
         if book_id_int < 1:
-            raise ValueError("book_id must be a valid Hardcover book id")
+            msg = "book_id must be a valid Hardcover book id"
+            raise ValueError(msg)
 
         state = self._fetch_book_target_state(book_id_int)
-        options = [
+        options: list[dict[str, Any]] = [
             dict(option)
             for option in self.get_user_lists()
             if option.get("group") in HARDCOVER_WRITABLE_TARGET_GROUPS
@@ -1677,31 +1901,46 @@ class HardcoverProvider(MetadataProvider):
 
         return options
 
-    def set_book_target_state(self, book_id: str, target: str, selected: bool) -> Dict[str, Any]:
+    def set_book_target_state(
+        self,
+        book_id: str,
+        target: str,
+        *,
+        selected: bool,
+    ) -> dict[str, Any]:
         """Set whether a Hardcover book belongs to a status shelf or user list."""
         if not self.api_key:
-            raise ValueError("Hardcover is not configured")
+            msg = "Hardcover is not configured"
+            raise ValueError(msg)
 
         book_id_int = coerce_int(book_id, 0)
         if book_id_int < 1:
-            raise ValueError("book_id must be a valid Hardcover book id")
+            msg = "book_id must be a valid Hardcover book id"
+            raise ValueError(msg)
 
         selected_target = str(target or "").strip()
         if not selected_target:
-            raise ValueError("target is required")
+            msg = "target is required"
+            raise ValueError(msg)
 
         if selected_target not in self._get_writable_targets():
-            raise ValueError("Unsupported Hardcover target")
+            msg = "Unsupported Hardcover target"
+            raise ValueError(msg)
 
         state = self._fetch_book_target_state(book_id_int)
         status_ids_to_invalidate: set[int] = set()
         list_ids_to_invalidate: set[int] = set()
-        deselected_target: Optional[str] = None
+        deselected_target: str | None = None
 
         if selected_target.startswith(HARDCOVER_STATUS_PREFIX):
             status_id = self._parse_prefixed_int(selected_target, "status target")
             previous_status_id = state.status_id
-            changed = self._set_status_target_state(book_id_int, status_id, selected, state)
+            changed = self._set_status_target_state(
+                book_id_int,
+                status_id,
+                selected=selected,
+                state=state,
+            )
             if changed:
                 if previous_status_id is not None:
                     status_ids_to_invalidate.add(previous_status_id)
@@ -1710,11 +1949,17 @@ class HardcoverProvider(MetadataProvider):
                 status_ids_to_invalidate.add(status_id)
         elif selected_target.startswith(HARDCOVER_LIST_ID_PREFIX):
             list_id = self._parse_prefixed_int(selected_target, "list target")
-            changed = self._set_list_target_state(book_id_int, list_id, selected, state)
+            changed = self._set_list_target_state(
+                book_id_int,
+                list_id,
+                selected=selected,
+                state=state,
+            )
             if changed:
                 list_ids_to_invalidate.add(list_id)
         else:
-            raise ValueError("Unsupported Hardcover target")
+            msg = "Unsupported Hardcover target"
+            raise ValueError(msg)
 
         if changed:
             self._invalidate_book_target_caches(
@@ -1723,22 +1968,24 @@ class HardcoverProvider(MetadataProvider):
                 list_ids=list_ids_to_invalidate,
             )
 
-        result_data: Dict[str, Any] = {"changed": changed}
+        result_data: dict[str, Any] = {"changed": changed}
         if deselected_target:
             result_data["deselected_target"] = deselected_target
         return result_data
 
     @staticmethod
-    def _unwrap_me_data(result: Optional[Dict]) -> Dict:
+    def _unwrap_me_data(result: dict | None) -> dict:
         """Extract and validate the ``me`` payload from a GraphQL result."""
         if not isinstance(result, dict):
-            raise RuntimeError("Hardcover could not load book targets")
+            msg = "Hardcover could not load book targets"
+            raise HardcoverTargetPayloadError(msg)
 
         me_data = result.get("me", {})
         if isinstance(me_data, list) and me_data:
             me_data = me_data[0]
         if not isinstance(me_data, dict):
-            raise RuntimeError("Hardcover returned an invalid target payload")
+            msg = "Hardcover returned an invalid target payload"
+            raise HardcoverTargetPayloadError(msg)
         return me_data
 
     def _fetch_book_target_state(self, book_id: int) -> HardcoverBookTargetState:
@@ -1750,15 +1997,15 @@ class HardcoverProvider(MetadataProvider):
         )
         me_data = self._unwrap_me_data(result)
 
-        user_book_id: Optional[int] = None
-        status_id: Optional[int] = None
+        user_book_id: int | None = None
+        status_id: int | None = None
         user_books = me_data.get("user_books", [])
         if isinstance(user_books, list) and user_books:
             latest_user_book = user_books[0] if isinstance(user_books[0], dict) else {}
             user_book_id = coerce_int(latest_user_book.get("id"), 0) or None
             status_id = coerce_int(latest_user_book.get("status_id"), 0) or None
 
-        list_book_ids: Dict[int, int] = {}
+        list_book_ids: dict[int, int] = {}
         for user_list in me_data.get("lists", []):
             if not isinstance(user_list, dict):
                 continue
@@ -1782,8 +2029,9 @@ class HardcoverProvider(MetadataProvider):
         )
 
     def _fetch_book_target_states_batch(
-        self, book_ids: List[int],
-    ) -> Dict[int, HardcoverBookTargetState]:
+        self,
+        book_ids: list[int],
+    ) -> dict[int, HardcoverBookTargetState]:
         """Load Hardcover membership state for multiple books in one query."""
         result = self._execute_query(
             BOOK_TARGET_MEMBERSHIP_BATCH_QUERY,
@@ -1793,7 +2041,7 @@ class HardcoverProvider(MetadataProvider):
         me_data = self._unwrap_me_data(result)
 
         # Group user_books by book_id (keep only the latest per book)
-        user_book_by_book: Dict[int, Dict] = {}
+        user_book_by_book: dict[int, dict] = {}
         for ub in me_data.get("user_books", []):
             if not isinstance(ub, dict):
                 continue
@@ -1802,7 +2050,7 @@ class HardcoverProvider(MetadataProvider):
                 user_book_by_book[bid] = ub
 
         # Group list_book memberships by book_id
-        list_book_ids_by_book: Dict[int, Dict[int, int]] = {}
+        list_book_ids_by_book: dict[int, dict[int, int]] = {}
         for user_list in me_data.get("lists", []):
             if not isinstance(user_list, dict):
                 continue
@@ -1817,7 +2065,7 @@ class HardcoverProvider(MetadataProvider):
                 if bid > 0 and lb_id > 0:
                     list_book_ids_by_book.setdefault(bid, {})[list_id] = lb_id
 
-        states: Dict[int, HardcoverBookTargetState] = {}
+        states: dict[int, HardcoverBookTargetState] = {}
         for bid in book_ids:
             ub = user_book_by_book.get(bid)
             states[bid] = HardcoverBookTargetState(
@@ -1827,13 +2075,13 @@ class HardcoverProvider(MetadataProvider):
             )
         return states
 
-    def get_book_targets_batch(self, book_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    def get_book_targets_batch(self, book_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
         """Get writable Hardcover list/status targets for multiple books."""
         if not self.api_key or not book_ids:
             return {bid: [] for bid in book_ids}
 
         int_ids = []
-        id_map: Dict[int, str] = {}
+        id_map: dict[int, str] = {}
         for bid in book_ids:
             int_id = coerce_int(bid, 0)
             if int_id > 0:
@@ -1844,17 +2092,22 @@ class HardcoverProvider(MetadataProvider):
             return {bid: [] for bid in book_ids}
 
         states = self._fetch_book_target_states_batch(int_ids)
-        writable_options = [
+        writable_options: list[dict[str, Any]] = [
             dict(option)
             for option in self.get_user_lists()
             if option.get("group") in HARDCOVER_WRITABLE_TARGET_GROUPS
         ]
 
-        results: Dict[str, List[Dict[str, Any]]] = {}
+        results: dict[str, list[dict[str, Any]]] = {}
         for int_id, str_id in id_map.items():
-            state = states.get(int_id, HardcoverBookTargetState(
-                user_book_id=None, status_id=None, list_book_ids={},
-            ))
+            state = states.get(
+                int_id,
+                HardcoverBookTargetState(
+                    user_book_id=None,
+                    status_id=None,
+                    list_book_ids={},
+                ),
+            )
             options = [dict(opt) for opt in writable_options]
             for option in options:
                 value = str(option.get("value") or "").strip()
@@ -1877,10 +2130,7 @@ class HardcoverProvider(MetadataProvider):
             if (
                 option.get("group") in HARDCOVER_WRITABLE_TARGET_GROUPS
                 and value
-                and (
-                    value.startswith(HARDCOVER_STATUS_PREFIX)
-                    or value.startswith(HARDCOVER_LIST_ID_PREFIX)
-                )
+                and value.startswith((HARDCOVER_STATUS_PREFIX, HARDCOVER_LIST_ID_PREFIX))
             ):
                 writable_targets.add(value)
         return writable_targets
@@ -1897,6 +2147,7 @@ class HardcoverProvider(MetadataProvider):
         self,
         book_id: int,
         status_id: int,
+        *,
         selected: bool,
         state: HardcoverBookTargetState,
     ) -> bool:
@@ -1937,6 +2188,7 @@ class HardcoverProvider(MetadataProvider):
         self,
         book_id: int,
         list_id: int,
+        *,
         selected: bool,
         state: HardcoverBookTargetState,
     ) -> bool:
@@ -1969,7 +2221,7 @@ class HardcoverProvider(MetadataProvider):
     def _invalidate_book_target_caches(
         self,
         *,
-        connected_user_id: Optional[str],
+        connected_user_id: str | None,
         status_ids: set[int],
         list_ids: set[int],
     ) -> None:
@@ -1992,7 +2244,8 @@ class HardcoverProvider(MetadataProvider):
         try:
             return int(value.split(":", 1)[1])
         except (IndexError, ValueError) as exc:
-            raise ValueError(f"Invalid Hardcover {label}") from exc
+            msg = f"Invalid Hardcover {label}"
+            raise ValueError(msg) from exc
 
     @staticmethod
     def _check_mutation_result(result: Any, key: str, *, check_error: bool = True) -> None:
@@ -2011,9 +2264,10 @@ class HardcoverProvider(MetadataProvider):
                     raise ValueError(error_text)
             if payload.get("id") is not None:
                 return
-        raise RuntimeError("Hardcover could not complete this action")
+        msg = "Hardcover could not complete this action"
+        raise RuntimeError(msg)
 
-    def search(self, options: MetadataSearchOptions) -> List[BookMetadata]:
+    def search(self, options: MetadataSearchOptions) -> list[BookMetadata]:
         """Search for books using Hardcover's search API."""
         return self.search_paginated(options).books
 
@@ -2035,16 +2289,18 @@ class HardcoverProvider(MetadataProvider):
             if list_value_from_field.startswith(HARDCOVER_STATUS_PREFIX):
                 try:
                     status_id = self._parse_prefixed_int(list_value_from_field, "status")
-                    return self._fetch_current_user_books_by_status(status_id, options.page, options.limit)
+                    return self._fetch_current_user_books_by_status(
+                        status_id, options.page, options.limit
+                    )
                 except ValueError:
-                    logger.debug(f"Invalid Hardcover status field value: {list_value_from_field}")
+                    logger.debug("Invalid Hardcover status field value: %s", list_value_from_field)
                     return SearchResult(books=[], page=options.page, total_found=0, has_more=False)
             if list_value_from_field.startswith(HARDCOVER_LIST_ID_PREFIX):
                 try:
                     list_id = self._parse_prefixed_int(list_value_from_field, "list")
                     return self._fetch_list_books_by_id(list_id, options.page, options.limit)
                 except ValueError:
-                    logger.debug(f"Invalid hardcover_list field value: {list_value_from_field}")
+                    logger.debug("Invalid hardcover_list field value: %s", list_value_from_field)
                     return SearchResult(books=[], page=options.page, total_found=0, has_more=False)
             return self._fetch_list_books(list_value_from_field, None, options.page, options.limit)
 
@@ -2053,14 +2309,43 @@ class HardcoverProvider(MetadataProvider):
             resolved_series = self._resolve_series_search_value(series_value_from_field)
             if not resolved_series:
                 return SearchResult(books=[], page=options.page, total_found=0, has_more=False)
-            exclude_compilations = app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False)
-            exclude_unreleased = app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False)
+            exclude_compilations = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False),
+                default=False,
+            )
+            exclude_unreleased = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False),
+                default=False,
+            )
             return self._fetch_series_books_by_id(
                 int(resolved_series["id"]),
                 options.page,
                 options.limit,
-                exclude_compilations,
-                exclude_unreleased,
+                exclude_compilations=exclude_compilations,
+                exclude_unreleased=exclude_unreleased,
+            )
+
+        author_value_from_field = str(options.fields.get("author", "")).strip()
+        if author_value_from_field.startswith(HARDCOVER_LIST_ID_PREFIX):
+            try:
+                author_id = self._parse_prefixed_int(author_value_from_field, "author id")
+            except ValueError:
+                logger.debug("Invalid Hardcover author id field value: %s", author_value_from_field)
+                return SearchResult(books=[], page=options.page, total_found=0, has_more=False)
+            exclude_compilations = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False),
+                default=False,
+            )
+            exclude_unreleased = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False),
+                default=False,
+            )
+            return self._fetch_author_books_by_id(
+                author_id,
+                options.page,
+                options.limit,
+                exclude_compilations=exclude_compilations,
+                exclude_unreleased=exclude_unreleased,
             )
 
         # Handle ISBN search separately
@@ -2071,14 +2356,20 @@ class HardcoverProvider(MetadataProvider):
 
         # Build cache key from options (include fields and settings for cache differentiation)
         fields_key = ":".join(f"{k}={v}" for k, v in sorted(options.fields.items()))
-        exclude_compilations = app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False)
-        exclude_unreleased = app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False)
+        exclude_compilations = coerce_bool(
+            app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False),
+            default=False,
+        )
+        exclude_unreleased = coerce_bool(
+            app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False),
+            default=False,
+        )
         cache_key = f"{options.query}:{options.search_type.value}:{options.sort.value}:{options.limit}:{options.page}:{fields_key}:excl_comp={exclude_compilations}:excl_unrel={exclude_unreleased}"
         return self._search_cached(cache_key, options)
 
     @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="hardcover:search")
     def _search_cached(self, cache_key: str, options: MetadataSearchOptions) -> SearchResult:
-        """Cached search implementation."""
+        """Return cached Hardcover search results."""
         # Determine query and fields based on custom search fields
         # Note: Hardcover API requires 'weights' when using 'fields' parameter
         author_value = options.fields.get("author", "").strip()
@@ -2131,9 +2422,15 @@ class HardcoverProvider(MetadataProvider):
             hits, found_count = _extract_typesense_hits(result)
 
             # Parse hits, filtering compilations and unreleased books if enabled
-            exclude_compilations = app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False)
-            exclude_unreleased = app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False)
-            current_year = datetime.now().year
+            exclude_compilations = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_COMPILATIONS", False),
+                default=False,
+            )
+            exclude_unreleased = coerce_bool(
+                app_config.get("HARDCOVER_EXCLUDE_UNRELEASED", False),
+                default=False,
+            )
+            current_year = datetime.now(UTC).year
             books = []
             for hit in hits:
                 item = _unwrap_hit_document(hit)
@@ -2149,25 +2446,27 @@ class HardcoverProvider(MetadataProvider):
                 if book:
                     books.append(book)
 
-            logger.info(f"Hardcover search '{query}' (fields={search_fields}) returned {len(books)} results")
+            logger.info(
+                "Hardcover search '%s' (fields=%s) returned %s results",
+                query,
+                search_fields,
+                len(books),
+            )
 
             # Calculate if there are more results
             results_so_far = (options.page - 1) * HARDCOVER_PAGE_SIZE + len(hits)
             has_more = results_so_far < found_count
 
             return SearchResult(
-                books=books,
-                page=options.page,
-                total_found=found_count,
-                has_more=has_more
+                books=books, page=options.page, total_found=found_count, has_more=has_more
             )
 
-        except Exception as e:
-            logger.error(f"Hardcover search error: {e}")
+        except (AttributeError, KeyError, TypeError, ValueError):
+            logger.exception("Hardcover search error")
             return SearchResult(books=[], page=options.page, total_found=0, has_more=False)
 
     @cacheable(ttl_key="METADATA_CACHE_BOOK_TTL", ttl_default=600, key_prefix="hardcover:book")
-    def get_book(self, book_id: str) -> Optional[BookMetadata]:
+    def get_book(self, book_id: str) -> BookMetadata | None:
         """Get book details by Hardcover ID."""
         if not self.api_key:
             logger.warning("Hardcover API key not configured")
@@ -2245,14 +2544,14 @@ class HardcoverProvider(MetadataProvider):
             return self._parse_book(books[0])
 
         except ValueError:
-            logger.error(f"Invalid book ID: {book_id}")
+            logger.exception("Invalid book ID: %s", book_id)
             return None
-        except Exception as e:
-            logger.error(f"Hardcover get_book error: {e}")
+        except (AttributeError, KeyError, TypeError):
+            logger.exception("Hardcover get_book error")
             return None
 
     @cacheable(ttl_key="METADATA_CACHE_BOOK_TTL", ttl_default=600, key_prefix="hardcover:isbn")
-    def search_by_isbn(self, isbn: str) -> Optional[BookMetadata]:
+    def search_by_isbn(self, isbn: str) -> BookMetadata | None:
         """Search for a book by ISBN-10 or ISBN-13."""
         if not self.api_key:
             logger.warning("Hardcover API key not configured")
@@ -2304,7 +2603,7 @@ class HardcoverProvider(MetadataProvider):
 
             editions = result.get("editions", [])
             if not editions:
-                logger.debug(f"No Hardcover book found for ISBN: {isbn}")
+                logger.debug("No Hardcover book found for ISBN: %s", isbn)
                 return None
 
             edition = editions[0]
@@ -2318,18 +2617,22 @@ class HardcoverProvider(MetadataProvider):
 
             return self._parse_book(book_data)
 
-        except Exception as e:
-            logger.error(f"Hardcover ISBN search error: {e}")
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            logger.exception("Hardcover ISBN search error")
             return None
 
     def _execute_query(
         self,
         query: str,
-        variables: Dict[str, Any],
+        variables: dict[str, Any],
         *,
         raise_on_error: bool = False,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Execute a GraphQL query and return data or None on error."""
+
+        def _raise_graphql_error(message: str) -> None:
+            raise HardcoverGraphQLError(message)
+
         try:
             response = self.session.post(
                 HARDCOVER_API_URL,
@@ -2342,43 +2645,50 @@ class HardcoverProvider(MetadataProvider):
             data = response.json()
 
             if "errors" in data:
-                logger.error(f"GraphQL errors: {data['errors']}")
+                logger.error("GraphQL errors: %s", data["errors"])
                 if raise_on_error:
-                    message = _extract_graphql_error_message(data) or "Hardcover rejected this request"
-                    raise HardcoverGraphQLError(message)
+                    message = (
+                        _extract_graphql_error_message(data) or "Hardcover rejected this request"
+                    )
+                    _raise_graphql_error(message)
                 return None
 
             return data.get("data")
 
-        except requests.Timeout:
+        except requests.Timeout as e:
             logger.warning("Hardcover API request timed out")
             if raise_on_error:
-                raise RuntimeError("Hardcover API request timed out")
+                msg = "Hardcover API request timed out"
+                raise RuntimeError(msg) from e
             return None
         except requests.HTTPError as e:
-            if e.response.status_code == 401:
-                logger.error("Hardcover API key is invalid")
+            if e.response.status_code == HTTPStatus.UNAUTHORIZED:
+                logger.exception("Hardcover API key is invalid")
                 if raise_on_error:
-                    raise RuntimeError("Hardcover API key is invalid")
+                    msg = "Hardcover API key is invalid"
+                    raise RuntimeError(msg) from e
             else:
-                logger.error(f"Hardcover API HTTP error: {e}")
+                logger.exception("Hardcover API HTTP error")
                 if raise_on_error:
-                    raise RuntimeError(f"Hardcover API HTTP error: {e}")
+                    msg = f"Hardcover API HTTP error: {e}"
+                    raise RuntimeError(msg) from e
             return None
         except HardcoverGraphQLError:
             raise
         except ValueError as e:
-            logger.error(f"Hardcover API returned invalid JSON: {e}")
+            logger.exception("Hardcover API returned invalid JSON")
             if raise_on_error:
-                raise RuntimeError("Hardcover API returned an invalid response") from e
+                msg = "Hardcover API returned an invalid response"
+                raise RuntimeError(msg) from e
             return None
-        except Exception as e:
-            logger.error(f"Hardcover API request failed: {e}")
+        except (TypeError, requests.RequestException) as e:
+            logger.exception("Hardcover API request failed")
             if raise_on_error:
-                raise RuntimeError("Hardcover API request failed") from e
+                msg = "Hardcover API request failed"
+                raise RuntimeError(msg) from e
             return None
 
-    def _parse_search_result(self, item: Dict) -> Optional[BookMetadata]:
+    def _parse_search_result(self, item: dict) -> BookMetadata | None:
         """Parse a search result item into BookMetadata."""
         try:
             book_id = item.get("id") or item.get("document", {}).get("id")
@@ -2398,7 +2708,7 @@ class HardcoverProvider(MetadataProvider):
 
             # If we have parallel arrays, filter to only "Author" contributions
             if contribution_types and len(contribution_types) == len(author_names):
-                for name, contrib_type in zip(author_names, contribution_types):
+                for name, contrib_type in zip(author_names, contribution_types, strict=True):
                     if contrib_type == "Author":
                         authors.append(name)
             elif author_names:
@@ -2431,7 +2741,9 @@ class HardcoverProvider(MetadataProvider):
             # Readers (users who have this book)
             users_count = item.get("users_count")
             if users_count:
-                display_fields.append(DisplayField(label="Readers", value=f"{users_count:,}", icon="users"))
+                display_fields.append(
+                    DisplayField(label="Readers", value=f"{users_count:,}", icon="users")
+                )
 
             if release_date:
                 display_fields.append(DisplayField(label="Release Date", value=release_date))
@@ -2463,17 +2775,16 @@ class HardcoverProvider(MetadataProvider):
                 display_fields=display_fields,
             )
 
-
-        except Exception as e:
-            logger.debug(f"Failed to parse Hardcover search result: {e}")
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
+            logger.debug("Failed to parse Hardcover search result: %s", e)
             return None
 
-    def get_book_languages_batch(self, book_ids: List[str]) -> Dict[str, Optional[str]]:
+    def get_book_languages_batch(self, book_ids: list[str]) -> dict[str, str | None]:
         """Fetch primary language code for many books in one GraphQL request."""
         if not self.api_key:
             return {}
 
-        normalized_ids: List[int] = []
+        normalized_ids: list[int] = []
         seen: set[int] = set()
         for raw in book_ids:
             try:
@@ -2509,7 +2820,7 @@ class HardcoverProvider(MetadataProvider):
         try:
             result = self._execute_query(graphql_query, {"ids": normalized_ids})
             books = (result or {}).get("books") or []
-            languages_by_id: Dict[str, Optional[str]] = {}
+            languages_by_id: dict[str, str | None] = {}
             for row in books:
                 if not isinstance(row, dict):
                     continue
@@ -2517,26 +2828,29 @@ class HardcoverProvider(MetadataProvider):
                 if raw_id is None:
                     continue
                 editions = row.get("editions") or []
-                language: Optional[str] = None
+                language: str | None = None
                 for edition in editions:
                     if not isinstance(edition, dict):
                         continue
                     lang_data = edition.get("language")
                     if not isinstance(lang_data, dict):
                         continue
-                    language = (
-                        normalize_language_code(lang_data.get("code2"))
-                        or normalize_language_code(lang_data.get("code3"))
-                    )
+                    language = normalize_language_code(
+                        lang_data.get("code2")
+                    ) or normalize_language_code(lang_data.get("code3"))
                     if language:
                         break
                 languages_by_id[str(raw_id)] = language
             return languages_by_id
         except Exception as exc:
-            logger.debug("Hardcover batched language fetch failed for %s ids: %s", len(normalized_ids), exc)
+            logger.debug(
+                "Hardcover batched language fetch failed for %s ids: %s",
+                len(normalized_ids),
+                exc,
+            )
             return {}
 
-    def _parse_book(self, book: Dict) -> BookMetadata:
+    def _parse_book(self, book: dict) -> BookMetadata:
         """Parse a book object into BookMetadata."""
         title = str(book.get("title") or "")
         subtitle = book.get("subtitle")
@@ -2626,7 +2940,7 @@ class HardcoverProvider(MetadataProvider):
                 series_count = series_data.get("primary_books_count")
 
         # Extract additional series from book_series (all series except the featured one)
-        additional_series: List[Dict[str, Any]] = []
+        additional_series: list[dict[str, Any]] = []
         for entry in (book.get("book_series") or []):
             entry_series = entry.get("series")
             if not entry_series:
@@ -2642,7 +2956,7 @@ class HardcoverProvider(MetadataProvider):
 
         # Extract titles by language from editions
         # This allows searching with localized titles when language filter is active
-        titles_by_language: Dict[str, str] = {}
+        titles_by_language: dict[str, str] = {}
         editions = book.get("editions", [])
         for edition in editions:
             edition_title = edition.get("title")
@@ -2664,7 +2978,7 @@ class HardcoverProvider(MetadataProvider):
                 if code3 and code3 not in titles_by_language:
                     titles_by_language[code3] = edition_title
 
-        language: Optional[str] = None
+        language: str | None = None
         for edition in editions:
             lang_data = edition.get("language")
             if not isinstance(lang_data, dict):
@@ -2677,7 +2991,7 @@ class HardcoverProvider(MetadataProvider):
                 break
 
         # Build display fields from Hardcover-specific metrics
-        display_fields: List[DisplayField] = []
+        display_fields: list[DisplayField] = []
 
         rating = book.get("rating")
         ratings_count = book.get("ratings_count")
@@ -2688,10 +3002,8 @@ class HardcoverProvider(MetadataProvider):
                 rating_str = str(rating)
 
             if ratings_count:
-                try:
+                with suppress(TypeError, ValueError):
                     rating_str += f" ({int(ratings_count):,})"
-                except (TypeError, ValueError):
-                    pass
 
             display_fields.append(DisplayField(label="Rating", value=rating_str, icon="star"))
 
@@ -2704,35 +3016,34 @@ class HardcoverProvider(MetadataProvider):
             display_fields.append(DisplayField(label="Readers", value=readers_value, icon="users"))
 
         return BookMetadata(
-             provider="hardcover",
-             provider_id=str(book["id"]),
-             title=title,
-             subtitle=subtitle,
-             search_title=_compute_search_title(title, subtitle, series_name=series_name),
-             search_author=search_author,
-             provider_display_name="Hardcover",
-             authors=authors,
-             isbn_10=isbn_10,
-             isbn_13=isbn_13,
-             cover_url=cover_url,
-             description=full_description,
-             publish_year=publish_year,
-             release_date=release_date,
-             language=language,
-             genres=genres,
-             source_url=source_url,
-             series_id=series_id,
-             series_name=series_name,
-             series_position=series_position,
-             series_count=series_count,
-             additional_series=additional_series,
-             titles_by_language=titles_by_language,
-             display_fields=display_fields,
-         )
+            provider="hardcover",
+            provider_id=str(book["id"]),
+            title=title,
+            subtitle=subtitle,
+            search_title=_compute_search_title(title, subtitle, series_name=series_name),
+            search_author=search_author,
+            provider_display_name="Hardcover",
+            authors=authors,
+            isbn_10=isbn_10,
+            isbn_13=isbn_13,
+            cover_url=cover_url,
+            description=full_description,
+            publish_year=publish_year,
+            release_date=release_date,
+            language=language,
+            genres=genres,
+            source_url=source_url,
+            series_id=series_id,
+            series_name=series_name,
+            series_position=series_position,
+            series_count=series_count,
+            additional_series=additional_series,
+            titles_by_language=titles_by_language,
+            display_fields=display_fields,
+        )
 
 
-
-def _test_hardcover_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_hardcover_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the Hardcover API connection using current form values."""
     from shelfmark.core.config import config as app_config
 
@@ -2740,51 +3051,60 @@ def _test_hardcover_connection(current_values: Optional[Dict[str, Any]] = None) 
 
     # Use current form values first, fall back to saved config
     raw_key = current_values.get("HARDCOVER_API_KEY") or app_config.get("HARDCOVER_API_KEY", "")
-    # Strip "Bearer " prefix if user pasted the full auth header from Hardcover
-    api_key = raw_key.removeprefix("Bearer ").strip() if raw_key else ""
+    api_key = _normalize_hardcover_api_key(raw_key)
 
     key_len = len(api_key) if api_key else 0
-    logger.debug(f"Hardcover test: key length={key_len}")
+    logger.debug("Hardcover test: key length=%s", key_len)
 
     if not api_key:
         # Clear any stored connection metadata since there's no key
         _save_connected_user(None, None)
         return {"success": False, "message": "API key is required"}
 
-    if key_len < 100:
-        return {"success": False, "message": f"API key seems too short ({key_len} chars). Expected 500+ chars."}
+    if key_len < HARDCOVER_API_KEY_MIN_LENGTH:
+        return {
+            "success": False,
+            "message": (
+                f"API key seems too short ({key_len} chars). "
+                f"Expected {HARDCOVER_API_KEY_MIN_LENGTH}+ chars."
+            ),
+        }
 
+    connection_result = {"success": False, "message": "API request failed - check your API key"}
     try:
         provider = HardcoverProvider(api_key=api_key)
         # Use the 'me' query to test connection (recommended by API docs)
-        result = provider._execute_query(
-            "query { me { id, username } }",
-            {}
-        )
+        result = provider._execute_query("query { me { id, username } }", {})
         if result is not None:
             # Handle both single object and array response formats
             me_data = result.get("me", {})
             if isinstance(me_data, list) and me_data:
                 me_data = me_data[0]
-            user_id = str(me_data.get("id")) if isinstance(me_data, dict) and me_data.get("id") is not None else None
-            username = me_data.get("username", "Unknown") if isinstance(me_data, dict) else "Unknown"
+            user_id = (
+                str(me_data.get("id"))
+                if isinstance(me_data, dict) and me_data.get("id") is not None
+                else None
+            )
+            username = (
+                me_data.get("username", "Unknown") if isinstance(me_data, dict) else "Unknown"
+            )
 
             # Save connected user metadata for persistent display + per-user list caching
             _save_connected_user(user_id, username)
-
-            return {"success": True, "message": f"Connected as: {username}"}
+            connection_result = {"success": True, "message": f"Connected as: {username}"}
         else:
             _save_connected_user(None, None)
-            return {"success": False, "message": "API request failed - check your API key"}
-    except Exception as e:
+    except (AttributeError, KeyError, requests.RequestException, TypeError, ValueError) as e:
         logger.exception("Hardcover connection test failed")
         _save_connected_user(None, None)
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+
+    return connection_result
 
 
-def _save_connected_user(user_id: Optional[str], username: Optional[str]) -> None:
+def _save_connected_user(user_id: str | None, username: str | None) -> None:
     """Save or clear connected user metadata in config."""
-    from shelfmark.core.settings_registry import save_config_file, load_config_file
+    from shelfmark.core.settings_registry import load_config_file, save_config_file
 
     config = load_config_file("hardcover")
     if user_id:
@@ -2800,7 +3120,7 @@ def _save_connected_user(user_id: Optional[str], username: Optional[str]) -> Non
     save_config_file("hardcover", config)
 
 
-def _get_connected_username() -> Optional[str]:
+def _get_connected_username() -> str | None:
     """Get the stored connected username."""
     from shelfmark.core.settings_registry import load_config_file
 
@@ -2808,7 +3128,7 @@ def _get_connected_username() -> Optional[str]:
     return config.get("_connected_username")
 
 
-def _get_connected_user_id() -> Optional[str]:
+def _get_connected_user_id() -> str | None:
     """Get the stored connected Hardcover user id."""
     from shelfmark.core.settings_registry import load_config_file
 
@@ -2828,11 +3148,13 @@ _HARDCOVER_SORT_OPTIONS = [
 
 
 @register_settings("hardcover", "Hardcover", icon="book", order=51, group="metadata_providers")
-def hardcover_settings():
+def hardcover_settings() -> list[SettingsField]:
     """Hardcover metadata provider settings."""
     # Check for connected username to show status
     connected_user = _get_connected_username()
-    test_button_description = f"Connected as: {connected_user}" if connected_user else "Verify your API key works"
+    test_button_description = (
+        f"Connected as: {connected_user}" if connected_user else "Verify your API key works"
+    )
 
     return [
         HeadingField(

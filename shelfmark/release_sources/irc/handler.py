@@ -3,19 +3,68 @@
 Handles downloading IRC releases via DCC protocol.
 """
 
+from contextlib import suppress
 from pathlib import Path
-from threading import Event
-from typing import Callable, Optional
+from typing import TYPE_CHECKING
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import DownloadTask
 from shelfmark.release_sources import DownloadHandler, register_handler
 
 from .connection_manager import connection_manager
-from .dcc import DCCError, download_dcc
+from .dcc import DCCError, download_dcc, safe_dcc_filename
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from threading import Event
+
+    from shelfmark.core.models import DownloadTask
 
 logger = setup_logger(__name__)
+
+
+def _server_from_download_request(download_request: str) -> str | None:
+    """Extract the expected IRC bot nick from a release request line."""
+    stripped = download_request.strip()
+    if not stripped.startswith("!"):
+        return None
+    server = stripped[1:].split(maxsplit=1)[0]
+    return server or None
+
+
+def _config_text(key: str) -> str:
+    """Read a string config value with whitespace trimmed."""
+    value = config.get(key, "")
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _config_port(key: str, default: int) -> int:
+    """Read an IRC port value from config, accepting ints and numeric strings."""
+    value = config.get(key, default)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            with suppress(ValueError):
+                return int(stripped)
+    return default
+
+
+def _config_bool(key: str, default: bool) -> bool:
+    """Read a boolean config value from config."""
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 @register_handler("irc")
@@ -27,18 +76,19 @@ class IRCDownloadHandler(DownloadHandler):
         task: DownloadTask,
         cancel_flag: Event,
         progress_callback: Callable[[float], None],
-        status_callback: Callable[[str, Optional[str]], None],
-    ) -> Optional[str]:
+        status_callback: Callable[[str, str | None], None],
+    ) -> str | None:
         """Download a release via IRC DCC. task.task_id contains the IRC request string."""
         download_request = task.task_id
-        logger.info(f"IRC download: {download_request[:60]}...")
+        logger.info("IRC download: %s...", download_request[:60])
+        expected_server = _server_from_download_request(download_request)
 
         # Get IRC settings
-        server = config.get("IRC_SERVER", "")
-        port = config.get("IRC_PORT", 6697)
-        use_tls = config.get("IRC_USE_TLS", True)
-        channel = config.get("IRC_CHANNEL", "")
-        nick = config.get("IRC_NICK", "")
+        server = _config_text("IRC_SERVER")
+        port = _config_port("IRC_PORT", 6697)
+        use_tls = _config_bool("IRC_USE_TLS", True)
+        channel = _config_text("IRC_CHANNEL")
+        nick = _config_text("IRC_NICK")
 
         if not server or not channel or not nick:
             logger.warning("IRC not fully configured")
@@ -83,7 +133,8 @@ class IRCDownloadHandler(DownloadHandler):
             # Phase 3: Wait for DCC offer
             status_callback("resolving", "Waiting for bot response")
 
-            offer = client.wait_for_dcc(timeout=120.0, result_type=False)
+            wait_kwargs = {"expected_senders": {expected_server}} if expected_server else {}
+            offer = client.wait_for_dcc(timeout=120.0, result_type=False, **wait_kwargs)
 
             if not offer:
                 status_callback("error", "No response from bot")
@@ -97,10 +148,13 @@ class IRCDownloadHandler(DownloadHandler):
             status_callback("downloading", "")
 
             # Get file extension from offer filename
-            ext = Path(offer.filename).suffix.lstrip('.') or task.format or "epub"
+            ext = (
+                Path(safe_dcc_filename(offer.filename)).suffix.lstrip(".") or task.format or "epub"
+            )
 
             # Stage to temp directory (lazy import to avoid circular import)
             from shelfmark.download.staging import get_staging_path
+
             staging_path = get_staging_path(task.task_id, ext)
 
             download_dcc(
@@ -120,18 +174,18 @@ class IRCDownloadHandler(DownloadHandler):
                 status_callback("cancelled", "Cancelled")
                 return None
 
-            logger.info(f"Download complete: {staging_path}")
+            logger.info("Download complete: %s", staging_path)
             return str(staging_path)
 
         except DCCError as e:
-            logger.error(f"DCC error: {e}")
+            logger.exception("DCC error")
             status_callback("error", str(e))
             if client:
                 connection_manager.close_connection(client)
             return None
 
         except Exception as e:
-            logger.error(f"Download failed: {e}")
+            logger.exception("Download failed")
             status_callback("error", f"Download failed: {e}")
             if client:
                 connection_manager.close_connection(client)
@@ -139,5 +193,5 @@ class IRCDownloadHandler(DownloadHandler):
 
     def cancel(self, task_id: str) -> bool:
         """Cancel an in-progress download (cleanup if cancel_flag fails)."""
-        logger.debug(f"Cancel requested for IRC task: {task_id}")
+        logger.debug("Cancel requested for IRC task: %s", task_id)
         return True

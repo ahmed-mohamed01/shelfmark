@@ -1,4 +1,4 @@
-.PHONY: help install dev build preview typecheck frontend-test clean up down docker-build refresh restart build-serve
+.PHONY: help install install-ci install-python-dev dev build preview frontend-typecheck frontend-lint frontend-format frontend-format-fix frontend-checks frontend-test clean up down docker-build refresh restart build-serve python-lint python-lint-fix python-format python-format-fix python-typecheck python-dead-code python-checks python-test python-test-cov checks fix
 
 # Frontend directory
 FRONTEND_DIR := src/frontend
@@ -10,14 +10,34 @@ COMPOSE_FILE := docker-compose.dev.yml
 help:
 	@echo "Available targets:"
 	@echo ""
+	@echo "Quality:"
+	@echo "  checks     - Run ALL static analysis checks (frontend + Python)"
+	@echo "  fix        - Auto-fix lint + format issues (frontend + Python)"
+	@echo ""
 	@echo "Frontend:"
 	@echo "  install    - Install frontend dependencies"
 	@echo "  dev        - Start development server"
 	@echo "  build      - Build frontend for production"
 	@echo "  build-serve - Build and serve via Flask (test prod build without Docker)"
 	@echo "  preview    - Preview production build"
-	@echo "  typecheck  - Run TypeScript type checking"
+	@echo "  frontend-typecheck - Run TypeScript type checking"
+	@echo "  frontend-lint - Run Oxlint against frontend code"
+	@echo "  frontend-format - Check frontend formatting with Oxfmt"
+	@echo "  frontend-format-fix - Format frontend code with Oxfmt"
+	@echo "  frontend-checks - Run all frontend static analysis checks"
 	@echo "  frontend-test - Run frontend unit tests"
+	@echo ""
+	@echo "Python:"
+	@echo "  install-python-dev - Sync Python runtime + dev tooling with uv"
+	@echo "  python-lint - Run Ruff against Python code (backend + tests)"
+	@echo "  python-lint-fix - Run Ruff with safe auto-fixes"
+	@echo "  python-format - Check Python formatting with Ruff"
+	@echo "  python-format-fix - Format Python code with Ruff"
+	@echo "  python-typecheck - Run BasedPyright against backend + tests"
+	@echo "  python-dead-code - Run Vulture against backend code"
+	@echo "  python-checks - Run all Python static analysis checks"
+	@echo "  python-test - Run unit tests"
+	@echo "  python-test-cov - Run unit tests with coverage report"
 	@echo "  clean      - Remove node_modules and build artifacts"
 	@echo ""
 	@echo "Backend (Docker):"
@@ -31,6 +51,17 @@ help:
 install:
 	@echo "Installing frontend dependencies..."
 	cd $(FRONTEND_DIR) && npm install
+
+install-ci:
+	@echo "Installing frontend dependencies (CI, lockfile-strict)..."
+	cd $(FRONTEND_DIR) && npm ci
+
+# Install Python development dependencies
+install-python-dev:
+	@echo "Syncing Python runtime and dev tooling with uv..."
+	uv sync --locked --extra browser
+	@echo "Installing prek git hooks..."
+	uv run prek install
 
 # Start development server
 dev:
@@ -55,14 +86,74 @@ preview:
 	cd $(FRONTEND_DIR) && npm run preview
 
 # Type checking
-typecheck:
+frontend-typecheck:
 	@echo "Running TypeScript type checking..."
 	cd $(FRONTEND_DIR) && npm run typecheck
+
+# Python linting (backend + tests)
+python-lint:
+	@echo "Running Ruff..."
+	uv run ruff check shelfmark tests
+
+python-lint-fix:
+	@echo "Running Ruff with safe auto-fixes..."
+	uv run ruff check shelfmark tests --fix
+
+python-format:
+	@echo "Checking Python formatting with Ruff..."
+	uv run ruff format --check shelfmark tests
+
+python-format-fix:
+	@echo "Formatting Python code with Ruff..."
+	uv run ruff format shelfmark tests
+
+python-typecheck:
+	@echo "Running BasedPyright..."
+	uv run basedpyright
+	@echo "Running BasedPyright against tests..."
+	uv run basedpyright tests --skipunannotated
+
+python-dead-code:
+	@echo "Running Vulture..."
+	uv run vulture shelfmark
+
+python-checks: python-lint python-format python-typecheck python-dead-code
+
+python-test:
+	@echo "Running tests..."
+	uv run pytest tests/ -x --tb=short -m "not integration and not e2e"
+
+python-test-cov:
+	@echo "Running tests with coverage..."
+	uv run pytest tests/ -x --tb=short -m "not integration and not e2e" --cov --cov-report=term-missing
+
+# Frontend linting
+frontend-lint:
+	@echo "Running Oxlint..."
+	cd $(FRONTEND_DIR) && npm run lint
+
+# Frontend formatting
+frontend-format:
+	@echo "Checking frontend formatting with Oxfmt..."
+	cd $(FRONTEND_DIR) && npm run format:check
+
+frontend-format-fix:
+	@echo "Formatting frontend code with Oxfmt..."
+	cd $(FRONTEND_DIR) && npm run format
+
+# All frontend static analysis
+frontend-checks: frontend-lint frontend-format frontend-typecheck
 
 # Run frontend unit tests
 frontend-test:
 	@echo "Running frontend unit tests..."
 	cd $(FRONTEND_DIR) && npm run test:unit
+
+# All static analysis checks (frontend + Python)
+checks: frontend-checks python-checks
+
+# Auto-fix lint + format issues (frontend + Python)
+fix: python-lint-fix python-format-fix frontend-format-fix
 
 # Clean build artifacts and dependencies
 clean:

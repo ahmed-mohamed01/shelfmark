@@ -1,7 +1,14 @@
 """Authentication mode, auth-source normalization, and admin access policy helpers."""
 
+from __future__ import annotations
+
 import os
-from typing import Any, Mapping
+import sqlite3
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 AUTH_SOURCE_BUILTIN = "builtin"
 AUTH_SOURCE_OIDC = "oidc"
@@ -17,7 +24,18 @@ AUTH_SOURCE_SET = frozenset(AUTH_SOURCES)
 _ALWAYS_ADMIN_SETTINGS_TABS = frozenset({"security", "users"})
 
 
-def has_local_password_admin(user_db: Any | None = None) -> bool:
+class _UserDBWithAdminPassword(Protocol):
+    """Minimal user DB surface needed for local-admin checks."""
+
+    def has_admin_with_password(self) -> bool: ...
+
+
+def _has_admin_password_api(candidate: object) -> TypeGuard[_UserDBWithAdminPassword]:
+    """Return True when *candidate* exposes the admin-password lookup we need."""
+    return callable(getattr(candidate, "has_admin_with_password", None))
+
+
+def has_local_password_admin(user_db: object | None = None) -> bool:
     """Return True when at least one local admin with a password exists."""
     try:
         db = user_db
@@ -25,17 +43,19 @@ def has_local_password_admin(user_db: Any | None = None) -> bool:
             from shelfmark.core.user_db import UserDB
 
             config_root = os.environ.get("CONFIG_DIR", "/config")
-            db = UserDB(os.path.join(config_root, "users.db"))
+            db = UserDB(str(Path(config_root) / "users.db"))
             db.initialize()
 
+        if not _has_admin_password_api(db):
+            return False
         return db.has_admin_with_password()
-    except Exception:
+    except AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error:
         return False
 
 
 def normalize_auth_source(
-    source: Any,
-    oidc_subject: Any = None,
+    source: object,
+    oidc_subject: object = None,
 ) -> str:
     """Resolve a stable auth source value from persisted fields."""
     normalized = str(source or "").strip().lower()
@@ -48,17 +68,19 @@ def normalize_auth_source(
 
 def determine_auth_mode(
     security_config: Mapping[str, Any],
-    cwa_db_path: Any | None,
+    cwa_db_path: object | None,
     *,
     has_local_admin: bool = True,
+    disable_local_auth: bool = False,
 ) -> str:
     """Determine active auth mode from security config and runtime prerequisites."""
     auth_mode = security_config.get("AUTH_METHOD", "none")
+    local_admin_available = has_local_admin or disable_local_auth
 
     if auth_mode == AUTH_SOURCE_CWA and cwa_db_path:
         return AUTH_SOURCE_CWA
 
-    if auth_mode == AUTH_SOURCE_BUILTIN and has_local_admin:
+    if auth_mode == AUTH_SOURCE_BUILTIN and local_admin_available:
         return AUTH_SOURCE_BUILTIN
 
     if auth_mode == AUTH_SOURCE_PROXY and security_config.get("PROXY_AUTH_USER_HEADER"):
@@ -66,7 +88,7 @@ def determine_auth_mode(
 
     if (
         auth_mode == AUTH_SOURCE_OIDC
-        and has_local_admin
+        and local_admin_available
         and security_config.get("OIDC_DISCOVERY_URL")
         and security_config.get("OIDC_CLIENT_ID")
     ):
@@ -75,44 +97,29 @@ def determine_auth_mode(
     return "none"
 
 
-def _load_security_config() -> dict[str, Any]:
-    """Load security settings with environment-backed values applied."""
-    from shelfmark.core.settings_registry import (
-        get_setting_value,
-        get_settings_field_map,
-        load_config_file,
-    )
-
-    try:
-        import shelfmark.config.security  # noqa: F401
-    except Exception:
-        return load_config_file("security")
-
-    config = load_config_file("security")
-    field_map = get_settings_field_map(tab_name="security")
-    if not field_map:
-        return config
-
-    resolved = dict(config)
-    for key, (field, tab_name) in field_map.items():
-        resolved[key] = get_setting_value(field, tab_name)
-    return resolved
-
-
 def load_active_auth_mode(
-    cwa_db_path: Any | None,
+    cwa_db_path: object | None,
     *,
-    user_db: Any | None = None,
+    user_db: object | None = None,
 ) -> str:
     """Resolve active auth mode using current security config and runtime prerequisites."""
     try:
-        security_config = _load_security_config()
+        from shelfmark.config.env import DISABLE_LOCAL_AUTH
+        from shelfmark.core.config import config as app_config
+
+        security_config = {
+            "AUTH_METHOD": app_config.get("AUTH_METHOD", "none"),
+            "PROXY_AUTH_USER_HEADER": app_config.get("PROXY_AUTH_USER_HEADER", ""),
+            "OIDC_DISCOVERY_URL": app_config.get("OIDC_DISCOVERY_URL", ""),
+            "OIDC_CLIENT_ID": app_config.get("OIDC_CLIENT_ID", ""),
+        }
         return determine_auth_mode(
             security_config,
             cwa_db_path,
             has_local_admin=has_local_password_admin(user_db),
+            disable_local_auth=DISABLE_LOCAL_AUTH,
         )
-    except Exception:
+    except ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error:
         return "none"
 
 
@@ -126,7 +133,7 @@ def is_user_active_for_auth_mode(user: Mapping[str, Any], auth_mode: str) -> boo
 
 def is_settings_or_onboarding_path(path: str) -> bool:
     """Return True when request path targets protected admin settings routes."""
-    return path.startswith("/api/settings") or path.startswith("/api/onboarding")
+    return path.startswith(("/api/settings", "/api/onboarding"))
 
 
 def get_settings_tab_from_path(path: str) -> str | None:
@@ -134,7 +141,7 @@ def get_settings_tab_from_path(path: str) -> str | None:
     if not path.startswith("/api/settings/"):
         return None
 
-    suffix = path[len("/api/settings/"):]
+    suffix = path[len("/api/settings/") :]
     if not suffix:
         return None
 

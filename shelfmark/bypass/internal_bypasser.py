@@ -1,22 +1,33 @@
+"""Internal Cloudflare bypass implementation using SeleniumBase and CDP helpers."""
+
+import _thread
 import asyncio
+import json
 import os
 import random
+import shutil
 import signal
 import socket
 import stat
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import traceback
-from datetime import datetime
+from contextlib import suppress
+from datetime import UTC, datetime
+from http import HTTPStatus
+from pathlib import Path
 from threading import Event
-from typing import Any, Optional
+from typing import Any, Protocol, TypedDict, TypeGuard
 from urllib.parse import urlparse
 
 import requests
 from seleniumbase import cdp_driver
+from seleniumbase.undetected.cdp_driver.connection import ProtocolException
 
-from shelfmark.bypass import BypassCancelledException
+from shelfmark.bypass import BypassCancelledError
 from shelfmark.bypass.fingerprint import get_screen_size
 from shelfmark.config import env
 from shelfmark.config.env import LOG_DIR
@@ -28,8 +39,18 @@ from shelfmark.download.network import get_proxies, get_ssl_verify
 
 logger = setup_logger(__name__)
 
-SELENIUMBASE_RUNTIME_ROOT = "/tmp/shelfmark/seleniumbase"
-SELENIUMBASE_DOWNLOADS_DIR = os.path.join(SELENIUMBASE_RUNTIME_ROOT, "downloaded_files")
+SELENIUMBASE_RUNTIME_ROOT = Path(tempfile.gettempdir()) / "shelfmark" / "seleniumbase"
+SELENIUMBASE_DOWNLOADS_DIR = SELENIUMBASE_RUNTIME_ROOT / "downloaded_files"
+BROWSER_RUNTIME_ROOT = Path(tempfile.gettempdir()) / "shelfmark" / "browser"
+BROWSER_HOME_DIR = BROWSER_RUNTIME_ROOT / "home"
+BROWSER_XDG_RUNTIME_DIR = BROWSER_RUNTIME_ROOT / "runtime"
+_BYPASSED_BODY_LENGTH_MIN = 100_000
+_BYPASS_EMOJI_MATCH_MIN = 3
+_LOADING_BODY_LENGTH_MAX = 50
+_PAGE_BODY_PREVIEW_CHARS = 500
+_BROWSER_START_TIMEOUT_SECONDS = 45.0
+_BYPASS_SUBPROCESS_TIMEOUT_SECONDS = 420.0
+_BYPASS_CHILD_ENV = "SHELFMARK_INTERNAL_BYPASSER_CHILD"
 
 # Challenge detection indicators
 CLOUDFLARE_INDICATORS = [
@@ -47,70 +68,154 @@ DDOS_GUARD_INDICATORS = [
     "could not verify your browser automatically",
 ]
 
-DISPLAY = {
+
+class _DisplayState(TypedDict):
+    ffmpeg: subprocess.Popen[bytes] | None
+    ffmpeg_output: Path | None
+
+
+class _PageWithWindowRect(Protocol):
+    async def set_window_rect(self, x: int, _y: int, width: int, height: int) -> object: ...
+
+
+class _BrowserWithWindowRectPage(Protocol):
+    page: _PageWithWindowRect
+
+
+DISPLAY: _DisplayState = {
     "ffmpeg": None,
     "ffmpeg_output": None,
 }
 LOCKED = threading.Lock()
+_PGREP_PATH = shutil.which("pgrep")
+_PKILL_PATH = shutil.which("pkill")
+_RNG = random.SystemRandom()
+
+_CDP_OPERATION_ERRORS = (
+    asyncio.TimeoutError,
+    AttributeError,
+    NameError,
+    OSError,
+    ProtocolException,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+_PATH_INSPECTION_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
+_REQUEST_OPERATION_ERRORS = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    requests.RequestException,
+)
+_SUBPROCESS_OPERATION_ERRORS = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    subprocess.SubprocessError,
+)
+_NATIVE_ATTR_ERRORS = (ImportError, AttributeError, RuntimeError)
 
 
-def _describe_runtime_path(path: str) -> str:
+def _get_native_attr(module: str, name: str, fallback: Any) -> Any:
+    """Return an unpatched stdlib attribute when running under gevent."""
+    try:
+        from gevent import monkey
+
+        original = monkey.get_original(module, name)
+    except _NATIVE_ATTR_ERRORS:
+        return fallback
+    else:
+        return original or fallback
+
+
+_NATIVE_START_NEW_THREAD = _get_native_attr("_thread", "start_new_thread", _thread.start_new_thread)
+_NATIVE_EVENT = _get_native_attr("threading", "Event", threading.Event)
+_NATIVE_LOCK = _get_native_attr("threading", "Lock", threading.Lock)
+
+
+def _coerce_positive_int(value: object, default: int) -> int:
+    """Return a positive integer config value or the provided default."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int) and value > 0:
+        return value
+    return default
+
+
+def _coerce_non_negative_float(value: object, default: float) -> float:
+    """Return a non-negative float config value or the provided default."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float) and value >= 0:
+        return float(value)
+    return default
+
+
+def _has_window_rect_page(candidate: object) -> TypeGuard[_BrowserWithWindowRectPage]:
+    """Check whether a browser wrapper exposes page.set_window_rect()."""
+    page = getattr(candidate, "page", None)
+    return callable(getattr(page, "set_window_rect", None))
+
+
+def _describe_runtime_path(path: str | Path) -> str:
     """Return compact ownership/mode info for a runtime path."""
     try:
+        path = Path(path)
         link_target = ""
-        if os.path.islink(path):
-            link_target = f" -> {os.readlink(path)}"
-        st = os.stat(path)
+        if path.is_symlink():
+            link_target = f" -> {path.readlink()}"
+        st = path.stat()
         mode = stat.S_IMODE(st.st_mode)
         return f"{path}{link_target} exists uid={st.st_uid} gid={st.st_gid} mode={oct(mode)}"
     except FileNotFoundError:
         return f"{path} missing"
-    except Exception as e:
+    except _PATH_INSPECTION_ERRORS as e:
         return f"{path} error={type(e).__name__}: {e}"
 
 
 class _CdpWorker:
     def __init__(self) -> None:
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._ready = threading.Event()
-        self._lock = threading.Lock()
+        self._thread_id: int | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = _NATIVE_EVENT()
+        self._lock = _NATIVE_LOCK()
 
     def _run(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._ready.set()
-        loop.run_forever()
         try:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        except Exception:
-            pass
-        finally:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            self._ready.set()
+            loop.run_forever()
+            with suppress(Exception):
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
+        finally:
+            self._thread_id = None
 
     def start(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._loop and self._loop.is_running() and not self._loop.is_closed():
                 return
+            self._loop = None
             self._ready.clear()
-            self._thread = threading.Thread(
-                target=self._run,
-                name="cdp-worker",
-                daemon=True,
-            )
-            self._thread.start()
+            self._thread_id = _NATIVE_START_NEW_THREAD(self._run, ())
         if not self._ready.wait(timeout=10):
-            raise RuntimeError("CDP worker loop failed to start")
+            msg = "CDP worker loop failed to start"
+            raise RuntimeError(msg)
 
-    def run(self, coro: Any, timeout: Optional[float] = None) -> Any:
+    def run(self, coro: Any, timeout: float | None = None) -> Any:
         self.start()
         if not self._loop or self._loop.is_closed():
-            raise RuntimeError("CDP worker loop not available")
+            msg = "CDP worker loop not available"
+            raise RuntimeError(msg)
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=timeout)
 
@@ -118,7 +223,7 @@ class _CdpWorker:
 _CDP_WORKER = _CdpWorker()
 
 # Cookie storage - shared with requests library for Cloudflare bypass
-# Structure: {domain: {cookie_name: {value, expiry, ...}}}
+# Nested mapping of domain to cookie name to cookie metadata.
 _cf_cookies: dict[str, dict] = {}
 _cf_cookies_lock = threading.Lock()
 
@@ -126,24 +231,38 @@ _cf_cookies_lock = threading.Lock()
 _cf_user_agents: dict[str, str] = {}
 
 # Protection cookie names we care about (Cloudflare and DDoS-Guard)
-CF_COOKIE_NAMES = {'cf_clearance', '__cf_bm', 'cf_chl_2', 'cf_chl_prog'}
-DDG_COOKIE_NAMES = {'__ddg1_', '__ddg2_', '__ddg5_', '__ddg8_', '__ddg9_', '__ddg10_', '__ddgid_', '__ddgmark_', 'ddg_last_challenge'}
-
-# Domains requiring full session cookies (not just protection cookies)
-FULL_COOKIE_DOMAINS = {'z-lib.fm', 'z-lib.gs', 'z-lib.id', 'z-library.sk', 'zlibrary-global.se'}
+CF_COOKIE_NAMES = {"cf_clearance", "__cf_bm", "cf_chl_2", "cf_chl_prog"}
+DDG_COOKIE_NAMES = {
+    "__ddg1_",
+    "__ddg2_",
+    "__ddg5_",
+    "__ddg8_",
+    "__ddg9_",
+    "__ddg10_",
+    "__ddgid_",
+    "__ddgmark_",
+    "ddg_last_challenge",
+}
 
 
 def _get_base_domain(domain: str) -> str:
     """Extract base domain from hostname (e.g., 'www.example.com' -> 'example.com')."""
-    return '.'.join(domain.split('.')[-2:]) if '.' in domain else domain
+    return ".".join(domain.split(".")[-2:]) if "." in domain else domain
 
 
-def _should_extract_cookie(name: str, extract_all: bool) -> bool:
+def _get_full_cookie_domains() -> set[str]:
+    """Return mirror domains that need full-session cookie extraction."""
+    from shelfmark.core.mirrors import get_zlib_cookie_domains
+
+    return {_get_base_domain(domain) for domain in get_zlib_cookie_domains()}
+
+
+def _should_extract_cookie(name: str, *, extract_all: bool) -> bool:
     """Determine if a cookie should be extracted based on its name."""
     if extract_all:
         return True
-    is_cf = name in CF_COOKIE_NAMES or name.startswith('cf_')
-    is_ddg = name in DDG_COOKIE_NAMES or name.startswith('__ddg')
+    is_cf = name in CF_COOKIE_NAMES or name.startswith("cf_")
+    is_ddg = name in DDG_COOKIE_NAMES or name.startswith("__ddg")
     return is_cf or is_ddg
 
 
@@ -151,7 +270,7 @@ def _store_extracted_cookies(
     *,
     url: str,
     cookies: list[Any],
-    user_agent: Optional[str] = None,
+    user_agent: str | None = None,
 ) -> None:
     """Store filtered bypass cookies (and optional UA) for a URL domain."""
     parsed = urlparse(url)
@@ -160,12 +279,12 @@ def _store_extracted_cookies(
         return
 
     base_domain = _get_base_domain(domain)
-    extract_all = base_domain in FULL_COOKIE_DOMAINS
+    extract_all = base_domain in _get_full_cookie_domains()
 
     cookies_found: dict[str, dict[str, Any]] = {}
     for cookie in cookies:
         name = getattr(cookie, "name", "") or ""
-        if not _should_extract_cookie(name, extract_all):
+        if not _should_extract_cookie(name, extract_all=extract_all):
             continue
         expires = getattr(cookie, "expires", None)
         if expires is not None and expires <= 0:
@@ -186,32 +305,33 @@ def _store_extracted_cookies(
         _cf_cookies[base_domain] = cookies_found
         if user_agent:
             _cf_user_agents[base_domain] = user_agent
-            logger.debug(f"Stored UA for {base_domain}: {str(user_agent)[:60]}...")
+            logger.debug("Stored UA for %s: %s...", base_domain, str(user_agent)[:60])
         else:
-            logger.debug(f"No UA captured for {base_domain}")
+            logger.debug("No UA captured for %s", base_domain)
 
     cookie_type = "all" if extract_all else "protection"
-    logger.debug(f"Extracted {len(cookies_found)} {cookie_type} cookies for {base_domain}")
+    logger.debug("Extracted %s %s cookies for %s", len(cookies_found), cookie_type, base_domain)
 
 
-async def _extract_cookies_from_cdp(driver, page, url: str) -> None:
+async def _extract_cookies_from_cdp(driver: Any, page: Any, url: str) -> None:
     """Extract cookies from a CDP browser after successful bypass."""
     try:
         try:
             all_cookies = await driver.cookies.get_all(requests_cookie_format=True)
-        except Exception as e:
-            logger.debug(f"Failed to get cookies via CDP: {e}")
+        except _CDP_OPERATION_ERRORS as e:
+            logger.debug("Failed to get cookies via CDP: %s", e)
             return
 
         try:
             user_agent = await page.evaluate("navigator.userAgent")
-        except Exception:
+        except _CDP_OPERATION_ERRORS:
             user_agent = None
 
         _store_extracted_cookies(url=url, cookies=all_cookies, user_agent=user_agent)
 
-    except Exception as e:
-        logger.debug(f"Failed to extract cookies: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("Failed to extract cookies: %s", e)
+
 
 def get_cf_cookies_for_domain(domain: str) -> dict[str, str]:
     """Get stored cookies for a domain. Returns empty dict if none available."""
@@ -225,17 +345,17 @@ def get_cf_cookies_for_domain(domain: str) -> dict[str, str]:
         if not cookies:
             return {}
 
-        cf_clearance = cookies.get('cf_clearance', {})
+        cf_clearance = cookies.get("cf_clearance", {})
         if cf_clearance:
-            expiry = cf_clearance.get('expiry')
+            expiry = cf_clearance.get("expiry")
             if expiry is None:
-                expiry = cf_clearance.get('expires')
+                expiry = cf_clearance.get("expires")
             if expiry and expiry > 0 and time.time() > expiry:
-                logger.debug(f"CF cookies expired for {base_domain}")
+                logger.debug("CF cookies expired for %s", base_domain)
                 _cf_cookies.pop(base_domain, None)
                 return {}
 
-        return {name: c['value'] for name, c in cookies.items()}
+        return {name: c["value"] for name, c in cookies.items()}
 
 
 def has_valid_cf_cookies(domain: str) -> bool:
@@ -243,7 +363,7 @@ def has_valid_cf_cookies(domain: str) -> bool:
     return bool(get_cf_cookies_for_domain(domain))
 
 
-def get_cf_user_agent_for_domain(domain: str) -> Optional[str]:
+def get_cf_user_agent_for_domain(domain: str) -> str | None:
     """Get the User-Agent that was used during bypass for a domain."""
     if not domain:
         return None
@@ -251,7 +371,7 @@ def get_cf_user_agent_for_domain(domain: str) -> Optional[str]:
         return _cf_user_agents.get(_get_base_domain(domain))
 
 
-def clear_cf_cookies(domain: str = None) -> None:
+def clear_cf_cookies(domain: str | None = None) -> None:
     """Clear stored Cloudflare cookies and User-Agent. If domain is None, clear all."""
     with _cf_cookies_lock:
         if domain:
@@ -276,198 +396,201 @@ def _cleanup_orphan_processes() -> int:
     logger.debug("Checking for orphan processes...")
     logger.log_resource_usage()
 
+    if _PGREP_PATH is None or _PKILL_PATH is None:
+        logger.warning("Skipping orphan-process cleanup because pgrep/pkill are unavailable")
+        return 0
+
     for proc_name in processes_to_kill:
         try:
             result = subprocess.run(
-                ["pgrep", "-f", proc_name],
+                [_PGREP_PATH, "-f", proc_name],
                 capture_output=True,
+                check=False,
                 text=True,
-                timeout=5
+                timeout=5,
             )
             if result.returncode != 0 or not result.stdout.strip():
                 continue
 
-            pids = result.stdout.strip().split('\n')
+            pids = result.stdout.strip().split("\n")
             count = len(pids)
-            logger.info(f"Found {count} orphan {proc_name} process(es), killing...")
+            logger.info("Found %s orphan %s process(es), killing...", count, proc_name)
 
             kill_result = subprocess.run(
-                ["pkill", "-9", "-f", proc_name],
+                [_PKILL_PATH, "-9", "-f", proc_name],
                 capture_output=True,
-                timeout=5
+                check=False,
+                timeout=5,
             )
             if kill_result.returncode == 0:
                 total_killed += count
             else:
-                logger.warning(f"pkill for {proc_name} returned {kill_result.returncode}")
+                logger.warning("pkill for %s returned %s", proc_name, kill_result.returncode)
 
         except subprocess.TimeoutExpired:
-            logger.warning(f"Timeout while checking for {proc_name} processes")
-        except Exception as e:
-            logger.debug(f"Error checking for {proc_name} processes: {e}")
+            logger.warning("Timeout while checking for %s processes", proc_name)
+        except _SUBPROCESS_OPERATION_ERRORS as e:
+            logger.debug("Error checking for %s processes: %s", proc_name, e)
 
     if total_killed > 0:
         time.sleep(1)
-        logger.info(f"Cleaned up {total_killed} orphan process(es)")
+        logger.info("Cleaned up %s orphan process(es)", total_killed)
         logger.log_resource_usage()
     else:
         logger.debug("No orphan processes found")
 
     return total_killed
 
-async def _get_page_info(page) -> tuple[str, str, str]:
+
+async def _get_page_info(page: Any) -> tuple[str, str, str]:
     """Extract page title, body text, and current URL safely."""
     try:
         title = (await page.get_title() or "").lower()
-    except Exception:
+    except _CDP_OPERATION_ERRORS:
         title = ""
     try:
         body = await page.evaluate("document.body ? document.body.innerText : ''")
         body = (body or "").lower()
-    except Exception:
+    except _CDP_OPERATION_ERRORS:
         body = ""
     try:
         current_url = await page.get_current_url() or ""
-    except Exception:
+    except _CDP_OPERATION_ERRORS:
         current_url = ""
     return title, body, current_url
 
 
-def _check_indicators(title: str, body: str, indicators: list[str]) -> Optional[str]:
+def _check_indicators(title: str, body: str, indicators: list[str]) -> str | None:
     """Check if any indicator is present in title or body. Returns the found indicator or None."""
     for indicator in indicators:
         if indicator in title or indicator in body:
             return indicator
     return None
 
+
 def _has_cloudflare_patterns(body: str, url: str) -> bool:
     """Check for Cloudflare-specific patterns in body or URL."""
     return "cf-" in body or "cloudflare" in url.lower() or "/cdn-cgi/" in url
 
-async def _detect_challenge_type(page) -> str:
+
+async def _detect_challenge_type(page: Any) -> str:
     """Detect challenge type: 'cloudflare', 'ddos_guard', or 'none'."""
-    try:
-        title, body, current_url = await _get_page_info(page)
+    title, body, current_url = await _get_page_info(page)
 
-        # DDOS-Guard indicators
-        if found := _check_indicators(title, body, DDOS_GUARD_INDICATORS):
-            logger.debug(f"DDOS-Guard indicator found: '{found}'")
-            return "ddos_guard"
+    # DDOS-Guard indicators
+    if found := _check_indicators(title, body, DDOS_GUARD_INDICATORS):
+        logger.debug("DDOS-Guard indicator found: '%s'", found)
+        return "ddos_guard"
 
-        # Cloudflare indicators
-        if found := _check_indicators(title, body, CLOUDFLARE_INDICATORS):
-            logger.debug(f"Cloudflare indicator found: '{found}'")
-            return "cloudflare"
+    # Cloudflare indicators
+    if found := _check_indicators(title, body, CLOUDFLARE_INDICATORS):
+        logger.debug("Cloudflare indicator found: '%s'", found)
+        return "cloudflare"
 
-        # Check URL patterns
-        if _has_cloudflare_patterns(body, current_url):
-            return "cloudflare"
+    # Check URL patterns
+    if _has_cloudflare_patterns(body, current_url):
+        return "cloudflare"
 
-        return "none"
-    except Exception as e:
-        logger.warning(f"Error detecting challenge type: {e}")
-        return "none"
+    return "none"
 
-async def _is_bypassed(page, escape_emojis: bool = True) -> bool:
+
+async def _is_bypassed(page: Any, *, escape_emojis: bool = True) -> bool:
     """Check if the protection has been bypassed."""
-    try:
-        title, body, current_url = await _get_page_info(page)
-        body_len = len(body.strip())
+    title, body, current_url = await _get_page_info(page)
+    body_len = len(body.strip())
 
-        # Long page content = probably bypassed
-        if body_len > 100000:
-            logger.debug(f"Page content too long, probably bypassed (len: {body_len})")
-            return True
-
-        # Multiple emojis = probably real content
-        if escape_emojis:
-            import emoji
-            if len(emoji.emoji_list(body)) >= 3:
-                logger.debug("Detected emojis in page, probably bypassed")
-                return True
-
-        # Check for protection indicators (means NOT bypassed)
-        if _check_indicators(title, body, CLOUDFLARE_INDICATORS + DDOS_GUARD_INDICATORS):
-            return False
-
-        # Cloudflare URL patterns
-        if _has_cloudflare_patterns(body, current_url):
-            logger.debug("Cloudflare patterns detected in page")
-            return False
-
-        # Page too short = still loading
-        if body_len < 50:
-            logger.debug("Page content too short, might still be loading")
-            return False
-
-        logger.debug(f"Bypass check passed - Title: '{title[:100]}', Body length: {body_len}")
+    # Long page content = probably bypassed
+    if body_len > _BYPASSED_BODY_LENGTH_MIN:
+        logger.debug("Page content too long, probably bypassed (len: %s)", body_len)
         return True
 
-    except Exception as e:
-        logger.warning(f"Error checking bypass status: {e}")
+    # Multiple emojis = probably real content
+    if escape_emojis:
+        import emoji
+
+        if len(emoji.emoji_list(body)) >= _BYPASS_EMOJI_MATCH_MIN:
+            logger.debug("Detected emojis in page, probably bypassed")
+            return True
+
+    # Check for protection indicators (means NOT bypassed)
+    if _check_indicators(title, body, CLOUDFLARE_INDICATORS + DDOS_GUARD_INDICATORS):
         return False
 
-async def _bypass_method_humanlike(page) -> bool:
+    # Cloudflare URL patterns
+    if _has_cloudflare_patterns(body, current_url):
+        logger.debug("Cloudflare patterns detected in page")
+        return False
+
+    # Page too short = still loading
+    if body_len < _LOADING_BODY_LENGTH_MAX:
+        logger.debug("Page content too short, might still be loading")
+        return False
+
+    logger.debug("Bypass check passed - Title: '%s', Body length: %s", title[:100], body_len)
+    return True
+
+
+async def _bypass_method_humanlike(page: Any) -> bool:
     """Human-like behavior with scroll, wait, and reload."""
     try:
         logger.debug("Attempting bypass: human-like interaction")
-        await asyncio.sleep(random.uniform(6, 10))
+        await asyncio.sleep(_RNG.uniform(6, 10))
 
         try:
             await page.evaluate("window.scrollTo(0, 10000);")
             await page.wait()
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(_RNG.uniform(1, 2))
             await page.evaluate("window.scrollTo(0, 0);")
             await page.wait()
-            await asyncio.sleep(random.uniform(2, 3))
-        except Exception as e:
-            logger.debug(f"Scroll behavior failed: {e}")
+            await asyncio.sleep(_RNG.uniform(2, 3))
+        except _CDP_OPERATION_ERRORS as e:
+            logger.debug("Scroll behavior failed: %s", e)
 
         if await _is_bypassed(page):
             return True
 
         logger.debug("Trying page refresh...")
         await page.reload(ignore_cache=True)
-        await asyncio.sleep(random.uniform(5, 8))
+        await asyncio.sleep(_RNG.uniform(5, 8))
 
         if await _is_bypassed(page):
             return True
 
         try:
             await page.solve_captcha()
-            await asyncio.sleep(random.uniform(3, 5))
-        except Exception as e:
-            logger.debug(f"Final captcha click failed: {e}")
+            await asyncio.sleep(_RNG.uniform(3, 5))
+        except _CDP_OPERATION_ERRORS as e:
+            logger.debug("Final captcha click failed: %s", e)
 
         return await _is_bypassed(page)
-    except Exception as e:
-        logger.debug(f"Human-like method failed: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("Human-like method failed: %s", e)
         return False
 
 
-async def _bypass_method_cdp_solve(page) -> bool:
+async def _bypass_method_cdp_solve(page: Any) -> bool:
     """CDP Mode with solve_captcha() - auto-detects challenge type."""
     try:
         logger.debug("Attempting bypass: CDP solve_captcha")
         await page.solve_captcha()
-        await asyncio.sleep(random.uniform(3, 5))
+        await asyncio.sleep(_RNG.uniform(3, 5))
         return await _is_bypassed(page)
-    except Exception as e:
-        logger.debug(f"CDP solve_captcha failed: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("CDP solve_captcha failed: %s", e)
         return False
 
 
 CDP_CLICK_SELECTORS = [
-    "#turnstile-widget div",      # Cloudflare Turnstile
-    "#cf-turnstile div",          # Alternative CF Turnstile
+    "#turnstile-widget div",  # Cloudflare Turnstile
+    "#cf-turnstile div",  # Alternative CF Turnstile
     "iframe[src*='challenges']",  # CF challenge iframe
-    "input[type='checkbox']",     # Generic checkbox (DDOS-Guard)
-    "[class*='checkbox']",        # Class-based checkbox
-    "#challenge-running",         # CF challenge indicator
+    "input[type='checkbox']",  # Generic checkbox (DDOS-Guard)
+    "[class*='checkbox']",  # Class-based checkbox
+    "#challenge-running",  # CF challenge indicator
 ]
 
 
-async def _bypass_method_cdp_click(page) -> bool:
+async def _bypass_method_cdp_click(page: Any) -> bool:
     """CDP Mode with native clicking - no PyAutoGUI dependency."""
     try:
         logger.debug("Attempting bypass: CDP native click")
@@ -477,31 +600,31 @@ async def _bypass_method_cdp_click(page) -> bool:
                 if not await page.is_element_visible(selector):
                     continue
 
-                logger.debug(f"CDP clicking: {selector}")
+                logger.debug("CDP clicking: %s", selector)
                 await page.click(selector)
-                await asyncio.sleep(random.uniform(2, 4))
+                await asyncio.sleep(_RNG.uniform(2, 4))
 
                 if await _is_bypassed(page):
                     return True
-            except Exception as e:
-                logger.debug(f"CDP click on '{selector}' failed: {e}")
+            except _CDP_OPERATION_ERRORS as e:
+                logger.debug("CDP click on '%s' failed: %s", selector, e)
 
         return await _is_bypassed(page)
-    except Exception as e:
-        logger.debug(f"CDP Mode click failed: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("CDP Mode click failed: %s", e)
         return False
 
 
 CDP_GUI_CLICK_SELECTORS = [
-    "#turnstile-widget div",      # Cloudflare Turnstile
-    "#cf-turnstile div",          # Alternative CF Turnstile
-    "#challenge-stage div",       # CF challenge stage
-    "input[type='checkbox']",     # Generic checkbox
-    "[class*='cb-i']",            # DDOS-Guard checkbox
+    "#turnstile-widget div",  # Cloudflare Turnstile
+    "#cf-turnstile div",  # Alternative CF Turnstile
+    "#challenge-stage div",  # CF challenge stage
+    "input[type='checkbox']",  # Generic checkbox
+    "[class*='cb-i']",  # DDOS-Guard checkbox
 ]
 
 
-async def _bypass_method_cdp_gui_click(page) -> bool:
+async def _bypass_method_cdp_gui_click(page: Any) -> bool:
     """CDP Mode with gui_click-style behavior."""
     try:
         logger.debug("Attempting bypass: CDP gui_click (mouse-based)")
@@ -509,30 +632,30 @@ async def _bypass_method_cdp_gui_click(page) -> bool:
         try:
             logger.debug("Trying solve_captcha()")
             await page.solve_captcha()
-            await asyncio.sleep(random.uniform(3, 5))
+            await asyncio.sleep(_RNG.uniform(3, 5))
 
             if await _is_bypassed(page):
                 return True
-        except Exception as e:
-            logger.debug(f"solve_captcha() failed: {e}")
+        except _CDP_OPERATION_ERRORS as e:
+            logger.debug("solve_captcha() failed: %s", e)
 
         for selector in CDP_GUI_CLICK_SELECTORS:
             try:
                 if not await page.is_element_visible(selector):
                     continue
 
-                logger.debug(f"CDP click_with_offset: {selector}")
+                logger.debug("CDP click_with_offset: %s", selector)
                 await page.click_with_offset(selector, 0, 0, center=True)
-                await asyncio.sleep(random.uniform(3, 5))
+                await asyncio.sleep(_RNG.uniform(3, 5))
 
                 if await _is_bypassed(page):
                     return True
-            except Exception as e:
-                logger.debug(f"CDP gui_click on '{selector}' failed: {e}")
+            except _CDP_OPERATION_ERRORS as e:
+                logger.debug("CDP gui_click on '%s' failed: %s", selector, e)
 
         return await _is_bypassed(page)
-    except Exception as e:
-        logger.debug(f"CDP Mode gui_click failed: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("CDP Mode gui_click failed: %s", e)
         return False
 
 
@@ -546,16 +669,21 @@ BYPASS_METHODS = [
 MAX_CONSECUTIVE_SAME_CHALLENGE = 3
 
 
-def _check_cancellation(cancel_flag: Optional[Event], message: str) -> None:
+def _check_cancellation(cancel_flag: Event | None, message: str) -> None:
     """Check if cancellation was requested and raise if so."""
     if cancel_flag and cancel_flag.is_set():
         logger.info(message)
-        raise BypassCancelledException("Bypass cancelled")
+        msg = "Bypass cancelled"
+        raise BypassCancelledError(msg)
 
 
-async def _bypass(page, max_retries: Optional[int] = None, cancel_flag: Optional[Event] = None) -> bool:
+async def _bypass(
+    page: Any, max_retries: int | None = None, cancel_flag: Event | None = None
+) -> bool:
     """Attempt to bypass Cloudflare/DDOS-Guard protection using multiple methods."""
-    max_retries = max_retries if max_retries is not None else app_config.MAX_RETRY
+    max_retries = (
+        max_retries if max_retries is not None else _coerce_positive_int(app_config.MAX_RETRY, 10)
+    )
 
     last_challenge_type = None
     consecutive_same_challenge = 0
@@ -571,30 +699,32 @@ async def _bypass(page, max_retries: Optional[int] = None, cancel_flag: Optional
             return True
 
         challenge_type = await _detect_challenge_type(page)
-        logger.debug(f"Challenge detected: {challenge_type}")
+        logger.debug("Challenge detected: %s", challenge_type)
 
         # No challenge detected but page doesn't look bypassed - wait and retry
         if challenge_type == "none":
             logger.info("No challenge detected, waiting for page to settle...")
-            await asyncio.sleep(random.uniform(2, 3))
+            await asyncio.sleep(_RNG.uniform(2, 3))
             if await _is_bypassed(page):
                 return True
             # Try a simple refresh instead of captcha methods
             try:
                 await page.reload(ignore_cache=True)
-                await asyncio.sleep(random.uniform(1, 2))
+                await asyncio.sleep(_RNG.uniform(1, 2))
                 if await _is_bypassed(page):
                     logger.info("Bypass successful after refresh")
                     return True
-            except Exception as e:
-                logger.debug(f"Refresh during no-challenge wait failed: {e}")
+            except _CDP_OPERATION_ERRORS as e:
+                logger.debug("Refresh during no-challenge wait failed: %s", e)
             continue
 
         if challenge_type == last_challenge_type:
             consecutive_same_challenge += 1
             if consecutive_same_challenge >= min_same_challenge_before_abort:
                 logger.warning(
-                    f"Same challenge ({challenge_type}) detected {consecutive_same_challenge} times - aborting"
+                    "Same challenge (%s) detected %s times - aborting",
+                    challenge_type,
+                    consecutive_same_challenge,
                 )
                 return False
         else:
@@ -602,11 +732,11 @@ async def _bypass(page, max_retries: Optional[int] = None, cancel_flag: Optional
         last_challenge_type = challenge_type
 
         method = BYPASS_METHODS[try_count % len(BYPASS_METHODS)]
-        logger.info(f"Bypass attempt {try_count + 1}/{max_retries} using {method.__name__}")
+        logger.info("Bypass attempt %s/%s using %s", try_count + 1, max_retries, method.__name__)
 
         if try_count > 0:
-            wait_time = min(random.uniform(2, 4) * try_count, 12)
-            logger.info(f"Waiting {wait_time:.1f}s before trying...")
+            wait_time = min(_RNG.uniform(2, 4) * try_count, 12)
+            logger.info("Waiting %0.1fs before trying...", wait_time)
             for _ in range(int(wait_time)):
                 _check_cancellation(cancel_flag, "Bypass cancelled during wait")
                 await asyncio.sleep(1)
@@ -614,17 +744,18 @@ async def _bypass(page, max_retries: Optional[int] = None, cancel_flag: Optional
 
         try:
             if await method(page):
-                logger.info(f"Bypass successful using {method.__name__}")
+                logger.info("Bypass successful using %s", method.__name__)
                 return True
-        except BypassCancelledException:
+        except BypassCancelledError:
             raise
-        except Exception as e:
-            logger.warning(f"Exception in {method.__name__}: {e}")
+        except _CDP_OPERATION_ERRORS as e:
+            logger.warning("Exception in %s: %s", method.__name__, e)
 
-        logger.info(f"Bypass method {method.__name__} failed.")
+        logger.info("Bypass method %s failed.", method.__name__)
 
     logger.warning("Exceeded maximum retries. Bypass failed.")
     return False
+
 
 def _get_browser_args() -> list[str]:
     """Build extra Chrome arguments, pre-resolving hostnames via patched DNS.
@@ -645,16 +776,14 @@ def _get_browser_args() -> list[str]:
     ]
 
     if app_config.get("DEBUG", False):
-        arguments.extend([
-            "--enable-logging",
-            "--v=1",
-            "--log-file=" + str(LOG_DIR / "chrome_browser.log")
-        ])
+        arguments.extend(
+            ["--enable-logging", "--v=1", "--log-file=" + str(LOG_DIR / "chrome_browser.log")]
+        )
 
     host_rules = _build_host_resolver_rules()
     if host_rules:
-        arguments.append(f'--host-resolver-rules={", ".join(host_rules)}')
-        logger.debug(f"Chrome: Using host resolver rules for {len(host_rules)} hosts")
+        arguments.append(f"--host-resolver-rules={', '.join(host_rules)}")
+        logger.debug("Chrome: Using host resolver rules for %s hosts", len(host_rules))
     else:
         logger.warning("Chrome: No hosts could be pre-resolved")
 
@@ -676,40 +805,39 @@ def _build_host_resolver_rules() -> list[str]:
                 if results:
                     ip = results[0][4][0]
                     host_rules.append(f"MAP {hostname} {ip}")
-                    logger.debug(f"Chrome: Pre-resolved {hostname} -> {ip}")
+                    logger.debug("Chrome: Pre-resolved %s -> %s", hostname, ip)
                 else:
-                    logger.warning(f"Chrome: No addresses returned for {hostname}")
+                    logger.warning("Chrome: No addresses returned for %s", hostname)
             except socket.gaierror as e:
-                logger.warning(f"Chrome: Could not pre-resolve {hostname}: {e}")
-    except Exception as e:
+                logger.warning("Chrome: Could not pre-resolve %s: %s", hostname, e)
+    except (OSError, RuntimeError, TypeError, ValueError) as e:
         logger.error_trace(f"Error pre-resolving hostnames for Chrome: {e}")
 
     return host_rules
 
+
 DRIVER_RESET_ERRORS = {"ProtocolException", "RuntimeError", "TimeoutError"}
 
 
-async def _get(url: str, driver, cancel_flag: Optional[Event] = None) -> str:
+async def _get(url: str, driver: Any, cancel_flag: Event | None = None) -> str:
     """Fetch URL with Cloudflare bypass using a CDP browser."""
     _check_cancellation(cancel_flag, "Bypass cancelled before starting")
 
-    logger.debug(f"CDP_GET: {url}")
+    logger.debug("CDP_GET: %s", url)
 
     logger.debug("Opening URL with SeleniumBase CDP...")
     page = await driver.get(url)
-    try:
+    with suppress(Exception):
         await page.wait()
-    except Exception:
-        pass
 
     _check_cancellation(cancel_flag, "Bypass cancelled after page load")
 
     try:
         current_url = await page.get_current_url()
         title = await page.get_title()
-        logger.debug(f"Page loaded - URL: {current_url}, Title: {title}")
-    except Exception as e:
-        logger.debug(f"Could not get page info: {e}")
+        logger.debug("Page loaded - URL: %s, Title: %s", current_url, title)
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("Could not get page info: %s", e)
 
     logger.debug("Starting bypass process...")
     if await _bypass(page, cancel_flag=cancel_flag):
@@ -720,16 +848,146 @@ async def _get(url: str, driver, cancel_flag: Optional[Event] = None) -> str:
     try:
         body = await page.evaluate("document.body ? document.body.innerText : ''")
         if body:
-            logger.debug(f"Page content: {body[:500]}..." if len(body) > 500 else body)
-    except Exception:
-        pass
+            preview = body
+            if len(body) > _PAGE_BODY_PREVIEW_CHARS:
+                preview = body[:_PAGE_BODY_PREVIEW_CHARS] + "..."
+            logger.debug("Page content: %s", preview)
+    except _CDP_OPERATION_ERRORS as exc:
+        logger.debug("Could not inspect protected page body: %s", exc)
 
     return ""
 
 
-def get(url: str, retry: Optional[int] = None, cancel_flag: Optional[Event] = None) -> str:
+def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | None = None) -> str:
+    """Run the CDP bypass in the current process."""
+
+    async def _run_bypass() -> str:
+        driver = None
+        try:
+            driver = await _create_cdp_browser(url)
+
+            for attempt in range(retry):
+                _check_cancellation(cancel_flag, "Bypass cancelled before attempt")
+
+                try:
+                    result = await _get(url, driver, cancel_flag)
+                    if result:
+                        return result
+                except BypassCancelledError:
+                    raise
+                except _CDP_OPERATION_ERRORS as e:
+                    error_details = f"{type(e).__name__}: {e}"
+                    logger.warning(
+                        "Bypass failed (attempt %s/%s): %s", attempt + 1, retry, error_details
+                    )
+                    logger.debug("Stack trace: %s", traceback.format_exc())
+
+                    # On CDP errors, quit and create a fresh browser
+                    if type(e).__name__ in DRIVER_RESET_ERRORS:
+                        logger.info("Restarting Chrome due to browser error...")
+                        await _close_cdp_driver(driver)
+                        driver = await _create_cdp_browser(url)
+
+            logger.error("Bypass failed after %s attempts", retry)
+            return ""
+        finally:
+            if driver:
+                await _close_cdp_driver(driver)
+
+    if os.environ.get(_BYPASS_CHILD_ENV) == "1":
+        return asyncio.run(_run_bypass())
+    return _CDP_WORKER.run(_run_bypass())
+
+
+def _store_child_bypass_state(payload: dict[str, Any]) -> None:
+    cookies = payload.get("cookies")
+    if isinstance(cookies, dict):
+        with _cf_cookies_lock:
+            _cf_cookies.update(cookies)
+
+    user_agents = payload.get("user_agents")
+    if isinstance(user_agents, dict):
+        with _cf_cookies_lock:
+            _cf_user_agents.update(
+                {str(domain): str(agent) for domain, agent in user_agents.items()}
+            )
+
+
+def _prepare_child_browser_env(env_vars: dict[str, str]) -> dict[str, str]:
+    """Force writable browser runtime paths for the helper subprocess."""
+    home_dir = BROWSER_HOME_DIR
+    config_dir = home_dir / ".config"
+    cache_dir = home_dir / ".cache"
+    runtime_dir = BROWSER_XDG_RUNTIME_DIR
+
+    for path in (home_dir, config_dir, cache_dir, runtime_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    with suppress(OSError):
+        runtime_dir.chmod(stat.S_IRWXU)
+
+    env_vars["HOME"] = str(home_dir)
+    env_vars["XDG_CONFIG_HOME"] = str(config_dir)
+    env_vars["XDG_CACHE_HOME"] = str(cache_dir)
+    env_vars["XDG_RUNTIME_DIR"] = str(runtime_dir)
+    return env_vars
+
+
+def _get_via_subprocess(url: str, retry: int, cancel_flag: Event | None = None) -> str:
+    """Run the browser bypass in a helper process isolated from gunicorn/gevent."""
+    _check_cancellation(cancel_flag, "Bypass cancelled before helper process")
+    result_path = (
+        Path(tempfile.gettempdir()) / f"shelfmark-bypass-{os.getpid()}-{time.time_ns()}.json"
+    )
+    payload = {"url": url, "retry": retry, "result_path": str(result_path)}
+    env_vars = os.environ.copy()
+    env_vars[_BYPASS_CHILD_ENV] = "1"
+    env_vars = _prepare_child_browser_env(env_vars)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "shelfmark.bypass.internal_bypasser"],
+        stdin=subprocess.PIPE,
+        text=True,
+        env=env_vars,
+    )
+    try:
+        proc.communicate(json.dumps(payload), timeout=_BYPASS_SUBPROCESS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        msg = "Internal bypasser helper process timed out"
+        raise TimeoutError(msg) from None
+
+    try:
+        result = json.loads(result_path.read_text())
+    except FileNotFoundError as exc:
+        msg = f"Internal bypasser helper exited without a result (code {proc.returncode})"
+        raise RuntimeError(msg) from exc
+    finally:
+        with suppress(OSError):
+            result_path.unlink()
+
+    if not isinstance(result, dict):
+        msg = "Internal bypasser helper returned an invalid result"
+        raise TypeError(msg)
+
+    if not result.get("ok"):
+        error_type = result.get("error_type", "RuntimeError")
+        error = result.get("error", "Internal bypasser helper failed")
+        trace = result.get("traceback")
+        if trace:
+            logger.debug("Internal bypasser helper traceback: %s", trace)
+        msg = f"{error_type}: {error}"
+        raise RuntimeError(msg)
+
+    _store_child_bypass_state(result)
+    html = result.get("html", "")
+    return html if isinstance(html, str) else ""
+
+
+def get(url: str, retry: int | None = None, cancel_flag: Event | None = None) -> str:
     """Fetch a URL with protection bypass. Creates fresh Chrome instance for each bypass."""
-    retry = retry if retry is not None else app_config.MAX_RETRY
+    retry = retry if retry is not None else _coerce_positive_int(app_config.MAX_RETRY, 10)
 
     with LOCKED:
         # Try cookies first - another request may have completed bypass while waiting
@@ -737,40 +995,12 @@ def get(url: str, retry: Optional[int] = None, cancel_flag: Optional[Event] = No
         if cached_result:
             return cached_result
 
-        async def _run_bypass() -> str:
-            driver = None
-            try:
-                driver = await _create_cdp_browser(url)
+        if env.DOCKERMODE and os.environ.get(_BYPASS_CHILD_ENV) != "1":
+            return _get_via_subprocess(url, retry, cancel_flag)
+        return _run_bypass_in_current_process(url, retry, cancel_flag)
 
-                for attempt in range(retry):
-                    _check_cancellation(cancel_flag, "Bypass cancelled before attempt")
 
-                    try:
-                        result = await _get(url, driver, cancel_flag)
-                        if result:
-                            return result
-                    except BypassCancelledException:
-                        raise
-                    except Exception as e:
-                        error_details = f"{type(e).__name__}: {e}"
-                        logger.warning(f"Bypass failed (attempt {attempt + 1}/{retry}): {error_details}")
-                        logger.debug(f"Stack trace: {traceback.format_exc()}")
-
-                        # On CDP errors, quit and create a fresh browser
-                        if type(e).__name__ in DRIVER_RESET_ERRORS:
-                            logger.info("Restarting Chrome due to browser error...")
-                            await _close_cdp_driver(driver)
-                            driver = await _create_cdp_browser(url)
-
-                logger.error(f"Bypass failed after {retry} attempts")
-                return ""
-            finally:
-                if driver:
-                    await _close_cdp_driver(driver)
-
-        return _CDP_WORKER.run(_run_bypass())
-
-def _get_proxy_string(url: str) -> Optional[str]:
+def _get_proxy_string(url: str) -> str | None:
     """Return a single proxy string for CDP, honoring NO_PROXY."""
     proxies = get_proxies(url)
     if not proxies:
@@ -787,50 +1017,65 @@ async def _create_cdp_browser(url: str) -> Any:
     display_height = screen_height + 150
     proxy = _get_proxy_string(url)
 
-    logger.debug(f"Creating Pure CDP browser with args: {browser_args}")
-    logger.debug(f"Browser screen size: {screen_width}x{screen_height}")
+    logger.debug("Creating Pure CDP browser with args: %s", browser_args)
+    logger.debug("Browser screen size: %sx%s", screen_width, screen_height)
 
     try:
-        driver = await cdp_driver.start_async(
-            headless=False,
-            headed=False,
-            xvfb=True,
-            xvfb_metrics=f"{display_width},{display_height}",
-            sandbox=False,
-            lang="en",
-            incognito=True,
-            ad_block=True,
-            proxy=proxy,
-            browser_args=browser_args,
+        driver = await asyncio.wait_for(
+            cdp_driver.start_async(
+                headless=False,
+                headed=False,
+                xvfb=True,
+                xvfb_metrics=f"{display_width},{display_height}",
+                sandbox=False,
+                lang="en",
+                incognito=True,
+                ad_block=True,
+                proxy=proxy,
+                browser_args=browser_args,
+            ),
+            timeout=_BROWSER_START_TIMEOUT_SECONDS,
         )
-    except Exception as e:
-        logger.warning(f"Pure CDP browser startup failed: {type(e).__name__}: {e}")
+    except TimeoutError:
         logger.warning(
-            "SeleniumBase runtime paths: "
-            f"cwd={os.getcwd()}; "
-            f"{_describe_runtime_path(SELENIUMBASE_DOWNLOADS_DIR)}; "
-            f"{_describe_runtime_path('/app/downloaded_files')}; "
-            f"{_describe_runtime_path('downloaded_files')}; "
-            f"{_describe_runtime_path('/tmp')}"
+            "Pure CDP browser startup timed out after %.0fs",
+            _BROWSER_START_TIMEOUT_SECONDS,
         )
+        if env.DOCKERMODE:
+            _cleanup_orphan_processes()
         raise
-
-    try:
-        await driver.page.set_window_rect(0, 0, screen_width, screen_height)
     except Exception as e:
-        logger.debug(f"Failed to set window size: {e}")
+        logger.warning("Pure CDP browser startup failed: %s: %s", type(e).__name__, e)
+        logger.warning(
+            "SeleniumBase runtime paths: cwd=%s; %s; %s; %s; %s",
+            Path.cwd(),
+            _describe_runtime_path(SELENIUMBASE_DOWNLOADS_DIR),
+            _describe_runtime_path("/app/downloaded_files"),
+            _describe_runtime_path("downloaded_files"),
+            _describe_runtime_path(tempfile.gettempdir()),
+        )
+        if env.DOCKERMODE:
+            _cleanup_orphan_processes()
+        msg = f"Pure CDP browser startup failed: {e}"
+        raise RuntimeError(msg) from e
+
+    if _has_window_rect_page(driver):
+        try:
+            await driver.page.set_window_rect(0, 0, screen_width, screen_height)
+        except _CDP_OPERATION_ERRORS as e:
+            logger.debug("Failed to set window size: %s", e)
 
     # Start FFmpeg recording if debug mode (record each bypass session)
     if app_config.get("DEBUG", False) and not DISPLAY.get("ffmpeg"):
         _start_ffmpeg_recording(display=os.environ.get("DISPLAY", ":0"))
 
-    await asyncio.sleep(app_config.DEFAULT_SLEEP)
+    await asyncio.sleep(_coerce_non_negative_float(app_config.DEFAULT_SLEEP, 5.0))
     logger.info("Chrome browser ready (Pure CDP)")
     logger.log_resource_usage()
     return driver
 
 
-async def _close_cdp_driver(driver) -> None:
+async def _close_cdp_driver(driver: Any) -> None:
     """Close CDP connections and stop the browser."""
     if not driver:
         return
@@ -846,18 +1091,15 @@ async def _close_cdp_driver(driver) -> None:
         if hasattr(driver, "targets") and driver.targets:
             connections.extend(driver.targets)
         for conn in connections:
-            try:
-                await conn.aclose()
-            except Exception as e:
-                logger.debug(f"Failed to close websocket connection: {e}")
-    except Exception as e:
-        logger.debug(f"Error during connection cleanup: {e}")
+            await _close_websocket_connection(conn)
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("Error during connection cleanup: %s", e)
 
     try:
         driver.stop()
         logger.debug("Stopped CDP browser")
-    except Exception as e:
-        logger.debug(f"CDP stop: {e}")
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("CDP stop: %s", e)
 
     if env.DOCKERMODE:
         await asyncio.sleep(0.3)
@@ -879,20 +1121,28 @@ async def _close_cdp_driver(driver) -> None:
                     await asyncio.sleep(0.1)
                     if _pid_alive(pid):
                         os.kill(pid, signal.SIGKILL)
-                    logger.debug(f"Killed Chrome pid {pid}")
-                except Exception as e:
-                    logger.debug(f"Failed to kill Chrome pid {pid}: {e}")
-        except Exception as e:
-            logger.debug(f"Process cleanup failed: {e}")
+                    logger.debug("Killed Chrome pid %s", pid)
+                except (OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.debug("Failed to kill Chrome pid %s: %s", pid, e)
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            logger.debug("Process cleanup failed: %s", e)
 
     logger.log_resource_usage()
+
+
+async def _close_websocket_connection(conn: Any) -> None:
+    """Close one websocket-like connection, ignoring best-effort failures."""
+    try:
+        await conn.aclose()
+    except _CDP_OPERATION_ERRORS as e:
+        logger.debug("Failed to close websocket connection: %s", e)
 
 
 def _start_ffmpeg_recording(display: str) -> None:
     """Start FFmpeg screen recording for debug mode."""
     global DISPLAY
     RECORDING_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
     output_file = RECORDING_DIR / f"screen_recording_{timestamp}.mp4"
 
     screen_width, screen_height = get_screen_size()
@@ -900,16 +1150,37 @@ def _start_ffmpeg_recording(display: str) -> None:
     display_height = screen_height + 150
 
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-f", "x11grab",
-        "-video_size", f"{display_width}x{display_height}",
-        "-i", display,
-        "-c:v", "libx264", "-preset", "ultrafast",
-        "-maxrate", "700k", "-bufsize", "1400k", "-crf", "36",
-        "-pix_fmt", "yuv420p", "-tune", "animation",
-        "-x264-params", "bframes=0:deblock=-1,-1",
-        "-r", "15", "-an",
+        "ffmpeg",
+        "-y",
+        "-f",
+        "x11grab",
+        "-video_size",
+        f"{display_width}x{display_height}",
+        "-i",
+        display,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-maxrate",
+        "700k",
+        "-bufsize",
+        "1400k",
+        "-crf",
+        "36",
+        "-pix_fmt",
+        "yuv420p",
+        "-tune",
+        "animation",
+        "-x264-params",
+        "bframes=0:deblock=-1,-1",
+        "-r",
+        "15",
+        "-an",
         output_file.as_posix(),
-        "-nostats", "-loglevel", "0"
+        "-nostats",
+        "-loglevel",
+        "0",
     ]
     logger.debug("Starting FFmpeg recording to %s", output_file)
     logger.debug_trace(f"FFmpeg command: {' '.join(ffmpeg_cmd)}")
@@ -920,9 +1191,9 @@ def _start_ffmpeg_recording(display: str) -> None:
 def _stop_ffmpeg_recording() -> None:
     """Stop FFmpeg screen recording if running."""
     import signal
+
     global DISPLAY
     proc = DISPLAY.get("ffmpeg")
-    output_file = DISPLAY.get("ffmpeg_output")
     if not proc:
         return
     if proc.poll() is not None:
@@ -934,22 +1205,18 @@ def _stop_ffmpeg_recording() -> None:
         proc.send_signal(signal.SIGINT)
         proc.wait(timeout=5)
         logger.debug("Stopped ffmpeg recording")
-    except Exception as e:
-        logger.debug(f"ffmpeg stop: {e}")
-        try:
+    except _SUBPROCESS_OPERATION_ERRORS as e:
+        logger.debug("ffmpeg stop: %s", e)
+        with suppress(Exception):
             proc.terminate()
             proc.wait(timeout=2)
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
     DISPLAY["ffmpeg"] = None
     DISPLAY["ffmpeg_output"] = None
 
 
-def _try_with_cached_cookies(url: str, hostname: str) -> Optional[str]:
+def _try_with_cached_cookies(url: str, hostname: str) -> str | None:
     """Attempt request with cached cookies before using Chrome."""
     cookies = get_cf_cookies_for_domain(hostname)
     if not cookies:
@@ -959,24 +1226,29 @@ def _try_with_cached_cookies(url: str, hostname: str) -> Optional[str]:
         headers = {}
         stored_ua = get_cf_user_agent_for_domain(hostname)
         if stored_ua:
-            headers['User-Agent'] = stored_ua
+            headers["User-Agent"] = stored_ua
 
-        logger.debug(f"Trying request with cached cookies: {url}")
-        response = requests.get(url, cookies=cookies, headers=headers, proxies=get_proxies(url), timeout=(5, 10), verify=get_ssl_verify(url))
-        if response.status_code == 200:
+        logger.debug("Trying request with cached cookies: %s", url)
+        response = requests.get(
+            url,
+            cookies=cookies,
+            headers=headers,
+            proxies=get_proxies(url),
+            timeout=(5, 10),
+            verify=get_ssl_verify(url),
+        )
+        if response.status_code == HTTPStatus.OK:
             logger.debug("Cached cookies worked, skipped Chrome bypass")
             return response.text
-    except Exception:
-        pass
+    except _REQUEST_OPERATION_ERRORS as exc:
+        logger.debug("Cached cookie retry failed for %s: %s", url, exc)
 
     return None
 
 
 def get_bypassed_page(
-    url: str,
-    selector: Optional[network.AAMirrorSelector] = None,
-    cancel_flag: Optional[Event] = None
-) -> Optional[str]:
+    url: str, selector: network.AAMirrorSelector | None = None, cancel_flag: Event | None = None
+) -> str | None:
     """Fetch HTML content from a URL using the internal Cloudflare Bypasser."""
     sel = selector or network.AAMirrorSelector()
     attempt_url = sel.rewrite(url)
@@ -988,9 +1260,9 @@ def get_bypassed_page(
 
     try:
         response_html = get(attempt_url, cancel_flag=cancel_flag)
-    except BypassCancelledException:
+    except BypassCancelledError:
         raise
-    except Exception:
+    except _CDP_OPERATION_ERRORS + _REQUEST_OPERATION_ERRORS:
         _check_cancellation(cancel_flag, "Bypass cancelled")
         new_base, action = sel.next_mirror_or_rotate_dns()
         if action in ("mirror", "dns") and new_base:
@@ -1000,6 +1272,41 @@ def get_bypassed_page(
             raise
 
     if not response_html.strip():
-        raise requests.exceptions.RequestException("Failed to bypass Cloudflare")
+        msg = "Failed to bypass Cloudflare"
+        raise requests.exceptions.RequestException(msg)
 
     return response_html
+
+
+def _run_child_process() -> int:
+    """CLI entrypoint used by the Docker helper subprocess."""
+    request = json.loads(sys.stdin.read() or "{}")
+    result_path = Path(str(request["result_path"]))
+    url = str(request["url"])
+    retry = _coerce_positive_int(
+        request.get("retry"), _coerce_positive_int(app_config.MAX_RETRY, 10)
+    )
+
+    try:
+        html = get(url, retry=retry)
+        payload = {
+            "ok": True,
+            "html": html,
+            "cookies": _cf_cookies,
+            "user_agents": _cf_user_agents,
+        }
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - helper boundary must serialize failures.
+        payload = {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_child_process())

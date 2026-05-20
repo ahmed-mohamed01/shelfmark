@@ -4,7 +4,7 @@ ARG BUILDPLATFORM
 ARG BUILDARCH
 
 # Frontend build stage.
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS frontend-builder
 
 # Helpful debug output to see what platforms BuildKit thinks it's using
 RUN echo "BUILDPLATFORM=$BUILDPLATFORM BUILDARCH=$BUILDARCH TARGETPLATFORM=$TARGETPLATFORM TARGETARCH=$TARGETARCH"
@@ -25,7 +25,9 @@ COPY src/frontend/ ./
 RUN npm run build
 
 # Use python-slim as the base image
-FROM python:3.14-slim AS base
+FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd AS base
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.3@sha256:90bbb3c16635e9627f49eec6539f956d70746c409209041800a0280b93152823 /uv /uvx /bin/
 
 # Add build argument for version
 ARG BUILD_VERSION
@@ -39,13 +41,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Consistent environment variables grouped together
 ENV DEBIAN_FRONTEND=noninteractive \
     DOCKERMODE=true \
+    UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONIOENCODING=UTF-8 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=100 \
     NAME=Shelfmark \
+    PATH=/app/.venv/bin:$PATH \
     PYTHONPATH=/app \
     # PUID/PGID will be handled by entrypoint script, but TZ/Locale are still needed
     LANG=en_US.UTF-8 \
@@ -56,7 +57,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ENV FLASK_PORT=8084
 
 # Configure locale, timezone, and perform initial cleanup in a single layer
-# User/group creation is removed
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     # For locale
@@ -92,15 +92,29 @@ RUN apt-get update && \
     echo "LC_ALL=en_US.UTF-8" >> /etc/environment && \
     echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
+# Create a fixed runtime user/group so hardened Docker/Kubernetes deployments
+# can start the container directly as a non-root user with a passwd entry.
+RUN groupadd -g 1000 shelfmark && \
+    useradd -u 1000 -g shelfmark -d /home/shelfmark -s /usr/sbin/nologin shelfmark && \
+    mkdir -p /home/shelfmark && \
+    chown 1000:1000 /home/shelfmark
+
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies using pip
-# Copying requirements files separately leverages build cache
-# Cache mount persists pip cache between builds for faster installs
-COPY requirements-base.txt requirements-shelfmark.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements-base.txt
+# Install core Python dependencies first for better layer caching
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-default-groups
+
+# Runtime dependencies are installed into /app/.venv during the build. Remove the
+# base image's system pip so stale installer CVEs do not ship in the final image.
+RUN rm -rf \
+        /usr/local/bin/pip \
+        /usr/local/bin/pip3 \
+        /usr/local/bin/pip3.* \
+        /usr/local/lib/python*/site-packages/pip \
+        /usr/local/lib/python*/site-packages/pip-*.dist-info
 
 # Copy application code *after* dependencies are installed
 COPY . .
@@ -108,10 +122,19 @@ COPY . .
 # Copy built frontend from frontend-builder stage
 COPY --from=frontend-builder /frontend/dist /app/frontend-dist
 
-# Final setup: permissions and directories in one layer
-# Only creating directories and setting executable bits.
-# Ownership will be handled by the entrypoint script.
-RUN mkdir -p /var/log/shelfmark /books && \
+# Final setup: create image-owned runtime paths for the fixed non-root user.
+# Root/PUID mode still re-homes ownership at startup when needed.
+RUN mkdir -p \
+        /config \
+        /books \
+        /var/log/shelfmark \
+        /tmp/shelfmark/seleniumbase/downloaded_files \
+        /tmp/shelfmark/seleniumbase/archived_files && \
+    rm -rf /app/downloaded_files /app/archived_files && \
+    ln -s /tmp/shelfmark/seleniumbase/downloaded_files /app/downloaded_files && \
+    ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
+    chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
+    chmod -R a+rX /app && \
     chmod +x /app/entrypoint.sh /app/tor.sh /app/vpn.sh /app/genDebug.sh
 
 # Expose the application port
@@ -150,9 +173,18 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install additional dependencies (requirements file already copied in base stage)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements-shelfmark.txt
+# Install the browser automation stack used by the full image
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-default-groups --extra browser
+
+# uv is only needed while building the image.
+RUN rm -f /usr/bin/uv /usr/bin/uvx
+
+# Keep SeleniumBase's bundled driver cache writable for the fixed non-root user.
+RUN SELENIUMBASE_DRIVERS_DIR=$(/app/.venv/bin/python -c "import pathlib, seleniumbase; print(pathlib.Path(seleniumbase.__file__).resolve().parent / 'drivers')") && \
+    chown -R 1000:1000 "${SELENIUMBASE_DRIVERS_DIR}" && \
+    chmod -R u+rwX,go+rX "${SELENIUMBASE_DRIVERS_DIR}" && \
+    if [ -f "${SELENIUMBASE_DRIVERS_DIR}/uc_driver" ]; then chmod +x "${SELENIUMBASE_DRIVERS_DIR}/uc_driver"; fi
 
 # Grant read/execute permissions to others
 RUN chmod -R o+rx /usr/bin/chromium
@@ -163,5 +195,8 @@ CMD ["/app/entrypoint.sh"]
 FROM base AS shelfmark-lite
 
 ENV USING_EXTERNAL_BYPASSER=true
+
+# uv is only needed while building the image.
+RUN rm -f /usr/bin/uv /usr/bin/uvx
 
 CMD ["/app/entrypoint.sh"]

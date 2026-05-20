@@ -1,3 +1,5 @@
+"""Helpers for Booklore settings validation, option loading, and connection tests."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -121,7 +123,7 @@ def get_booklore_library_options() -> list[dict[str, Any]]:
 
     base_url = str(config.get("BOOKLORE_HOST", "") or "").strip().rstrip("/")
     username = str(config.get("BOOKLORE_USERNAME", "") or "").strip()
-    password = config.get("BOOKLORE_PASSWORD", "") or ""
+    password = str(config.get("BOOKLORE_PASSWORD", "") or "")
 
     if not base_url or not username or not password:
         return []
@@ -130,12 +132,13 @@ def get_booklore_library_options() -> list[dict[str, Any]]:
 
     try:
         library_options, _ = _get_booklore_cached_options(base_url, username, password)
-        return library_options
-    except Exception as exc:
-        logger.error(f"Failed to fetch Booklore libraries: {exc}")
+    except Exception:
+        logger.exception("Failed to fetch Booklore libraries")
         if _BOOKLORE_OPTIONS_CACHE.get("key") == cache_key:
             return _BOOKLORE_OPTIONS_CACHE.get("library_options", [])
         return []
+    else:
+        return library_options
 
 
 def get_booklore_path_options() -> list[dict[str, Any]]:
@@ -145,7 +148,7 @@ def get_booklore_path_options() -> list[dict[str, Any]]:
 
     base_url = str(config.get("BOOKLORE_HOST", "") or "").strip().rstrip("/")
     username = str(config.get("BOOKLORE_USERNAME", "") or "").strip()
-    password = config.get("BOOKLORE_PASSWORD", "") or ""
+    password = str(config.get("BOOKLORE_PASSWORD", "") or "")
 
     if not base_url or not username or not password:
         return []
@@ -154,19 +157,22 @@ def get_booklore_path_options() -> list[dict[str, Any]]:
 
     try:
         _, path_options = _get_booklore_cached_options(base_url, username, password)
-        return path_options
-    except Exception as exc:
-        logger.error(f"Failed to fetch Booklore paths: {exc}")
+    except Exception:
+        logger.exception("Failed to fetch Booklore paths")
         if _BOOKLORE_OPTIONS_CACHE.get("key") == cache_key:
             return _BOOKLORE_OPTIONS_CACHE.get("path_options", [])
         return []
+    else:
+        return path_options
 
 
-def test_booklore_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+def check_booklore_connection(
+    current_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Test the Booklore connection using current form values."""
     current_values = current_values or {}
 
-    def _get_value(key: str, default: Any = None) -> Any:
+    def _get_value(key: str, default: object = None) -> object:
         value = current_values.get(key)
         if value not in (None, ""):
             return value
@@ -176,7 +182,7 @@ def test_booklore_connection(current_values: dict[str, Any] | None = None) -> di
 
     base_url = str(_get_value("BOOKLORE_HOST", "") or "").strip().rstrip("/")
     username = str(_get_value("BOOKLORE_USERNAME", "") or "").strip()
-    password = _get_value("BOOKLORE_PASSWORD", "") or ""
+    password = str(_get_value("BOOKLORE_PASSWORD", "") or "")
 
     if not base_url:
         return {"success": False, "message": "Grimmory URL is required"}
@@ -187,11 +193,11 @@ def test_booklore_connection(current_values: dict[str, Any] | None = None) -> di
 
     try:
         library_options, _ = _get_booklore_select_options(base_url, username, password)
-
+    except BookloreError as exc:
+        return {"success": False, "message": str(exc)}
+    else:
         message = "Connected to Grimmory"
         if library_options:
             message = f"Connected to Grimmory ({len(library_options)} libraries)"
 
         return {"success": True, "message": message}
-    except BookloreError as exc:
-        return {"success": False, "message": str(exc)}

@@ -1,4 +1,4 @@
-import { RequestRecord } from '../../types';
+import type { RequestRecord } from '../../types';
 
 export type ActivityKind = 'download' | 'request';
 
@@ -37,6 +37,7 @@ export interface ActivityItem {
   username?: string;
 
   downloadBookId?: string;
+  downloadRetryAvailable?: boolean;
   downloadPath?: string;
   requestId?: number;
   requestLevel?: 'book' | 'release';

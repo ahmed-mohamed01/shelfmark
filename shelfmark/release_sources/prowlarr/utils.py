@@ -1,12 +1,49 @@
-"""
-Shared utilities for Prowlarr release source.
+"""Shared utilities for Prowlarr release source.
 
 Provides common helper functions used across the Prowlarr plugin.
 """
 
-from pathlib import Path
-from typing import Optional
+import re
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from shelfmark.core.request_helpers import normalize_optional_text
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_INTEGER_LIKE_PATTERN = re.compile(r"^[+-]?\d+$")
+_FLOAT_LIKE_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+
+
+def coerce_int_like(value: object) -> int | None:
+    """Return an integer for int-like config/API values, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+
+    normalized = normalize_optional_text(value)
+    if normalized is None or not _INTEGER_LIKE_PATTERN.fullmatch(normalized):
+        return None
+
+    return int(normalized)
+
+
+def coerce_float_like(value: object) -> float | None:
+    """Return a float for float-like config/API values, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    normalized = normalize_optional_text(value)
+    if normalized is None or not _FLOAT_LIKE_PATTERN.fullmatch(normalized):
+        return None
+
+    return float(normalized)
 
 
 def get_protocol(result: dict) -> str:
@@ -65,7 +102,7 @@ def sanitize_download_url(download_url: str) -> str:
         return normalized
 
     lower = normalized.lower()
-    if not (lower.startswith("http://") or lower.startswith("https://")):
+    if not lower.startswith(("http://", "https://")):
         return normalized
 
     if " " not in normalized:
@@ -92,14 +129,14 @@ def sanitize_download_url(download_url: str) -> str:
 
 
 def get_protocol_display(result: dict) -> str:
-    """
-    Get a user-friendly display label for the protocol.
+    """Get a user-friendly display label for the protocol.
 
     Args:
         result: Prowlarr search result dictionary
 
     Returns:
         Display label: "torrent", "nzb", or "unknown"
+
     """
     protocol = get_protocol(result)
     if protocol == "usenet":
@@ -108,8 +145,7 @@ def get_protocol_display(result: dict) -> str:
 
 
 def get_unique_path(staging_dir: Path, name: str, suffix: str = "") -> Path:
-    """
-    Generate a unique path in staging_dir, appending _N if needed.
+    """Generate a unique path in staging_dir, appending _N if needed.
 
     Args:
         staging_dir: Directory to create the path in
@@ -118,6 +154,7 @@ def get_unique_path(staging_dir: Path, name: str, suffix: str = "") -> Path:
 
     Returns:
         Unique Path that doesn't exist in staging_dir
+
     """
     staged_path = staging_dir / (name + suffix)
     if not staged_path.exists():

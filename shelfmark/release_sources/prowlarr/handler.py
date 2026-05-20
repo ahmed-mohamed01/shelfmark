@@ -1,23 +1,49 @@
 """Prowlarr download handler - resolves releases and delegates lifecycle to shared clients."""
 
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Any
 
-from shelfmark.core.config import config  # noqa: F401 (compat patch target in tests)
+from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import DownloadTask
-from shelfmark.download.clients import DownloadClient, get_client, list_configured_clients
+from shelfmark.core.request_helpers import normalize_optional_text
+from shelfmark.download.clients import (
+    DownloadClient,
+    get_client,
+    list_configured_clients,
+)
 from shelfmark.download.clients.base_handler import (
     COMPLETED_PATH_MAX_ATTEMPTS as _DEFAULT_COMPLETED_PATH_MAX_ATTEMPTS,
+)
+from shelfmark.download.clients.base_handler import (
     COMPLETED_PATH_RETRY_INTERVAL as _DEFAULT_COMPLETED_PATH_RETRY_INTERVAL,
+)
+from shelfmark.download.clients.base_handler import (
     POLL_INTERVAL as _DEFAULT_POLL_INTERVAL,
+)
+from shelfmark.download.clients.base_handler import (
     DownloadRequest,
     ExternalClientHandler,
 )
 from shelfmark.release_sources import register_handler
 from shelfmark.release_sources.prowlarr.cache import get_release, remove_release
-from shelfmark.release_sources.prowlarr.utils import get_preferred_download_url, get_protocol
+from shelfmark.release_sources.prowlarr.utils import (
+    coerce_int_like,
+    get_preferred_download_url,
+    get_protocol,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from shelfmark.core.models import DownloadTask
 
 logger = setup_logger(__name__)
+__all__ = [
+    "ProwlarrHandler",
+    "POLL_INTERVAL",
+    "COMPLETED_PATH_RETRY_INTERVAL",
+    "COMPLETED_PATH_MAX_ATTEMPTS",
+    "config",
+]
 
 # Backwards-compat constants for tests patching this module.
 POLL_INTERVAL = _DEFAULT_POLL_INTERVAL
@@ -25,30 +51,18 @@ COMPLETED_PATH_RETRY_INTERVAL = _DEFAULT_COMPLETED_PATH_RETRY_INTERVAL
 COMPLETED_PATH_MAX_ATTEMPTS = _DEFAULT_COMPLETED_PATH_MAX_ATTEMPTS
 
 
-def _coerce_seed_time_minutes(raw_seed_time: object) -> Optional[int]:
-    """Convert Prowlarr's minimum seed time from seconds to whole minutes."""
-    if raw_seed_time is None:
+def _coerce_positive_minutes(raw_minutes: object) -> int | None:
+    minutes = coerce_int_like(raw_minutes)
+    if minutes is None:
         return None
-
-    try:
-        seed_time_seconds = int(raw_seed_time)
-    except (TypeError, ValueError):
-        logger.warning(f"Invalid Prowlarr minimumSeedTime value: {raw_seed_time!r}")
-        return None
-
-    if seed_time_seconds < 0:
-        logger.warning(f"Ignoring negative Prowlarr minimumSeedTime value: {seed_time_seconds}")
-        return None
-
-    # Round up so we never under-seed when a tracker uses a non-minute boundary.
-    return (seed_time_seconds + 59) // 60
+    return minutes if minutes > 0 else None
 
 
 @register_handler("prowlarr")
 class ProwlarrHandler(ExternalClientHandler):
     """Handler for Prowlarr downloads via configured torrent or usenet client."""
 
-    def _get_client(self, protocol: str) -> Optional[DownloadClient]:
+    def _get_client(self, protocol: str) -> DownloadClient | None:
         """Compatibility shim so module-level patching still works in tests."""
         return get_client(protocol)
 
@@ -65,18 +79,73 @@ class ProwlarrHandler(ExternalClientHandler):
     def _completed_path_max_attempts(self) -> int:
         return COMPLETED_PATH_MAX_ATTEMPTS
 
+    def build_retry_resolution_fields(self, release_data: dict[str, Any]) -> dict[str, Any]:
+        source_id = normalize_optional_text(release_data.get("source_id"))
+        if source_id is None:
+            return {}
+
+        prowlarr_result = get_release(source_id)
+        if prowlarr_result is None:
+            return {}
+
+        return {
+            "retry_download_url": normalize_optional_text(
+                get_preferred_download_url(prowlarr_result)
+            ),
+            "retry_download_protocol": normalize_optional_text(get_protocol(prowlarr_result)),
+        }
+
+    @classmethod
+    def _restore_download_request_from_task(cls, task: DownloadTask) -> DownloadRequest | None:
+        """Rebuild a DownloadRequest when the in-memory Prowlarr cache is gone."""
+        retry_download_url = normalize_optional_text(getattr(task, "retry_download_url", None))
+        retry_download_protocol = normalize_optional_text(
+            getattr(task, "retry_download_protocol", None)
+        )
+        if retry_download_url is None or retry_download_protocol is None:
+            return None
+
+        protocol = retry_download_protocol.lower()
+        if protocol not in {"torrent", "usenet"}:
+            return None
+
+        ratio_limit = getattr(task, "retry_ratio_limit", None)
+        if not isinstance(ratio_limit, (int, float)) or isinstance(ratio_limit, bool):
+            ratio_limit = None
+
+        seeding_time_limit = getattr(task, "retry_seeding_time_limit_minutes", None)
+        if not isinstance(seeding_time_limit, int) or isinstance(seeding_time_limit, bool):
+            seeding_time_limit = None
+
+        return DownloadRequest(
+            url=retry_download_url,
+            protocol=protocol,
+            release_name=(
+                normalize_optional_text(getattr(task, "retry_release_name", None))
+                or task.title
+                or "Unknown"
+            ),
+            expected_hash=normalize_optional_text(getattr(task, "retry_expected_hash", None)),
+            seeding_time_limit=seeding_time_limit,
+            ratio_limit=float(ratio_limit) if ratio_limit is not None else None,
+        )
+
     def _resolve_download(
         self,
         task: DownloadTask,
-        status_callback: Callable[[str, Optional[str]], None],
-    ) -> Optional[DownloadRequest]:
+        status_callback: Callable[[str, str | None], None],
+    ) -> DownloadRequest | None:
         """Resolve Prowlarr cache entry into download request parameters."""
         # Look up the cached release
         prowlarr_result = get_release(task.task_id)
         if not prowlarr_result:
-            logger.warning(f"Release cache miss: {task.task_id}")
-            status_callback("error", "Release not found in cache (may have expired)")
-            return None
+            restored_request = self._restore_download_request_from_task(task)
+            if restored_request is None:
+                logger.warning("Release cache miss: %s", task.task_id)
+                status_callback("error", "Release not found in cache (may have expired)")
+                return None
+            logger.info("Restored Prowlarr download request for retry: %s", task.task_id)
+            return restored_request
 
         # Extract download URL
         download_url = get_preferred_download_url(prowlarr_result)
@@ -93,12 +162,14 @@ class ProwlarrHandler(ExternalClientHandler):
         release_name = prowlarr_result.get("title") or task.title or "Unknown"
         expected_hash = str(prowlarr_result.get("infoHash") or "").strip() or None
 
-        # Seed criteria from the indexer (Torznab attributes)
-        raw_seed_time = prowlarr_result.get("minimumSeedTime")
-        raw_ratio = prowlarr_result.get("minimumRatio")
+        seeding_time_limit = None
+        ratio_limit = None
+        if config.get("PROWLARR_USE_SEED_PREFERENCES", False):
+            raw_configured_seed_time = prowlarr_result.get("configuredSeedTimeMinutes")
+            raw_configured_ratio = prowlarr_result.get("configuredRatioLimit")
 
-        seeding_time_limit = _coerce_seed_time_minutes(raw_seed_time)
-        ratio_limit = float(raw_ratio) if raw_ratio is not None else None
+            seeding_time_limit = _coerce_positive_minutes(raw_configured_seed_time)
+            ratio_limit = float(raw_configured_ratio) if raw_configured_ratio is not None else None
 
         return DownloadRequest(
             url=download_url,
@@ -115,6 +186,6 @@ class ProwlarrHandler(ExternalClientHandler):
 
     def cancel(self, task_id: str) -> bool:
         """Cancel download and clean up cache. Primary cancellation is via cancel_flag."""
-        logger.debug(f"Cancel requested for Prowlarr task: {task_id}")
+        logger.debug("Cancel requested for Prowlarr task: %s", task_id)
         remove_release(task_id)
         return super().cancel(task_id)

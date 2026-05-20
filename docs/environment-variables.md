@@ -14,6 +14,7 @@ This document lists all configuration options that can be set via environment va
 - [Network](#network)
 - [Advanced](#advanced)
 - [Prowlarr](#prowlarr)
+- [Newznab](#newznab)
 - [AudiobookBay](#audiobookbay)
 - [IRC](#irc)
 - [Download Clients](#download-clients)
@@ -21,7 +22,6 @@ This document lists all configuration options that can be set via environment va
   - [Hardcover](#metadata-providers-hardcover)
   - [Open Library](#metadata-providers-open-library)
   - [Google Books](#metadata-providers-google-books)
-
 - [Direct Download](#direct-download)
   - [Download Sources](#direct-download-download-sources)
   - [Cloudflare Bypass](#direct-download-cloudflare-bypass)
@@ -31,7 +31,7 @@ This document lists all configuration options that can be set via environment va
 
 ## Bootstrap Configuration
 
-These environment variables are used at startup before the settings system loads. They typically configure paths and server settings.
+These environment variables are used at startup before the settings system loads. They typically configure paths, server settings, and authentication startup behavior.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
@@ -43,6 +43,9 @@ These environment variables are used at startup before the settings system loads
 | `FLASK_PORT` | Port number for the Flask web server. | number | `8084` |
 | `SESSION_COOKIE_SECURE` | Enable secure cookies (requires HTTPS). | boolean | `false` |
 | `CWA_DB_PATH` | Path to the Calibre-Web database for authentication integration. | string (path) | `/auth/app.db` |
+| `HIDE_LOCAL_AUTH` | Hide the username/password login form when OIDC is active. | boolean | `false` |
+| `DISABLE_LOCAL_AUTH` | Disable username/password login and remove the local-admin prerequisite for OIDC. Implies HIDE_LOCAL_AUTH; with AUTH_METHOD=builtin, everyone is locked out until auth env vars are changed. | boolean | `false` |
+| `OIDC_AUTO_REDIRECT` | Automatically redirect to the OIDC provider instead of showing the login page. | boolean | `false` |
 | `DOCKERMODE` | Indicates the application is running inside a Docker container. | boolean | `false` |
 | `ONBOARDING` | Show the onboarding wizard on first run. Set to false to skip (useful for ephemeral storage). | boolean | `true` |
 
@@ -105,6 +108,27 @@ Path to the Calibre-Web database for authentication integration.
 - **Type:** string (path)
 - **Default:** `/auth/app.db`
 
+#### `HIDE_LOCAL_AUTH`
+
+Hide the username/password login form when OIDC is active.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `DISABLE_LOCAL_AUTH`
+
+Disable username/password login and remove the local-admin prerequisite for OIDC. Implies HIDE_LOCAL_AUTH; with AUTH_METHOD=builtin, everyone is locked out until auth env vars are changed.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `OIDC_AUTO_REDIRECT`
+
+Automatically redirect to the OIDC provider instead of showing the login page.
+
+- **Type:** boolean
+- **Default:** `false`
+
 #### `DOCKERMODE`
 
 Indicates the application is running inside a Docker container.
@@ -125,7 +149,8 @@ Show the onboarding wizard on first run. Set to false to skip (useful for epheme
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
-| `CALIBRE_WEB_URL` | Adds a navigation button to your book library (Calibre-Web Automated, Booklore, etc). | string | _none_ |
+| `SEARCH_PAGE_TITLE` | Title shown above the main search box on the homepage. | string | `Shelfmark` |
+| `CALIBRE_WEB_URL` | Adds a navigation button to your book library (Calibre-Web Automated, Grimmory, etc). | string | _none_ |
 | `AUDIOBOOK_LIBRARY_URL` | Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text. | string | _none_ |
 | `SUPPORTED_FORMATS` | Book formats to include in search results. ZIP/RAR archives are extracted automatically and book files are used if found. | string (comma-separated) | `epub,mobi,azw3,fb2,djvu,cbz,cbr` |
 | `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3` |
@@ -134,11 +159,20 @@ Show the onboarding wizard on first run. Set to false to skip (useful for epheme
 <details>
 <summary>Detailed descriptions</summary>
 
+#### `SEARCH_PAGE_TITLE`
+
+**Search Page Title**
+
+Title shown above the main search box on the homepage.
+
+- **Type:** string
+- **Default:** `Shelfmark`
+
 #### `CALIBRE_WEB_URL`
 
 **Library URL**
 
-Adds a navigation button to your book library (Calibre-Web Automated, Booklore, etc).
+Adds a navigation button to your book library (Calibre-Web Automated, Grimmory, etc).
 
 - **Type:** string
 - **Default:** _none_
@@ -185,12 +219,14 @@ Default language filter for searches.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
-| `SEARCH_MODE` | How you want to search for and download books. | string (choice) | `direct` |
+| `SEARCH_MODE` | How you want to search for and download books. | string (choice) | `universal` |
 | `AA_DEFAULT_SORT` | Default sort order for search results. | string (choice) | `relevance` |
 | `SHOW_RELEASE_SOURCE_LINKS` | Show clickable release-source links in release and details modals. Metadata provider links stay enabled. | boolean | `true` |
+| `SHOW_COMBINED_SELECTOR` | Show the option to search for and download both a book and audiobook together. | boolean | `true` |
 | `METADATA_PROVIDER` | Choose which metadata provider to use for book searches. | string (choice) | `openlibrary` |
 | `METADATA_PROVIDER_AUDIOBOOK` | Metadata provider for audiobook searches. Uses the book provider if not set. | string (choice) | _empty string_ |
-| `DEFAULT_RELEASE_SOURCE` | The release source tab to open by default in the release modal for books. | string (choice) | `direct_download` |
+| `METADATA_PROVIDER_COMBINED` | Metadata provider for combined mode searches. Uses the book provider if not set. | string (choice) | _empty string_ |
+| `DEFAULT_RELEASE_SOURCE` | The release source tab to open by default in the release modal for books. Leave unset to use the first available source. | string (choice) | _empty string_ |
 | `DEFAULT_RELEASE_SOURCE_AUDIOBOOK` | The release source tab to open by default in the release modal for audiobooks. Uses the book release source if not set. | string (choice) | _empty string_ |
 
 <details>
@@ -203,7 +239,7 @@ Default language filter for searches.
 How you want to search for and download books.
 
 - **Type:** string (choice)
-- **Default:** `direct`
+- **Default:** `universal`
 - **Options:** `direct` (Direct), `universal` (Universal)
 
 #### `AA_DEFAULT_SORT`
@@ -225,6 +261,15 @@ Show clickable release-source links in release and details modals. Metadata prov
 - **Type:** boolean
 - **Default:** `true`
 
+#### `SHOW_COMBINED_SELECTOR`
+
+**Show Combined Download Selector**
+
+Show the option to search for and download both a book and audiobook together.
+
+- **Type:** boolean
+- **Default:** `true`
+
 #### `METADATA_PROVIDER`
 
 **Book Metadata Provider**
@@ -233,7 +278,7 @@ Choose which metadata provider to use for book searches.
 
 - **Type:** string (choice)
 - **Default:** `openlibrary`
-- **Options:** `hardcover` (Hardcover), `openlibrary` (Open Library), `googlebooks` (Google Books)
+- **Options:** `""` (No providers enabled)
 
 #### `METADATA_PROVIDER_AUDIOBOOK`
 
@@ -243,17 +288,27 @@ Metadata provider for audiobook searches. Uses the book provider if not set.
 
 - **Type:** string (choice)
 - **Default:** _empty string_
-- **Options:** `""` (Use book provider), `hardcover` (Hardcover), `openlibrary` (Open Library), `googlebooks` (Google Books)
+- **Options:** `""` (Use book provider), `""` (No providers enabled)
+
+#### `METADATA_PROVIDER_COMBINED`
+
+**Combined Mode Metadata Provider**
+
+Metadata provider for combined mode searches. Uses the book provider if not set.
+
+- **Type:** string (choice)
+- **Default:** _empty string_
+- **Options:** `""` (Use book provider), `""` (No providers enabled)
 
 #### `DEFAULT_RELEASE_SOURCE`
 
 **Default Book Release Source**
 
-The release source tab to open by default in the release modal for books.
+The release source tab to open by default in the release modal for books. Leave unset to use the first available source.
 
 - **Type:** string (choice)
-- **Default:** `direct_download`
-- **Options:** `direct_download` (Direct Download), `prowlarr` (Prowlarr)
+- **Default:** _empty string_
+- **Options:** `""` (Use first available source)
 
 #### `DEFAULT_RELEASE_SOURCE_AUDIOBOOK`
 
@@ -263,7 +318,7 @@ The release source tab to open by default in the release modal for audiobooks. U
 
 - **Type:** string (choice)
 - **Default:** _empty string_
-- **Options:** `""` (Use book release source), `prowlarr` (Prowlarr), `audiobookbay` (AudiobookBay)
+- **Options:** `""` (Use book release source)
 
 </details>
 
@@ -274,15 +329,15 @@ The release source tab to open by default in the release modal for audiobooks. U
 | `BOOKS_OUTPUT_MODE` | Choose where completed book files are sent. | string (choice) | `folder` |
 | `INGEST_DIR` | Directory where downloaded files are saved. Use {User} for per-user folders (e.g. /books/{User}). | string | `/books` |
 | `FILE_ORGANIZATION` | Choose how downloaded book files are named and organized. | string (choice) | `rename` |
-| `TEMPLATE_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
-| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
+| `TEMPLATE_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
+| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
 | `HARDLINK_TORRENTS` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `false` |
-| `BOOKLORE_HOST` | Base URL of your Booklore instance | string | _none_ |
-| `BOOKLORE_USERNAME` | Booklore account username | string | _none_ |
-| `BOOKLORE_PASSWORD` | Booklore account password | string (secret) | _none_ |
+| `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
+| `BOOKLORE_USERNAME` | Grimmory account username | string | _none_ |
+| `BOOKLORE_PASSWORD` | Grimmory account password | string (secret) | _none_ |
 | `BOOKLORE_DESTINATION` | Choose whether uploads go directly to a specific library path or to Bookdrop for review. | string (choice) | `library` |
-| `BOOKLORE_LIBRARY_ID` | Booklore library to upload into. | string (choice) | _none_ |
-| `BOOKLORE_PATH_ID` | Booklore library path for uploads. | string (choice) | _none_ |
+| `BOOKLORE_LIBRARY_ID` | Grimmory library to upload into. | string (choice) | _none_ |
+| `BOOKLORE_PATH_ID` | Grimmory library path for uploads. | string (choice) | _none_ |
 | `EMAIL_RECIPIENT` | Optional fallback email address when no per-user email recipient override is configured. | string | _none_ |
 | `EMAIL_ATTACHMENT_SIZE_LIMIT_MB` | Maximum total attachment size per email. Email encoding adds overhead; keep this below your provider's limit. | number | `25` |
 | `EMAIL_SMTP_HOST` | SMTP server hostname or IP (e.g., smtp.gmail.com). | string | _none_ |
@@ -291,13 +346,13 @@ The release source tab to open by default in the release modal for audiobooks. U
 | `EMAIL_SMTP_USERNAME` | SMTP username (leave empty for no authentication). | string | _none_ |
 | `EMAIL_SMTP_PASSWORD` | SMTP password (required if Username is set). | string (secret) | _none_ |
 | `EMAIL_FROM` | From address used for the email. You can include a display name (e.g., Shelfmark <mail@example.com>). Leave blank to default to the SMTP username (when it is an email address). | string | _none_ |
-| `EMAIL_SUBJECT_TEMPLATE` | Email subject. Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}. | string | `{Title}` |
+| `EMAIL_SUBJECT_TEMPLATE` | Email subject. Variables: {Author}, {Title}, {PrimaryTitle}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}. | string | `{Title}` |
 | `EMAIL_SMTP_TIMEOUT_SECONDS` | How long to wait for SMTP operations before failing. | number | `60` |
 | `EMAIL_ALLOW_UNVERIFIED_TLS` | Disable TLS certificate verification (not recommended). | boolean | `false` |
 | `DESTINATION_AUDIOBOOK` | Directory where downloaded audiobook files are saved. Leave empty to use the Books destination. | string | _none_ |
 | `FILE_ORGANIZATION_AUDIOBOOK` | Choose how downloaded audiobook files are named and organized. | string (choice) | `rename` |
-| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
-| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title}` |
+| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
+| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title}/{Title}` |
 | `HARDLINK_TORRENTS_AUDIOBOOK` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `true` |
 | `AUTO_OPEN_DOWNLOADS_SIDEBAR` | Automatically open the downloads sidebar when a new download is queued. | boolean | `false` |
 | `DOWNLOAD_TO_BROWSER_CONTENT_TYPES` | Automatically download completed files to your browser for the selected content types. | string (comma-separated) | _empty list_ |
@@ -315,7 +370,7 @@ Choose where completed book files are sent.
 
 - **Type:** string (choice)
 - **Default:** `folder`
-- **Options:** `folder` (Folder), `email` (Email (SMTP)), `booklore` (Booklore (API))
+- **Options:** `folder` (Folder), `email` (Email (SMTP)), `booklore` (Grimmory (API))
 
 #### `INGEST_DIR`
 
@@ -331,7 +386,7 @@ Directory where downloaded files are saved. Use {User} for per-user folders (e.g
 
 **File Organization**
 
-Choose how downloaded book files are named and organized. 
+Choose how downloaded book files are named and organized.
 
 - **Type:** string (choice)
 - **Default:** `rename`
@@ -341,7 +396,7 @@ Choose how downloaded book files are named and organized.
 
 **Naming Template**
 
-Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title} ({Year})`
@@ -350,7 +405,7 @@ Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename wi
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
+Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
 
 - **Type:** string
 - **Default:** `{Author}/{Title} ({Year})`
@@ -366,9 +421,9 @@ Create hardlinks instead of copying. Preserves seeding but archives won't be ext
 
 #### `BOOKLORE_HOST`
 
-**Booklore URL**
+**Grimmory URL**
 
-Base URL of your Booklore instance
+Base URL of your Grimmory instance
 
 - **Type:** string
 - **Default:** _none_
@@ -378,7 +433,7 @@ Base URL of your Booklore instance
 
 **Username**
 
-Booklore account username
+Grimmory account username
 
 - **Type:** string
 - **Default:** _none_
@@ -388,7 +443,7 @@ Booklore account username
 
 **Password**
 
-Booklore account password
+Grimmory account password
 
 - **Type:** string (secret)
 - **Default:** _none_
@@ -408,7 +463,7 @@ Choose whether uploads go directly to a specific library path or to Bookdrop for
 
 **Library**
 
-Booklore library to upload into.
+Grimmory library to upload into.
 
 - **Type:** string (choice)
 - **Default:** _none_
@@ -418,7 +473,7 @@ Booklore library to upload into.
 
 **Path**
 
-Booklore library path for uploads.
+Grimmory library path for uploads.
 
 - **Type:** string (choice)
 - **Default:** _none_
@@ -504,7 +559,7 @@ From address used for the email. You can include a display name (e.g., Shelfmark
 
 **Subject Template**
 
-Email subject. Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}.
+Email subject. Variables: {Author}, {Title}, {PrimaryTitle}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}.
 
 - **Type:** string
 - **Default:** `{Title}`
@@ -551,7 +606,7 @@ Choose how downloaded audiobook files are named and organized.
 
 **Naming Template**
 
-Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title}`
@@ -560,10 +615,10 @@ Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename wi
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
+Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
 
 - **Type:** string
-- **Default:** `{Author}/{Title}`
+- **Default:** `{Author}/{Title}/{Title}`
 
 #### `HARDLINK_TORRENTS_AUDIOBOOK`
 
@@ -619,7 +674,7 @@ How long to keep completed/failed downloads in the queue display.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
-| `AUTH_METHOD` | Select the authentication method for accessing Shelfmark. | string (choice) | `none` |
+| `AUTH_METHOD` | Select the authentication method for accessing Shelfmark. Restart container after changing Calibre-Web passwords. | string (choice) | `none` |
 | `PROXY_AUTH_USER_HEADER` | The HTTP header your proxy uses to pass the authenticated username. | string | `X-Auth-User` |
 | `PROXY_AUTH_LOGOUT_URL` | The URL to redirect users to for logging out. Leave empty to disable logout functionality. | string | _empty string_ |
 | `PROXY_AUTH_ADMIN_GROUP_HEADER` | Optional: header your proxy uses to pass user groups/roles. | string | `X-Auth-Groups` |
@@ -627,7 +682,7 @@ How long to keep completed/failed downloads in the queue display.
 | `OIDC_DISCOVERY_URL` | OpenID Connect discovery endpoint URL. Usually ends with /.well-known/openid-configuration. | string | _none_ |
 | `OIDC_CLIENT_ID` | OAuth2 client ID from your identity provider. | string | _none_ |
 | `OIDC_CLIENT_SECRET` | OAuth2 client secret from your identity provider. | string (secret) | _none_ |
-| `OIDC_SCOPES` | OAuth2 scopes to request from the identity provider. Managed automatically: includes essential scopes and the group claim when using admin group authorization. | string | `openid,email,profile` |
+| `OIDC_SCOPES` | OAuth2 scopes to request from the identity provider. Managed automatically: includes essential scopes and the group claim when using admin group authorization. | string (comma-separated) | `openid,email,profile` |
 | `OIDC_GROUP_CLAIM` | The name of the claim in the ID token that contains user groups. | string | `groups` |
 | `OIDC_ADMIN_GROUP` | Users in this group will be given admin access (if enabled below). Leave empty to use database roles only. | string | _empty string_ |
 | `OIDC_USE_ADMIN_GROUP` | When enabled, users in the Admin Group are granted admin access. When disabled, admin access is determined solely by database roles. | boolean | `true` |
@@ -641,7 +696,7 @@ How long to keep completed/failed downloads in the queue display.
 
 **Authentication Method**
 
-Select the authentication method for accessing Shelfmark.
+Select the authentication method for accessing Shelfmark. Restart container after changing Calibre-Web passwords.
 
 - **Type:** string (choice)
 - **Default:** `none`
@@ -719,7 +774,7 @@ OAuth2 client secret from your identity provider.
 
 OAuth2 scopes to request from the identity provider. Managed automatically: includes essential scopes and the group claim when using admin group authorization.
 
-- **Type:** string
+- **Type:** string (comma-separated)
 - **Default:** `openid,email,profile`
 
 #### `OIDC_GROUP_CLAIM`
@@ -777,7 +832,7 @@ Custom label for the OIDC sign-in button on the login page.
 | `CUSTOM_DNS` | DNS provider for domain resolution. 'Auto' rotates through providers on failure. | string (choice) | `auto` |
 | `CUSTOM_DNS_MANUAL` | Comma-separated list of DNS server IP addresses (e.g., 8.8.8.8, 1.1.1.1). | string | _none_ |
 | `USE_DOH` | Use encrypted DNS queries for improved reliability and privacy. | boolean | `true` |
-| `USING_TOR` | Route all traffic through Tor for enhanced privacy. | boolean | `false` |
+| `USING_TOR` | Route all traffic through Tor for enhanced privacy. Requires root startup. | boolean | `false` |
 | `PROXY_MODE` | Choose proxy type. SOCKS5 handles all traffic through a single proxy. | string (choice) | `none` |
 | `HTTP_PROXY` | HTTP proxy URL (e.g., http://proxy:8080) | string | _none_ |
 | `HTTPS_PROXY` | HTTPS proxy URL (leave empty to use HTTP proxy for HTTPS) | string | _none_ |
@@ -829,7 +884,7 @@ Use encrypted DNS queries for improved reliability and privacy.
 
 **Tor Routing**
 
-Route all traffic through Tor for enhanced privacy.
+Route all traffic through Tor for enhanced privacy. Requires root startup.
 
 - **Type:** boolean
 - **Default:** `false`
@@ -1042,6 +1097,7 @@ How long to cache individual book details. Default: 600 (10 minutes). Max: 60480
 | `PROWLARR_API_KEY` | Found in Prowlarr: Settings > General > API Key | string (secret) | _none_ |
 | `PROWLARR_INDEXERS` | Select which indexers to search. 📚 = has book categories. Leave empty to search all. | string (comma-separated) | _empty list_ |
 | `PROWLARR_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
+| `PROWLARR_USE_SEED_PREFERENCES` | Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client | boolean | `false` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1085,6 +1141,66 @@ Select which indexers to search. 📚 = has book categories. Leave empty to sear
 - **Default:** _empty list_
 
 #### `PROWLARR_AUTO_EXPAND`
+
+**Auto-expand search on no results**
+
+Automatically retry search without category filtering if no results are found
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `PROWLARR_USE_SEED_PREFERENCES`
+
+**Use Prowlarr seed preferences**
+
+Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client
+
+- **Type:** boolean
+- **Default:** `false`
+
+</details>
+
+## Newznab
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `NEWZNAB_ENABLED` | Enable searching for books via a Newznab-compatible indexer | boolean | `false` |
+| `NEWZNAB_URL` | Base URL of your Newznab indexer or aggregator | string | _none_ |
+| `NEWZNAB_API_KEY` | Your Newznab API key (leave blank if not required) | string (secret) | _none_ |
+| `NEWZNAB_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `NEWZNAB_ENABLED`
+
+**Enable Newznab source**
+
+Enable searching for books via a Newznab-compatible indexer
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `NEWZNAB_URL`
+
+**Newznab URL**
+
+Base URL of your Newznab indexer or aggregator
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `NEWZNAB_API_KEY`
+
+**API Key**
+
+Your Newznab API key (leave blank if not required)
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `NEWZNAB_AUTO_EXPAND`
 
 **Auto-expand search on no results**
 
@@ -1253,7 +1369,7 @@ How long to keep cached search results before they expire.
 | `QBITTORRENT_CATEGORY` | Category to assign to book downloads in qBittorrent | string | `books` |
 | `QBITTORRENT_CATEGORY_AUDIOBOOK` | Category for audiobook downloads. Leave empty to use the book category. | string | _empty string_ |
 | `QBITTORRENT_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses qBittorrent default if not specified) | string | _none_ |
-| `QBITTORRENT_TAG` | Tag(s) to assign to qBittorrent downloads. Leave empty for no tags. | string | _empty list_ |
+| `QBITTORRENT_TAG` | Tag(s) to assign to qBittorrent downloads. Leave empty for no tags. | string (comma-separated) | _empty list_ |
 | `TRANSMISSION_URL` | URL of your Transmission instance (use https:// for TLS) | string | _none_ |
 | `TRANSMISSION_USERNAME` | Transmission RPC username (if authentication enabled) | string | _none_ |
 | `TRANSMISSION_PASSWORD` | Transmission RPC password | string (secret) | _none_ |
@@ -1357,7 +1473,7 @@ Server-side directory where torrents are downloaded (optional, uses qBittorrent 
 
 Tag(s) to assign to qBittorrent downloads. Leave empty for no tags.
 
-- **Type:** string
+- **Type:** string (comma-separated)
 - **Default:** _empty list_
 
 #### `TRANSMISSION_URL`
@@ -1637,6 +1753,7 @@ Move deletes the job from your usenet client after import; Copy keeps it in the 
 | `HARDCOVER_DEFAULT_SORT` | Default sort order for Hardcover search results. | string (choice) | `relevance` |
 | `HARDCOVER_EXCLUDE_COMPILATIONS` | Filter out compilations, anthologies, and omnibus editions from search results | boolean | `false` |
 | `HARDCOVER_EXCLUDE_UNRELEASED` | Filter out books with a release year in the future | boolean | `false` |
+| `HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD` | Automatically remove a book from the active Hardcover list when you download it | boolean | `true` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1687,6 +1804,15 @@ Filter out books with a release year in the future
 
 - **Type:** boolean
 - **Default:** `false`
+
+#### `HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD`
+
+**Auto-Remove from List on Download**
+
+Automatically remove a book from the active Hardcover list when you download it
+
+- **Type:** boolean
+- **Default:** `true`
 
 </details>
 
@@ -1769,6 +1895,7 @@ Default sort order for Google Books search results.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
+| `DIRECT_DOWNLOAD_ENABLED` | Show Direct Download in release-source lists and allow Direct mode searches. Add your own mirror URLs in the Mirrors tab before using it. | boolean | `false` |
 | `AA_DONATOR_KEY` | Enables fast download access on AA. Get this from your donator account page. | string (secret) | _none_ |
 | `FAST_SOURCES_DISPLAY` | Always tried first, no waiting or bypass required. | JSON array | _see UI for defaults_ |
 | `SOURCE_PRIORITY` | Fallback sources, may have waiting. Requires bypasser. Drag to reorder. | JSON array | _see UI for defaults_ |
@@ -1786,6 +1913,15 @@ Default sort order for Google Books search results.
 
 <details>
 <summary>Detailed descriptions</summary>
+
+#### `DIRECT_DOWNLOAD_ENABLED`
+
+**Enable Direct Download Source**
+
+Show Direct Download in release-source lists and allow Direct mode searches. Add your own mirror URLs in the Mirrors tab before using it.
+
+- **Type:** boolean
+- **Default:** `false`
 
 #### `AA_DONATOR_KEY`
 
@@ -1971,14 +2107,11 @@ Timeout for external bypasser requests in milliseconds.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
-| `AA_BASE_URL` | Select 'Auto' to try mirrors from your list on startup and fall back on failures. Choosing a specific mirror locks Shelfmark to that mirror (no fallback). | string (choice) | `auto` |
-| `AA_MIRROR_URLS` | Editable list of AA mirrors. Used to populate the Primary Mirror dropdown and the order used when Auto is selected. Type a URL and press Enter to add. Order matters for auto-rotation | string | `https://annas-archive.gl,https://annas-archive.pk,https://annas-archive.vg,https://annas-archive.gd` |
-| `AA_ADDITIONAL_URLS` | Deprecated. Use Mirrors instead. This is kept for backwards compatibility with existing installs and environment variables. | string | _none_ |
-| `LIBGEN_ADDITIONAL_URLS` | Comma-separated list of custom LibGen mirrors to add to the defaults. | string | _none_ |
-| `ZLIB_PRIMARY_URL` | Z-Library mirror to use for downloads. | string (choice) | `https://z-lib.fm` |
-| `ZLIB_ADDITIONAL_URLS` | Comma-separated list of custom Z-Library mirror URLs. | string | _none_ |
-| `WELIB_PRIMARY_URL` | Welib mirror to use for downloads. | string (choice) | `https://welib.org` |
-| `WELIB_ADDITIONAL_URLS` | Comma-separated list of custom Welib mirror URLs. | string | _none_ |
+| `AA_BASE_URL` | Select Auto to try mirrors from your list on startup and fail over on errors. Choosing a specific mirror pins Shelfmark to that URL. | string (choice) | `auto` |
+| `AA_MIRROR_URLS` | List the Anna's Archive mirror URLs you want Shelfmark to use. Type a URL and press Enter to add it. Order matters when Auto is selected. | string (comma-separated) | _empty list_ |
+| `LIBGEN_MIRROR_URLS` | Mirrors are tried in the order you add them until one works. | string (comma-separated) | _empty list_ |
+| `ZLIB_MIRROR_URLS` | Only the first mirror in the list is used. | string (comma-separated) | _empty list_ |
+| `WELIB_MIRROR_URLS` | Only the first mirror in the list is used. | string (comma-separated) | _empty list_ |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1987,75 +2120,46 @@ Timeout for external bypasser requests in milliseconds.
 
 **Primary Mirror**
 
-Select 'Auto' to try mirrors from your list on startup and fall back on failures. Choosing a specific mirror locks Shelfmark to that mirror (no fallback).
+Select Auto to try mirrors from your list on startup and fail over on errors. Choosing a specific mirror pins Shelfmark to that URL.
 
 - **Type:** string (choice)
 - **Default:** `auto`
-- **Options:** `auto` (Auto (Recommended)), `https://annas-archive.gl` (annas-archive.gl), `https://annas-archive.pk` (annas-archive.pk), `https://annas-archive.vg` (annas-archive.vg), `https://annas-archive.gd` (annas-archive.gd)
+- **Options:** `auto` (Auto (Recommended))
 
 #### `AA_MIRROR_URLS`
 
 **Mirrors**
 
-Editable list of AA mirrors. Used to populate the Primary Mirror dropdown and the order used when Auto is selected. Type a URL and press Enter to add. Order matters for auto-rotation
+List the Anna's Archive mirror URLs you want Shelfmark to use. Type a URL and press Enter to add it. Order matters when Auto is selected.
 
-- **Type:** string
-- **Default:** `https://annas-archive.gl,https://annas-archive.pk,https://annas-archive.vg,https://annas-archive.gd`
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
 
-#### `AA_ADDITIONAL_URLS`
+#### `LIBGEN_MIRROR_URLS`
 
-**Additional Mirrors (Legacy)**
+**LibGen**
 
-Deprecated. Use Mirrors instead. This is kept for backwards compatibility with existing installs and environment variables.
+Mirrors are tried in the order you add them until one works.
 
-- **Type:** string
-- **Default:** _none_
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
 
-#### `LIBGEN_ADDITIONAL_URLS`
+#### `ZLIB_MIRROR_URLS`
 
-**Additional Mirrors**
+**Z-Library**
 
-Comma-separated list of custom LibGen mirrors to add to the defaults.
+Only the first mirror in the list is used.
 
-- **Type:** string
-- **Default:** _none_
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
 
-#### `ZLIB_PRIMARY_URL`
+#### `WELIB_MIRROR_URLS`
 
-**Primary Mirror**
+**Welib**
 
-Z-Library mirror to use for downloads.
+Only the first mirror in the list is used.
 
-- **Type:** string (choice)
-- **Default:** `https://z-lib.fm`
-- **Options:** `https://z-lib.fm` (z-lib.fm), `https://z-lib.gs` (z-lib.gs), `https://z-lib.id` (z-lib.id), `https://z-library.sk` (z-library.sk), `https://zlibrary-global.se` (zlibrary-global.se)
-
-#### `ZLIB_ADDITIONAL_URLS`
-
-**Additional Mirrors**
-
-Comma-separated list of custom Z-Library mirror URLs.
-
-- **Type:** string
-- **Default:** _none_
-
-#### `WELIB_PRIMARY_URL`
-
-**Primary Mirror**
-
-Welib mirror to use for downloads.
-
-- **Type:** string (choice)
-- **Default:** `https://welib.org`
-- **Options:** `https://welib.org` (welib.org)
-
-#### `WELIB_ADDITIONAL_URLS`
-
-**Additional Mirrors**
-
-Comma-separated list of custom Welib mirror URLs.
-
-- **Type:** string
-- **Default:** _none_
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
 
 </details>

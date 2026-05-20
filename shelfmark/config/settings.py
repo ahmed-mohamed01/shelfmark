@@ -1,12 +1,43 @@
 """Core settings registration and derived configuration values."""
 
-import os
-from pathlib import Path
 import json
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any
+
+from shelfmark.config import env
+from shelfmark.config.booklore_settings import (
+    check_booklore_connection,
+    get_booklore_library_options,
+    get_booklore_path_options,
+)
+from shelfmark.config.download_settings_handlers import (
+    check_audiobook_destination,
+    check_books_destination,
+)
+from shelfmark.config.email_settings import check_email_connection
+from shelfmark.core.logger import setup_logger
+from shelfmark.core.settings_registry import (
+    ActionButton,
+    CheckboxField,
+    CustomComponentField,
+    HeadingField,
+    MultiSelectField,
+    NumberField,
+    OrderableListField,
+    PasswordField,
+    SelectField,
+    SettingsField,
+    TableField,
+    TagListField,
+    TextField,
+    load_config_file,
+    register_group,
+    register_on_save,
+    register_settings,
+)
 
 
-def _on_save_advanced(values: Dict[str, Any]) -> Dict[str, Any]:
+def _on_save_advanced(values: dict[str, Any]) -> dict[str, Any]:
     """Validate advanced settings before persisting."""
     from shelfmark.core.logger import setup_logger
 
@@ -37,7 +68,7 @@ def _on_save_advanced(values: Dict[str, Any]) -> Dict[str, Any]:
 
         if not host or not remote_path or not local_path:
             logger.debug(
-                "Skipping entry %d: missing field(s) - host=%r, remotePath=%r, localPath=%r",
+                "Skipping entry %d: missing field(s) - host=%s, remotePath=%s, localPath=%s",
                 i,
                 host,
                 remote_path,
@@ -57,38 +88,33 @@ def _on_save_advanced(values: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Saved %d remote path mapping(s)", len(cleaned))
     if cleaned:
         for m in cleaned:
-            logger.debug("  Mapping: %s -> %s (client: %s)", m["remotePath"], m["localPath"], m["host"])
+            logger.debug(
+                "  Mapping: %s -> %s (client: %s)", m["remotePath"], m["localPath"], m["host"]
+            )
 
     values["PROWLARR_REMOTE_PATH_MAPPINGS"] = cleaned
     return {"error": False, "values": values}
 
 
-from shelfmark.config import env
-from shelfmark.config.booklore_settings import (
-    get_booklore_library_options,
-    get_booklore_path_options,
-    test_booklore_connection,
-)
-from shelfmark.config.email_settings import test_email_connection
-from shelfmark.core.logger import setup_logger
-
 logger = setup_logger(__name__)
+_SMTP_PORT_MAX = 65535
+_EMAIL_ATTACHMENT_LIMIT_MB_MAX = 600
 
 # Log bootstrap configuration values at DEBUG level
 logger.debug("Bootstrap configuration:")
-for key in ['CONFIG_DIR', 'LOG_DIR', 'TMP_DIR', 'INGEST_DIR', 'DEBUG', 'DOCKERMODE']:
+for key in ["CONFIG_DIR", "LOG_DIR", "TMP_DIR", "INGEST_DIR", "DEBUG", "DOCKERMODE"]:
     if hasattr(env, key):
-        logger.debug(f"  {key}: {getattr(env, key)}")
+        logger.debug("  %s: %s", key, getattr(env, key))
 
 # Load supported book languages from data file
 # Path is relative to the package root, not this file
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-with open(_DATA_DIR / "book-languages.json") as file:
+with (_DATA_DIR / "book-languages.json").open() as file:
     _SUPPORTED_BOOK_LANGUAGE = json.load(file)
 
 # Directory settings
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-logger.debug(f"BASE_DIR: {BASE_DIR}")
+logger.debug("BASE_DIR: %s", BASE_DIR)
 if env.ENABLE_LOGGING:
     env.LOG_DIR.mkdir(exist_ok=True)
 
@@ -106,6 +132,7 @@ RECORDING_DIR = env.LOG_DIR / "recording"
 def _log_external_bypasser_warning() -> None:
     """Log warning about external bypasser DNS limitations (called after config is available)."""
     from shelfmark.core.config import config
+
     if config.get("USING_EXTERNAL_BYPASSER", False) and config.get("USE_CF_BYPASS", True):
         logger.warning(
             "Using external bypasser (FlareSolverr). Note: FlareSolverr uses its own DNS resolution, "
@@ -115,37 +142,13 @@ def _log_external_bypasser_warning() -> None:
         )
 
 
-from shelfmark.core.settings_registry import (
-    register_settings,
-    register_group,
-    register_on_save,
-    load_config_file,
-    TextField,
-    PasswordField,
-    NumberField,
-    CheckboxField,
-    SelectField,
-    MultiSelectField,
-    TagListField,
-    OrderableListField,
-    TableField,
-    HeadingField,
-    ActionButton,
-)
-
-
-register_group(
-    "direct_download",
-    "Direct Download",
-    icon="download",
-    order=20
-)
+register_group("direct_download", "Direct Download", icon="download", order=20)
 
 register_group(
     "metadata_providers",
     "Metadata Providers",
     icon="book",
-    order=12  # Between Network (10) and Advanced (15)
+    order=12,  # Between Network (10) and Advanced (15)
 )
 
 
@@ -203,15 +206,15 @@ _DOWNLOAD_TO_BROWSER_CONTENT_TYPE_VALUES = {
 }
 
 
-def _get_metadata_provider_options():
+def _get_metadata_provider_options() -> list[dict[str, str]]:
     """Build metadata provider options dynamically from enabled providers only."""
-    from shelfmark.metadata_providers import list_providers, is_provider_enabled
+    from shelfmark.metadata_providers import is_provider_enabled, list_providers
 
-    options = []
-    for provider in list_providers():
-        # Only show providers that are enabled
-        if is_provider_enabled(provider["name"]):
-            options.append({"value": provider["name"], "label": provider["display_name"]})
+    options = [
+        {"value": provider["name"], "label": provider["display_name"]}
+        for provider in list_providers()
+        if is_provider_enabled(provider["name"])
+    ]
 
     # If no providers enabled, show a placeholder option
     if not options:
@@ -222,114 +225,74 @@ def _get_metadata_provider_options():
     return options
 
 
-def _get_metadata_provider_options_with_none():
+def _get_metadata_provider_options_with_none() -> list[dict[str, str]]:
     """Build metadata provider options with a 'Use main provider' option first."""
-    return [{"value": "", "label": "Use book provider"}] + _get_metadata_provider_options()
+    return [{"value": "", "label": "Use book provider"}, *_get_metadata_provider_options()]
 
 
-def _get_release_source_options_for_content_type(content_type: str):
+def _get_release_source_options_for_content_type(content_type: str) -> list[dict[str, str]]:
     """Build release source options dynamically for a specific content type."""
     from shelfmark.release_sources import list_available_sources
 
     return [
         {"value": source["name"], "label": source["display_name"]}
         for source in list_available_sources()
-        if source.get("can_be_default", True)
+        if source.get("enabled", True)
+        and source.get("can_be_default", True)
         and content_type in source.get("supported_content_types", ["ebook", "audiobook"])
     ]
 
 
-def _get_book_release_source_options():
+def _get_book_release_source_options() -> list[dict[str, str]]:
     """Build default release source options for book searches."""
-    return _get_release_source_options_for_content_type("ebook")
+    return [
+        {"value": "", "label": "Use first available source"},
+        *_get_release_source_options_for_content_type("ebook"),
+    ]
 
 
-def _get_audiobook_release_source_options():
+def _get_audiobook_release_source_options() -> list[dict[str, str]]:
     """Build default release source options for audiobook searches."""
-    return [{"value": "", "label": "Use book release source"}] + _get_release_source_options_for_content_type(
-        "audiobook"
-    )
+    return [
+        {"value": "", "label": "Use book release source"},
+        *_get_release_source_options_for_content_type("audiobook"),
+    ]
 
 
+_LANGUAGE_OPTIONS = [
+    {"value": lang["code"], "label": lang["language"]} for lang in _SUPPORTED_BOOK_LANGUAGE
+]
 
-_LANGUAGE_OPTIONS = [{"value": lang["code"], "label": lang["language"]} for lang in _SUPPORTED_BOOK_LANGUAGE]
 
-def _get_aa_base_url_options():
-    """Build AA URL options dynamically, including additional mirrors from config."""
-    from shelfmark.core.mirrors import DEFAULT_AA_MIRRORS, get_aa_mirrors
+def _string_setting(value: object) -> str:
+    """Normalize free-form string settings used by select option builders."""
+    return value if isinstance(value, str) else str(value or "")
+
+
+def _get_aa_base_url_options() -> list[dict[str, str]]:
+    """Build AA URL options dynamically from user-supplied mirrors."""
     from shelfmark.core.config import config
+    from shelfmark.core.mirrors import get_aa_mirrors
     from shelfmark.core.utils import normalize_http_url
 
     options = [{"value": "auto", "label": "Auto (Recommended)"}]
 
-    # Get all mirrors (defaults + custom)
     all_mirrors = get_aa_mirrors()
 
-    # If AA_BASE_URL is configured to a custom mirror that isn't present in the
-    # defaults/additional list, include it so the UI can display the active value.
     configured_url = normalize_http_url(
-        config.get("AA_BASE_URL", "auto"),
+        _string_setting(config.get("AA_BASE_URL", "auto")),
         default_scheme="https",
         allow_special=("auto",),
     )
     if configured_url and configured_url != "auto" and configured_url not in all_mirrors:
-        all_mirrors = [configured_url] + all_mirrors
+        all_mirrors = [configured_url, *all_mirrors]
 
     for url in all_mirrors:
         domain = url.replace("https://", "").replace("http://", "")
-        is_custom = url not in DEFAULT_AA_MIRRORS
-        label = f"{domain} (custom)" if is_custom else domain
-        if configured_url and url == configured_url and is_custom:
+        label = domain
+        if configured_url and url == configured_url:
             label = f"{domain} (configured)"
         options.append({"value": url, "label": label})
-
-    return options
-
-
-def _get_zlib_mirror_options():
-    """Build Z-Library mirror options for SelectField."""
-    from shelfmark.core.mirrors import DEFAULT_ZLIB_MIRRORS
-    from shelfmark.core.config import config
-
-    options = []
-
-    # Add default mirrors
-    for url in DEFAULT_ZLIB_MIRRORS:
-        domain = url.replace("https://", "").replace("http://", "")
-        options.append({"value": url, "label": domain})
-
-    # Add custom mirrors
-    additional = config.get("ZLIB_ADDITIONAL_URLS", "")
-    if additional:
-        for url in additional.split(","):
-            url = url.strip()
-            if url and url not in DEFAULT_ZLIB_MIRRORS:
-                domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-                options.append({"value": url, "label": f"{domain} (custom)"})
-
-    return options
-
-
-def _get_welib_mirror_options():
-    """Build Welib mirror options for SelectField."""
-    from shelfmark.core.mirrors import DEFAULT_WELIB_MIRRORS
-    from shelfmark.core.config import config
-
-    options = []
-
-    # Add default mirrors
-    for url in DEFAULT_WELIB_MIRRORS:
-        domain = url.replace("https://", "").replace("http://", "")
-        options.append({"value": url, "label": domain})
-
-    # Add custom mirrors
-    additional = config.get("WELIB_ADDITIONAL_URLS", "")
-    if additional:
-        for url in additional.split(","):
-            url = url.strip()
-            if url and url not in DEFAULT_WELIB_MIRRORS:
-                domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-                options.append({"value": url, "label": f"{domain} (custom)"})
 
     return options
 
@@ -345,15 +308,16 @@ def _clear_covers_cache(current_values: dict) -> dict:
         # Reset the singleton so it reinitializes with fresh state
         reset_image_cache()
 
+    except Exception as e:
+        logger.exception("Failed to clear cover cache")
+        return {
+            "success": False,
+            "message": f"Failed to clear cache: {e!s}",
+        }
+    else:
         return {
             "success": True,
             "message": f"Cleared {count} cached cover images.",
-        }
-    except Exception as e:
-        logger.error(f"Failed to clear cover cache: {e}")
-        return {
-            "success": False,
-            "message": f"Failed to clear cache: {str(e)}",
         }
 
 
@@ -371,17 +335,24 @@ def _clear_metadata_cache(current_values: dict) -> dict:
             "message": f"Cleared {stats_before['size']} cached entries.",
         }
     except Exception as e:
-        logger.error(f"Failed to clear metadata cache: {e}")
+        logger.exception("Failed to clear metadata cache")
         return {
             "success": False,
-            "message": f"Failed to clear cache: {str(e)}",
+            "message": f"Failed to clear cache: {e!s}",
         }
 
 
 @register_settings("general", "General", icon="settings", order=0)
-def general_settings():
+def general_settings() -> list[SettingsField]:
     """Core application settings."""
     return [
+        TextField(
+            key="SEARCH_PAGE_TITLE",
+            label="Search Page Title",
+            description="Title shown above the main search box on the homepage.",
+            default="Shelfmark",
+            placeholder="Shelfmark",
+        ),
         TextField(
             key="CALIBRE_WEB_URL",
             label="Library URL",
@@ -424,13 +395,16 @@ def general_settings():
 
 
 @register_settings("search_mode", "Search Mode", icon="search", order=1)
-def search_mode_settings():
+def search_mode_settings() -> list[SettingsField]:
     """Configure how you search for and download books."""
     return [
         HeadingField(
             key="search_mode_heading",
             title="Search Mode",
-            description="Direct mode searches web sources and downloads immediately. Universal mode supports Prowlarr, IRC and audiobooks with metadata-based searching.",
+            description=(
+                "Direct mode uses the optional Direct Download source. Universal mode uses "
+                "metadata search with whichever release sources you have enabled."
+            ),
         ),
         SelectField(
             key="SEARCH_MODE",
@@ -440,7 +414,10 @@ def search_mode_settings():
                 {
                     "value": "direct",
                     "label": "Direct",
-                    "description": "Search web sources for books and download directly. Works out of the box.",
+                    "description": (
+                        "Search with the Direct Download source. Requires enabling the source "
+                        "and adding your own mirror URLs."
+                    ),
                 },
                 {
                     "value": "universal",
@@ -448,7 +425,7 @@ def search_mode_settings():
                     "description": "Metadata-based search with downloads from all sources. Book and Audiobook support.",
                 },
             ],
-            default="direct",
+            default="universal",
             user_overridable=True,
         ),
         SelectField(
@@ -512,9 +489,12 @@ def search_mode_settings():
         SelectField(
             key="DEFAULT_RELEASE_SOURCE",
             label="Default Book Release Source",
-            description="The release source tab to open by default in the release modal for books.",
+            description=(
+                "The release source tab to open by default in the release modal for books. "
+                "Leave unset to use the first available source."
+            ),
             options=_get_book_release_source_options,  # Callable - evaluated lazily to avoid circular imports
-            default="direct_download",
+            default="",
             show_when={"field": "SEARCH_MODE", "value": "universal"},
             user_overridable=True,
         ),
@@ -538,10 +518,10 @@ def search_mode_settings():
 
 
 @register_settings("network", "Network", icon="globe", order=10)
-def network_settings():
+def network_settings() -> list[SettingsField]:
     """Network and connectivity settings."""
-    # Check if Tor variant is available and if Tor is currently enabled
-    tor_available = env.TOR_VARIANT_AVAILABLE
+    # Avoid querying the live config singleton while settings are still being
+    # registered, which can recurse back into this module during import.
     tor_enabled = env.USING_TOR
 
     # When Tor is enabled, DNS/proxy settings are overridden by iptables rules
@@ -602,7 +582,10 @@ def network_settings():
             disabled=tor_overrides_network,
             disabled_reason="DNS over HTTPS is not used when Tor routing is enabled.",
             # Hide for manual and system (no DoH endpoint available for custom IPs or system DNS)
-            show_when={"field": "CUSTOM_DNS", "value": ["auto", "google", "cloudflare", "quad9", "opendns"]},
+            show_when={
+                "field": "CUSTOM_DNS",
+                "value": ["auto", "google", "cloudflare", "quad9", "opendns"],
+            },
             # Disable for auto (always uses DoH)
             disabled_when={
                 "field": "CUSTOM_DNS",
@@ -616,14 +599,14 @@ def network_settings():
             description=(
                 "All traffic is routed through Tor. Requires container restart to change."
                 if tor_enabled
-                else "Route all traffic through Tor for enhanced privacy."
+                else "Route all traffic through Tor for enhanced privacy. Requires root startup."
             ),
             default=tor_enabled,  # Reflects actual state from env var
             disabled=True,  # Tor state requires container restart
             disabled_reason=(
                 "Tor routing is active. Set USING_TOR=false and restart to disable."
                 if tor_enabled
-                else "Set USING_TOR=true env var and restart with NET_ADMIN/NET_RAW capabilities."
+                else "Set USING_TOR=true env var and restart as root."
             ),
         ),
         SelectField(
@@ -697,9 +680,7 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
             normalized_content_types: list[str] = []
         elif isinstance(raw_content_types, list):
             normalized_content_types = [
-                str(value).strip().lower()
-                for value in raw_content_types
-                if str(value).strip()
+                str(value).strip().lower() for value in raw_content_types if str(value).strip()
             ]
         else:
             return {
@@ -780,38 +761,57 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
 
         try:
             port = int(effective.get("EMAIL_SMTP_PORT", 587))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return {"error": True, "message": "SMTP port must be a number", "values": values}
 
-        if port < 1 or port > 65535:
-            return {"error": True, "message": "SMTP port must be between 1 and 65535", "values": values}
+        if port < 1 or port > _SMTP_PORT_MAX:
+            return {
+                "error": True,
+                "message": f"SMTP port must be between 1 and {_SMTP_PORT_MAX}",
+                "values": values,
+            }
 
         try:
             timeout_seconds = int(effective.get("EMAIL_SMTP_TIMEOUT_SECONDS", 60))
-        except (TypeError, ValueError):
-            return {"error": True, "message": "SMTP timeout (seconds) must be a number", "values": values}
+        except TypeError, ValueError:
+            return {
+                "error": True,
+                "message": "SMTP timeout (seconds) must be a number",
+                "values": values,
+            }
 
         if timeout_seconds < 1:
-            return {"error": True, "message": "SMTP timeout (seconds) must be >= 1", "values": values}
+            return {
+                "error": True,
+                "message": "SMTP timeout (seconds) must be >= 1",
+                "values": values,
+            }
 
         username = str(effective.get("EMAIL_SMTP_USERNAME", "") or "").strip()
         password = effective.get("EMAIL_SMTP_PASSWORD", "") or ""
         if username and not password:
-            return {"error": True, "message": "SMTP password is required when username is set", "values": values}
+            return {
+                "error": True,
+                "message": "SMTP password is required when username is set",
+                "values": values,
+            }
 
         try:
             attachment_limit_mb = int(effective.get("EMAIL_ATTACHMENT_SIZE_LIMIT_MB", 25))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return {
                 "error": True,
                 "message": "Attachment size limit (MB) must be a number",
                 "values": values,
             }
 
-        if attachment_limit_mb < 1 or attachment_limit_mb > 600:
+        if attachment_limit_mb < 1 or attachment_limit_mb > _EMAIL_ATTACHMENT_LIMIT_MB_MAX:
             return {
                 "error": True,
-                "message": "Attachment size limit (MB) must be between 1 and 600",
+                "message": (
+                    "Attachment size limit (MB) must be between 1 and "
+                    f"{_EMAIL_ATTACHMENT_LIMIT_MB_MAX}"
+                ),
                 "values": values,
             }
 
@@ -852,8 +852,39 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
     return {"error": False, "values": values}
 
 
+def _naming_template_field(
+    *,
+    key: str,
+    label: str,
+    description: str,
+    default: str,
+    placeholder: str,
+    show_when: dict[str, Any] | list[dict[str, Any]],
+    universal_only: bool = False,
+) -> CustomComponentField:
+    return CustomComponentField(
+        key=f"{key.lower()}_editor",
+        label=label,
+        component="naming_template",
+        show_when=show_when,
+        universal_only=universal_only,
+        wrap_in_field_wrapper=True,
+        value_fields=[
+            TextField(
+                key=key,
+                label=label,
+                description=description,
+                default=default,
+                placeholder=placeholder,
+                show_when=show_when,
+                universal_only=universal_only,
+            )
+        ],
+    )
+
+
 @register_settings("downloads", "Downloads", icon="folder", order=5)
-def download_settings():
+def download_settings() -> list[SettingsField]:
     """Configure download behavior and file locations."""
     return [
         # === BOOKS SECTION ===
@@ -900,25 +931,36 @@ def download_settings():
                 "value": "folder",
             },
         ),
+        ActionButton(
+            key="test_destination",
+            label="Test Destination",
+            description="Check that Shelfmark can create and write to this destination.",
+            style="primary",
+            callback=check_books_destination,
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
+        ),
         SelectField(
             key="FILE_ORGANIZATION",
             label="File Organization",
-            description="Choose how downloaded book files are named and organized. ",
+            description="Choose how downloaded book files are named and organized.",
             options=[
                 {
                     "value": "none",
                     "label": "None",
-                    "description": "Keep original filename from source"
+                    "description": "Keep original filename from source",
                 },
                 {
                     "value": "rename",
                     "label": "Rename Only",
-                    "description": "Rename single-file downloads; multi-file keeps original names."
+                    "description": "Rename single-file downloads; multi-file keeps original names.",
                 },
                 {
                     "value": "organize",
                     "label": "Rename and Organize",
-                    "description": "Create folders and rename files using a template. Do not use with ingest folders."
+                    "description": "Create folders and rename files using a template. Do not use with ingest folders.",
                 },
             ],
             default="rename",
@@ -928,10 +970,17 @@ def download_settings():
             },
         ),
         # Rename mode template - filename only
-        TextField(
+        _naming_template_field(
             key="TEMPLATE_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders. Applies to single-file downloads.",
+            description=(
+                "Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} "
+                "(source filename without extension). Universal adds: {Series}, "
+                "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
+                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
+                "Rename templates are filename-only (no '/' or '\\'); use Organize for folders. "
+                "Applies to single-file downloads."
+            ),
             default="{Author} - {Title} ({Year})",
             placeholder="{Author} - {Title} ({Year})",
             show_when=[
@@ -940,10 +989,15 @@ def download_settings():
             ],
         ),
         # Organize mode template - folders allowed
-        TextField(
+        _naming_template_field(
             key="TEMPLATE_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
+            description=(
+                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, "
+                "{OriginalName} (source filename without extension). Universal adds: {Series}, "
+                "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
+                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
+            ),
             default="{Author}/{Title} ({Year})",
             placeholder="{Author}/{Series/}{Title} ({Year})",
             show_when=[
@@ -1058,7 +1112,7 @@ def download_settings():
             label="Test Connection",
             description="Verify your Grimmory configuration",
             style="primary",
-            callback=test_booklore_connection,
+            callback=check_booklore_connection,
             show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
         ),
         HeadingField(
@@ -1107,7 +1161,11 @@ def download_settings():
             description="Transport security mode for SMTP.",
             options=[
                 {"value": "none", "label": "None", "description": "No TLS (not recommended)."},
-                {"value": "starttls", "label": "STARTTLS", "description": "Upgrade to TLS after connecting (recommended)."},
+                {
+                    "value": "starttls",
+                    "label": "STARTTLS",
+                    "description": "Upgrade to TLS after connecting (recommended).",
+                },
                 {"value": "ssl", "label": "SSL/TLS", "description": "Connect using TLS (SMTPS)."},
             ],
             default="starttls",
@@ -1136,7 +1194,7 @@ def download_settings():
         TextField(
             key="EMAIL_SUBJECT_TEMPLATE",
             label="Subject Template",
-            description="Email subject. Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}.",
+            description="Email subject. Variables: {Author}, {Title}, {PrimaryTitle}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {Format}.",
             default="{Title}",
             placeholder="{Title}",
             show_when={"field": "BOOKS_OUTPUT_MODE", "value": "email"},
@@ -1162,10 +1220,9 @@ def download_settings():
             label="Test SMTP Connection",
             description="Verify your SMTP configuration (connect + optional login).",
             style="primary",
-            callback=test_email_connection,
+            callback=check_email_connection,
             show_when={"field": "BOOKS_OUTPUT_MODE", "value": "email"},
         ),
-
         # === AUDIOBOOKS SECTION ===
         # Universal mode only
         HeadingField(
@@ -1181,34 +1238,66 @@ def download_settings():
             user_overridable=True,
             universal_only=True,
         ),
+        ActionButton(
+            key="test_destination_audiobook",
+            label="Test Destination",
+            description="Check that Shelfmark can create and write to this audiobook destination.",
+            style="primary",
+            callback=check_audiobook_destination,
+            universal_only=True,
+        ),
         SelectField(
             key="FILE_ORGANIZATION_AUDIOBOOK",
             label="File Organization",
             description="Choose how downloaded audiobook files are named and organized.",
             options=[
-                {"value": "none", "label": "None", "description": "Keep original filename from source"},
-                {"value": "rename", "label": "Rename Only", "description": "Rename single-file downloads; multi-file keeps original names."},
-                {"value": "organize", "label": "Rename and Organize", "description": "Create folders and rename files using a template. Recommended for Audiobookshelf. Do not use with ingest folders."},
+                {
+                    "value": "none",
+                    "label": "None",
+                    "description": "Keep original filename from source",
+                },
+                {
+                    "value": "rename",
+                    "label": "Rename Only",
+                    "description": "Rename single-file downloads; multi-file keeps original names.",
+                },
+                {
+                    "value": "organize",
+                    "label": "Rename and Organize",
+                    "description": "Create folders and rename files using a template. Recommended for Audiobookshelf. Do not use with ingest folders.",
+                },
             ],
             default="rename",
             universal_only=True,
         ),
         # Rename mode template - filename only
-        TextField(
+        _naming_template_field(
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders. Applies to single-file downloads.",
+            description=(
+                "Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} "
+                "(source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, "
+                "{PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
+                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
+                "Rename templates are filename-only (no '/' or '\\'); use Organize for folders. "
+                "Applies to single-file downloads."
+            ),
             default="{Author} - {Title}",
             placeholder="{Author} - {Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "rename"},
             universal_only=True,
         ),
         # Organize mode template - folders allowed
-        TextField(
+        _naming_template_field(
             key="TEMPLATE_AUDIOBOOK_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
-            default="{Author}/{Title}",
+            description=(
+                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, "
+                "{OriginalName} (source filename without extension), {Series}, {SeriesPosition}, "
+                "{Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
+                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
+            ),
+            default="{Author}/{Title}/{Title}",
             placeholder="{Author}/{Series/}{Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "organize"},
             universal_only=True,
@@ -1220,7 +1309,6 @@ def download_settings():
             default=True,
             universal_only=True,
         ),
-
         # === OPTIONS SECTION ===
         HeadingField(
             key="options_heading",
@@ -1288,11 +1376,16 @@ def download_settings():
 register_on_save("downloads", _on_save_downloads)
 
 
-def _get_fast_source_options():
+def _get_fast_source_options() -> list[dict[str, str | bool | int | None]]:
     """Fast download sources - configurable list shown in settings."""
     from shelfmark.core.config import config
+    from shelfmark.core.mirrors import get_download_source_missing_mirror_reason
 
     has_donator_key = bool(config.get("AA_DONATOR_KEY", ""))
+    aa_fast_reason = get_download_source_missing_mirror_reason("aa-fast")
+    if not aa_fast_reason and not has_donator_key:
+        aa_fast_reason = "Requires Donator Key"
+    libgen_reason = get_download_source_missing_mirror_reason("libgen")
 
     return [
         {
@@ -1300,19 +1393,21 @@ def _get_fast_source_options():
             "label": "AA Fast Downloads",
             "description": "Fast downloads for donators",
             "isPinned": True,
-            "isLocked": not has_donator_key,
-            "disabledReason": "Requires Donator Key" if not has_donator_key else None,
+            "isLocked": aa_fast_reason is not None,
+            "disabledReason": aa_fast_reason,
         },
         {
             "id": "libgen",
             "label": "Library Genesis",
             "description": "Instant downloads, no bypass needed",
             "isPinned": True,
+            "isLocked": libgen_reason is not None,
+            "disabledReason": libgen_reason,
         },
     ]
 
 
-def _get_fast_source_defaults():
+def _get_fast_source_defaults() -> list[dict[str, str | bool]]:
     """Default values for fast sources display."""
     return [
         {"id": "aa-fast", "enabled": True},
@@ -1320,47 +1415,54 @@ def _get_fast_source_defaults():
     ]
 
 
-def _get_slow_source_options():
+def _get_slow_source_options() -> list[dict[str, str | bool | None]]:
     """Slow download sources - configurable order. All require bypasser."""
     from shelfmark.core.config import config
+    from shelfmark.core.mirrors import get_download_source_missing_mirror_reason
 
     bypass_enabled = config.get("USE_CF_BYPASS", True)
-    locked = not bypass_enabled
-    disabled_reason = "Requires Cloudflare bypass" if locked else None
+
+    def _get_reason(source_id: str) -> str | None:
+        mirror_reason = get_download_source_missing_mirror_reason(source_id)
+        if mirror_reason:
+            return mirror_reason
+        if not bypass_enabled:
+            return "Requires Cloudflare bypass"
+        return None
 
     return [
         {
             "id": "aa-slow-nowait",
             "label": "AA Slow Downloads (No Waitlist)",
             "description": "Partner servers",
-            "isLocked": locked,
-            "disabledReason": disabled_reason,
+            "isLocked": _get_reason("aa-slow-nowait") is not None,
+            "disabledReason": _get_reason("aa-slow-nowait"),
         },
         {
             "id": "aa-slow-wait",
             "label": "AA Slow Downloads (Waitlist)",
             "description": "Partner servers with countdown timer",
-            "isLocked": locked,
-            "disabledReason": disabled_reason,
+            "isLocked": _get_reason("aa-slow-wait") is not None,
+            "disabledReason": _get_reason("aa-slow-wait"),
         },
         {
             "id": "welib",
             "label": "Welib",
             "description": "Alternative mirror",
-            "isLocked": locked,
-            "disabledReason": disabled_reason,
+            "isLocked": _get_reason("welib") is not None,
+            "disabledReason": _get_reason("welib"),
         },
         {
             "id": "zlib",
             "label": "Zlib",
             "description": "Alternative mirror",
-            "isLocked": locked,
-            "disabledReason": disabled_reason,
+            "isLocked": _get_reason("zlib") is not None,
+            "disabledReason": _get_reason("zlib"),
         },
     ]
 
 
-def _get_slow_source_defaults():
+def _get_slow_source_defaults() -> list[dict[str, str | bool]]:
     """Default source priority order for slow sources."""
     from shelfmark.config.env import _LEGACY_ALLOW_USE_WELIB
 
@@ -1371,10 +1473,22 @@ def _get_slow_source_defaults():
         {"id": "zlib", "enabled": True},
     ]
 
-@register_settings("download_sources", "Download Sources", icon="download", order=21, group="direct_download")
-def download_source_settings():
-    """Settings for download source behavior."""
+
+@register_settings(
+    "download_sources", "Download Sources", icon="download", order=21, group="direct_download"
+)
+def download_source_settings() -> list[SettingsField]:
+    """Return settings for download source behavior."""
     return [
+        CheckboxField(
+            key="DIRECT_DOWNLOAD_ENABLED",
+            label="Enable Direct Download Source",
+            description=(
+                "Show Direct Download in release-source lists and allow Direct mode "
+                "searches. Add your own mirror URLs in the Mirrors tab before using it."
+            ),
+            default=False,
+        ),
         PasswordField(
             key="AA_DONATOR_KEY",
             label="Account Donator Key",
@@ -1383,7 +1497,7 @@ def download_source_settings():
         HeadingField(
             key="source_priority_heading",
             title="Source Priority",
-            description="Sources are tried in order until a download succeeds.",
+            description="Sources are tried in order until a download succeeds. Mirror-backed entries unlock automatically when you configure their mirrors.",
         ),
         OrderableListField(
             key="FAST_SOURCES_DISPLAY",
@@ -1477,9 +1591,11 @@ def download_source_settings():
     ]
 
 
-@register_settings("cloudflare_bypass", "Cloudflare Bypass", icon="shield", order=22, group="direct_download")
-def cloudflare_bypass_settings():
-    """Settings for Cloudflare bypass behavior."""
+@register_settings(
+    "cloudflare_bypass", "Cloudflare Bypass", icon="shield", order=22, group="direct_download"
+)
+def cloudflare_bypass_settings() -> list[SettingsField]:
+    """Return settings for Cloudflare bypass behavior."""
     return [
         CheckboxField(
             key="USE_CF_BYPASS",
@@ -1525,131 +1641,105 @@ def cloudflare_bypass_settings():
         ),
     ]
 
-def _on_save_mirrors(values: Dict[str, Any]) -> Dict[str, Any]:
+
+def _on_save_mirrors(values: dict[str, Any]) -> dict[str, Any]:
     """Normalize mirror list settings before persisting."""
-    from shelfmark.core.logger import setup_logger
-    from shelfmark.core.mirrors import DEFAULT_AA_MIRRORS
     from shelfmark.core.utils import normalize_http_url
 
-    logger = setup_logger(__name__)
+    mirror_list_keys = {
+        "AA_MIRROR_URLS",
+        "LIBGEN_MIRROR_URLS",
+        "ZLIB_MIRROR_URLS",
+        "WELIB_MIRROR_URLS",
+    }
 
-    raw_urls = values.get("AA_MIRROR_URLS")
-    if raw_urls is None:
-        return {"error": False, "values": values}
-
-    if isinstance(raw_urls, str):
-        parts = [p.strip() for p in raw_urls.split(",") if p.strip()]
-    elif isinstance(raw_urls, list):
-        parts = [str(p).strip() for p in raw_urls if str(p).strip()]
-    else:
-        parts = []
-
-    normalized: list[str] = []
-    for url in parts:
-        if url.lower() == "auto":
+    for key in mirror_list_keys:
+        raw_urls = values.get(key)
+        if raw_urls is None:
             continue
-        norm = normalize_http_url(url, default_scheme="https")
-        if norm and norm not in normalized:
-            normalized.append(norm)
 
-    if not normalized:
-        logger.warning("AA_MIRROR_URLS saved empty/invalid; falling back to defaults")
-        normalized = [normalize_http_url(url, default_scheme="https") for url in DEFAULT_AA_MIRRORS]
-        normalized = [url for url in normalized if url]
+        if isinstance(raw_urls, str):
+            parts = [p.strip() for p in raw_urls.split(",") if p.strip()]
+        elif isinstance(raw_urls, list):
+            parts = [str(p).strip() for p in raw_urls if str(p).strip()]
+        else:
+            parts = []
 
-    values["AA_MIRROR_URLS"] = normalized
+        normalized: list[str] = []
+        for url in parts:
+            if url.lower() == "auto":
+                continue
+            norm = normalize_http_url(url, default_scheme="https")
+            if norm and norm not in normalized:
+                normalized.append(norm)
+
+        values[key] = normalized
+
     return {"error": False, "values": values}
+
 
 # Register the on_save handler for this tab
 register_on_save("mirrors", _on_save_mirrors)
 
 
 @register_settings("mirrors", "Mirrors", icon="globe", order=23, group="direct_download")
-def mirror_settings():
+def mirror_settings() -> list[SettingsField]:
     """Configure download source mirrors."""
-    from shelfmark.core.mirrors import DEFAULT_AA_MIRRORS, DEFAULT_ZLIB_MIRRORS, DEFAULT_WELIB_MIRRORS
-
     return [
         # === PRIMARY SOURCE ===
         HeadingField(
             key="aa_mirrors_heading",
             title="Anna's Archive",
-            description="Choose a primary mirror, or use Auto to try mirrors from your list below. The mirror list controls which options appear in the dropdown and the order used in Auto mode.",
+            description=(
+                "Add your own Anna's Archive mirror URLs here. Auto mode will try them in the "
+                "order listed below."
+            ),
         ),
         SelectField(
             key="AA_BASE_URL",
             label="Primary Mirror",
-            description="Select 'Auto' to try mirrors from your list on startup and fall back on failures. Choosing a specific mirror locks Shelfmark to that mirror (no fallback).",
+            description=(
+                "Select Auto to try mirrors from your list on startup and fail over on errors. "
+                "Choosing a specific mirror pins Shelfmark to that URL."
+            ),
             options=_get_aa_base_url_options,
             default="auto",
         ),
         TagListField(
             key="AA_MIRROR_URLS",
             label="Mirrors",
-            description="Editable list of AA mirrors. Used to populate the Primary Mirror dropdown and the order used when Auto is selected. Type a URL and press Enter to add. Order matters for auto-rotation",
-            placeholder="https://annas-archive.gl",
-            default=DEFAULT_AA_MIRRORS,
+            description=(
+                "List the Anna's Archive mirror URLs you want Shelfmark to use. Type a URL and "
+                "press Enter to add it. Order matters when Auto is selected."
+            ),
+            placeholder="https://your-aa-mirror.example",
+            default=[],
         ),
-        TextField(
-            key="AA_ADDITIONAL_URLS",
-            label="Additional Mirrors (Legacy)",
-            description="Deprecated. Use Mirrors instead. This is kept for backwards compatibility with existing installs and environment variables.",
-            show_when={"field": "AA_ADDITIONAL_URLS", "notEmpty": True},
-        ),
-
         # === LIBGEN ===
-        HeadingField(
-            key="libgen_mirrors_heading",
-            title="LibGen",
-            description="All mirrors are tried during download until one succeeds. Defaults: libgen.gl, libgen.li, libgen.bz, libgen.la, libgen.vg",
+        TagListField(
+            key="LIBGEN_MIRROR_URLS",
+            label="LibGen",
+            description="Mirrors are tried in the order you add them until one works.",
+            placeholder="https://your-libgen-mirror.example",
         ),
-        TextField(
-            key="LIBGEN_ADDITIONAL_URLS",
-            label="Additional Mirrors",
-            description="Comma-separated list of custom LibGen mirrors to add to the defaults.",
-        ),
-
         # === Z-LIBRARY ===
-        HeadingField(
-            key="zlib_mirrors_heading",
-            title="Z-Library",
-            description="Z-Library requires Cloudflare bypass. Only the primary mirror is used.",
+        TagListField(
+            key="ZLIB_MIRROR_URLS",
+            label="Z-Library",
+            description="Only the first mirror in the list is used.",
+            placeholder="https://your-zlibrary-mirror.example",
         ),
-        SelectField(
-            key="ZLIB_PRIMARY_URL",
-            label="Primary Mirror",
-            description="Z-Library mirror to use for downloads.",
-            options=_get_zlib_mirror_options,
-            default=DEFAULT_ZLIB_MIRRORS[0],
-        ),
-        TextField(
-            key="ZLIB_ADDITIONAL_URLS",
-            label="Additional Mirrors",
-            description="Comma-separated list of custom Z-Library mirror URLs.",
-        ),
-
         # === WELIB ===
-        HeadingField(
-            key="welib_mirrors_heading",
-            title="Welib",
-            description="Welib requires Cloudflare bypass. Only the primary mirror is used.",
-        ),
-        SelectField(
-            key="WELIB_PRIMARY_URL",
-            label="Primary Mirror",
-            description="Welib mirror to use for downloads.",
-            options=_get_welib_mirror_options,
-            default=DEFAULT_WELIB_MIRRORS[0],
-        ),
-        TextField(
-            key="WELIB_ADDITIONAL_URLS",
-            label="Additional Mirrors",
-            description="Comma-separated list of custom Welib mirror URLs.",
+        TagListField(
+            key="WELIB_MIRROR_URLS",
+            label="Welib",
+            description="Only the first mirror in the list is used.",
+            placeholder="https://your-welib-mirror.example",
         ),
     ]
 
 @register_settings("advanced", "Advanced", icon="cog", order=15)
-def advanced_settings():
+def advanced_settings() -> list[SettingsField]:
     """Advanced settings for power users."""
     return [
         TextField(
@@ -1695,8 +1785,16 @@ def advanced_settings():
             label="Custom Script Path Mode",
             description="Pass the path to the custom script as an absolute path or relative to the destination folder.",
             options=[
-                {"value": "absolute", "label": "Absolute", "description": "Pass the full destination path (default)."},
-                {"value": "relative", "label": "Relative", "description": "Pass the path relative to the destination folder."},
+                {
+                    "value": "absolute",
+                    "label": "Absolute",
+                    "description": "Pass the full destination path (default).",
+                },
+                {
+                    "value": "relative",
+                    "label": "Relative",
+                    "description": "Pass the path relative to the destination folder.",
+                },
             ],
             default="absolute",
         ),

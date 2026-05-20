@@ -8,7 +8,6 @@ from typing import Any
 
 from shelfmark.core.request_helpers import now_utc_iso
 
-
 VALID_ACTIVITY_ITEM_TYPES = frozenset({"download", "request"})
 ADMIN_VIEWER_SCOPE = "admin:shared"
 NOAUTH_VIEWER_SCOPE = "noauth:shared"
@@ -16,59 +15,69 @@ USER_VIEWER_SCOPE_PREFIX = "user:"
 
 
 def user_viewer_scope(user_id: int) -> str:
+    """Build the persisted viewer scope string for a specific user."""
     if not isinstance(user_id, int) or user_id < 1:
-        raise ValueError("user_id must be a positive integer")
+        msg = "user_id must be a positive integer"
+        raise ValueError(msg)
     return f"{USER_VIEWER_SCOPE_PREFIX}{user_id}"
 
 
-def normalize_viewer_scope(viewer_scope: Any) -> str:
+def normalize_viewer_scope(viewer_scope: object) -> str:
+    """Validate and normalize a persisted viewer scope string."""
     if not isinstance(viewer_scope, str) or not viewer_scope.strip():
-        raise ValueError("viewer_scope must be a non-empty string")
+        msg = "viewer_scope must be a non-empty string"
+        raise ValueError(msg)
 
     normalized = viewer_scope.strip()
     if normalized in {ADMIN_VIEWER_SCOPE, NOAUTH_VIEWER_SCOPE}:
         return normalized
 
     if not normalized.startswith(USER_VIEWER_SCOPE_PREFIX):
-        raise ValueError(
-            "viewer_scope must be one of: admin:shared, noauth:shared, or user:<id>"
-        )
+        msg = "viewer_scope must be one of: admin:shared, noauth:shared, or user:<id>"
+        raise ValueError(msg)
 
-    raw_user_id = normalized[len(USER_VIEWER_SCOPE_PREFIX):].strip()
+    raw_user_id = normalized[len(USER_VIEWER_SCOPE_PREFIX) :].strip()
     try:
         parsed_user_id = int(raw_user_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError("viewer_scope user id must be a positive integer") from exc
+        msg = "viewer_scope user id must be a positive integer"
+        raise ValueError(msg) from exc
 
     return user_viewer_scope(parsed_user_id)
 
 
-def _normalize_item_type(item_type: Any) -> str:
+def _normalize_item_type(item_type: object) -> str:
     if not isinstance(item_type, str) or not item_type.strip():
-        raise ValueError("item_type must be a non-empty string")
+        msg = "item_type must be a non-empty string"
+        raise ValueError(msg)
     normalized = item_type.strip().lower()
     if normalized not in VALID_ACTIVITY_ITEM_TYPES:
-        raise ValueError("item_type must be one of: download, request")
+        msg = "item_type must be one of: download, request"
+        raise ValueError(msg)
     return normalized
 
 
-def _normalize_item_key(item_key: Any, *, item_type: str) -> str:
+def _normalize_item_key(item_key: object, *, item_type: str) -> str:
     if not isinstance(item_key, str) or not item_key.strip():
-        raise ValueError("item_key must be a non-empty string")
+        msg = "item_key must be a non-empty string"
+        raise ValueError(msg)
 
     normalized = item_key.strip()
     expected_prefix = f"{item_type}:"
     if not normalized.startswith(expected_prefix):
-        raise ValueError(f"item_key must be in the format {expected_prefix}<id>")
+        msg_0 = f"item_key must be in the format {expected_prefix}<id>"
+        raise ValueError(msg_0)
     if not normalized.split(":", 1)[1].strip():
-        raise ValueError(f"item_key must be in the format {expected_prefix}<id>")
+        msg_0 = f"item_key must be in the format {expected_prefix}<id>"
+        raise ValueError(msg_0)
     return normalized
 
 
 class ActivityViewStateService:
     """Service for per-viewer activity dismissal and history visibility."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str) -> None:
+        """Initialize the service with the SQLite state database path."""
         self._db_path = db_path
         self._lock = threading.Lock()
 
@@ -84,6 +93,7 @@ class ActivityViewStateService:
         viewer_scope: str,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Return dismissed rows for a viewer, including cleared history entries."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
         normalized_limit = None if limit is None else max(1, int(limit))
         query = """
@@ -112,6 +122,7 @@ class ActivityViewStateService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """Return active dismissal history rows for a viewer."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
         normalized_limit = max(1, min(int(limit), 5000))
         normalized_offset = max(0, int(offset))
@@ -141,6 +152,7 @@ class ActivityViewStateService:
         item_type: str,
         item_key: str,
     ) -> int:
+        """Mark a single activity item as dismissed for a viewer."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
         normalized_type = _normalize_item_type(item_type)
         normalized_key = _normalize_item_key(item_key, item_type=normalized_type)
@@ -177,6 +189,7 @@ class ActivityViewStateService:
         viewer_scope: str,
         items: list[dict[str, str]],
     ) -> int:
+        """Mark multiple activity items as dismissed for a viewer."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
         if not items:
             return 0
@@ -215,7 +228,12 @@ class ActivityViewStateService:
                             dismissed_at = excluded.dismissed_at,
                             cleared_at = NULL
                         """,
-                        (normalized_scope, normalized_type, normalized_key, dismissed_at),
+                        (
+                            normalized_scope,
+                            normalized_type,
+                            normalized_key,
+                            dismissed_at,
+                        ),
                     )
                     rowcount = int(cursor.rowcount) if cursor.rowcount is not None else 0
                     total += max(rowcount, 0)
@@ -225,6 +243,7 @@ class ActivityViewStateService:
                 conn.close()
 
     def clear_history(self, *, viewer_scope: str) -> int:
+        """Mark all dismissed items as cleared for a viewer."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
         cleared_at = now_utc_iso()
 
@@ -248,6 +267,7 @@ class ActivityViewStateService:
                 conn.close()
 
     def clear_item_for_all_viewers(self, *, item_type: str, item_key: str) -> int:
+        """Delete a dismissed item record for every viewer."""
         normalized_type = _normalize_item_type(item_type)
         normalized_key = _normalize_item_key(item_key, item_type=normalized_type)
 
@@ -268,6 +288,7 @@ class ActivityViewStateService:
                 conn.close()
 
     def delete_viewer_scope(self, *, viewer_scope: str) -> int:
+        """Delete all activity-view state rows for a viewer scope."""
         normalized_scope = normalize_viewer_scope(viewer_scope)
 
         with self._lock:
@@ -284,24 +305,20 @@ class ActivityViewStateService:
                 conn.close()
 
     def delete_items(self, *, item_type: str, item_keys: list[str]) -> int:
+        """Delete multiple dismissed item records for a given item type."""
         normalized_type = _normalize_item_type(item_type)
         normalized_keys = [
-            _normalize_item_key(item_key, item_type=normalized_type)
-            for item_key in item_keys
+            _normalize_item_key(item_key, item_type=normalized_type) for item_key in item_keys
         ]
         if not normalized_keys:
             return 0
 
-        placeholders = ",".join("?" for _ in normalized_keys)
         with self._lock:
             conn = self._connect()
             try:
-                cursor = conn.execute(
-                    f"""
-                    DELETE FROM activity_view_state
-                    WHERE item_type = ? AND item_key IN ({placeholders})
-                    """,
-                    (normalized_type, *normalized_keys),
+                cursor = conn.executemany(
+                    "DELETE FROM activity_view_state WHERE item_type = ? AND item_key = ?",
+                    [(normalized_type, normalized_key) for normalized_key in normalized_keys],
                 )
                 conn.commit()
                 rowcount = int(cursor.rowcount) if cursor.rowcount is not None else 0

@@ -15,6 +15,12 @@ import pytest
 from shelfmark.core.user_db import UserDB
 
 
+def _set_config_dir(monkeypatch, config_dir: Path) -> None:
+    """Point config helpers at a test-local config directory."""
+    monkeypatch.setenv("CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", config_dir)
+
+
 @pytest.fixture
 def temp_config_dir():
     """Create a temporary config directory for tests."""
@@ -34,7 +40,9 @@ def mock_logger():
 class TestSecurityMigration:
     """Tests for migrating legacy security settings."""
 
-    def test_migrate_use_cwa_auth_true_syncs_legacy_admin(self, temp_config_dir, mock_logger, monkeypatch):
+    def test_migrate_use_cwa_auth_true_syncs_legacy_admin(
+        self, temp_config_dir, mock_logger, monkeypatch
+    ):
         """USE_CWA_AUTH=True migrates to cwa and keeps legacy creds synced to users DB."""
         config_root = temp_config_dir.parent
         monkeypatch.setenv("CONFIG_DIR", str(config_root))
@@ -48,7 +56,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(legacy_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -69,7 +80,9 @@ class TestSecurityMigration:
         assert user["auth_source"] == "builtin"
         assert user["password_hash"] == "hashed_password"
 
-    def test_migrate_use_cwa_auth_false_with_credentials(self, temp_config_dir, mock_logger, monkeypatch):
+    def test_migrate_use_cwa_auth_false_with_credentials(
+        self, temp_config_dir, mock_logger, monkeypatch
+    ):
         """USE_CWA_AUTH=False with creds migrates to builtin and syncs users DB."""
         config_root = temp_config_dir.parent
         monkeypatch.setenv("CONFIG_DIR", str(config_root))
@@ -83,7 +96,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(legacy_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -109,7 +125,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(legacy_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -137,9 +156,14 @@ class TestSecurityMigration:
             return {}
 
         with patch("shelfmark.config.security.load_config_file", side_effect=_load_config):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
-                    with patch("shelfmark.core.settings_registry.save_config_file") as mock_save_config:
+                    with patch(
+                        "shelfmark.core.settings_registry.save_config_file"
+                    ) as mock_save_config:
                         with patch("shelfmark.config.security.logger", mock_logger):
                             from shelfmark.config.security import _migrate_security_settings
 
@@ -166,9 +190,14 @@ class TestSecurityMigration:
             return {}
 
         with patch("shelfmark.config.security.load_config_file", side_effect=_load_config):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
-                    with patch("shelfmark.core.settings_registry.save_config_file") as mock_save_config:
+                    with patch(
+                        "shelfmark.core.settings_registry.save_config_file"
+                    ) as mock_save_config:
                         with patch("shelfmark.config.security.logger", mock_logger):
                             from shelfmark.config.security import _migrate_security_settings
 
@@ -188,7 +217,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(legacy_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -214,7 +246,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(legacy_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=legacy_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -240,7 +275,9 @@ class TestSecurityMigration:
 
                 _migrate_security_settings()
 
-        mock_logger.debug.assert_any_call("No existing security config file found - nothing to migrate")
+        mock_logger.debug.assert_any_call(
+            "No existing security config file found - nothing to migrate"
+        )
 
     def test_migrate_no_changes_needed(self, temp_config_dir, mock_logger):
         """No-op migration should not rewrite config."""
@@ -253,7 +290,10 @@ class TestSecurityMigration:
         config_file.write_text(json.dumps(modern_config, indent=2))
 
         with patch("shelfmark.config.security.load_config_file", return_value=modern_config.copy()):
-            with patch("shelfmark.core.settings_registry._get_config_file_path", return_value=str(config_file)):
+            with patch(
+                "shelfmark.core.settings_registry._get_config_file_path",
+                return_value=str(config_file),
+            ):
                 with patch("shelfmark.core.settings_registry._ensure_config_dir"):
                     with patch("shelfmark.config.security.logger", mock_logger):
                         from shelfmark.config.security import _migrate_security_settings
@@ -271,6 +311,7 @@ class TestSecuritySettings:
         """CWA remains selectable but warns when the DB is unavailable."""
         with patch("shelfmark.config.env.CWA_DB_PATH", None):
             import importlib
+
             import shelfmark.config.security
 
             importlib.reload(shelfmark.config.security)
@@ -296,6 +337,7 @@ class TestSecuritySettings:
 
         with patch("shelfmark.config.env.CWA_DB_PATH", mock_path):
             import importlib
+
             import shelfmark.config.security
 
             importlib.reload(shelfmark.config.security)
@@ -339,13 +381,25 @@ class TestSecuritySettings:
         assert "inactive" in hint.label.lower()
         assert "local admin" in hint.label.lower()
 
+    def test_oidc_admin_requirement_hint_absent_when_local_auth_is_disabled(self):
+        """OIDC mode should not show the local-admin warning when local auth is disabled."""
+        from shelfmark.config.security import security_settings
+
+        with patch("shelfmark.config.env.DISABLE_LOCAL_AUTH", True):
+            fields = security_settings()
+
+        hint = next((f for f in fields if f.key == "oidc_admin_requirement"), None)
+        assert hint is None
+
     def test_builtin_option_label_is_local(self):
         """Builtin auth option should be labeled Local."""
         from shelfmark.config.security import security_settings
 
         fields = security_settings()
         auth_field = next((f for f in fields if f.key == "AUTH_METHOD"), None)
-        builtin_option = next((opt for opt in auth_field.options if opt["value"] == "builtin"), None)
+        builtin_option = next(
+            (opt for opt in auth_field.options if opt["value"] == "builtin"), None
+        )
         assert builtin_option is not None
         assert builtin_option["label"] == "Local"
 
@@ -366,7 +420,7 @@ class TestSecurityOnSave:
     def test_on_save_passthrough_for_non_oidc(self, tmp_path, monkeypatch):
         from shelfmark.config.security import _on_save_security
 
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        _set_config_dir(monkeypatch, tmp_path)
         values = {"AUTH_METHOD": "builtin", "PROXY_AUTH_USER_HEADER": "X-Auth-User"}
 
         result = _on_save_security(values.copy())
@@ -377,7 +431,7 @@ class TestSecurityOnSave:
     def test_on_save_blocks_oidc_without_local_admin(self, tmp_path, monkeypatch):
         from shelfmark.config.security import _on_save_security
 
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        _set_config_dir(monkeypatch, tmp_path)
         UserDB(str(tmp_path / "users.db")).initialize()
 
         result = _on_save_security({"AUTH_METHOD": "oidc"})
@@ -385,22 +439,114 @@ class TestSecurityOnSave:
         assert result["error"] is True
         assert "local admin" in result["message"].lower()
 
-    def test_on_save_allows_oidc_with_local_password_admin(self, tmp_path, monkeypatch):
+    def test_on_save_allows_oidc_without_local_admin_when_local_auth_is_disabled(
+        self, tmp_path, monkeypatch
+    ):
         from shelfmark.config.security import _on_save_security
 
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        _set_config_dir(monkeypatch, tmp_path)
+        UserDB(str(tmp_path / "users.db")).initialize()
+
+        with patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", True):
+            result = _on_save_security(
+                {
+                    "AUTH_METHOD": "oidc",
+                    "OIDC_DISCOVERY_URL": (
+                        "https://auth.example.com/.well-known/openid-configuration"
+                    ),
+                    "OIDC_CLIENT_ID": "shelfmark",
+                    "OIDC_CLIENT_SECRET": "secret123",
+                }
+            )
+
+        assert result["error"] is False
+
+    def test_on_save_blocks_oidc_when_client_id_is_missing(self, tmp_path, monkeypatch):
+        from shelfmark.config.security import _on_save_security
+
+        _set_config_dir(monkeypatch, tmp_path)
         user_db = UserDB(str(tmp_path / "users.db"))
         user_db.initialize()
         user_db.create_user(username="admin", password_hash="hash", role="admin")
 
-        result = _on_save_security({"AUTH_METHOD": "oidc"})
+        result = _on_save_security(
+            {
+                "AUTH_METHOD": "oidc",
+                "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
+                "OIDC_CLIENT_SECRET": "secret123",
+            }
+        )
 
-        assert result["error"] is False
+        assert result["error"] is True
+        assert "client id" in result["message"].lower()
 
-    def test_on_save_normalizes_oidc_discovery_url(self, tmp_path, monkeypatch):
+    def test_on_save_blocks_oidc_when_discovery_url_is_missing(self, tmp_path, monkeypatch):
         from shelfmark.config.security import _on_save_security
 
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        _set_config_dir(monkeypatch, tmp_path)
+        user_db = UserDB(str(tmp_path / "users.db"))
+        user_db.initialize()
+        user_db.create_user(username="admin", password_hash="hash", role="admin")
+
+        result = _on_save_security(
+            {
+                "AUTH_METHOD": "oidc",
+                "OIDC_CLIENT_ID": "shelfmark",
+                "OIDC_CLIENT_SECRET": "secret123",
+            }
+        )
+
+        assert result["error"] is True
+        assert "discovery url" in result["message"].lower()
+
+    def test_on_save_blocks_oidc_when_secret_is_missing(self, tmp_path, monkeypatch):
+        from shelfmark.config.security import _on_save_security
+
+        _set_config_dir(monkeypatch, tmp_path)
+        user_db = UserDB(str(tmp_path / "users.db"))
+        user_db.initialize()
+        user_db.create_user(username="admin", password_hash="hash", role="admin")
+
+        result = _on_save_security(
+            {
+                "AUTH_METHOD": "oidc",
+                "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
+                "OIDC_CLIENT_ID": "shelfmark",
+            }
+        )
+
+        assert result["error"] is True
+        assert "client secret" in result["message"].lower()
+
+    def test_on_save_allows_oidc_with_existing_saved_secret(self, tmp_path, monkeypatch):
+        from shelfmark.config.security import _on_save_security
+        from shelfmark.core.settings_registry import save_config_file
+
+        _set_config_dir(monkeypatch, tmp_path)
+        user_db = UserDB(str(tmp_path / "users.db"))
+        user_db.initialize()
+        user_db.create_user(username="admin", password_hash="hash", role="admin")
+        save_config_file(
+            "security",
+            {
+                "AUTH_METHOD": "oidc",
+                "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
+                "OIDC_CLIENT_ID": "existing-client",
+                "OIDC_CLIENT_SECRET": "saved-secret",
+            },
+        )
+
+        result = _on_save_security({"AUTH_METHOD": "oidc", "OIDC_CLIENT_ID": "updated-client"})
+
+        assert result["error"] is False
+        assert result["values"]["OIDC_CLIENT_ID"] == "updated-client"
+
+    def test_on_save_normalizes_oidc_discovery_url_without_stripping_trailing_slash(
+        self, tmp_path, monkeypatch
+    ):
+        from shelfmark.config.security import _on_save_security
+
+        _set_config_dir(monkeypatch, tmp_path)
         values = {"OIDC_DISCOVERY_URL": " 'auth.example.com/.well-known/openid-configuration/' "}
 
         result = _on_save_security(values)
@@ -408,13 +554,13 @@ class TestSecurityOnSave:
         assert result["error"] is False
         assert (
             result["values"]["OIDC_DISCOVERY_URL"]
-            == "https://auth.example.com/.well-known/openid-configuration"
+            == "https://auth.example.com/.well-known/openid-configuration/"
         )
 
     def test_on_save_normalizes_proxy_logout_url(self, tmp_path, monkeypatch):
         from shelfmark.config.security import _on_save_security
 
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        _set_config_dir(monkeypatch, tmp_path)
         values = {"PROXY_AUTH_LOGOUT_URL": "auth.example.com/logout"}
 
         result = _on_save_security(values)

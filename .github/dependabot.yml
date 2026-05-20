@@ -1,29 +1,63 @@
 version: 2
 updates:
   # Python dependencies
-  - package-ecosystem: "pip"
+  # Dependabot supports uv version updates, but GitHub currently lists uv
+  # security updates as "Not applicable"; daily checks keep uv.lock moving
+  # while repo-level Dependabot alerts/security updates cover supported ecosystems.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
+      time: "05:00"
+      timezone: "Europe/London"
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
+    groups:
+      python-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Frontend npm dependencies
   - package-ecosystem: "npm"
     directory: "/src/frontend"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
+    groups:
+      npm-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
-  # Dockerfile base images
+  # Dockerfile base image digests. When a tag stays the same, Dependabot titles
+  # can only show digest prefixes, so keep the group name explicit.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
+    groups:
+      docker-base-image-digests:
+        patterns: ["*"]
+    ignore:
+      # Node.js: block major-version bumps so dependabot never proposes
+      # moving from one LTS line to a non-LTS "Current" release (e.g. 24 -> 25).
+      # Node LTS is even-numbered only; major bumps should be deliberate.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
+    groups:
+      gh-actions:
+        patterns: ["*"]

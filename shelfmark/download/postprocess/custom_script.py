@@ -1,3 +1,5 @@
+"""Custom script execution helpers for post-processing hooks."""
+
 from __future__ import annotations
 
 import json
@@ -5,15 +7,20 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import DownloadTask
 from shelfmark.download.fs import run_blocking_io
 
 from .steps import log_plan_steps, record_step
-from .types import PlanStep
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from shelfmark.core.models import DownloadTask
+
+    from .types import PlanStep
 
 logger = setup_logger(__name__)
 
@@ -29,7 +36,6 @@ def resolve_custom_script_target(target_path: Path, destination: Path, path_mode
     target is not within the destination, fall back to just the filename to
     avoid leaking unrelated absolute paths.
     """
-
     mode = (path_mode or "absolute").strip().lower()
     if mode != "relative":
         return target_path
@@ -44,17 +50,21 @@ def resolve_custom_script_target(target_path: Path, destination: Path, path_mode
 
 @dataclass(frozen=True)
 class CustomScriptExecution:
+    """Resolved command inputs for a single custom script run."""
+
     script_path: str
     target_arg: Path
     target_abs: Path
     destination: Path
     mode: str
     phase: str
-    payload_json: Optional[str] = None
+    payload_json: str | None = None
 
 
 @dataclass(frozen=True)
 class CustomScriptTransferSummary:
+    """Transfer metadata exposed to custom post-process scripts."""
+
     op_counts: dict[str, int]
     use_hardlink: bool
     is_torrent: bool
@@ -63,14 +73,16 @@ class CustomScriptTransferSummary:
 
 @dataclass(frozen=True)
 class CustomScriptContext:
+    """Runtime context exposed to custom post-process scripts."""
+
     task: DownloadTask
     phase: str
     output_mode: str
-    destination: Optional[Path] = None
+    destination: Path | None = None
     final_paths: list[Path] = field(default_factory=list)
-    target_path: Optional[Path] = None
-    organization_mode: Optional[str] = None
-    transfer: Optional[CustomScriptTransferSummary] = None
+    target_path: Path | None = None
+    organization_mode: str | None = None
+    transfer: CustomScriptTransferSummary | None = None
     output_details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -81,8 +93,9 @@ def prepare_custom_script_execution(
     destination: Path,
     path_mode: str,
     phase: str,
-    payload: Optional[dict[str, Any]] = None,
+    payload: dict[str, Any] | None = None,
 ) -> CustomScriptExecution:
+    """Resolve script arguments and payload for a custom hook invocation."""
     mode = (path_mode or "absolute").strip().lower()
     if mode != "relative":
         mode = "absolute"
@@ -103,10 +116,11 @@ def run_custom_script(
     execution: CustomScriptExecution,
     *,
     task_id: str,
-    status_callback,
+    status_callback: Callable[[str, str | None], None],
     timeout_seconds: int = DEFAULT_CUSTOM_SCRIPT_TIMEOUT_SECONDS,
 ) -> bool:
-    cwd: Optional[str] = None
+    """Run a prepared custom script and report success."""
+    cwd: str | None = None
     if execution.mode == "relative":
         # Make relative paths unambiguous by running the script from the destination folder.
         cwd = str(execution.destination)
@@ -120,33 +134,41 @@ def run_custom_script(
     )
 
     try:
+        run_kwargs: dict[str, Any] = {
+            "check": True,
+            "timeout": timeout_seconds,
+            "capture_output": True,
+            "text": True,
+            "cwd": cwd,
+        }
         # If we are not sending a JSON payload, close stdin so scripts that try
-        # to read it won't block indefinitely.
-        stdin = None if execution.payload_json is not None else subprocess.DEVNULL
+        # to read it won't block indefinitely. When we do send a payload, let
+        # subprocess.run manage stdin implicitly via `input=` to avoid passing
+        # both arguments at once.
+        if execution.payload_json is None:
+            run_kwargs["stdin"] = subprocess.DEVNULL
+        else:
+            run_kwargs["input"] = execution.payload_json
+
         result = run_blocking_io(
             subprocess.run,
             [execution.script_path, str(execution.target_arg)],
-            check=True,
-            timeout=timeout_seconds,
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            stdin=stdin,
-            input=execution.payload_json,
+            **run_kwargs,
         )
         if result.stdout:
             logger.debug("Task %s: custom script stdout: %s", task_id, result.stdout.strip())
-        return True
     except FileNotFoundError:
-        logger.error("Task %s: custom script not found: %s", task_id, execution.script_path)
+        logger.exception("Task %s: custom script not found: %s", task_id, execution.script_path)
         status_callback("error", f"Custom script not found: {execution.script_path}")
         return False
     except PermissionError:
-        logger.error("Task %s: custom script not executable: %s", task_id, execution.script_path)
+        logger.exception(
+            "Task %s: custom script not executable: %s", task_id, execution.script_path
+        )
         status_callback("error", f"Custom script not executable: {execution.script_path}")
         return False
     except subprocess.TimeoutExpired:
-        logger.error(
+        logger.exception(
             "Task %s: custom script timed out after %ss: %s",
             task_id,
             timeout_seconds,
@@ -156,7 +178,7 @@ def run_custom_script(
         return False
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip() if exc.stderr else "No error output"
-        logger.error(
+        logger.exception(
             "Task %s: custom script failed (exit code %s): %s",
             task_id,
             exc.returncode,
@@ -164,14 +186,16 @@ def run_custom_script(
         )
         status_callback("error", f"Custom script failed: {stderr[:100]}")
         return False
+    else:
+        return True
 
 
 def _choose_custom_script_target(
     *,
-    explicit_target: Optional[Path],
-    destination: Optional[Path],
+    explicit_target: Path | None,
+    destination: Path | None,
     final_paths: list[Path],
-) -> Optional[Path]:
+) -> Path | None:
     if explicit_target is not None:
         return explicit_target
 
@@ -187,7 +211,9 @@ def _choose_custom_script_target(
     return destination
 
 
-def _build_custom_script_payload(context: CustomScriptContext, *, target_path: Path) -> dict[str, Any]:
+def _build_custom_script_payload(
+    context: CustomScriptContext, *, target_path: Path
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "version": 1,
         "phase": context.phase,
@@ -233,8 +259,8 @@ def _build_custom_script_payload(context: CustomScriptContext, *, target_path: P
 def maybe_run_custom_script(
     context: CustomScriptContext,
     *,
-    status_callback,
-    steps: Optional[list[PlanStep]] = None,
+    status_callback: Callable[[str, str | None], None],
+    steps: list[PlanStep] | None = None,
 ) -> bool:
     """Run the custom script hook (if configured).
 
@@ -242,7 +268,6 @@ def maybe_run_custom_script(
     This function is responsible for choosing the script target, building the
     optional JSON payload, and executing the script.
     """
-
     script_path = getattr(core_config.config, "CUSTOM_SCRIPT", None)
     if not isinstance(script_path, str) or not script_path.strip():
         return True
@@ -259,9 +284,10 @@ def maybe_run_custom_script(
         )
         return True
 
-    path_mode = core_config.config.get("CUSTOM_SCRIPT_PATH_MODE", "absolute")
+    configured_path_mode = core_config.config.get("CUSTOM_SCRIPT_PATH_MODE", "absolute")
+    path_mode = configured_path_mode if isinstance(configured_path_mode, str) else "absolute"
 
-    payload: Optional[dict[str, Any]] = None
+    payload: dict[str, Any] | None = None
     if core_config.config.get("CUSTOM_SCRIPT_JSON_PAYLOAD", False):
         payload = _build_custom_script_payload(context, target_path=target_path)
 
@@ -293,4 +319,6 @@ def maybe_run_custom_script(
         )
         log_plan_steps(context.task.task_id, steps)
 
-    return run_custom_script(execution, task_id=context.task.task_id, status_callback=status_callback)
+    return run_custom_script(
+        execution, task_id=context.task.task_id, status_callback=status_callback
+    )

@@ -1,25 +1,124 @@
 """Shared download client settings registration."""
 
-from contextlib import contextmanager
-from typing import Any, Dict, Optional
+from __future__ import annotations
+
+import importlib
+from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeGuard
 
 from shelfmark.core.settings_registry import (
-    register_settings,
-    HeadingField,
-    TextField,
-    PasswordField,
     ActionButton,
+    HeadingField,
+    PasswordField,
     SelectField,
+    SettingsField,
     TagListField,
+    TextField,
+    register_settings,
 )
-from shelfmark.core.utils import normalize_http_url, get_hardened_xmlrpc_client
+from shelfmark.core.utils import get_hardened_xmlrpc_client, normalize_http_url
 from shelfmark.download.network import get_ssl_verify
 
+try:
+    import qbittorrentapi as _qbittorrentapi
+except ImportError:
+    _ImportedQBittorrentApiError = RuntimeError
+    _ImportedQBittorrentLoginFailed = RuntimeError
+else:
+    _ImportedQBittorrentApiError = getattr(_qbittorrentapi, "APIError", RuntimeError)
+    _ImportedQBittorrentLoginFailed = getattr(_qbittorrentapi, "LoginFailed", RuntimeError)
+
+try:
+    from transmission_rpc import TransmissionError as _ImportedTransmissionError
+except ImportError:
+    _ImportedTransmissionError = RuntimeError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 # ==================== Test Connection Callbacks ====================
+_DELUGE_HOST_ENTRY_MIN_LENGTH = 2
+
+
+class _SessionWithVerify(Protocol):
+    verify: bool
+
+
+class _RequestsModuleWithSession(Protocol):
+    Session: Callable[..., _SessionWithVerify]
+
+
+class _TransmissionClientWithProtocol(Protocol):
+    protocol: str
+
+
+def _resolve_exception_type(candidate: object) -> type[Exception]:
+    if isinstance(candidate, type) and issubclass(candidate, Exception):
+        return candidate
+    return RuntimeError
+
+
+_QBittorrentApiError = _resolve_exception_type(_ImportedQBittorrentApiError)
+_QBittorrentLoginFailed = _resolve_exception_type(_ImportedQBittorrentLoginFailed)
+_TransmissionError = _resolve_exception_type(_ImportedTransmissionError)
+_QBITTORRENT_SETTINGS_ERRORS = (
+    _QBittorrentLoginFailed,
+    _QBittorrentApiError,
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+_TRANSMISSION_SETTINGS_ERRORS = (
+    _TransmissionError,
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+
+def _raise_runtime_error(message: str) -> NoReturn:
+    raise RuntimeError(message)
+
+
+def _is_requests_module_with_session(candidate: object) -> TypeGuard[_RequestsModuleWithSession]:
+    return callable(getattr(candidate, "Session", None))
+
+
+def _has_protocol_attr(candidate: object) -> TypeGuard[_TransmissionClientWithProtocol]:
+    return hasattr(candidate, "protocol")
+
+
+def _set_transmission_protocol_if_supported(client: object, protocol: str) -> None:
+    if protocol != "https" or not _has_protocol_attr(client):
+        return
+    with suppress(AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        client.protocol = protocol
+
+
+def _resolve_string_setting(
+    current_values: dict[str, Any],
+    config_get: Callable[[str, str], object],
+    key: str,
+    *,
+    default: str = "",
+) -> str:
+    current_value = current_values.get(key)
+    if isinstance(current_value, str) and current_value:
+        return current_value
+
+    config_value = config_get(key, default)
+    if isinstance(config_value, str) and config_value:
+        return config_value
+
+    return default
+
 
 @contextmanager
-def _transmission_session_verify_override(url: str):
+def _transmission_session_verify_override(url: str) -> Iterator[None]:
     """Ensure transmission-rpc constructor uses the configured TLS verify mode."""
     verify = get_ssl_verify(url)
     if verify:
@@ -27,34 +126,39 @@ def _transmission_session_verify_override(url: str):
         return
 
     try:
-        import transmission_rpc.client as transmission_rpc_client
-    except Exception:
+        transmission_rpc_client = importlib.import_module("transmission_rpc.client")
+    except ImportError:
         yield
         return
 
-    original_session_factory = transmission_rpc_client.requests.Session
+    requests_module = getattr(transmission_rpc_client, "requests", None)
+    if not _is_requests_module_with_session(requests_module):
+        yield
+        return
+
+    original_session_factory = requests_module.Session
 
     def _session_factory(*args: Any, **kwargs: Any) -> Any:
         session = original_session_factory(*args, **kwargs)
         session.verify = False
         return session
 
-    transmission_rpc_client.requests.Session = _session_factory
+    requests_module.Session = _session_factory
     try:
         yield
     finally:
-        transmission_rpc_client.requests.Session = original_session_factory
+        requests_module.Session = original_session_factory
 
 
-def _test_qbittorrent_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_qbittorrent_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the qBittorrent connection using current form values."""
     from shelfmark.core.config import config
 
     current_values = current_values or {}
 
-    raw_url = current_values.get("QBITTORRENT_URL") or config.get("QBITTORRENT_URL", "")
-    username = current_values.get("QBITTORRENT_USERNAME") or config.get("QBITTORRENT_USERNAME", "")
-    password = current_values.get("QBITTORRENT_PASSWORD") or config.get("QBITTORRENT_PASSWORD", "")
+    raw_url = _resolve_string_setting(current_values, config.get, "QBITTORRENT_URL")
+    username = _resolve_string_setting(current_values, config.get, "QBITTORRENT_USERNAME")
+    password = _resolve_string_setting(current_values, config.get, "QBITTORRENT_PASSWORD")
 
     if not raw_url:
         return {"success": False, "message": "qBittorrent URL is required"}
@@ -66,17 +170,23 @@ def _test_qbittorrent_connection(current_values: Optional[Dict[str, Any]] = None
         if not url:
             return {"success": False, "message": "qBittorrent URL is invalid"}
 
-        client = Client(host=url, username=username, password=password, VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(url))
+        client = Client(
+            host=url,
+            username=username,
+            password=password,
+            VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(url),
+        )
         client.auth_log_in()
         api_version = client.app.web_api_version
-        return {"success": True, "message": f"Connected to qBittorrent (API v{api_version})"}
     except ImportError:
         return {"success": False, "message": "qbittorrent-api package not installed"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+    except _QBITTORRENT_SETTINGS_ERRORS as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
+        return {"success": True, "message": f"Connected to qBittorrent (API v{api_version})"}
 
 
-def _test_transmission_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_transmission_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the Transmission connection using current form values."""
     from shelfmark.core.config import config
     from shelfmark.download.clients.torrent_utils import (
@@ -85,9 +195,9 @@ def _test_transmission_connection(current_values: Optional[Dict[str, Any]] = Non
 
     current_values = current_values or {}
 
-    raw_url = current_values.get("TRANSMISSION_URL") or config.get("TRANSMISSION_URL", "")
-    username = current_values.get("TRANSMISSION_USERNAME") or config.get("TRANSMISSION_USERNAME", "")
-    password = current_values.get("TRANSMISSION_PASSWORD") or config.get("TRANSMISSION_PASSWORD", "")
+    raw_url = _resolve_string_setting(current_values, config.get, "TRANSMISSION_URL")
+    username = _resolve_string_setting(current_values, config.get, "TRANSMISSION_USERNAME")
+    password = _resolve_string_setting(current_values, config.get, "TRANSMISSION_PASSWORD")
 
     if not raw_url:
         return {"success": False, "message": "Transmission URL is required"}
@@ -106,8 +216,8 @@ def _test_transmission_connection(current_values: Optional[Dict[str, Any]] = Non
             "host": host,
             "port": port,
             "path": path,
-            "username": username if username else None,
-            "password": password if password else None,
+            "username": username or None,
+            "password": password or None,
             "protocol": protocol,
         }
         try:
@@ -119,11 +229,7 @@ def _test_transmission_connection(current_values: Optional[Dict[str, Any]] = Non
             client_kwargs.pop("protocol", None)
             with _transmission_session_verify_override(url):
                 client = Client(**client_kwargs)
-            if protocol == "https" and hasattr(client, "protocol"):
-                try:
-                    setattr(client, "protocol", protocol)
-                except Exception:
-                    pass
+        _set_transmission_protocol_if_supported(client, protocol)
 
         # Keep session verify aligned for subsequent calls beyond constructor bootstrap.
         http_session = getattr(client, "_http_session", None)
@@ -132,25 +238,29 @@ def _test_transmission_connection(current_values: Optional[Dict[str, Any]] = Non
 
         session = client.get_session()
         version = session.version
-        return {"success": True, "message": f"Connected to Transmission {version}"}
     except ImportError:
         return {"success": False, "message": "transmission-rpc package not installed"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+    except _TRANSMISSION_SETTINGS_ERRORS as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
+        return {"success": True, "message": f"Connected to Transmission {version}"}
 
 
-def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_deluge_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test Deluge Web UI JSON-RPC connection using current form values."""
     from urllib.parse import urlparse
 
     import requests
+
     from shelfmark.core.config import config
 
     current_values = current_values or {}
 
-    raw_host = current_values.get("DELUGE_HOST") or config.get("DELUGE_HOST", "localhost")
-    raw_port = current_values.get("DELUGE_PORT") or config.get("DELUGE_PORT", "8112")
-    password = current_values.get("DELUGE_PASSWORD") or config.get("DELUGE_PASSWORD", "")
+    raw_host = _resolve_string_setting(
+        current_values, config.get, "DELUGE_HOST", default="localhost"
+    )
+    raw_port = _resolve_string_setting(current_values, config.get, "DELUGE_PORT", default="8112")
+    password = _resolve_string_setting(current_values, config.get, "DELUGE_PASSWORD")
 
     if not raw_host:
         return {"success": False, "message": "Deluge host is required"}
@@ -177,13 +287,12 @@ def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> 
         if parsed.port is not None:
             port = parsed.port
         base_path = (parsed.path or "").rstrip("/")
-    else:
-        # Allow "host:port" in DELUGE_HOST for convenience.
-        if ":" in raw_host and raw_host.count(":") == 1:
-            host_part, port_part = raw_host.split(":", 1)
-            if host_part and port_part.isdigit():
-                host = host_part
-                port = int(port_part)
+    # Allow "host:port" in DELUGE_HOST for convenience.
+    elif ":" in raw_host and raw_host.count(":") == 1:
+        host_part, port_part = raw_host.split(":", 1)
+        if host_part and port_part.isdigit():
+            host = host_part
+            port = int(port_part)
 
     rpc_url = f"{scheme}://{host}:{port}{base_path}/json"
 
@@ -195,8 +304,8 @@ def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> 
         if data.get("error"):
             error = data["error"]
             if isinstance(error, dict):
-                raise Exception(error.get("message") or str(error))
-            raise Exception(str(error))
+                raise RuntimeError(error.get("message") or str(error))
+            raise RuntimeError(str(error))
         return data.get("result")
 
     def get_daemon_version(session: requests.Session, rpc_id: int) -> Any:
@@ -204,7 +313,7 @@ def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> 
             methods = rpc_call(session, rpc_id, "system.listMethods")
             if isinstance(methods, list) and "daemon.get_version" in methods:
                 return rpc_call(session, rpc_id + 1, "daemon.get_version")
-        except Exception:
+        except requests.exceptions.RequestException, RuntimeError, ValueError, TypeError:
             # Fall back to daemon.info to preserve existing behavior.
             pass
 
@@ -226,7 +335,11 @@ def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> 
 
             host_id = hosts[0][0]
             for entry in hosts:
-                if isinstance(entry, list) and len(entry) >= 2 and entry[1] in {"127.0.0.1", "localhost"}:
+                if (
+                    isinstance(entry, list)
+                    and len(entry) >= _DELUGE_HOST_ENTRY_MIN_LENGTH
+                    and entry[1] in {"127.0.0.1", "localhost"}
+                ):
                     host_id = entry[0]
                     break
 
@@ -239,27 +352,36 @@ def _test_deluge_connection(current_values: Optional[Dict[str, Any]] = None) -> 
                 }
 
         version = get_daemon_version(session, 6)
-        return {"success": True, "message": f"Connected to Deluge {version}"}
-
     except requests.exceptions.ConnectionError:
         return {"success": False, "message": "Could not connect to Deluge Web UI"}
     except requests.exceptions.Timeout:
         return {"success": False, "message": "Connection timed out"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+    except (
+        requests.exceptions.RequestException,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        AttributeError,
+    ) as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
+        return {"success": True, "message": f"Connected to Deluge {version}"}
 
 
-def _test_rtorrent_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_rtorrent_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the rTorrent connection using current form values."""
-    from shelfmark.core.config import config
     import ssl
     from urllib.parse import urlparse
 
+    from shelfmark.core.config import config
+
     current_values = current_values or {}
 
-    raw_url = current_values.get("RTORRENT_URL") or config.get("RTORRENT_URL", "")
-    username = current_values.get("RTORRENT_USERNAME") or config.get("RTORRENT_USERNAME", "")
-    password = current_values.get("RTORRENT_PASSWORD") or config.get("RTORRENT_PASSWORD", "")
+    raw_url = _resolve_string_setting(current_values, config.get, "RTORRENT_URL")
+    username = _resolve_string_setting(current_values, config.get, "RTORRENT_USERNAME")
+    password = _resolve_string_setting(current_values, config.get, "RTORRENT_PASSWORD")
 
     if not raw_url:
         return {"success": False, "message": "rTorrent URL is required"}
@@ -270,7 +392,10 @@ def _test_rtorrent_connection(current_values: Optional[Dict[str, Any]] = None) -
 
     try:
         xmlrpc_client = get_hardened_xmlrpc_client()
+    except (RuntimeError, OSError, ValueError, TypeError) as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
 
+    try:
         # Add HTTP auth to URL if credentials provided
         if username and password:
             parsed = urlparse(url)
@@ -290,21 +415,29 @@ def _test_rtorrent_connection(current_values: Optional[Dict[str, Any]] = None) -
             rpc = xmlrpc_client.ServerProxy(rpc_url)
 
         version = rpc.system.client_version()
+    except (xmlrpc_client.Error, RuntimeError, OSError, ValueError, TypeError) as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+
+    else:
         return {"success": True, "message": f"Connected to rTorrent {version}"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
 
 
-def _test_nzbget_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_nzbget_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the NZBGet connection using current form values."""
     import requests
+
     from shelfmark.core.config import config
 
     current_values = current_values or {}
 
-    raw_url = current_values.get("NZBGET_URL") or config.get("NZBGET_URL", "")
-    username = current_values.get("NZBGET_USERNAME") or config.get("NZBGET_USERNAME", "nzbget")
-    password = current_values.get("NZBGET_PASSWORD") or config.get("NZBGET_PASSWORD", "")
+    raw_url = _resolve_string_setting(current_values, config.get, "NZBGET_URL")
+    username = _resolve_string_setting(
+        current_values,
+        config.get,
+        "NZBGET_USERNAME",
+        default="nzbget",
+    )
+    password = _resolve_string_setting(current_values, config.get, "NZBGET_PASSWORD")
 
     if not raw_url:
         return {"success": False, "message": "NZBGet URL is required"}
@@ -316,30 +449,44 @@ def _test_nzbget_connection(current_values: Optional[Dict[str, Any]] = None) -> 
     try:
         rpc_url = f"{url.rstrip('/')}/jsonrpc"
         payload = {"jsonrpc": "2.0", "method": "status", "params": [], "id": 1}
-        response = requests.post(rpc_url, json=payload, auth=(username, password), timeout=30, verify=get_ssl_verify(rpc_url))
+        response = requests.post(
+            rpc_url,
+            json=payload,
+            auth=(username, password),
+            timeout=30,
+            verify=get_ssl_verify(rpc_url),
+        )
         response.raise_for_status()
         result = response.json()
-        if "error" in result and result["error"]:
-            raise Exception(result["error"].get("message", "RPC error"))
+        if result.get("error"):
+            _raise_runtime_error(result["error"].get("message", "RPC error"))
         version = result.get("result", {}).get("Version", "unknown")
-        return {"success": True, "message": f"Connected to NZBGet {version}"}
     except requests.exceptions.ConnectionError:
         return {"success": False, "message": "Could not connect to NZBGet"}
     except requests.exceptions.Timeout:
         return {"success": False, "message": "Connection timed out"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+    except (
+        requests.exceptions.RequestException,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        TypeError,
+    ) as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
+        return {"success": True, "message": f"Connected to NZBGet {version}"}
 
 
-def _test_sabnzbd_connection(current_values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _test_sabnzbd_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the SABnzbd connection using current form values."""
     import requests
+
     from shelfmark.core.config import config
 
     current_values = current_values or {}
 
-    raw_url = current_values.get("SABNZBD_URL") or config.get("SABNZBD_URL", "")
-    api_key = current_values.get("SABNZBD_API_KEY") or config.get("SABNZBD_API_KEY", "")
+    raw_url = _resolve_string_setting(current_values, config.get, "SABNZBD_URL")
+    api_key = _resolve_string_setting(current_values, config.get, "SABNZBD_API_KEY")
 
     if not raw_url:
         return {"success": False, "message": "SABnzbd URL is required"}
@@ -357,16 +504,24 @@ def _test_sabnzbd_connection(current_values: Optional[Dict[str, Any]] = None) ->
         response.raise_for_status()
         result = response.json()
         version = result.get("version", "unknown")
-        return {"success": True, "message": f"Connected to SABnzbd {version}"}
     except requests.exceptions.ConnectionError:
         return {"success": False, "message": "Could not connect to SABnzbd"}
     except requests.exceptions.Timeout:
         return {"success": False, "message": "Connection timed out"}
-    except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+    except (
+        requests.exceptions.RequestException,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        TypeError,
+    ) as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+    else:
+        return {"success": True, "message": f"Connected to SABnzbd {version}"}
 
 
 # ==================== Download Clients Tab ====================
+
 
 @register_settings(
     name="prowlarr_clients",
@@ -374,7 +529,7 @@ def _test_sabnzbd_connection(current_values: Optional[Dict[str, Any]] = None) ->
     icon="cog",
     order=110,
 )
-def prowlarr_clients_settings():
+def prowlarr_clients_settings() -> list[SettingsField]:
     """Download client settings shared by external release sources."""
     return [
         # --- Torrent Client Selection ---
@@ -396,7 +551,6 @@ def prowlarr_clients_settings():
             ],
             default="",
         ),
-
         # --- qBittorrent Settings ---
         TextField(
             key="QBITTORRENT_URL",
@@ -458,7 +612,6 @@ def prowlarr_clients_settings():
             normalize_urls=False,
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
         ),
-
         # --- Transmission Settings ---
         TextField(
             key="TRANSMISSION_URL",
@@ -510,7 +663,6 @@ def prowlarr_clients_settings():
             placeholder="/downloads",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
         ),
-
         # --- Deluge Settings ---
         TextField(
             key="DELUGE_HOST",
@@ -565,7 +717,6 @@ def prowlarr_clients_settings():
             placeholder="/downloads",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
         ),
-
         # --- rTorrent Settings ---
         TextField(
             key="RTORRENT_URL",
@@ -621,7 +772,6 @@ def prowlarr_clients_settings():
             default="keep",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
         ),
-
         # --- Usenet Client Selection ---
         HeadingField(
             key="usenet_heading",
@@ -639,7 +789,6 @@ def prowlarr_clients_settings():
             ],
             default="",
         ),
-
         # --- NZBGet Settings ---
         TextField(
             key="NZBGET_URL",
@@ -686,7 +835,6 @@ def prowlarr_clients_settings():
             default="",
             show_when={"field": "PROWLARR_USENET_CLIENT", "value": "nzbget"},
         ),
-
         # --- SABnzbd Settings ---
         TextField(
             key="SABNZBD_URL",

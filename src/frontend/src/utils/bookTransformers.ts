@@ -1,4 +1,5 @@
-import { Book, Release } from '../types';
+import type { Book, Release } from '../types';
+import { isRecord, isStringArray } from './objectHelpers';
 
 /**
  * Raw metadata book data from the API (provider responses).
@@ -130,6 +131,25 @@ const humanizeSourceName = (value: string): string => {
     .join(' ');
 };
 
+const parseBookInfo = (value: unknown): Record<string, string | string[]> | undefined => {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const info: Record<string, string | string[]> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') {
+      info[key] = entry;
+      continue;
+    }
+    if (isStringArray(entry)) {
+      info[key] = entry;
+    }
+  }
+
+  return Object.keys(info).length > 0 ? info : undefined;
+};
+
 const transformSourceBackedDataToBook = (data: SourceBackedBookData): Book => {
   const displayName = humanizeSourceName(data.source);
 
@@ -167,10 +187,7 @@ export function transformReleaseToDirectBook(release: Release): Book {
     size: release.size,
     preview: extra.preview,
     publisher: extra.publisher,
-    info:
-      typeof extra.info === 'object' && extra.info !== null
-        ? extra.info as Record<string, string | string[]>
-        : undefined,
+    info: parseBookInfo(extra.info),
     description: extra.description,
     source_url: release.info_url || release.download_url,
   });

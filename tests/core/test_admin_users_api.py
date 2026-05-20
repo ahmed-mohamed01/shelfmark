@@ -7,7 +7,6 @@ Tests CRUD endpoints for managing users from the admin panel.
 import os
 import sqlite3
 import tempfile
-
 from unittest.mock import patch
 
 import pytest
@@ -101,10 +100,12 @@ class TestAdminUsersListEndpoint:
 
     def test_list_users_excludes_password_hash(self, admin_client, user_db):
         user_db.create_user(username="alice", password_hash="secret_hash")
+        user_db.create_user(username="bob", password_hash="another_secret_hash")
 
         resp = admin_client.get("/api/admin/users")
         users = resp.json
-        assert "password_hash" not in users[0]
+        assert users
+        assert all("password_hash" not in user for user in users)
 
     def test_list_users_includes_auth_source_and_is_active(self, admin_client, user_db):
         user_db.create_user(username="local_user", auth_source="builtin")
@@ -152,8 +153,10 @@ class TestAdminUsersListEndpoint:
         )
 
         with patch(
-            "shelfmark.core.admin_routes.load_config_file",
-            return_value={"OIDC_USE_ADMIN_GROUP": False},
+            "shelfmark.core.admin_routes.app_config.get",
+            side_effect=lambda key, default=None, user_id=None: {
+                "OIDC_USE_ADMIN_GROUP": False,
+            }.get(key, default),
         ):
             resp = admin_client.get("/api/admin/users")
 
@@ -219,7 +222,9 @@ class TestAdminUserCreateEndpoint:
         user = user_db.get_user(username="alice")
         assert user["password_hash"] is not None
         assert user["password_hash"] != "pass1234"
-        assert user["password_hash"].startswith("scrypt:") or user["password_hash"].startswith("pbkdf2:")
+        assert user["password_hash"].startswith("scrypt:") or user["password_hash"].startswith(
+            "pbkdf2:"
+        )
 
     def test_create_user_requires_admin(self, regular_client):
         resp = regular_client.post(
@@ -354,6 +359,18 @@ class TestAdminUserCreateEndpoint:
 
         assert resp.status_code == 201
         assert resp.json["username"] == "alice"
+
+    def test_create_user_allowed_without_session_in_no_auth(self, no_session_client, user_db):
+        resp = no_session_client.post(
+            "/api/admin/users",
+            json={"username": "alice", "password": "pass1234"},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json["username"] == "alice"
+        created = user_db.get_user(username="alice")
+        assert created is not None
+        assert created["role"] == "admin"
 
 
 # ---------------------------------------------------------------------------
@@ -518,13 +535,16 @@ class TestAdminUserUpdateEndpoint:
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
-            json={"settings": {"USER_NOTIFICATION_ROUTES": [{"event": "all", "url": "not-a-valid-url"}]}},
+            json={
+                "settings": {
+                    "USER_NOTIFICATION_ROUTES": [{"event": "all", "url": "not-a-valid-url"}]
+                }
+            },
         )
         assert resp.status_code == 400
         assert resp.json["error"] == "Invalid settings payload"
         assert any(
-            "Invalid value for USER_NOTIFICATION_ROUTES" in msg
-            for msg in resp.json["details"]
+            "Invalid value for USER_NOTIFICATION_ROUTES" in msg for msg in resp.json["details"]
         )
 
     def test_update_user_settings_accepts_valid_request_policy_rule(self, admin_client, user_db):
@@ -555,7 +575,9 @@ class TestAdminUserUpdateEndpoint:
             }
         ]
 
-    def test_update_user_settings_rejects_invalid_source_content_type_pair(self, admin_client, user_db):
+    def test_update_user_settings_rejects_invalid_source_content_type_pair(
+        self, admin_client, user_db
+    ):
         user = user_db.create_user(username="alice")
 
         resp = admin_client.put(
@@ -576,8 +598,7 @@ class TestAdminUserUpdateEndpoint:
         assert resp.status_code == 400
         assert resp.json["error"] == "Invalid settings payload"
         assert any(
-            "does not support content_type 'audiobook'" in msg
-            for msg in resp.json["details"]
+            "does not support content_type 'audiobook'" in msg for msg in resp.json["details"]
         )
 
     def test_update_settings_merges(self, admin_client, user_db):
@@ -630,9 +651,14 @@ class TestAdminUserUpdateEndpoint:
 
     def test_update_user_settings_null_policy_rules_accepted(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
-        user_db.set_user_settings(user["id"], {
-            "REQUEST_POLICY_RULES": [{"source": "prowlarr", "content_type": "audiobook", "mode": "request_release"}],
-        })
+        user_db.set_user_settings(
+            user["id"],
+            {
+                "REQUEST_POLICY_RULES": [
+                    {"source": "prowlarr", "content_type": "audiobook", "mode": "request_release"}
+                ],
+            },
+        )
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
@@ -644,19 +670,24 @@ class TestAdminUserUpdateEndpoint:
 
     def test_update_user_settings_mixed_null_and_values(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
-        user_db.set_user_settings(user["id"], {
-            "DESTINATION": "/books/alice",
-            "REQUEST_POLICY_DEFAULT_EBOOK": "request_book",
-        })
+        user_db.set_user_settings(
+            user["id"],
+            {
+                "DESTINATION": "/books/alice",
+                "REQUEST_POLICY_DEFAULT_EBOOK": "request_book",
+            },
+        )
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
-            json={"settings": {
-                "DESTINATION": None,
-                "BOOKLORE_LIBRARY_ID": "5",
-                "REQUEST_POLICY_DEFAULT_EBOOK": None,
-                "REQUEST_POLICY_DEFAULT_AUDIOBOOK": "download",
-            }},
+            json={
+                "settings": {
+                    "DESTINATION": None,
+                    "BOOKLORE_LIBRARY_ID": "5",
+                    "REQUEST_POLICY_DEFAULT_EBOOK": None,
+                    "REQUEST_POLICY_DEFAULT_AUDIOBOOK": "download",
+                }
+            },
         )
         assert resp.status_code == 200
         settings = user_db.get_user_settings(user["id"])
@@ -685,7 +716,9 @@ class TestAdminUserUpdateEndpoint:
         )
         assert resp.status_code == 400
         assert resp.json["error"] == "Invalid settings payload"
-        assert any("Setting not user-overridable: FILE_ORGANIZATION" in msg for msg in resp.json["details"])
+        assert any(
+            "Setting not user-overridable: FILE_ORGANIZATION" in msg for msg in resp.json["details"]
+        )
 
     def test_update_user_settings_rejects_lowercase_key(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -697,6 +730,26 @@ class TestAdminUserUpdateEndpoint:
         assert resp.status_code == 400
         assert resp.json["error"] == "Invalid settings payload"
         assert any("Unknown setting: destination" in msg for msg in resp.json["details"])
+
+    def test_update_user_settings_warns_when_runtime_refresh_fails(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+
+        with (
+            patch(
+                "shelfmark.core.admin_routes.app_config.refresh", side_effect=RuntimeError("boom")
+            ),
+            patch("shelfmark.core.admin_routes.logger.warning") as mock_warning,
+        ):
+            resp = admin_client.put(
+                f"/api/admin/users/{user['id']}",
+                json={"settings": {"DESTINATION": "/books/alice"}},
+            )
+
+        assert resp.status_code == 200
+        settings = user_db.get_user_settings(user["id"])
+        assert settings["DESTINATION"] == "/books/alice"
+        mock_warning.assert_called_once()
+        assert "failed to refresh runtime config" in mock_warning.call_args[0][0]
 
     def test_update_response_excludes_password_hash(self, admin_client, user_db):
         user = user_db.create_user(username="alice", password_hash="secret")
@@ -796,7 +849,9 @@ class TestAdminUserPasswordUpdate:
 
         updated = user_db.get_user(user_id=user["id"])
         assert updated["password_hash"] != "old_hash"
-        assert updated["password_hash"].startswith("scrypt:") or updated["password_hash"].startswith("pbkdf2:")
+        assert updated["password_hash"].startswith("scrypt:") or updated[
+            "password_hash"
+        ].startswith("pbkdf2:")
 
     def test_update_password_too_short(self, admin_client, user_db):
         """Password shorter than 4 characters should be rejected."""
@@ -944,7 +999,8 @@ class TestAdminSyncCwaUsersEndpoint:
         assert bob_original["email"] == "old@example.com"
 
         bob_cwa = next(
-            user for user in user_db.list_users()
+            user
+            for user in user_db.list_users()
             if user.get("auth_source") == "cwa" and user.get("email") == "bob@example.com"
         )
         assert bob_cwa["username"].startswith("bob__cwa")
@@ -982,8 +1038,11 @@ class TestAdminDownloadDefaults:
         import json
         from pathlib import Path
 
+        from shelfmark.core.config import config as app_config
+
         config_dir = str(tmp_path)
         monkeypatch.setenv("CONFIG_DIR", config_dir)
+        monkeypatch.delenv("INGEST_DIR", raising=False)
         monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", Path(config_dir))
         plugins_dir = tmp_path / "plugins"
         plugins_dir.mkdir()
@@ -996,6 +1055,9 @@ class TestAdminDownloadDefaults:
             "EMAIL_RECIPIENT": "reader@example.com",
         }
         (plugins_dir / "downloads.json").write_text(json.dumps(config))
+        app_config.refresh(force=True)
+        yield
+        app_config.refresh(force=True)
 
     def test_returns_download_defaults(self, admin_client):
         resp = admin_client.get("/api/admin/download-defaults")
@@ -1097,7 +1159,8 @@ class TestAdminDeliveryPreferences:
         (plugins_dir / "downloads.json").write_text(json.dumps(downloads_config))
 
         from shelfmark.core.config import config as app_config
-        app_config.refresh()
+
+        app_config.refresh(force=True)
 
     def test_returns_curated_fields_and_effective_values(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1181,7 +1244,8 @@ class TestAdminSearchPreferences:
         (plugins_dir / "search_mode.json").write_text(json.dumps(search_mode_config))
 
         from shelfmark.core.config import config as app_config
-        app_config.refresh()
+
+        app_config.refresh(force=True)
 
     def test_returns_curated_fields_and_effective_values(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1221,7 +1285,10 @@ class TestAdminSearchPreferences:
         assert data["effective"]["SEARCH_MODE"]["source"] == "user_override"
         assert data["effective"]["SEARCH_MODE"]["value"] == "universal"
         assert data["effective"]["METADATA_PROVIDER"]["source"] == "user_override"
-        assert data["effective"]["METADATA_PROVIDER_AUDIOBOOK"]["source"] in {"global_config", "default"}
+        assert data["effective"]["METADATA_PROVIDER_AUDIOBOOK"]["source"] in {
+            "global_config",
+            "default",
+        }
         assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["source"] == "user_override"
         assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["value"] == "prowlarr"
         assert data["effective"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"]["source"] == "user_override"
@@ -1268,7 +1335,8 @@ class TestAdminNotificationPreferences:
         (plugins_dir / "notifications.json").write_text(json.dumps(notifications_config))
 
         from shelfmark.core.config import config as app_config
-        app_config.refresh()
+
+        app_config.refresh(force=True)
 
     def test_returns_curated_fields_and_effective_values(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1341,7 +1409,8 @@ class TestAdminNotificationPreferencesTestAction:
         (plugins_dir / "notifications.json").write_text(json.dumps(notifications_config))
 
         from shelfmark.core.config import config as app_config
-        app_config.refresh()
+
+        app_config.refresh(force=True)
 
     def test_requires_admin(self, regular_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1375,9 +1444,7 @@ class TestAdminNotificationPreferencesTestAction:
 
         assert resp.status_code == 200
         assert resp.json["success"] is True
-        mock_send.assert_called_once_with(
-            ["ntfys://ntfy.sh/alice", "ntfys://ntfy.sh/alice-errors"]
-        )
+        mock_send.assert_called_once_with(["ntfys://ntfy.sh/alice", "ntfys://ntfy.sh/alice-errors"])
 
     def test_uses_effective_routes_when_payload_missing(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1500,7 +1567,8 @@ class TestAdminEffectiveSettings:
 
         # Ensure config singleton sees the current test env/config dir.
         from shelfmark.core.config import config as app_config
-        app_config.refresh()
+
+        app_config.refresh(force=True)
 
     def test_returns_effective_values_with_sources(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -1597,7 +1665,9 @@ class TestAdminUserDeleteEndpoint:
         assert resp.status_code == 200
         assert resp.json["success"] is True
 
-    def test_delete_active_oidc_user_allowed_when_auto_provision_enabled(self, admin_client, user_db):
+    def test_delete_active_oidc_user_allowed_when_auto_provision_enabled(
+        self, admin_client, user_db
+    ):
         user = user_db.create_user(
             username="oidcuser",
             oidc_subject="sub-123",
@@ -1624,6 +1694,24 @@ class TestAdminUserDeleteEndpoint:
         assert resp.json["success"] is True
         assert user_db.get_user(user_id=user["id"]) is None
 
+    def test_delete_own_account_rejected(self, admin_client, user_db):
+        user = user_db.create_user(
+            username="onlyadmin",
+            password_hash="hashed_pw",
+            role="admin",
+        )
+
+        with admin_client.session_transaction() as sess:
+            sess["user_id"] = user["username"]
+            sess["db_user_id"] = user["id"]
+            sess["is_admin"] = True
+
+        resp = admin_client.delete(f"/api/admin/users/{user['id']}")
+
+        assert resp.status_code == 400
+        assert resp.json["error"] == "Cannot delete your own account"
+        assert user_db.get_user(user_id=user["id"]) is not None
+
 
 # ---------------------------------------------------------------------------
 # OIDC lockout prevention (security on_save handler)
@@ -1638,12 +1726,14 @@ class TestOIDCLockoutPrevention:
         """Point CONFIG_DIR to a temp dir so _on_save_security can find users.db."""
         config_dir = str(tmp_path)
         monkeypatch.setenv("CONFIG_DIR", config_dir)
+        monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", tmp_path)
         # Create user_db at the path _on_save_security will look for
         self._user_db = UserDB(os.path.join(config_dir, "users.db"))
         self._user_db.initialize()
 
     def _call_on_save(self, values):
         from shelfmark.config.security import _on_save_security
+
         return _on_save_security(values)
 
     def test_oidc_blocked_without_local_admin(self):
@@ -1679,7 +1769,14 @@ class TestOIDCLockoutPrevention:
             password_hash="hashed_pw",
             role="admin",
         )
-        result = self._call_on_save({"AUTH_METHOD": "oidc"})
+        result = self._call_on_save(
+            {
+                "AUTH_METHOD": "oidc",
+                "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
+                "OIDC_CLIENT_ID": "shelfmark",
+                "OIDC_CLIENT_SECRET": "secret123",
+            }
+        )
         assert result["error"] is False
 
     def test_non_oidc_methods_not_blocked(self):

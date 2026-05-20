@@ -1,23 +1,85 @@
 """qBittorrent download client for Prowlarr integration."""
 
+from __future__ import annotations
+
+import os
 import time
+from http import HTTPStatus
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
-from typing import Optional, Tuple
+from typing import NoReturn, TypedDict
+
+import requests
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.utils import normalize_http_url
-from shelfmark.download.network import get_ssl_verify
 from shelfmark.download.clients import (
     DownloadClient,
     DownloadStatus,
     register_client,
 )
+from shelfmark.download.clients._coercion import (
+    coerce_optional_float,
+    coerce_optional_int,
+    config_text,
+    normalize_http_config_url,
+)
 from shelfmark.download.clients.torrent_utils import (
     extract_torrent_info,
 )
+from shelfmark.download.network import get_ssl_verify
+
+try:
+    import qbittorrentapi as _qbittorrentapi
+except ImportError:
+    _ImportedQBittorrentApiError = RuntimeError
+    _ImportedQBittorrentLoginFailed = RuntimeError
+else:
+    _ImportedQBittorrentApiError = getattr(_qbittorrentapi, "APIError", RuntimeError)
+    _ImportedQBittorrentLoginFailed = getattr(_qbittorrentapi, "LoginFailed", RuntimeError)
 
 logger = setup_logger(__name__)
+
+_HASH_LENGTH_40 = 40
+_HASH_LENGTH_ED2K = 32
+_HTTP_STATUS_FORBIDDEN = HTTPStatus.FORBIDDEN
+_HTTP_STATUS_NOT_FOUND = HTTPStatus.NOT_FOUND
+_ONE_WEEK_IN_SECONDS = 604800
+
+
+class _UnsafeQBittorrentPath:
+    pass
+
+
+_UNSAFE_QBITTORRENT_PATH = _UnsafeQBittorrentPath()
+
+
+class _QBittorrentAddKwargs(TypedDict, total=False):
+    rename: str
+    category: str
+    save_path: str
+    tags: str
+    seeding_time_limit: int
+    ratio_limit: float
+
+
+def _resolve_qbittorrent_exception_type(candidate: object) -> type[Exception]:
+    if isinstance(candidate, type) and issubclass(candidate, Exception):
+        return candidate
+    return RuntimeError
+
+
+_QBittorrentApiError = _resolve_qbittorrent_exception_type(_ImportedQBittorrentApiError)
+_QBittorrentLoginFailed = _resolve_qbittorrent_exception_type(_ImportedQBittorrentLoginFailed)
+_QBITTORRENT_CLIENT_ERRORS = (
+    _QBittorrentLoginFailed,
+    _QBittorrentApiError,
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def _hashes_match(hash1: str, hash2: str) -> bool:
@@ -25,11 +87,15 @@ def _hashes_match(hash1: str, hash2: str) -> bool:
     h1, h2 = hash1.lower(), hash2.lower()
     if h1 == h2:
         return True
-    if len(h1) == 40 and len(h2) == 32 and h1.endswith("00000000"):
-        return h1[:32] == h2
-    if len(h2) == 40 and len(h1) == 32 and h2.endswith("00000000"):
-        return h2[:32] == h1
+    if len(h1) == _HASH_LENGTH_40 and len(h2) == _HASH_LENGTH_ED2K and h1.endswith("00000000"):
+        return h1[:_HASH_LENGTH_ED2K] == h2
+    if len(h2) == _HASH_LENGTH_40 and len(h1) == _HASH_LENGTH_ED2K and h2.endswith("00000000"):
+        return h2[:_HASH_LENGTH_ED2K] == h1
     return False
+
+
+def _raise_runtime_error(message: str) -> NoReturn:
+    raise RuntimeError(message)
 
 
 def _normalize_tags(raw_tags: object) -> list[str]:
@@ -78,11 +144,29 @@ def _is_explicit_add_failure(raw_result: object) -> bool:
     return normalized in {"fail", "fails", "error", "errors"}
 
 
+def _build_qbittorrent_child_path(base_path: object, child_path: object) -> str | None:
+    """Build a qBittorrent-reported child path without allowing escape from base."""
+    if not isinstance(base_path, str) or not base_path:
+        return None
+    if not isinstance(child_path, str) or not child_path:
+        return None
+
+    child = child_path.replace("\\", "/")
+    posix_child = PurePosixPath(child)
+    windows_child = PureWindowsPath(child_path)
+    if posix_child.is_absolute() or windows_child.is_absolute() or windows_child.drive:
+        return None
+    if any(part == ".." for part in posix_child.parts):
+        return None
+
+    return os.path.normpath(str(Path(base_path) / child))
+
+
 @register_client("torrent")
 class QBittorrentClient(DownloadClient):
     """qBittorrent download client."""
 
-    def _is_torrent_loaded(self, torrent_hash: str) -> tuple[bool, Optional[str]]:
+    def _is_torrent_loaded(self, torrent_hash: str) -> tuple[bool, str | None]:
         """Check whether qBittorrent has registered a torrent yet.
 
         Uses `/api/v2/torrents/properties?hash=<hash>`.
@@ -92,9 +176,8 @@ class QBittorrentClient(DownloadClient):
 
         Notes:
             A false result with no error means "not loaded yet".
-        """
-        import requests
 
+        """
         url = f"{self._base_url}/api/v2/torrents/properties"
         params = {"hash": torrent_hash}
 
@@ -103,23 +186,24 @@ class QBittorrentClient(DownloadClient):
             response = self._client._session.get(url, params=params, timeout=10)
 
             # Re-authenticate and retry once on 403
-            if response.status_code == 403:
-                logger.debug("qBittorrent returned 403 for properties; re-authenticating and retrying")
+            if response.status_code == _HTTP_STATUS_FORBIDDEN:
+                logger.debug(
+                    "qBittorrent returned 403 for properties; re-authenticating and retrying"
+                )
                 self._client.auth_log_in()
                 response = self._client._session.get(url, params=params, timeout=10)
 
-            if response.status_code == 403:
+            if response.status_code == _HTTP_STATUS_FORBIDDEN:
                 return False, "qBittorrent authentication failed (HTTP 403)"
 
             # qBittorrent returns 404/409-ish responses depending on version when missing.
-            if response.status_code == 404:
+            if response.status_code == _HTTP_STATUS_NOT_FOUND:
                 return False, None
 
             response.raise_for_status()
-            return True, None
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
-            if status == 404:
+            if status == _HTTP_STATUS_NOT_FOUND:
                 return False, None
             if status:
                 return False, f"qBittorrent API request failed (HTTP {status})"
@@ -128,42 +212,54 @@ class QBittorrentClient(DownloadClient):
             return False, f"Cannot connect to qBittorrent at {self._base_url}"
         except requests.exceptions.Timeout:
             return False, f"qBittorrent request timed out at {self._base_url}"
-        except Exception as e:
+        except requests.exceptions.InvalidSchema:
+            return (
+                False,
+                "qBittorrent URL is invalid (missing http:// or https://). "
+                f"Configured: {self._base_url}",
+            )
+        except _QBITTORRENT_CLIENT_ERRORS as e:
             return False, f"qBittorrent API error: {type(e).__name__}: {e}"
+        else:
+            return True, None
 
     protocol = "torrent"
     name = "qbittorrent"
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize qBittorrent client with settings from config."""
         # Lazy import to avoid dependency issues if not using torrents
         from qbittorrentapi import Client
 
         raw_url = config.get("QBITTORRENT_URL", "")
         if not raw_url:
-            raise ValueError("QBITTORRENT_URL is required")
+            msg = "QBITTORRENT_URL is required"
+            raise ValueError(msg)
 
         # We use `_base_url` for direct HTTP calls, so it must be a fully-qualified URL.
-        self._base_url = normalize_http_url(raw_url)
+        self._base_url = normalize_http_config_url(raw_url, require_string=True)
         if not self._base_url:
-            raise ValueError("QBITTORRENT_URL is invalid")
+            msg = "QBITTORRENT_URL is invalid"
+            raise ValueError(msg)
+
+        username = config_text(config.get("QBITTORRENT_USERNAME", ""))
+        password = config_text(config.get("QBITTORRENT_PASSWORD", ""))
 
         # qbittorrent-api accepts either a full URL or host:port; prefer the normalized URL
         # for consistency.
         self._client = Client(
             host=self._base_url,
-            username=config.get("QBITTORRENT_USERNAME", ""),
-            password=config.get("QBITTORRENT_PASSWORD", ""),
+            username=username,
+            password=password,
             VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(self._base_url),
         )
-        self._category = config.get("QBITTORRENT_CATEGORY", "books")
-        self._download_dir = config.get("QBITTORRENT_DOWNLOAD_DIR", "")
+        self._category = config_text(config.get("QBITTORRENT_CATEGORY", "books"))
+        self._download_dir = config_text(config.get("QBITTORRENT_DOWNLOAD_DIR", ""))
         self._tags = _normalize_tags(config.get("QBITTORRENT_TAG", []))
 
-
     def _get_torrents_info(
-        self, torrent_hash: Optional[str] = None
-    ) -> tuple[list[SimpleNamespace], Optional[str]]:
+        self, torrent_hash: str | None = None
+    ) -> tuple[list[SimpleNamespace], str | None]:
         """Get torrent info using GET.
 
         Behaviors:
@@ -174,9 +270,8 @@ class QBittorrentClient(DownloadClient):
 
         Returns:
             (torrents, error_message)
-        """
-        import requests
 
+        """
         url = f"{self._base_url}/api/v2/torrents/info"
 
         def do_request(params: dict[str, str]) -> requests.Response:
@@ -188,13 +283,13 @@ class QBittorrentClient(DownloadClient):
             response: requests.Response,
             *,
             request_params: dict[str, str],
-        ) -> tuple[list[SimpleNamespace], Optional[str]]:
-            if response.status_code == 403:
+        ) -> tuple[list[SimpleNamespace], str | None]:
+            if response.status_code == _HTTP_STATUS_FORBIDDEN:
                 logger.debug("qBittorrent returned 403; re-authenticating and retrying")
                 self._client.auth_log_in()
                 response = self._client._session.get(url, params=request_params, timeout=10)
 
-            if response.status_code == 403:
+            if response.status_code == _HTTP_STATUS_FORBIDDEN:
                 logger.warning("qBittorrent authentication failed (HTTP 403)")
                 return [], "qBittorrent authentication failed (HTTP 403)"
 
@@ -236,48 +331,49 @@ class QBittorrentClient(DownloadClient):
 
                 return all_torrents, None
 
-            return torrents, None
-
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status:
-                logger.warning(f"qBittorrent API error (HTTP {status}): {e}")
+                logger.warning("qBittorrent API error (HTTP %s): %s", status, e)
                 return [], f"qBittorrent API request failed (HTTP {status})"
 
-            logger.warning(f"qBittorrent API error: {e}")
+            logger.warning("qBittorrent API error: %s", e)
             return [], "qBittorrent API request failed"
         except requests.exceptions.ConnectionError:
-            logger.warning(f"Cannot connect to qBittorrent at {self._base_url}")
+            logger.warning("Cannot connect to qBittorrent at %s", self._base_url)
             return [], f"Cannot connect to qBittorrent at {self._base_url}"
         except requests.exceptions.Timeout:
-            logger.warning(f"qBittorrent request timed out at {self._base_url}")
+            logger.warning("qBittorrent request timed out at %s", self._base_url)
             return [], f"qBittorrent request timed out at {self._base_url}"
-        except Exception as e:
-            logger.debug(f"Failed to get torrents info: {e}")
-            # requests raises InvalidSchema when the base URL doesn't include http(s)
-            if type(e).__name__ == "InvalidSchema":
-                return (
-                    [],
-                    "qBittorrent URL is invalid (missing http:// or https://). "
-                    f"Configured: {self._base_url}",
-                )
+        except requests.exceptions.InvalidSchema:
+            logger.debug("Failed to get torrents info: invalid qBittorrent URL: %s", self._base_url)
+            return (
+                [],
+                "qBittorrent URL is invalid (missing http:// or https://). "
+                f"Configured: {self._base_url}",
+            )
+        except _QBITTORRENT_CLIENT_ERRORS as e:
+            logger.debug("Failed to get torrents info: %s", e)
             return [], f"qBittorrent API error: {type(e).__name__}: {e}"
+        else:
+            return torrents, None
 
     @staticmethod
     def is_configured() -> bool:
         """Check if qBittorrent is configured and selected as the torrent client."""
-        client = config.get("PROWLARR_TORRENT_CLIENT", "")
-        url = normalize_http_url(config.get("QBITTORRENT_URL", ""))
+        client = config_text(config.get("PROWLARR_TORRENT_CLIENT", ""))
+        url = normalize_http_config_url(config.get("QBITTORRENT_URL", ""), require_string=True)
         return client == "qbittorrent" and bool(url)
 
-    def test_connection(self) -> Tuple[bool, str]:
+    def test_connection(self) -> tuple[bool, str]:
         """Test connection to qBittorrent."""
         try:
             self._client.auth_log_in()
             api_version = self._client.app.web_api_version
+        except _QBITTORRENT_CLIENT_ERRORS as e:
+            return False, f"Connection failed: {e!s}"
+        else:
             return True, f"Connected to qBittorrent (API v{api_version})"
-        except Exception as e:
-            return False, f"Connection failed: {str(e)}"
 
     def add_download(
         self,
@@ -285,62 +381,67 @@ class QBittorrentClient(DownloadClient):
         name: str,
         category: str | None = None,
         expected_hash: str | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> str:
-        """
-        Add torrent by URL (magnet or .torrent).
+        """Add torrent by URL (magnet or .torrent).
 
         Args:
             url: Magnet link or .torrent URL
             name: Display name for the torrent
             category: Category for organization (uses configured default if not specified)
             expected_hash: Optional info_hash hint (from Prowlarr)
+            **kwargs: Client-specific options passed through to the implementation.
 
         Returns:
             Torrent hash (info_hash).
 
         Raises:
             Exception: If adding fails.
+
         """
         try:
             # Use configured category if not explicitly provided
             category = category or self._category
             tags = self._tags
+            seeding_time_limit: int | None = None
+            ratio_limit: float | None = None
 
             # Ensure category exists (may already exist, which is fine)
             if category:
                 try:
                     self._client.torrents_create_category(name=category)
-                except Exception as e:
+                except _QBITTORRENT_CLIENT_ERRORS as e:
                     # Conflict409Error means category exists - that's expected
                     # Log other errors but continue since download may still work
                     if "Conflict" not in type(e).__name__ and "409" not in str(e):
                         logger.debug(
-                            f"Could not create category '{category}': {type(e).__name__}: {e}"
+                            "Could not create category '%s': %s: %s",
+                            category,
+                            type(e).__name__,
+                            e,
                         )
 
             torrent_info = extract_torrent_info(url, expected_hash=expected_hash)
             expected_hash = torrent_info.info_hash
             torrent_data = torrent_info.torrent_data
 
-            # Add the torrent - use file content if we have it, otherwise URL
-            add_kwargs = {
-                "rename": name,
-            }
+            # Per-torrent seeding limits from indexer
+            seeding_time_limit_value = kwargs.get("seeding_time_limit")
+            seeding_time_limit = coerce_optional_int(seeding_time_limit_value)
+            ratio_limit_value = kwargs.get("ratio_limit")
+            ratio_limit = coerce_optional_float(ratio_limit_value)
+
+            add_kwargs: _QBittorrentAddKwargs = {"rename": name}
             if category:
                 add_kwargs["category"] = category
             if self._download_dir:
                 add_kwargs["save_path"] = self._download_dir
             if tags:
                 add_kwargs["tags"] = ",".join(tags)
-
-            # Per-torrent seeding limits from indexer
-            seeding_time_limit = kwargs.get("seeding_time_limit")
             if seeding_time_limit is not None:
-                add_kwargs["seeding_time_limit"] = int(seeding_time_limit)
-            ratio_limit = kwargs.get("ratio_limit")
+                add_kwargs["seeding_time_limit"] = seeding_time_limit
             if ratio_limit is not None:
-                add_kwargs["ratio_limit"] = float(ratio_limit)
+                add_kwargs["ratio_limit"] = ratio_limit
 
             if torrent_data:
                 result = self._client.torrents_add(
@@ -356,13 +457,13 @@ class QBittorrentClient(DownloadClient):
                 )
 
             result_text = _normalize_add_result(result)
-            logger.debug(f"qBittorrent add result: {result_text}")
+            logger.debug("qBittorrent add result: %s", result_text)
 
             if not expected_hash:
-                raise Exception("Could not determine torrent hash from URL")
+                _raise_runtime_error("Could not determine torrent hash from URL")
 
             if _is_explicit_add_failure(result):
-                raise Exception(f"Failed to add torrent: {result_text}")
+                _raise_runtime_error(f"Failed to add torrent: {result_text}")
 
             # Some qBittorrent-compatible clients return HTTP 200 with an empty body
             # instead of qBittorrent's literal "Ok." response. Prefer verifying that
@@ -370,30 +471,31 @@ class QBittorrentClient(DownloadClient):
             for _ in range(10):
                 loaded, error = self._is_torrent_loaded(expected_hash)
                 if error:
-                    logger.debug(f"qBittorrent add_download: {error}")
+                    logger.debug("qBittorrent add_download: %s", error)
                 if loaded:
-                    logger.info(f"Added torrent: {expected_hash}")
+                    logger.info("Added torrent: %s", expected_hash)
                     return expected_hash.lower()
                 time.sleep(0.5)
 
             logger.warning(
-                "Torrent add was not confirmed within the visibility grace period "
-                f"(response={result_text or '<empty>'}), returning expected hash"
+                "Torrent add was not confirmed within the visibility grace period (response=%s), returning expected hash",
+                result_text,
             )
-            return expected_hash
-        except Exception as e:
-            logger.error(f"qBittorrent add failed: {e}")
+        except _QBITTORRENT_CLIENT_ERRORS:
+            logger.exception("qBittorrent add failed")
             raise
+        else:
+            return expected_hash
 
     def get_status(self, download_id: str) -> DownloadStatus:
-        """
-        Get torrent status by hash.
+        """Get torrent status by hash.
 
         Args:
             download_id: Torrent info_hash
 
         Returns:
             Current download status.
+
         """
         try:
             torrents, error = self._get_torrents_info(download_id)
@@ -405,7 +507,7 @@ class QBittorrentClient(DownloadClient):
                     t
                     for t in torrents
                     if isinstance(getattr(t, "hash", None), str)
-                    and _hashes_match(getattr(t, "hash"), download_id)
+                    and _hashes_match(t.hash, download_id)
                 ),
                 None,
             )
@@ -414,7 +516,10 @@ class QBittorrentClient(DownloadClient):
 
             # Map qBittorrent states to our states and user-friendly messages
             state_info = {
-                "downloading": ("downloading", None),  # None = use default progress message
+                "downloading": (
+                    "downloading",
+                    None,
+                ),  # None = use default progress message
                 "stalledDL": ("downloading", "Stalled"),
                 "metaDL": ("downloading", "Fetching metadata"),
                 "forcedDL": ("downloading", None),
@@ -449,7 +554,11 @@ class QBittorrentClient(DownloadClient):
                 message = "Complete"
 
             torrent_eta = getattr(torrent, "eta", 0)
-            eta = torrent_eta if isinstance(torrent_eta, int) and 0 < torrent_eta < 604800 else None
+            eta = (
+                torrent_eta
+                if isinstance(torrent_eta, int) and 0 < torrent_eta < _ONE_WEEK_IN_SECONDS
+                else None
+            )
 
             # Get file path for completed downloads
             file_path = None
@@ -468,12 +577,11 @@ class QBittorrentClient(DownloadClient):
                 download_speed=torrent_speed,
                 eta=eta,
             )
-        except Exception as e:
+        except _QBITTORRENT_CLIENT_ERRORS as e:
             return DownloadStatus.error(self._log_error("get_status", e))
 
-    def remove(self, download_id: str, delete_files: bool = False) -> bool:
-        """
-        Remove a torrent from qBittorrent.
+    def remove(self, download_id: str, *, delete_files: bool = False) -> bool:
+        """Remove a torrent from qBittorrent.
 
         Args:
             download_id: Torrent info_hash
@@ -481,21 +589,22 @@ class QBittorrentClient(DownloadClient):
 
         Returns:
             True if successful.
+
         """
         try:
-            self._client.torrents_delete(
-                torrent_hashes=download_id, delete_files=delete_files
-            )
+            self._client.torrents_delete(torrent_hashes=download_id, delete_files=delete_files)
             logger.info(
-                f"Removed torrent from qBittorrent: {download_id}"
-                + (" (with files)" if delete_files else "")
+                "Removed torrent from qBittorrent: %s%s",
+                download_id,
+                " (with files)" if delete_files else "",
             )
-            return True
-        except Exception as e:
+        except _QBITTORRENT_CLIENT_ERRORS as e:
             self._log_error("remove", e)
             return False
+        else:
+            return True
 
-    def get_download_path(self, download_id: str) -> Optional[str]:
+    def get_download_path(self, download_id: str) -> str | None:
         """Get the path where torrent files are located.
 
         Prefer `content_path` when available.
@@ -506,12 +615,10 @@ class QBittorrentClient(DownloadClient):
         - `/api/v2/torrents/files?hash=<hash>` for the first file name
         - join `save_path` with the torrent's top-level directory
         """
-        import os
-
         try:
             torrents, error = self._get_torrents_info(download_id)
             if error:
-                logger.debug(f"qBittorrent get_download_path: {error}")
+                logger.debug("qBittorrent get_download_path: %s", error)
                 return None
 
             torrent = next(
@@ -519,7 +626,7 @@ class QBittorrentClient(DownloadClient):
                     t
                     for t in torrents
                     if isinstance(getattr(t, "hash", None), str)
-                    and _hashes_match(getattr(t, "hash"), download_id)
+                    and _hashes_match(t.hash, download_id)
                 ),
                 None,
             )
@@ -527,11 +634,11 @@ class QBittorrentClient(DownloadClient):
                 return None
 
             return self._resolve_completed_download_path(torrent)
-        except Exception as e:
+        except _QBITTORRENT_CLIENT_ERRORS as e:
             self._log_error("get_download_path", e, level="debug")
             return None
 
-    def _resolve_completed_download_path(self, torrent: SimpleNamespace) -> Optional[str]:
+    def _resolve_completed_download_path(self, torrent: SimpleNamespace) -> str | None:
         """Resolve the completed path for a torrent.
 
         Centralizes the logic shared by `get_status()` and `get_download_path()`:
@@ -539,7 +646,6 @@ class QBittorrentClient(DownloadClient):
         - otherwise derive via properties+files
         - finally fall back to `save_path + name`
         """
-
         # Prefer content_path, but treat content_path == save_path as invalid.
         content_path = getattr(torrent, "content_path", "")
         save_path = getattr(torrent, "save_path", "")
@@ -549,28 +655,29 @@ class QBittorrentClient(DownloadClient):
         download_id = getattr(torrent, "hash", "")
         if isinstance(download_id, str) and download_id:
             derived = self._derive_download_path_from_files(download_id)
-            if derived:
+            if derived and not isinstance(derived, _UnsafeQBittorrentPath):
                 return derived
 
         # Legacy fallback: save_path + name (for older clients/emulators)
-        return self._build_path(
+        return _build_qbittorrent_child_path(
             getattr(torrent, "save_path", ""),
             getattr(torrent, "name", ""),
         )
 
-    def _derive_download_path_from_files(self, download_id: str) -> Optional[str]:
+    def _derive_download_path_from_files(
+        self, download_id: str
+    ) -> str | _UnsafeQBittorrentPath | None:
         """Derive completed download path using `/torrents/properties` + `/torrents/files`.
 
         This mirrors how common automation apps derive the path when
         `content_path` isn't provided.
         """
         import os
-        import requests
 
         def get_with_auth(url: str, params: dict[str, str]) -> requests.Response:
             self._client.auth_log_in()
             resp = self._client._session.get(url, params=params, timeout=10)
-            if resp.status_code == 403:
+            if resp.status_code == _HTTP_STATUS_FORBIDDEN:
                 logger.debug("qBittorrent returned 403; re-authenticating and retrying")
                 self._client.auth_log_in()
                 resp = self._client._session.get(url, params=params, timeout=10)
@@ -581,7 +688,7 @@ class QBittorrentClient(DownloadClient):
             files_url = f"{self._base_url}/api/v2/torrents/files"
 
             props_resp = get_with_auth(properties_url, {"hash": download_id})
-            if props_resp.status_code == 404:
+            if props_resp.status_code == _HTTP_STATUS_NOT_FOUND:
                 return None
             props_resp.raise_for_status()
             props = props_resp.json() if isinstance(props_resp.json(), dict) else {}
@@ -591,7 +698,7 @@ class QBittorrentClient(DownloadClient):
                 return None
 
             files_resp = get_with_auth(files_url, {"hash": download_id})
-            if files_resp.status_code == 404:
+            if files_resp.status_code == _HTTP_STATUS_NOT_FOUND:
                 return None
             files_resp.raise_for_status()
             files = files_resp.json() if isinstance(files_resp.json(), list) else []
@@ -606,16 +713,23 @@ class QBittorrentClient(DownloadClient):
             first_name_norm = first_name.replace("\\", "/")
             top_level = first_name_norm.split("/", 1)[0]
             if not top_level:
-                return None
+                return _UNSAFE_QBITTORRENT_PATH
 
-            return os.path.normpath(os.path.join(save_path, top_level))
-        except Exception as e:
-            logger.debug(f"qBittorrent could not derive path from files: {type(e).__name__}: {e}")
+            derived = _build_qbittorrent_child_path(save_path, top_level)
+            if derived is None:
+                return _UNSAFE_QBITTORRENT_PATH
+            return os.path.normpath(derived)
+        except _QBITTORRENT_CLIENT_ERRORS as e:
+            logger.debug(
+                "qBittorrent could not derive path from files: %s: %s",
+                type(e).__name__,
+                e,
+            )
             return None
 
     def find_existing(
-        self, url: str, category: Optional[str] = None
-    ) -> Optional[Tuple[str, DownloadStatus]]:
+        self, url: str, category: str | None = None
+    ) -> tuple[str, DownloadStatus] | None:
         """Check if a torrent for this URL already exists in qBittorrent."""
         try:
             torrent_info = extract_torrent_info(url)
@@ -624,7 +738,7 @@ class QBittorrentClient(DownloadClient):
 
             torrents, error = self._get_torrents_info(torrent_info.info_hash)
             if error:
-                logger.debug(f"qBittorrent find_existing: {error}")
+                logger.debug("qBittorrent find_existing: %s", error)
                 return None
 
             torrent = next(
@@ -632,15 +746,15 @@ class QBittorrentClient(DownloadClient):
                     t
                     for t in torrents
                     if isinstance(getattr(t, "hash", None), str)
-                    and _hashes_match(getattr(t, "hash"), torrent_info.info_hash)
+                    and _hashes_match(t.hash, torrent_info.info_hash)
                 ),
                 None,
             )
             if torrent and isinstance(getattr(torrent, "hash", None), str):
-                torrent_hash = getattr(torrent, "hash")
+                torrent_hash = torrent.hash
                 return (torrent_hash.lower(), self.get_status(torrent_hash.lower()))
-
+        except _QBITTORRENT_CLIENT_ERRORS as e:
+            logger.debug("Error checking for existing torrent: %s", e)
             return None
-        except Exception as e:
-            logger.debug(f"Error checking for existing torrent: {e}")
+        else:
             return None
