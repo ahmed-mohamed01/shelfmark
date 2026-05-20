@@ -688,6 +688,10 @@ class MonitoredDB:
         Only rows matching *source* are considered, so filesystem scans never
         prune audiobookshelf records and vice versa.
 
+        Rows with ``manual_override = 1`` are never pruned — the user
+        positively chose those attributions via Fix Match, so a sync that
+        doesn't re-discover their path must not silently delete them.
+
         Returns the number of deleted rows.
         """
 
@@ -701,6 +705,7 @@ class MonitoredDB:
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
                           AND source = ?
+                          AND manual_override = 0
                         """,
                         (entity_id, source),
                     )
@@ -723,6 +728,7 @@ class MonitoredDB:
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
                           AND source = ?
+                          AND manual_override = 0
                           AND path NOT IN (SELECT path FROM _prune_keep_paths)
                         """,
                         (entity_id, source),
@@ -735,6 +741,7 @@ class MonitoredDB:
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
                           AND source = ?
+                          AND manual_override = 0
                           AND path NOT IN ({placeholders})
                         """,
                         (entity_id, source, *keep_paths),
