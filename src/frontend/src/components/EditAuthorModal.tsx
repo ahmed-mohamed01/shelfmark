@@ -4,7 +4,7 @@ import { getMonitoredEntity, patchMonitoredEntity, MonitoredEntity, deleteMonito
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { showConfirm } from './ConfirmDialog';
 
-type MonitorMode = 'all' | 'missing' | 'upcoming';
+type MonitorMode = 'none' | 'all' | 'missing' | 'upcoming';
 
 interface ParsedEntitySettings {
   ebookAuthorDir: string;
@@ -15,7 +15,7 @@ interface ParsedEntitySettings {
 
 function parseEntitySettings(settings: Record<string, unknown>): ParsedEntitySettings {
   const validateMode = (v: unknown): MonitorMode =>
-    v === 'all' || v === 'missing' ? v : 'upcoming';
+    v === 'all' || v === 'missing' || v === 'upcoming' ? v : 'none';
   return {
     ebookAuthorDir: typeof settings.ebook_author_dir === 'string' ? settings.ebook_author_dir : '',
     audiobookAuthorDir: typeof settings.audiobook_author_dir === 'string' ? settings.audiobook_author_dir : '',
@@ -47,8 +47,8 @@ export const EditAuthorModal = ({
   const [error, setError] = useState<string | null>(null);
   const [ebookAuthorDir, setEbookAuthorDir] = useState('');
   const [audiobookAuthorDir, setAudiobookAuthorDir] = useState('');
-  const [monitorEbookMode, setMonitorEbookMode] = useState<MonitorMode>('upcoming');
-  const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<MonitorMode>('upcoming');
+  const [monitorEbookMode, setMonitorEbookMode] = useState<MonitorMode>('none');
+  const [monitorAudiobookMode, setMonitorAudiobookMode] = useState<MonitorMode>('none');
   const [entity, setEntity] = useState<MonitoredEntity | null>(null);
   const [ebookRoots, setEbookRoots] = useState<string[]>([]);
   const [audiobookRoots, setAudiobookRoots] = useState<string[]>([]);
@@ -96,8 +96,8 @@ export const EditAuthorModal = ({
       setError(null);
       setEbookAuthorDir('');
       setAudiobookAuthorDir('');
-      setMonitorEbookMode('upcoming');
-      setMonitorAudiobookMode('upcoming');
+      setMonitorEbookMode('none');
+      setMonitorAudiobookMode('none');
       setEntity(null);
       return;
     }
@@ -295,6 +295,7 @@ export const EditAuthorModal = ({
                       <option value="upcoming">Upcoming releases only</option>
                       <option value="missing">All missing</option>
                       <option value="all">All books</option>
+                      <option value="none">No monitoring</option>
                     </select>
                   </div>
                   <div className="space-y-1.5">
@@ -308,11 +309,12 @@ export const EditAuthorModal = ({
                       <option value="upcoming">Upcoming releases only</option>
                       <option value="missing">All missing</option>
                       <option value="all">All books</option>
+                      <option value="none">No monitoring</option>
                     </select>
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                  Controls which books are auto-monitored when syncing. "Upcoming" monitors unreleased books missing files. "Missing" monitors all books without files. "All" monitors every book.
+                  Controls which books are auto-monitored when syncing. "Upcoming" monitors unreleased books missing files. "Missing" monitors all books without files. "All" monitors every book. "No monitoring" tracks the author without auto-searching for any books.
                 </p>
               </div>
             </div>

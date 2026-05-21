@@ -554,16 +554,16 @@ export const MonitoredPage = ({
     author: { name: string; provider?: string; provider_id?: string; photo_url?: string; books_count?: number } | null;
     ebookAuthorDir: string;
     audiobookAuthorDir: string;
-    monitorEbookMode: 'all' | 'missing' | 'upcoming';
-    monitorAudiobookMode: 'all' | 'missing' | 'upcoming';
+    monitorEbookMode: 'none' | 'all' | 'missing' | 'upcoming';
+    monitorAudiobookMode: 'none' | 'all' | 'missing' | 'upcoming';
     visibility: 'public' | 'private';
   }>(() => ({
     open: false,
     author: null,
     ebookAuthorDir: '',
     audiobookAuthorDir: '',
-    monitorEbookMode: 'missing',
-    monitorAudiobookMode: 'missing',
+    monitorEbookMode: 'none',
+    monitorAudiobookMode: 'none',
     visibility: 'public',
   }));
 
@@ -2308,8 +2308,8 @@ export const MonitoredPage = ({
       author: { ...payload, name: normalized },
       ebookAuthorDir: ebookSuggestion,
       audiobookAuthorDir: audioSuggestion,
-      monitorEbookMode: 'missing',
-      monitorAudiobookMode: 'missing',
+      monitorEbookMode: 'none',
+      monitorAudiobookMode: 'none',
       visibility: 'public',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
@@ -2321,8 +2321,8 @@ export const MonitoredPage = ({
       author: null,
       ebookAuthorDir: '',
       audiobookAuthorDir: '',
-      monitorEbookMode: 'missing',
-      monitorAudiobookMode: 'missing',
+      monitorEbookMode: 'none',
+      monitorAudiobookMode: 'none',
       visibility: 'public',
     });
     setPathSuggestState({ kind: null, open: false, loading: false, parent: null, entries: [], error: null });
@@ -4282,7 +4282,7 @@ export const MonitoredPage = ({
                     <select
                       value={monitorModalState.monitorEbookMode}
                       onChange={(e) => {
-                        const value = e.target.value as 'all' | 'missing' | 'upcoming';
+                        const value = e.target.value as 'none' | 'all' | 'missing' | 'upcoming';
                         setMonitorModalState((prev) => ({ ...prev, monitorEbookMode: value }));
                       }}
                       className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
@@ -4290,6 +4290,7 @@ export const MonitoredPage = ({
                       <option value="all">Monitor all books</option>
                       <option value="missing">Monitor missing only</option>
                       <option value="upcoming">Monitor upcoming only</option>
+                      <option value="none">No monitoring</option>
                     </select>
                   </label>
 
@@ -4298,7 +4299,7 @@ export const MonitoredPage = ({
                     <select
                       value={monitorModalState.monitorAudiobookMode}
                       onChange={(e) => {
-                        const value = e.target.value as 'all' | 'missing' | 'upcoming';
+                        const value = e.target.value as 'none' | 'all' | 'missing' | 'upcoming';
                         setMonitorModalState((prev) => ({ ...prev, monitorAudiobookMode: value }));
                       }}
                       className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm"
@@ -4306,6 +4307,7 @@ export const MonitoredPage = ({
                       <option value="all">Monitor all books</option>
                       <option value="missing">Monitor missing only</option>
                       <option value="upcoming">Monitor upcoming only</option>
+                      <option value="none">No monitoring</option>
                     </select>
                   </label>
                 </div>

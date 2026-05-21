@@ -898,11 +898,11 @@ def scan_monitored_author_files(
 def normalize_monitor_mode(value: Any) -> str:
     """Validate and normalize a monitor mode string.
 
-    Valid values: "all", "missing", "upcoming". Defaults to "all" for
+    Valid values: "none", "all", "missing", "upcoming". Defaults to "all" for
     unrecognized input.
     """
     mode = str(value or "").strip().lower()
-    if mode not in {"all", "missing", "upcoming"}:
+    if mode not in {"none", "all", "missing", "upcoming"}:
         return "all"
     return mode
 
@@ -916,11 +916,13 @@ def compute_monitor_flag(
     """Determine whether a book should be auto-monitored given mode and availability.
 
     Args:
-        mode: Monitor mode — "all", "missing", or "upcoming".
+        mode: Monitor mode — "none", "all", "missing", or "upcoming".
         has_available: True if the book already has a matched local file.
         explicit_release_date: Parsed release date or None.
         today: Reference date for "upcoming" check.
     """
+    if mode == "none":
+        return False
     if mode == "all":
         return True
     if mode == "missing":
