@@ -2916,7 +2916,7 @@ export const MonitoredPage = ({
                   </div>
                 </div>
               </div>
-            ) : monitored.length === 0 ? (
+            ) : monitored.length === 0 && landingTab === 'authors' ? (
               <div className="rounded-2xl bg-white/0 dark:bg-white/0 py-10">
                 <div className="mx-auto max-w-md text-center">
                   <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-black/5 dark:bg-white/10">
