@@ -3923,7 +3923,7 @@ export const MonitoredPage = ({
                     />
                     </>
                   ) : landingTab === 'history' ? (
-                    <MonitoredHistoryTab onShowToast={onShowToast} exportRef={historyExportRef} clearRef={historyClearRef} dateRange={historyDateRange} />
+                    <MonitoredHistoryTab onShowToast={onShowToast} exportRef={historyExportRef} clearRef={historyClearRef} dateRange={historyDateRange} onNavigate={navigateToAuthorPage} />
                   ) : landingTab === 'authors' ? (
                     <MonitoredAuthorsView
                       viewMode={monitoredViewMode}

@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MouseEvent } from 'react';
 import { MonitoredEvent } from '../services/monitoredApi';
-import { parseEventMeta, formatEventDate } from './MonitoredEventRow';
+import { parseEventMeta, formatEventDate, MonitoredEventNavigate, buildNavigateHandler } from './MonitoredEventRow';
 import { ActivityProgressBar } from './activity/ActivityProgressBar';
 import { STATUS_BADGE_STYLES } from './activity/activityStyles';
 import { ActivityVisualStatus } from './activity/activityTypes';
@@ -17,6 +17,7 @@ interface MonitoredEventSessionRowProps {
   isActive: boolean;
   liveBook: Book | null;
   defaultExpanded?: boolean;
+  onNavigate?: MonitoredEventNavigate;
 }
 
 function fmtTime(iso: string): string {
@@ -106,6 +107,7 @@ export const MonitoredEventSessionRow = ({
   isActive,
   liveBook,
   defaultExpanded = false,
+  onNavigate,
 }: MonitoredEventSessionRowProps) => {
   const [expanded, setExpanded] = useState<boolean>(defaultExpanded);
 
@@ -113,6 +115,13 @@ export const MonitoredEventSessionRow = ({
   const chronological = useMemo(() => events.slice().reverse(), [events]);
   const earliest = chronological[0];
   const latest = events[0];
+
+  // Use the latest event as the navigation anchor — it carries the freshest
+  // book/author identifiers and cover URL for this session.
+  const handleNavigate = latest ? buildNavigateHandler(latest, onNavigate) : null;
+  const stopAndNavigate = handleNavigate
+    ? (e: MouseEvent) => { e.stopPropagation(); handleNavigate(); }
+    : null;
 
   // Pull the cover from any event in the session — the DB layer snapshots it
   // at insert time on every event for the same book.
@@ -136,24 +145,54 @@ export const MonitoredEventSessionRow = ({
   metaParts.push(`${events.length} event${events.length !== 1 ? 's' : ''}`);
   const metaLine = metaParts.join(' · ');
 
+  const toggleExpanded = () => setExpanded(v => !v);
+
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setExpanded(v => !v)}
-        className="w-full px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggleExpanded}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(); } }}
+        className="w-full px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left cursor-pointer"
       >
         <div className="flex gap-3 items-start">
-          <RowThumbnail
-            url={coverUrl ?? undefined}
-            alt={bookTitle || undefined}
-            kind="book"
-            className="w-12 h-18 shrink-0"
-          />
+          {stopAndNavigate ? (
+            <button
+              type="button"
+              onClick={stopAndNavigate}
+              className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+              aria-label={`Open ${bookTitle || authorName || 'item'}`}
+            >
+              <RowThumbnail
+                url={coverUrl ?? undefined}
+                alt={bookTitle || undefined}
+                kind="book"
+                className="w-12 h-18"
+              />
+            </button>
+          ) : (
+            <RowThumbnail
+              url={coverUrl ?? undefined}
+              alt={bookTitle || undefined}
+              kind="book"
+              className="w-12 h-18 shrink-0"
+            />
+          )}
           <div className="flex-1 min-w-0 py-0.5">
             <div className="flex items-start justify-between gap-2">
               <p className="text-sm truncate leading-tight min-w-0 flex-1">
-                <span className="font-semibold">{bookTitle || 'Unknown title'}</span>
+                {stopAndNavigate ? (
+                  <button
+                    type="button"
+                    onClick={stopAndNavigate}
+                    className="font-semibold text-left hover:underline cursor-pointer"
+                  >
+                    {bookTitle || 'Unknown title'}
+                  </button>
+                ) : (
+                  <span className="font-semibold">{bookTitle || 'Unknown title'}</span>
+                )}
                 {authorName ? <span className="opacity-60 text-xs"> — {authorName}</span> : null}
               </p>
               <div className="flex items-center gap-1 flex-shrink-0">
@@ -195,7 +234,7 @@ export const MonitoredEventSessionRow = ({
             </div>
           </div>
         </div>
-      </button>
+      </div>
 
       {isActive && livePct != null ? (
         <ActivityProgressBar status="downloading" progress={livePct} animated />

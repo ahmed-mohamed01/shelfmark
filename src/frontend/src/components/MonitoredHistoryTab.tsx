@@ -7,7 +7,7 @@ import {
   MonitoredEvent,
   MonitoredEventStats,
 } from '../services/monitoredApi';
-import { MonitoredEventRow, parseEventMeta, formatEventDate } from './MonitoredEventRow';
+import { MonitoredEventRow, parseEventMeta, formatEventDate, MonitoredEventNavigate } from './MonitoredEventRow';
 import { MonitoredEventSessionRow, SessionLatestStatus } from './MonitoredEventSessionRow';
 import { useRealtimeStatus } from '../hooks/useRealtimeStatus';
 import { Book } from '../types';
@@ -76,9 +76,10 @@ interface MonitoredHistoryTabProps {
   exportRef?: React.MutableRefObject<(() => void) | null>;
   clearRef?: React.MutableRefObject<(() => void) | null>;
   dateRange?: string;
+  onNavigate?: MonitoredEventNavigate;
 }
 
-export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRange: dateRangeProp }: MonitoredHistoryTabProps) => {
+export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRange: dateRangeProp, onNavigate }: MonitoredHistoryTabProps) => {
   const [events, setEvents] = useState<MonitoredEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -253,6 +254,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
       isActive={item.isActive}
       liveBook={item.activeTaskId ? lookupLiveBook(item.activeTaskId) : null}
       defaultExpanded={defaultExpanded}
+      onNavigate={onNavigate}
     />
   );
 
@@ -741,7 +743,7 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
                     );
                   }
 
-                  return <MonitoredEventRow key={item.event.id} event={item.event} />;
+                  return <MonitoredEventRow key={item.event.id} event={item.event} onNavigate={onNavigate} />;
                 })}
               </div>
             </div>

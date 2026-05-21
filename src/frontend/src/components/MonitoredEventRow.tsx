@@ -3,6 +3,33 @@ import { RowThumbnail } from './RowThumbnail';
 import { STATUS_BADGE_STYLES } from './activity/activityStyles';
 import { ActivityVisualStatus } from './activity/activityTypes';
 
+export type MonitoredEventNavigate = (payload: {
+  name: string;
+  monitoredEntityId?: number | null;
+  photo_url?: string | null;
+  initialBookQuery?: string;
+  initialBookProvider?: string | null;
+  initialBookProviderId?: string | null;
+}) => void;
+
+export function buildNavigateHandler(
+  ev: MonitoredEvent,
+  onNavigate: MonitoredEventNavigate | undefined,
+): (() => void) | null {
+  if (!onNavigate || !ev.author_name) return null;
+  const hasBook = !!(ev.book_provider_id && ev.book_provider && ev.book_title);
+  return () => onNavigate({
+    name: ev.author_name!,
+    monitoredEntityId: ev.entity_id,
+    photo_url: ev.author_photo_url,
+    ...(hasBook ? {
+      initialBookQuery: ev.book_title!,
+      initialBookProvider: ev.book_provider,
+      initialBookProviderId: ev.book_provider_id,
+    } : {}),
+  });
+}
+
 export function parseEventMeta(ev: MonitoredEvent): Record<string, any> | null {
   if (!ev.metadata_json) return null;
   try { return JSON.parse(ev.metadata_json); } catch { return null; }
@@ -50,13 +77,15 @@ function eventLabel(ev: MonitoredEvent): string {
 
 interface MonitoredEventRowProps {
   event: MonitoredEvent;
+  onNavigate?: MonitoredEventNavigate;
 }
 
-export const MonitoredEventRow = ({ event: ev }: MonitoredEventRowProps) => {
+export const MonitoredEventRow = ({ event: ev, onNavigate }: MonitoredEventRowProps) => {
   const meta = parseEventMeta(ev);
   const isError = ev.status === 'error' || ev.event_type === 'download_failed' || ev.event_type === 'author_sync_failed';
   const visualStatus = visualStatusFor(ev);
   const badgeStyle = STATUS_BADGE_STYLES[visualStatus];
+  const handleNavigate = buildNavigateHandler(ev, onNavigate);
 
   const hasBook = !!(ev.book_provider && ev.book_provider_id);
   const thumbUrl = hasBook ? ev.book_cover_url : ev.author_photo_url;
@@ -84,16 +113,42 @@ export const MonitoredEventRow = ({ event: ev }: MonitoredEventRowProps) => {
   return (
     <div className={`px-4 py-2 ${isError ? 'bg-red-500/5' : ''}`}>
       <div className="flex gap-3 items-start">
-        <RowThumbnail
-          url={thumbUrl ?? undefined}
-          alt={title}
-          kind={thumbKind}
-          className="w-12 h-18 shrink-0"
-        />
+        {handleNavigate ? (
+          <button
+            type="button"
+            onClick={handleNavigate}
+            className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+            aria-label={`Open ${title}`}
+          >
+            <RowThumbnail
+              url={thumbUrl ?? undefined}
+              alt={title}
+              kind={thumbKind}
+              className="w-12 h-18"
+            />
+          </button>
+        ) : (
+          <RowThumbnail
+            url={thumbUrl ?? undefined}
+            alt={title}
+            kind={thumbKind}
+            className="w-12 h-18 shrink-0"
+          />
+        )}
         <div className="flex-1 min-w-0 py-0.5">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm truncate leading-tight min-w-0 flex-1">
-              <span className="font-semibold">{title}</span>
+              {handleNavigate ? (
+                <button
+                  type="button"
+                  onClick={handleNavigate}
+                  className="font-semibold text-left hover:underline cursor-pointer"
+                >
+                  {title}
+                </button>
+              ) : (
+                <span className="font-semibold">{title}</span>
+              )}
               {author ? <span className="opacity-60 text-xs"> — {author}</span> : null}
             </p>
             <span className="text-[10px] text-gray-400 whitespace-nowrap flex-shrink-0">
