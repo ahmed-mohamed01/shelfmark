@@ -1026,6 +1026,7 @@ def download_settings() -> list[SettingsField]:
             default=[],
             env_supported=False,
             hidden_in_ui=True,
+            user_overridable=True,
         ),
         TagListField(
             key="MONITORED_AUDIOBOOK_ROOTS",
@@ -1034,6 +1035,7 @@ def download_settings() -> list[SettingsField]:
             default=[],
             env_supported=False,
             hidden_in_ui=True,
+            user_overridable=True,
         ),
         HeadingField(
             key="booklore_heading",
