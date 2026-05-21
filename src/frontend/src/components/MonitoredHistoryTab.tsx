@@ -415,7 +415,38 @@ export const MonitoredHistoryTab = ({ onShowToast, exportRef, clearRef, dateRang
         result.push(buildSessionItem(a.key, evs));
       }
     }
-    return result;
+
+    // Drop single file_imported events when a matching download_complete single
+    // exists for the same book (matched by entity_id/provider/provider_id within
+    // 60s) — they convey the same outcome to the user. Session-grouped rows
+    // already collapse naturally, so this only affects manual one-off downloads
+    // without a session_id.
+    const completeKeys = new Set<string>();
+    for (const item of result) {
+      if (item.kind === 'single' && item.event.event_type === 'download_complete') {
+        const ev = item.event;
+        completeKeys.add(`${ev.entity_id}|${ev.book_provider}|${ev.book_provider_id}`);
+      }
+    }
+    if (completeKeys.size === 0) return result;
+    const droppedImportedIds = new Set<number>();
+    for (const item of result) {
+      if (item.kind !== 'single' || item.event.event_type !== 'file_imported') continue;
+      const fi = item.event;
+      if (!completeKeys.has(`${fi.entity_id}|${fi.book_provider}|${fi.book_provider_id}`)) continue;
+      const fiTime = new Date(fi.created_at).getTime();
+      const hasNearbyComplete = result.some(other =>
+        other.kind === 'single'
+        && other.event.event_type === 'download_complete'
+        && other.event.entity_id === fi.entity_id
+        && other.event.book_provider === fi.book_provider
+        && other.event.book_provider_id === fi.book_provider_id
+        && Math.abs(new Date(other.event.created_at).getTime() - fiTime) < 60_000
+      );
+      if (hasNearbyComplete) droppedImportedIds.add(fi.id);
+    }
+    if (droppedImportedIds.size === 0) return result;
+    return result.filter(item => !(item.kind === 'single' && droppedImportedIds.has(item.event.id)));
   }, [events]);
 
   // Pass 2: annotate sessions with isActive from live WebSocket state. Cheap
