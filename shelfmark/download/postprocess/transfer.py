@@ -22,11 +22,8 @@ from shelfmark.download.fs import (
     atomic_move,
     run_blocking_io,
 )
-from shelfmark.download.postprocess.policy import (
-    get_file_organization,
-    get_template,
-    get_template_for_task,
-)
+from shelfmark.download.postprocess.monitored_overrides import get_template_for_task
+from shelfmark.download.postprocess.policy import get_file_organization
 
 from .scan import collect_directory_files, scan_directory_tree
 from .types import TransferPlan

@@ -71,10 +71,8 @@ def validate_destination(
 def get_final_destination(task: DownloadTask) -> Path:
     """Get final destination directory, with content-type routing support."""
     if task.destination_override:
-        try:
-            return Path(task.destination_override)
-        except Exception:
-            pass
+        from pathlib import Path
+        return Path(task.destination_override)
 
     is_audiobook = check_audiobook(task.content_type)
 
