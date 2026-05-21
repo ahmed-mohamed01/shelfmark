@@ -1247,6 +1247,25 @@ def evaluate_match(
                 retained_penalties.append(p)
         evidence.penalties = retained_penalties
 
+    # ---- Strong title disagreement on both sides = hard reject ----
+    # The filename title AND the file's embedded/source metadata title both
+    # actively disagree with the candidate book — the file itself is naming
+    # a different book on two independent channels. An ISBN/ASIN match would
+    # have stripped these penalties just above, so reaching here means we
+    # have contradicting title evidence on both sides with no identifier
+    # rescue. Symmetric with the identifier-mismatch hard-reject earlier.
+    if not evidence.hard_reject:
+        has_path_title_mismatch = any(
+            p["name"] == "title_mismatch" for p in evidence.penalties
+        )
+        has_meta_title_mismatch = any(
+            p["name"].endswith("_title_mismatch") and p["name"] != "title_mismatch"
+            for p in evidence.penalties
+        )
+        if has_path_title_mismatch and has_meta_title_mismatch:
+            evidence.hard_reject = True
+            evidence.hard_reject_reason = "title_mismatch_both_sides"
+
     # ---- Final decision ----
     if evidence.hard_reject:
         evidence.accept = False

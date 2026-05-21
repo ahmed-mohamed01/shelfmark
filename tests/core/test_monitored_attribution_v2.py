@@ -310,3 +310,48 @@ class TestAttributionDecisions:
         )
         assert r.book is None
         assert r.evidence.hard_reject is True
+
+    def test_title_disagreement_both_sides_hard_rejects(self):
+        # Filename title AND embedded title both strongly disagree with the
+        # candidate book — even when other signals (author folder, author
+        # trailer, position) align, this is the file unambiguously naming a
+        # different book. Reproduces the "In the City of Demons" vs file
+        # "Carl's Doomsday Scenario" scenario where book_spos happened to
+        # coincide.
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(
+            title="Carl's Doomsday Scenario: Dungeon Crawler Carl Book 2",
+            authors=["Matt Dinniman"],
+        )
+        r = pick_best_attribution(
+            path="/books/ebooks/fiction/Matt Dinniman/Dungeon Crawler Carl/2. Carl's Doomsday Scenario Dungeon Crawler Carl Book 2 - Matt Dinniman (2021).epub",
+            books=[_book("In the City of Demons", pos=2.0, series="Dungeon Crawler Carl")],
+            author_name="Matt Dinniman",
+            embedded=embedded,
+        )
+        assert r.book is None
+        assert r.evidence.hard_reject is True
+        assert r.evidence.hard_reject_reason == "title_mismatch_both_sides"
+
+    def test_title_disagreement_rescued_by_identifier(self):
+        # Same dual title disagreement as above, but the embedded ISBN matches
+        # the candidate book — identifier is a hard identity claim and should
+        # override the title-mismatch hard-reject. (Mirrors
+        # test_isbn_identifier_match_overrides_all but with both titles wrong.)
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(
+            title="Carl's Doomsday Scenario",
+            authors=["Matt Dinniman"],
+            isbn_13="9780441018864",
+        )
+        r = pick_best_attribution(
+            path="/lib/Matt Dinniman/Dungeon Crawler Carl/Carl's Doomsday Scenario - Matt Dinniman.epub",
+            books=[_book("In the City of Demons", pos=2.0,
+                         series="Dungeon Crawler Carl", isbn_13="9780441018864")],
+            author_name="Matt Dinniman",
+            embedded=embedded,
+        )
+        assert r.book is not None
+        assert r.evidence.hard_reject is False
