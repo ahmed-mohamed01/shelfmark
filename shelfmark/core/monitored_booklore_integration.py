@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import json
 from difflib import SequenceMatcher
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    import ssl
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
@@ -60,12 +63,12 @@ def _parse_json(raw: bytes, endpoint: str) -> Any:
     """Parse JSON bytes; raise ValueError with a useful preview on decode failure."""
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as err:
         preview = raw[:200].decode("utf-8", errors="replace")
-        raise ValueError(f"Booklore returned non-JSON from {endpoint!r}: {preview!r}")
+        raise ValueError(f"Booklore returned non-JSON from {endpoint!r}: {preview!r}") from err
 
 
-def _build_ssl_ctx(url: str):
+def _build_ssl_ctx(url: str) -> ssl.SSLContext:
     """Return an ssl.SSLContext that respects the CERTIFICATE_VALIDATION setting."""
     import ssl
 
@@ -155,7 +158,7 @@ def _find_booklore_author_books(
             timeout=15,
         )
         authors: list[dict[str, Any]] = data.get("content") or []
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — Booklore is external; any fetch failure (HTTP, SSL, JSON, auth) should degrade gracefully rather than crash the scan.
         logger.warning("Booklore: failed to fetch authors for %r: %s", author_name, exc)
         return [], True  # fetch failure → nothing to match, treat as complete
 
@@ -211,7 +214,7 @@ def _find_booklore_author_books(
                 params={"authors": matched_name, "size": 50, "page": page},
                 timeout=30,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — external API; bail out of pagination on any failure rather than crash the scan.
             logger.warning(
                 "Booklore: failed to fetch books for author %r page %d: %s — skipping prune",
                 matched_name,
@@ -298,7 +301,7 @@ def sync_booklore_availability_for_entity(
 
     try:
         token = _booklore_login(url, cfg["username"], cfg["password"])
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any auth or network failure degrades to skipping Booklore for this entity; no need to crash the scan.
         logger.warning("Booklore: login failed for entity_id=%s: %s", entity_id, exc)
         return {"bl_skipped": True, "reason": "login_failed"}
 
@@ -363,7 +366,7 @@ def sync_booklore_availability_for_entity(
             size_kb = primary.get("fileSizeKb")
             if size_kb is not None:
                 file_size = int(float(size_kb)) * 1024
-        except Exception as fp_exc:
+        except Exception as fp_exc:  # noqa: BLE001 — optional enrichment; fall back to the bare book payload if the file-detail endpoint fails.
             logger.debug("Booklore: could not fetch file path for book %s: %s", bl_id, fp_exc)
 
         # Drop rejected (path, book) pairs from consideration up front so the
@@ -398,7 +401,7 @@ def sync_booklore_availability_for_entity(
             from dataclasses import asdict as _asdict
 
             evidence_json = _json.dumps(_asdict(result.evidence), default=str)
-        except Exception:
+        except Exception:  # noqa: BLE001 — evidence is a diagnostic blob; if it fails to serialize, persist NULL rather than crash the whole upsert.
             evidence_json = None
 
         # Tier → status: confirmed = 'matched' (counts toward owned),
@@ -425,7 +428,7 @@ def sync_booklore_availability_for_entity(
             )
             kept_paths.append(path)
             matched += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — per-row failure (DB lock, JSON, constraint) is logged and counted as unmatched; one bad row must not abort the whole scan.
             logger.warning(
                 "Booklore: failed to upsert match for %r (entity=%s book=%s): %s",
                 path,

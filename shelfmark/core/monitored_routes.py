@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, Response, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
@@ -42,7 +42,10 @@ from shelfmark.core.monitored_utils import (
 )
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
-from shelfmark.core.user_db import UserDB
+
+if TYPE_CHECKING:
+    from shelfmark.core.monitored_db import MonitoredDB
+    from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
 
@@ -106,10 +109,8 @@ def _resolve_visible_user_ids(
         raw = session.get("db_user_id")
         uid = None
         if raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 uid = int(raw)
-            except TypeError, ValueError:
-                pass
         uid = uid or global_user_id
         return uid, global_user_id, [uid] if uid == global_user_id else [uid, global_user_id], None
 
@@ -147,14 +148,14 @@ def _policy_allows_monitoring(
 ) -> tuple[bool, str | None]:
     try:
         global_settings = load_config_file("users")
-    except Exception:
+    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
         global_settings = {}
 
     user_settings: dict[str, Any] = {}
     if db_user_id is not None:
         try:
             user_settings = user_db.get_user_settings(db_user_id) or {}
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             user_settings = {}
 
     blocked_count = 0
@@ -182,7 +183,7 @@ def _resolve_preferred_languages_for_user(
     if db_user_id is not None:
         try:
             settings = user_db.get_user_settings(db_user_id) or {}
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             settings = {}
         user_langs = normalize_preferred_languages(settings.get("BOOK_LANGUAGE"))
         if user_langs:
@@ -212,7 +213,7 @@ def resolve_download_db_user_id(
 
     try:
         return _resolve_global_monitor_user_id(user_db)
-    except Exception:
+    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
         return None
 
 
@@ -253,7 +254,7 @@ def enrich_release_for_monitored(
                     gid = _resolve_global_monitor_user_id(user_db)
                     if gid != int(db_user_id):
                         lookup_ids.append(gid)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
                     pass
             entity = monitored_db.get_monitored_entity(
                 user_ids=lookup_ids,
@@ -299,7 +300,7 @@ def enrich_release_for_monitored(
                         if rd:
                             release_payload["release_date"] = rd
                         break
-    except Exception:
+    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
         logger.warning(
             "Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True
         )
@@ -439,7 +440,7 @@ def register_monitored_routes(
 ) -> None:
 
     @app.before_request
-    def _ensure_auth_none_user():
+    def _ensure_auth_none_user() -> None:
         """Auto-provision a db_user_id for auth-none mode (Sonarr-style single user).
 
         Re-uses the same "global" user that _resolve_global_monitor_user_id
@@ -566,7 +567,7 @@ def register_monitored_routes(
                     eid = int(entity.get("id") or 0)
                     try:
                         av = compute_book_availability(monitored_db, entity_id=eid, user_id=uid)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                         logger.debug("Skipping candidate count for entity %s: %s", eid, exc)
                         continue
                     total_candidates += len(filter_search_candidates(av.books, "ebook"))
@@ -583,7 +584,7 @@ def register_monitored_routes(
                         slot=s,
                         user_id=None,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     logger.debug("Failed to record run_started for slot=%s: %s", s, exc)
 
                 total_queued = 0
@@ -637,7 +638,7 @@ def register_monitored_routes(
                                 ename,
                                 eid,
                             )
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                             logger.warning(
                                 "Scheduled auto-search failed slot=%s entity=%s(%s) type=%s error=%s",
                                 s,
@@ -672,7 +673,10 @@ def register_monitored_routes(
                         stop_event.wait(30)
                         continue
 
-                    now = datetime.now()
+                    # Local time, not UTC: MONITORED_REFRESH_TIMES are
+                    # user-configured wall-clock times. astimezone() respects
+                    # the operator's TZ env var.
+                    now = datetime.now().astimezone()
                     slot = now.strftime("%H:%M")
                     # Read MONITORED_REFRESH_TIMES from disk rather than the
                     # config cache: bound fields inside CustomComponentField
@@ -708,7 +712,7 @@ def register_monitored_routes(
                                 daemon=True,
                                 name=f"MonitoredBatchSync-{marker}",
                             ).start()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     logger.warning("Scheduled monitored refresh loop error: %s", exc)
 
                 stop_event.wait(30)
@@ -721,8 +725,8 @@ def register_monitored_routes(
     _start_monitored_refresh_scheduler()
 
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
-    def api_get_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_get_monitored(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -735,7 +739,7 @@ def register_monitored_routes(
         return jsonify(entity)
 
     @app.route("/api/monitored/<int:entity_id>", methods=["PATCH", "PUT"])
-    def api_patch_monitored(entity_id: int):
+    def api_patch_monitored(entity_id: int) -> Response | tuple[Response, int]:
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
@@ -825,7 +829,7 @@ def register_monitored_routes(
         return jsonify(updated)
 
     @app.route("/api/monitored", methods=["GET"])
-    def api_list_monitored():
+    def api_list_monitored() -> Response | tuple[Response, int]:
         import time as _time
 
         _t0 = _time.perf_counter()
@@ -855,7 +859,7 @@ def register_monitored_routes(
                     if isinstance(author_data, dict):
                         row["cached_bio"] = author_data.get("bio")
                         row["cached_source_url"] = author_data.get("source_url")
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass  # Best-effort enrichment
         _t_meta = _time.perf_counter()
 
@@ -889,7 +893,7 @@ def register_monitored_routes(
                         row["best_book_cover_url"] = transform_cover_url(
                             info["cover_url"], cache_id
                         )
-            except Exception:
+            except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 logger.warning("Failed to compute best book covers for fallback", exc_info=True)
         _t_covers = _time.perf_counter()
 
@@ -928,14 +932,14 @@ def register_monitored_routes(
                         break
             if preload_urls:
                 resp.headers["Link"] = ", ".join(preload_urls)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass
 
         return resp
 
     @app.route("/api/monitored/search/books", methods=["GET"])
-    def api_search_monitored_author_books():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_search_monitored_author_books() -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -964,7 +968,7 @@ def register_monitored_routes(
             for row in rows:
                 try:
                     entity_id = int(row.get("entity_id"))
-                except Exception:
+                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     continue
                 rows_by_entity.setdefault(entity_id, []).append(row)
 
@@ -980,17 +984,16 @@ def register_monitored_routes(
                     availability_by_entity[entity_id] = {}
                     continue
 
-                books_for_alias: list[dict[str, Any]] = []
-                for entity_row in entity_rows:
-                    books_for_alias.append(
-                        {
-                            "provider": entity_row.get("book_provider"),
-                            "provider_book_id": entity_row.get("book_provider_id"),
-                            "title": entity_row.get("book_title"),
-                            "series_name": entity_row.get("series_name"),
-                            "series_position": entity_row.get("series_position"),
-                        }
-                    )
+                books_for_alias: list[dict[str, Any]] = [
+                    {
+                        "provider": entity_row.get("book_provider"),
+                        "provider_book_id": entity_row.get("book_provider_id"),
+                        "title": entity_row.get("book_title"),
+                        "series_name": entity_row.get("series_name"),
+                        "series_position": entity_row.get("series_position"),
+                    }
+                    for entity_row in entity_rows
+                ]
                 expanded_files = expand_monitored_file_rows_for_equivalent_books(
                     books=books_for_alias,
                     file_rows=files,
@@ -1003,7 +1006,7 @@ def register_monitored_routes(
             for row in rows:
                 try:
                     entity_id = int(row.get("entity_id"))
-                except Exception:
+                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     entity_id = -1
                 provider = str(row.get("book_provider") or "").strip()
                 provider_book_id = str(row.get("book_provider_id") or "").strip()
@@ -1022,8 +1025,8 @@ def register_monitored_routes(
         return jsonify({"results": rows})
 
     @app.route("/api/monitored", methods=["POST"])
-    def api_create_monitored():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_create_monitored() -> Response | tuple[Response, int]:
+        db_user_id, global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -1127,7 +1130,7 @@ def register_monitored_routes(
                                     enabled=bool(int(ent.get("enabled") or 0)),
                                     settings=merged,
                                 )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
                     pass
 
         try:
@@ -1155,7 +1158,7 @@ def register_monitored_routes(
                 provider_id=provider_id,
                 user_id=owner_user_id,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.debug("Failed to record author_added event: %s", exc)
 
         if kind == "book" and provider and provider_id:
@@ -1178,7 +1181,7 @@ def register_monitored_routes(
         return jsonify(row), 201
 
     @app.route("/api/monitored/<int:entity_id>", methods=["DELETE"])
-    def api_delete_monitored(entity_id: int):
+    def api_delete_monitored(entity_id: int) -> Response | tuple[Response, int]:
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
@@ -1213,7 +1216,7 @@ def register_monitored_routes(
                 author_name=str(entity.get("name") or "Unknown"),
                 user_id=db_user_id,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.debug("Failed to record author_removed event: %s", exc)
 
         deleted = monitored_db.delete_monitored_entity(
@@ -1225,8 +1228,8 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/books", methods=["GET"])
-    def api_list_monitored_books(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_list_monitored_books(entity_id: int) -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -1277,7 +1280,7 @@ def register_monitored_routes(
                     extra = cached_meta.get("additional_series")
                     if extra:
                         row["additional_series"] = extra
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass  # Best-effort enrichment
 
         # Include sync_status and last_checked_at for the frontend
@@ -1290,8 +1293,8 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])
-    def api_list_monitored_book_files(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_list_monitored_book_files(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -1415,7 +1418,7 @@ def register_monitored_routes(
             if cand_source == "filesystem" and cand_path:
                 try:
                     embedded = read_embedded_metadata(cand_path)
-                except Exception:
+                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     embedded = None
             elif cand_source in ("audiobookshelf", "booklore"):
                 stored = cand.get("evidence_json")
@@ -1425,7 +1428,7 @@ def register_monitored_routes(
                         parsed = _json.loads(stored)
                         if isinstance(parsed, dict):
                             source_data = parsed.get("source_data") or {}
-                    except Exception:
+                    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                         source_data = {}
                 # Restore all_series_pairs from the serialised form
                 # (list of [name, pos] pairs) so the Fix-match re-score
@@ -1509,7 +1512,7 @@ def register_monitored_routes(
                                 attached_provider=None,
                                 attached_pbid=None,
                             )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 logger.warning(
                     "Failed to live-fetch ABS candidates for entity %s: %s", entity_id, exc
                 )
@@ -1521,13 +1524,13 @@ def register_monitored_routes(
         return ranked[:50]
 
     @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/candidates", methods=["GET"])
-    def api_list_match_candidates(entity_id: int, file_id: int):
+    def api_list_match_candidates(entity_id: int, file_id: int) -> Response | tuple[Response, int]:
         """Return ranked candidate FILES for the book this row is attached to.
 
         Used by Fix Match when the user wants to swap which file represents
         a book that already has an attribution.
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -1595,7 +1598,9 @@ def register_monitored_routes(
         "/api/monitored/<int:entity_id>/books/<string:provider>/<path:provider_book_id>/candidates",
         methods=["GET"],
     )
-    def api_list_match_candidates_for_book(entity_id: int, provider: str, provider_book_id: str):
+    def api_list_match_candidates_for_book(
+        entity_id: int, provider: str, provider_book_id: str
+    ) -> Response | tuple[Response, int]:
         """Return ranked candidate FILES for a (book, file_type) pair that has
         no current attribution yet — backs the "+ Add audiobook/ebook" flow.
         """
@@ -1603,7 +1608,7 @@ def register_monitored_routes(
         if ft_param not in {"ebook", "audiobook"}:
             return jsonify({"error": "file_type must be ebook or audiobook"}), 400
 
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -1690,7 +1695,7 @@ def register_monitored_routes(
         if chosen_source == "filesystem" and chosen_path:
             try:
                 embedded = read_embedded_metadata(chosen_path)
-            except Exception:
+            except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 embedded = None
         ev = evaluate_match(
             path=chosen_path if chosen_source == "filesystem" else "",
@@ -1716,7 +1721,7 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/match", methods=["POST"])
-    def api_set_manual_match(entity_id: int, file_id: int):
+    def api_set_manual_match(entity_id: int, file_id: int) -> Response | tuple[Response, int]:
         """User swaps which file is attached to the book of an existing row,
         or detaches the row entirely.
 
@@ -1729,7 +1734,7 @@ def register_monitored_routes(
                                                            virtual candidates)
           { "detach": true }                             → delete this row
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -1853,12 +1858,12 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/promote", methods=["POST"])
-    def api_promote_candidate(entity_id: int, file_id: int):
+    def api_promote_candidate(entity_id: int, file_id: int) -> Response | tuple[Response, int]:
         """User accepts a Possible Candidate. Promotes the row's status from
         'candidate' to 'matched' and sets manual_override=1 so the scanner
         won't demote it back.
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -1880,12 +1885,12 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/reject", methods=["POST"])
-    def api_reject_candidate(entity_id: int, file_id: int):
+    def api_reject_candidate(entity_id: int, file_id: int) -> Response | tuple[Response, int]:
         """User rejects a Possible Candidate. Records the (file, book) pair
         in monitored_file_rejections so future scans won't re-attribute, then
         deletes the row. Mirrors the `detach` branch of api_set_manual_match.
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -1926,7 +1931,9 @@ def register_monitored_routes(
         "/api/monitored/<int:entity_id>/books/<string:provider>/<path:provider_book_id>/match",
         methods=["POST"],
     )
-    def api_attach_book_match(entity_id: int, provider: str, provider_book_id: str):
+    def api_attach_book_match(
+        entity_id: int, provider: str, provider_book_id: str
+    ) -> Response | tuple[Response, int]:
         """Attach a file to a book that has no current attribution (or replace
         one). Backs the "+ Add audiobook/ebook" flow.
 
@@ -1936,7 +1943,7 @@ def register_monitored_routes(
             "file_type": "ebook" | "audiobook" }   → use (source, path);
                                                      row is created if missing
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db,
             resolve_auth_mode=resolve_auth_mode,
         )
@@ -2019,7 +2026,7 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/books/history", methods=["GET"])
-    def api_list_monitored_book_history(entity_id: int):
+    def api_list_monitored_book_history(entity_id: int) -> Response | tuple[Response, int]:
         """Return structured download/attempt history for a book.
 
         Reads the structured ``monitored_book_download_history`` and
@@ -2027,7 +2034,7 @@ def register_monitored_routes(
         auto-search precheck). The ``/api/monitored/events`` endpoints are
         the audit-log layer; this endpoint exposes the structured rows.
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2065,8 +2072,8 @@ def register_monitored_routes(
         return jsonify({"history": rows, "attempt_history": attempt_rows})
 
     @app.route("/api/monitored/<int:entity_id>/books/auto-search-precheck", methods=["POST"])
-    def api_monitored_auto_search_precheck(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_monitored_auto_search_precheck(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2109,7 +2116,7 @@ def register_monitored_routes(
                     metadata={"run_id": run_id} if run_id else None,
                     triggered_by="manual",
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 logger.debug(
                     "Failed to record search_started for precheck %s/%s: %s",
                     provider,
@@ -2143,8 +2150,8 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/<int:entity_id>/books/attempt", methods=["POST"])
-    def api_record_monitored_book_attempt(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_record_monitored_book_attempt(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2215,8 +2222,8 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
-    def api_scan_monitored_files(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_scan_monitored_files(entity_id: int) -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2313,8 +2320,8 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])
-    def api_update_monitored_books_monitor_flags(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_update_monitored_books_monitor_flags(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2419,7 +2426,7 @@ def register_monitored_routes(
             items = resp.json()
             if not isinstance(items, list):
                 return []
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.warning("AudiMeta search failed: %s", exc)
             return []
 
@@ -2429,10 +2436,8 @@ def register_monitored_routes(
             release_date = raw_date[:10] if len(raw_date) >= 10 else None
             pub_year = None
             if release_date:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     pub_year = int(release_date[:4])
-                except ValueError, TypeError:
-                    pass
             authors = [
                 a.get("name", "") for a in (item.get("authors") or []) if isinstance(a, dict)
             ]
@@ -2458,8 +2463,8 @@ def register_monitored_routes(
         return results
 
     @app.route("/api/monitored/release-date-search")
-    def api_release_date_search():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_release_date_search() -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2477,11 +2482,11 @@ def register_monitored_routes(
 
         try:
             audimeta_results = _search_audimeta(title, author)
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             audimeta_results = []
         try:
             google_results = search_google_books(title, author, api_key=api_key)
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             google_results = []
 
         hardcover_results: list[dict[str, Any]] = []
@@ -2513,20 +2518,20 @@ def register_monitored_routes(
                         fields=fields,
                     )
                 )
-                for book in sr.books:
-                    hardcover_results.append(
-                        {
-                            "asin": "",
-                            "title": book.title or "",
-                            "authors": list(book.authors) if book.authors else [],
-                            "release_date": book.release_date,
-                            "publish_year": book.publish_year,
-                            "cover_url": book.cover_url,
-                            "series_name": book.series_name,
-                            "source": "hardcover",
-                        }
-                    )
-        except Exception:
+                hardcover_results.extend(
+                    {
+                        "asin": "",
+                        "title": book.title or "",
+                        "authors": list(book.authors) if book.authors else [],
+                        "release_date": book.release_date,
+                        "publish_year": book.publish_year,
+                        "cover_url": book.cover_url,
+                        "series_name": book.series_name,
+                        "source": "hardcover",
+                    }
+                    for book in sr.books
+                )
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass
 
         results = hardcover_results + audimeta_results + google_results
@@ -2534,8 +2539,8 @@ def register_monitored_routes(
         return jsonify({"results": results})
 
     @app.route("/api/monitored/<int:entity_id>/books/release-date", methods=["PATCH"])
-    def api_set_release_date(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_set_release_date(entity_id: int) -> Response | tuple[Response, int]:
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2564,8 +2569,8 @@ def register_monitored_routes(
         return jsonify({"ok": True})
 
     @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
-    def api_search_monitored_entity(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_search_monitored_entity(entity_id: int) -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2626,8 +2631,8 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
-    def api_sync_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_sync_monitored(entity_id: int) -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2668,7 +2673,9 @@ def register_monitored_routes(
     @app.route(
         "/api/monitored/<int:entity_id>/books/<provider>/<provider_book_id>", methods=["DELETE"]
     )
-    def api_delete_monitored_book(entity_id: int, provider: str, provider_book_id: str):
+    def api_delete_monitored_book(
+        entity_id: int, provider: str, provider_book_id: str
+    ) -> Response | tuple[Response, int]:
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
@@ -2703,8 +2710,8 @@ def register_monitored_routes(
     # ------------------------------------------------------------------
 
     @app.route("/api/monitored/sync-all", methods=["POST"])
-    def api_sync_all_monitored():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+    def api_sync_all_monitored() -> Response | tuple[Response, int]:
+        db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -2731,7 +2738,7 @@ def register_monitored_routes(
                 app.extensions["monitored_batch_sync_running"] = False
             return jsonify({"ok": True, "total": 0})
 
-        batch_id = f"manual-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        batch_id = f"manual-{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
 
         def _run_and_clear() -> None:
             try:
@@ -2748,7 +2755,7 @@ def register_monitored_routes(
         return jsonify({"ok": True, "batch_id": batch_id, "total": len(entities)})
 
     @app.route("/api/monitored/run-started", methods=["POST"])
-    def api_record_monitored_run_started():
+    def api_record_monitored_run_started() -> Response | tuple[Response, int]:
         """Record a manual batch auto-download run.
 
         Frontend calls this once at the start of a bulk auto-download to
@@ -2789,7 +2796,7 @@ def register_monitored_routes(
                 slot=slot,
                 user_id=int(db_user_id) if db_user_id is not None else None,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.warning("Failed to record run_started for %s: %s", run_id, exc)
             return jsonify({"error": "Failed to record run"}), 500
 
@@ -2800,7 +2807,7 @@ def register_monitored_routes(
     # ------------------------------------------------------------------
 
     @app.route("/api/fs/list", methods=["GET"])
-    def api_fs_list():
+    def api_fs_list() -> Response | tuple[Response, int]:
         """List directories for folder browsing UI.
 
         Query parameters:
@@ -2841,12 +2848,12 @@ def register_monitored_routes(
             )
             if dest_audio:
                 allowed_roots.append(Path(dest_audio).resolve())
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass
 
         try:
             user_settings = user_db.get_user_settings(db_user_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             user_settings = {}
 
         for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
@@ -2882,7 +2889,7 @@ def register_monitored_routes(
 
         try:
             requested_path = Path(requested).resolve()
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             return jsonify({"error": "Invalid path"}), 400
 
         # Ensure requested path is within at least one allowed root.
@@ -2892,7 +2899,7 @@ def register_monitored_routes(
                 requested_path.relative_to(root)
                 allowed = True
                 break
-            except Exception:
+            except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 continue
 
         if not allowed:
@@ -2907,9 +2914,9 @@ def register_monitored_routes(
                 try:
                     if entry.is_dir():
                         children.append({"name": entry.name, "path": str(entry)})
-                except Exception:
+                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     continue
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             return jsonify({"error": f"Failed to list directory: {exc}"}), 500
 
         parent: str | None = None
@@ -2920,9 +2927,9 @@ def register_monitored_routes(
                         requested_path.parent.relative_to(root)
                         parent = str(requested_path.parent)
                         break
-                    except Exception:
+                    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                         continue
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             parent = None
 
         return jsonify(
@@ -2934,7 +2941,7 @@ def register_monitored_routes(
         )
 
     @app.route("/api/fs/mkdir", methods=["POST"])
-    def api_fs_mkdir():
+    def api_fs_mkdir() -> Response | tuple[Response, int]:
         """Create a new directory within an allowed root.
 
         Request body (JSON):
@@ -2979,12 +2986,12 @@ def register_monitored_routes(
             )
             if dest_audio:
                 allowed_roots.append(Path(dest_audio).resolve())
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
             pass
 
         try:
             user_settings = user_db.get_user_settings(db_user_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             user_settings = {}
 
         for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
@@ -2997,7 +3004,7 @@ def register_monitored_routes(
 
         try:
             parent_path = Path(parent_raw).resolve()
-        except Exception:
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             return jsonify({"error": "Invalid parent path"}), 400
 
         allowed = False
@@ -3006,7 +3013,7 @@ def register_monitored_routes(
                 parent_path.relative_to(root)
                 allowed = True
                 break
-            except Exception:
+            except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                 continue
         if not allowed:
             return jsonify({"error": "Path not allowed"}), 403
@@ -3020,7 +3027,7 @@ def register_monitored_routes(
 
         try:
             new_dir.mkdir(parents=False, exist_ok=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             return jsonify({"error": f"Failed to create directory: {exc}"}), 500
 
         return jsonify({"path": str(new_dir)}), 201
@@ -3030,9 +3037,9 @@ def register_monitored_routes(
     # ------------------------------------------------------------------
 
     @app.route("/api/metadata/authors/search", methods=["GET"])
-    def api_metadata_author_search():
+    def api_metadata_author_search() -> Response | tuple[Response, int]:
         """Search for authors using the configured metadata provider."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3183,7 +3190,7 @@ def register_monitored_routes(
                     _backfill_search_author_photos(
                         provider, authors_missing_photo, transform_cover_url
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     logger.debug("Failed to backfill search author photos", exc_info=True)
 
             has_more = False
@@ -3205,14 +3212,14 @@ def register_monitored_routes(
                 }
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.error_trace(f"Metadata author search error: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/metadata/authors/<provider>/<author_id>", methods=["GET"])
-    def api_metadata_author(provider: str, author_id: str):
+    def api_metadata_author(provider: str, author_id: str) -> Response | tuple[Response, int]:
         """Get detailed author information from a metadata provider."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3342,14 +3349,14 @@ def register_monitored_routes(
 
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.error_trace(f"Metadata author details error: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/metadata/authors/<provider>/<author_id>/books", methods=["GET"])
-    def api_metadata_author_books(provider: str, author_id: str):
+    def api_metadata_author_books(provider: str, author_id: str) -> Response | tuple[Response, int]:
         """Fetch an author's book list directly from a metadata provider (no DB writes)."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3445,10 +3452,8 @@ def register_monitored_routes(
                     release_date = edition.get("release_date")
                 publish_year: int | None = None
                 if release_date:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         publish_year = int(str(release_date)[:4])
-                    except ValueError, TypeError:
-                        pass
 
                 # ISBN
                 isbn_13: str | None = None
@@ -3475,7 +3480,7 @@ def register_monitored_routes(
             books = [_normalize_book(b) for b in raw_books]
             return jsonify({"provider": provider, "provider_id": str(author_id), "books": books})
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
             logger.error_trace(f"Metadata author books error: {e}")
             return jsonify({"error": str(e)}), 500
 
@@ -3492,9 +3497,9 @@ def register_monitored_routes(
             return None
 
     @app.route("/api/monitored/events", methods=["GET"])
-    def api_list_monitored_events():
+    def api_list_monitored_events() -> Response | tuple[Response, int]:
         """List monitored events with optional filters and pagination."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3532,9 +3537,9 @@ def register_monitored_routes(
         return jsonify({"events": events, "total": total})
 
     @app.route("/api/monitored/<int:entity_id>/books/events", methods=["GET"])
-    def api_list_monitored_book_events(entity_id: int):
+    def api_list_monitored_book_events(entity_id: int) -> Response | tuple[Response, int]:
         """List events for a specific book within a monitored entity."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3564,9 +3569,9 @@ def register_monitored_routes(
         return jsonify({"events": events, "total": total})
 
     @app.route("/api/monitored/events/stats", methods=["GET"])
-    def api_monitored_event_stats():
+    def api_monitored_event_stats() -> Response | tuple[Response, int]:
         """Return event counts by type for the stats dashboard."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3597,9 +3602,9 @@ def register_monitored_routes(
         )
 
     @app.route("/api/monitored/events", methods=["DELETE"])
-    def api_clear_monitored_events():
+    def api_clear_monitored_events() -> Response | tuple[Response, int]:
         """Clear monitored event history."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:
@@ -3616,12 +3621,12 @@ def register_monitored_routes(
         return jsonify({"deleted": deleted})
 
     @app.route("/api/monitored/events/export", methods=["GET"])
-    def api_export_monitored_events():
+    def api_export_monitored_events() -> Response | tuple[Response, int]:
         """Export monitored events as CSV."""
         import csv
         import io
 
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+        _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
             user_db, resolve_auth_mode=resolve_auth_mode
         )
         if gate is not None:

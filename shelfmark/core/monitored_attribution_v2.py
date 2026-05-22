@@ -639,8 +639,8 @@ def _parse_book_identifiers(book: dict[str, Any]) -> tuple[set[str], set[str]]:
 
     raw_asins = book.get("asins") or ""
     if isinstance(raw_asins, str):
-        for tok in re.split(r"[,;\s]+", raw_asins):
-            tok = tok.strip().upper()
+        for raw_tok in re.split(r"[,;\s]+", raw_asins):
+            tok = raw_tok.strip().upper()
             if _ASIN_RE.match(tok):
                 asins.add(tok)
 
@@ -962,9 +962,11 @@ def collect_position_votes(
         )
     if decomposition.series_folder and decomposition.series_folder != decomposition.book_folder:
         # Series folder rarely contains position info; only extract explicit markers.
-        for v in extract_position_signals(decomposition.series_folder, series_name=series_name):
-            if v.source in ("explicit_marker", "after_series_name", "word_number_marker"):
-                votes.append(v)
+        votes.extend(
+            v
+            for v in extract_position_signals(decomposition.series_folder, series_name=series_name)
+            if v.source in ("explicit_marker", "after_series_name", "word_number_marker")
+        )
     return votes
 
 
@@ -1043,9 +1045,7 @@ def extract_title_core(
     # Strip stray separator chars now exposed at the edges
     s = re.sub(r"^\s*[-–—:_.\s]+", "", s)
     s = re.sub(r"[-–—:_.\s]+\s*$", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-
-    return s
+    return re.sub(r"\s+", " ", s).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1138,7 +1138,7 @@ def _canonical_title_forms(
             # Separator class includes `.` to handle trailing initial-dots
             # like "Taylor, Dennis E. - Outland" where the dot sits between
             # the variant and the separator.
-            bases = [title, no_parens] + series_stripped_bases
+            bases = [title, no_parens, *series_stripped_bases]
             for base in bases:
                 stripped = base
                 # Trailing: " - Author", " by Author", ", Author"
@@ -1161,7 +1161,7 @@ def _canonical_title_forms(
 
     # Channel 5: strip explicit "Book N" / "Vol N" / "#N" markers from
     # every variant we've produced so far.
-    bases_for_markers = [title, no_parens] + series_stripped_bases + author_stripped_bases
+    bases_for_markers = [title, no_parens, *series_stripped_bases, *author_stripped_bases]
     for base in bases_for_markers:
         stripped = _EXPLICIT_VOL_RE.sub(" ", base)
         _add(stripped)
@@ -1338,7 +1338,7 @@ def _metadata_to_dict(
     }
     if extra:
         raw.update(extra)
-    return {k: v for k, v in raw.items() if v is not None and v != "" and v != []}
+    return {k: v for k, v in raw.items() if v is not None and v not in ("", [])}
 
 
 def _score_metadata_signals(
@@ -1542,16 +1542,19 @@ def _score_metadata_signals(
     # an EPUB <dc:creator>) — compare against the monitored entity's name
     # using the dot-tolerant author fuzz.  Single positive signal, no graded
     # weights: either the names match or they don't.
-    if metadata_author and author_name:
-        if _fuzz_author(metadata_author, author_name) >= AUTHOR_FUZZ_THRESHOLD:
-            evidence.positives.append(
-                {
-                    "name": f"{label}_author_agree",
-                    "weight": W_EMBEDDED_AUTHOR_AGREE,
-                    "detail": f"'{metadata_author}'",
-                }
-            )
-            evidence.net_score += W_EMBEDDED_AUTHOR_AGREE
+    if (
+        metadata_author
+        and author_name
+        and _fuzz_author(metadata_author, author_name) >= AUTHOR_FUZZ_THRESHOLD
+    ):
+        evidence.positives.append(
+            {
+                "name": f"{label}_author_agree",
+                "weight": W_EMBEDDED_AUTHOR_AGREE,
+                "detail": f"'{metadata_author}'",
+            }
+        )
+        evidence.net_score += W_EMBEDDED_AUTHOR_AGREE
 
     # ---- Series + position agreement / disagreement ----
     # The metadata may carry multiple (series_name, position) pairs (ABS:
@@ -1869,17 +1872,21 @@ def evaluate_match(
             evidence.series_folder_ratio = sf_ratio
 
     # ---- Series-name in filename ----
-    if book_series_name and decomp.leaf:
-        if _norm(book_series_name) and _norm(book_series_name) in _norm(decomp.leaf):
-            evidence.series_in_filename = True
-            evidence.positives.append(
-                {
-                    "name": "series_in_filename",
-                    "weight": W_SERIES_IN_FILENAME,
-                    "detail": f"'{book_series_name}'",
-                }
-            )
-            evidence.net_score += W_SERIES_IN_FILENAME
+    if (
+        book_series_name
+        and decomp.leaf
+        and _norm(book_series_name)
+        and _norm(book_series_name) in _norm(decomp.leaf)
+    ):
+        evidence.series_in_filename = True
+        evidence.positives.append(
+            {
+                "name": "series_in_filename",
+                "weight": W_SERIES_IN_FILENAME,
+                "detail": f"'{book_series_name}'",
+            }
+        )
+        evidence.net_score += W_SERIES_IN_FILENAME
 
     # ---- Position votes ---- (votes already computed at the top of this
     # function for the title-fuzz disagreement check; reuse here.)
@@ -2317,9 +2324,7 @@ def pick_best_attribution(
         all_evidence.append((ev.net_score, ev, book))
         if ev.hard_reject:
             continue
-        if ev.tier == "confirmed" and (
-            best_confirmed is None or ev.net_score > best_confirmed[0]
-        ):
+        if ev.tier == "confirmed" and (best_confirmed is None or ev.net_score > best_confirmed[0]):
             best_confirmed = (ev.net_score, ev, book)
         elif ev.tier == "candidate" and (
             best_candidate is None or ev.net_score > best_candidate[0]

@@ -13,8 +13,11 @@ from __future__ import annotations
 import json
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    import ssl
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
@@ -64,7 +67,7 @@ def get_abs_config() -> dict[str, str] | None:
 # ---------------------------------------------------------------------------
 
 
-def _build_ssl_ctx(url: str):
+def _build_ssl_ctx(url: str) -> ssl.SSLContext:
     """Return an ssl.SSLContext that respects the CERTIFICATE_VALIDATION setting."""
     import ssl
 
@@ -108,7 +111,7 @@ def _get_abs_library_ids(url: str, token: str) -> list[str]:
             for lib in (data.get("libraries") or [])
             if lib.get("mediaType") == "book"
         ]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — ABS is external; bail to an empty library list on any fetch failure.
         logger.warning("ABS: failed to fetch libraries: %s", exc)
     return []
 
@@ -134,7 +137,7 @@ def _find_abs_author_items(
     try:
         data = _abs_get(url, token, f"/api/libraries/{library_id}/authors")
         authors: list[dict[str, Any]] = data.get("authors") or []
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — ABS is external; skip this library on fetch failure rather than abort the scan.
         logger.warning("ABS: failed to fetch authors for library %s: %s", library_id, exc)
         return []
 
@@ -182,16 +185,16 @@ def _find_abs_author_items(
     try:
         author_data = _abs_get(url, token, f"/api/authors/{author_id}?include=items", timeout=60)
         items: list[dict[str, Any]] = author_data.get("libraryItems") or []
-        logger.info(
-            "ABS: fetched %d library items for author %r (id=%s)",
-            len(items),
-            best_author.get("name"),
-            author_id,
-        )
-        return items
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — ABS is external; treat fetch failure as zero items for this author.
         logger.warning("ABS: failed to fetch items for author %s: %s", author_id, exc)
         return []
+    logger.info(
+        "ABS: fetched %d library items for author %r (id=%s)",
+        len(items),
+        best_author.get("name"),
+        author_id,
+    )
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +222,8 @@ def _parse_abs_series_pairs(
     # --- Parse seriesName: "SeriesA #N, SeriesB #M" ---
     if series_name_str:
         # Split on ", " but only when not inside a number
-        for segment in _SERIES_SEGMENT_SPLIT_RE.split(series_name_str):
-            segment = segment.strip()
+        for raw_segment in _SERIES_SEGMENT_SPLIT_RE.split(series_name_str):
+            segment = raw_segment.strip()
             if not segment:
                 continue
             # Try to extract "#N" or similar at the end
@@ -229,11 +232,8 @@ def _parse_abs_series_pairs(
                 sname = m.group(1).strip()
                 pos_str = m.group(2)
                 try:
-                    if "/" in pos_str:
-                        # "N/M" = book N of M — position is the numerator
-                        pos = float(pos_str.split("/", 1)[0])
-                    else:
-                        pos = float(pos_str)
+                    # "N/M" = book N of M — position is the numerator
+                    pos = float(pos_str.split("/", 1)[0]) if "/" in pos_str else float(pos_str)
                     if sname:
                         pairs.append((sname, pos))
                 except ValueError:
@@ -452,7 +452,7 @@ def sync_abs_availability_for_entity(
                         cfg["url"], cfg["token"], f"/api/items/{item_id}", timeout=10
                     )
                     item_ext = _get_abs_item_format(full_item)
-                except Exception as _fmt_exc:
+                except Exception as _fmt_exc:  # noqa: BLE001 — format enrichment is best-effort; fall back to the bare item payload.
                     logger.debug(
                         "ABS: could not fetch full item %s for format: %s", item_id, _fmt_exc
                     )
@@ -463,7 +463,7 @@ def sync_abs_availability_for_entity(
             from dataclasses import asdict as _asdict
 
             evidence_json = _json.dumps(_asdict(result.evidence), default=str)
-        except Exception:
+        except Exception:  # noqa: BLE001 — evidence is a diagnostic blob; if it fails to serialize, persist NULL rather than crash the whole upsert.
             evidence_json = None
 
         # Tier maps to status: confirmed → 'matched' (counts toward owned);
@@ -490,7 +490,7 @@ def sync_abs_availability_for_entity(
             )
             kept_paths.append(path)
             matched += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — per-row failure (DB lock, JSON, constraint) is logged and counted as unmatched; one bad row must not abort the whole scan.
             logger.warning(
                 "ABS: failed to upsert match for %r (entity=%s book=%s): %s",
                 path,

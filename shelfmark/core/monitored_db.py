@@ -4,6 +4,7 @@ This module manages the monitored_* tables in the same users.db file as UserDB.
 It operates as an independent connection — no coupling to UserDB at runtime.
 """
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -632,7 +633,7 @@ class MonitoredDB:
     monitored_entities references via FK).
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
 
@@ -815,7 +816,7 @@ class MonitoredDB:
         """Return entity row if owned by any of *user_ids*, else None."""
         clause, params = self._user_id_clause(user_ids)
         row = conn.execute(
-            f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",
+            f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
             (entity_id, *params),
         ).fetchone()
         return dict(row) if row else None
@@ -830,7 +831,7 @@ class MonitoredDB:
         clause, params = self._user_id_clause(user_ids)
         return bool(
             conn.execute(
-                f"SELECT 1 FROM monitored_entities WHERE id = ? AND {clause}",
+                f"SELECT 1 FROM monitored_entities WHERE id = ? AND {clause}",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 (entity_id, *params),
             ).fetchone()
         )
@@ -876,8 +877,8 @@ class MonitoredDB:
                     return int(cur.rowcount or 0)
 
                 # SQLite bind variable limit is 999; use a temp table for large sets.
-                _SQLITE_BIND_LIMIT = 900
-                if len(keep_paths) > _SQLITE_BIND_LIMIT:
+                sqlite_bind_limit = 900
+                if len(keep_paths) > sqlite_bind_limit:
                     conn.execute(
                         "CREATE TEMP TABLE IF NOT EXISTS _prune_keep_paths (path TEXT PRIMARY KEY)"
                     )
@@ -906,7 +907,7 @@ class MonitoredDB:
                           AND source = ?
                           AND manual_override = 0
                           AND path NOT IN ({placeholders})
-                        """,
+                        """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                         (entity_id, source, *keep_paths),
                     )
                 conn.commit()
@@ -925,7 +926,7 @@ class MonitoredDB:
                 FROM monitored_entities
                 WHERE {clause}
                 ORDER BY created_at DESC, id DESC
-                """,
+                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 params,
             ).fetchall()
             results: list[dict[str, Any]] = []
@@ -935,7 +936,7 @@ class MonitoredDB:
                 if isinstance(raw_settings, str) and raw_settings:
                     try:
                         payload["settings"] = json.loads(raw_settings)
-                    except Exception:
+                    except json.JSONDecodeError, TypeError:
                         payload["settings"] = {}
                 else:
                     payload["settings"] = {}
@@ -951,7 +952,7 @@ class MonitoredDB:
         try:
             clause, params = self._user_id_clause(user_ids)
             row = conn.execute(
-                f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",
+                f"SELECT * FROM monitored_entities WHERE id = ? AND {clause}",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 (entity_id, *params),
             ).fetchone()
             if not row:
@@ -961,7 +962,7 @@ class MonitoredDB:
             if isinstance(raw_settings, str) and raw_settings:
                 try:
                     payload["settings"] = json.loads(raw_settings)
-                except Exception:
+                except json.JSONDecodeError, TypeError:
                     payload["settings"] = {}
             else:
                 payload["settings"] = {}
@@ -976,7 +977,7 @@ class MonitoredDB:
             return None
         try:
             return json.dumps(value)
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             raise ValueError(f"Failed to serialize {field} to JSON: {e}") from e
 
     def create_monitored_entity(
@@ -1059,7 +1060,7 @@ class MonitoredDB:
             try:
                 clause, params = self._user_id_clause(user_ids)
                 cursor = conn.execute(
-                    f"DELETE FROM monitored_entities WHERE id = ? AND {clause}",
+                    f"DELETE FROM monitored_entities WHERE id = ? AND {clause}",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                     (entity_id, *params),
                 )
                 conn.commit()
@@ -1158,12 +1159,12 @@ class MonitoredDB:
                         "monitored_book_attempt_history",
                     ):
                         conn.execute(
-                            f"UPDATE OR IGNORE {table} SET entity_id = ? WHERE entity_id = ?",
+                            f"UPDATE OR IGNORE {table} SET entity_id = ? WHERE entity_id = ?",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                             (target_id, entity_id),
                         )
                         # Delete any rows that conflicted (already exist under target)
                         conn.execute(
-                            f"DELETE FROM {table} WHERE entity_id = ?",
+                            f"DELETE FROM {table} WHERE entity_id = ?",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                             (entity_id,),
                         )
                     conn.execute(
@@ -1227,7 +1228,7 @@ class MonitoredDB:
                 f"""
                 SELECT id FROM monitored_entities
                 WHERE id IN ({entity_placeholders}) AND {uid_clause}
-                """,
+                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 [*entity_ids, *uid_params],
             ).fetchall()
             owned_ids = [r["id"] for r in owned_rows]
@@ -1249,7 +1250,7 @@ class MonitoredDB:
                     WHERE entity_id IN ({placeholders})
                       AND cover_url IS NOT NULL AND cover_url != ''
                 ) WHERE rn = 1
-                """,
+                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 owned_ids,
             ).fetchall()
             return {
@@ -1353,7 +1354,7 @@ class MonitoredDB:
                     WHERE entity_id = ?
                       AND provider = ?
                       AND provider_book_id = ?
-                    """,
+                    """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                     params,
                 )
                 conn.commit()
@@ -1401,10 +1402,8 @@ class MonitoredDB:
         # Derive publish_year from release_date
         publish_year: int | None = None
         if release_date and isinstance(release_date, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 publish_year = int(release_date[:4])
-            except ValueError, TypeError:
-                pass
 
         with self._lock:
             conn = self._connect()
@@ -1432,7 +1431,7 @@ class MonitoredDB:
                     WHERE entity_id = ?
                       AND provider = ?
                       AND provider_book_id = ?
-                    """,
+                    """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                     params,
                 )
                 conn.commit()
@@ -1494,7 +1493,7 @@ class MonitoredDB:
                     WHERE entity_id = ?
                       AND provider = ?
                       AND provider_book_id = ?
-                    """,
+                    """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                     (status, searched_at, entity_id, provider, provider_book_id),
                 )
                 conn.commit()
@@ -1730,7 +1729,7 @@ class MonitoredDB:
                     mb.first_seen_at DESC,
                     mb.id DESC
                 LIMIT :limit
-                """,
+                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 {
                     **uid_binds,
                     "like": like,
@@ -1838,21 +1837,21 @@ class MonitoredDB:
         if isbns is not None:
             try:
                 isbns_json = json.dumps(isbns)
-            except Exception:
+            except TypeError, ValueError:
                 isbns_json = None
 
         asins_json: str | None = None
         if asins is not None:
             try:
                 asins_json = json.dumps(asins)
-            except Exception:
+            except TypeError, ValueError:
                 asins_json = None
 
         all_series_json: str | None = None
         if all_series is not None:
             try:
                 all_series_json = json.dumps(all_series)
-            except Exception:
+            except TypeError, ValueError:
                 all_series_json = None
 
         cached_tags_json: str | None = None
@@ -1862,7 +1861,7 @@ class MonitoredDB:
             else:
                 try:
                     cached_tags_json = json.dumps(cached_tags)
-                except Exception:
+                except TypeError, ValueError:
                     cached_tags_json = None
 
         with self._lock:
@@ -2071,7 +2070,7 @@ class MonitoredDB:
                         WHERE entity_id = ?
                           AND ({or_clauses})
                           AND state != ?
-                        """,
+                        """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                         params,
                     )
                     updated += cursor.rowcount or 0
@@ -2205,39 +2204,44 @@ class MonitoredDB:
                         # in the UI as an alternate without displacing the
                         # winner.
                         status = "candidate"
-                if status == "matched" and provider and provider_book_id and file_type:
-                    # A manual_override matched row at a different path for
-                    # the same (book, file_type, source) would violate the
-                    # partial unique index. Demote the incoming row to
-                    # candidate rather than overwrite the user's prior
-                    # explicit choice. (Cannot reach here when manual_override
-                    # is True AND already-matched — the early manual-skip
-                    # guard above returned out.)
-                    if not manual_override:
-                        blocking_manual = conn.execute(
-                            """
-                            SELECT 1 FROM monitored_book_files
-                            WHERE entity_id = ?
-                              AND provider = ?
-                              AND provider_book_id = ?
-                              AND file_type = ?
-                              AND source = ?
-                              AND status = 'matched'
-                              AND path != ?
-                              AND COALESCE(manual_override, 0) = 1
-                            LIMIT 1
-                            """,
-                            (
-                                entity_id,
-                                provider,
-                                provider_book_id,
-                                file_type,
-                                source,
-                                normalized_path,
-                            ),
-                        ).fetchone()
-                        if blocking_manual is not None:
-                            status = "candidate"
+                # A manual_override matched row at a different path for
+                # the same (book, file_type, source) would violate the
+                # partial unique index. Demote the incoming row to
+                # candidate rather than overwrite the user's prior
+                # explicit choice. (Cannot reach here when manual_override
+                # is True AND already-matched — the early manual-skip
+                # guard above returned out.)
+                if (
+                    status == "matched"
+                    and provider
+                    and provider_book_id
+                    and file_type
+                    and not manual_override
+                ):
+                    blocking_manual = conn.execute(
+                        """
+                        SELECT 1 FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND file_type = ?
+                          AND source = ?
+                          AND status = 'matched'
+                          AND path != ?
+                          AND COALESCE(manual_override, 0) = 1
+                        LIMIT 1
+                        """,
+                        (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            file_type,
+                            source,
+                            normalized_path,
+                        ),
+                    ).fetchone()
+                    if blocking_manual is not None:
+                        status = "candidate"
 
                 if status == "matched" and provider and provider_book_id and file_type:
                     # New row wins (or is the only matched candidate) — evict
@@ -2571,7 +2575,7 @@ class MonitoredDB:
             if isinstance(path, str) and path.strip():
                 try:
                     path_exists = Path(path).exists()
-                except Exception:
+                except OSError:
                     path_exists = False
 
             if path_exists:
@@ -2589,7 +2593,7 @@ class MonitoredDB:
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
                           AND id IN ({placeholders})
-                        """,
+                        """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                         (entity_id, *stale_ids),
                     )
                     cleanup_conn.commit()
@@ -2966,7 +2970,7 @@ class MonitoredDB:
             where = f" WHERE {' AND '.join(conditions)}"
 
             count_row = conn.execute(
-                f"SELECT COUNT(*) FROM monitored_events{where}",
+                f"SELECT COUNT(*) FROM monitored_events{where}",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 params,
             ).fetchone()
             total = count_row[0] if count_row else 0
@@ -2974,7 +2978,7 @@ class MonitoredDB:
             query_params = list(params)
             query_params.extend([limit, offset])
             rows = conn.execute(
-                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 query_params,
             ).fetchall()
             return [dict(r) for r in rows], total
@@ -2996,7 +3000,7 @@ class MonitoredDB:
                 where += " AND created_at >= ?"
                 params.append(since)
             rows = conn.execute(
-                f"SELECT event_type, COUNT(*) as cnt FROM monitored_events {where} GROUP BY event_type",
+                f"SELECT event_type, COUNT(*) as cnt FROM monitored_events {where} GROUP BY event_type",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 params,
             ).fetchall()
             return {row["event_type"]: row["cnt"] for row in rows}
@@ -3023,7 +3027,7 @@ class MonitoredDB:
                 f"""
                 SELECT COUNT(DISTINCT json_extract(metadata_json, '$.batch_id')) as cnt
                 FROM monitored_events {where}
-                """,
+                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 params,
             ).fetchone()
             return row[0] if row else 0
@@ -3053,7 +3057,7 @@ class MonitoredDB:
                     conditions.append("created_at < ?")
                     params.append(before)
                 where = f" WHERE {' AND '.join(conditions)}"
-                cursor = conn.execute(f"DELETE FROM monitored_events{where}", params)
+                cursor = conn.execute(f"DELETE FROM monitored_events{where}", params)  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 conn.commit()
                 return cursor.rowcount or 0
             finally:
@@ -3091,7 +3095,7 @@ class MonitoredDB:
                 params.append(until)
             where = f" WHERE {' AND '.join(conditions)}"
             rows = conn.execute(
-                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC",
+                f"SELECT * FROM monitored_events{where} ORDER BY created_at DESC, id DESC",  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
                 params,
             ).fetchall()
             return [dict(r) for r in rows]

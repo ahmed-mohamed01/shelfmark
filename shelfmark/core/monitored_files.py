@@ -8,16 +8,18 @@ import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db import MonitoredDB
-from shelfmark.core.user_db import UserDB
 from shelfmark.download.postprocess.policy import (
     get_supported_audiobook_formats,
     get_supported_formats,
 )
+
+if TYPE_CHECKING:
+    from shelfmark.core.monitored_db import MonitoredDB
+    from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
 
@@ -73,8 +75,7 @@ def normalize_match_text(raw: str) -> str:
     )
     s = re.sub(r"[^a-z0-9]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
-    s = re.sub(r"\b(\d{1,3})\s+\1\b", r"\1", s)
-    return s
+    return re.sub(r"\b(\d{1,3})\s+\1\b", r"\1", s)
 
 
 def _row_provider_key(row: dict[str, Any]) -> tuple[str, str]:
@@ -256,10 +257,7 @@ def _books_are_alias_equivalent(left: dict[str, Any], right: dict[str, Any]) -> 
     ):
         return False
 
-    if left_series_name and right_series_name and left_series_name != right_series_name:
-        return False
-
-    return True
+    return not (left_series_name and right_series_name and left_series_name != right_series_name)
 
 
 def expand_monitored_file_rows_for_equivalent_books(
@@ -341,9 +339,9 @@ def iso_mtime(p: Path) -> str | None:
     """Return ISO 8601 UTC mtime for a path, or None on error."""
     try:
         ts = p.stat().st_mtime
-        return datetime.fromtimestamp(ts, UTC).isoformat().replace("+00:00", "Z")
-    except Exception:
+    except OSError:
         return None
+    return datetime.fromtimestamp(ts, UTC).isoformat().replace("+00:00", "Z")
 
 
 def _iter_files_recursive_safe(root: Path) -> list[Path]:
@@ -357,9 +355,8 @@ def _iter_files_recursive_safe(root: Path) -> list[Path]:
         for dirpath, _, filenames in os.walk(
             root, topdown=True, followlinks=False, onerror=_onerror
         ):
-            for filename in filenames:
-                files.append(Path(dirpath) / filename)
-    except Exception as exc:
+            files.extend(Path(dirpath) / filename for filename in filenames)
+    except OSError as exc:
         logger.warning("Failed walking monitored scan root=%s: %s", root, exc)
     return files
 
@@ -380,7 +377,7 @@ def pick_best_audio_file(
         pr = rank_map.get(ext, 999)
         try:
             sz = int(p.stat().st_size)
-        except Exception:
+        except OSError:
             sz = 0
         return (pr, -sz)
 
@@ -729,10 +726,10 @@ def prune_stale_matched_files(
             for root in scanned_roots:
                 try:
                     Path(path).resolve().relative_to(root)
-                    should_consider = True
-                    break
-                except Exception:
-                    pass
+                except ValueError, OSError:
+                    continue
+                should_consider = True
+                break
             if not should_consider:
                 keep.append(path)
                 continue
@@ -741,7 +738,7 @@ def prune_stale_matched_files(
         monitored_db.prune_monitored_book_files(
             entity_id=entity_id, keep_paths=keep, source="filesystem"
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — prune is best-effort cleanup; never crash the scan because a stale path lookup failed.
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 
 
@@ -798,7 +795,7 @@ def scan_monitored_author_files(
             try:
                 if not p.is_file() or p.is_symlink():
                     continue
-            except Exception:
+            except OSError:
                 continue
 
             ext = p.suffix.lower()
@@ -809,7 +806,7 @@ def scan_monitored_author_files(
             scanned_ebook_files += 1
             try:
                 size_bytes = int(p.stat().st_size)
-            except Exception:
+            except OSError:
                 size_bytes = None
 
             file_type = ext.lstrip(".")
@@ -843,7 +840,7 @@ def scan_monitored_author_files(
             try:
                 if not p.is_file() or p.is_symlink():
                     continue
-            except Exception:
+            except OSError:
                 continue
 
             path_ext = p.suffix.lower()
@@ -863,7 +860,7 @@ def scan_monitored_author_files(
                     and (not fp.is_symlink())
                     and fp.suffix.lower() in effective_audio_ext
                 ]
-            except Exception:
+            except OSError:
                 continue
 
             best_file = pick_best_audio_file(audio_files, format_rank=audio_rank_by_format)
@@ -878,7 +875,7 @@ def scan_monitored_author_files(
             mtime = iso_mtime(best_file)
             try:
                 size_bytes = int(best_file.stat().st_size)
-            except Exception:
+            except OSError:
                 size_bytes = None
 
             seen_paths.add(str(best_file))
@@ -1029,7 +1026,9 @@ def apply_monitor_modes_for_books(
         file_rows=file_rows or [],
         user_id=db_user_id,
     )
-    today = date.today()
+    # Local date — release-date comparisons are user-facing ("is this book out
+    # yet?") and should match the operator's wall clock, not UTC.
+    today = datetime.now().astimezone().date()
 
     from shelfmark.core.monitored_release_scoring import parse_release_date
 
@@ -1077,7 +1076,7 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
     """
     try:
         from shelfmark.core.config import config as app_config
-    except Exception:
+    except ImportError:
         app_config = None
 
     def _normalize_root(value: Any) -> str | None:
@@ -1099,12 +1098,12 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
             )
             if dest_audio:
                 allowed.append(Path(dest_audio).resolve())
-        except Exception:
-            pass
+        except (KeyError, OSError, AttributeError) as exc:
+            logger.debug("Monitored root resolution skipped: %s", exc)
 
     try:
         user_settings = user_db.get_user_settings(db_user_id) or {}
-    except Exception:
+    except Exception:  # noqa: BLE001 — user_db may raise broadly; fall back to empty settings rather than crash root resolution.
         user_settings = {}
 
     for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
@@ -1115,7 +1114,7 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
                 if root:
                     try:
                         allowed.append(Path(root).resolve())
-                    except Exception:
+                    except OSError:
                         continue
 
     unique: list[Path] = []
@@ -1133,7 +1132,7 @@ def path_within_allowed_roots(*, path: Path, roots: list[Path]) -> bool:
     for root in roots:
         try:
             path.relative_to(root)
-            return True
-        except Exception:
+        except ValueError:
             continue
+        return True
     return False
