@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
-
 from shelfmark.core.monitored_attribution_v2 import (
+    TITLE_CORE_HIGH,
     decompose_path,
-    evaluate_match,
     extract_position_signals,
     extract_title_core,
     pick_best_attribution,
 )
-
 
 # ---------------------------------------------------------------------------
 # Path decomposition
@@ -93,7 +90,9 @@ class TestPositionSignals:
 
     def test_explicit_book_marker(self):
         votes = extract_position_signals("Title (Book 4) - Author.epub", is_filename=True)
-        assert any(v.value == 4.0 and v.weight == "high" and v.source == "explicit_marker" for v in votes)
+        assert any(
+            v.value == 4.0 and v.weight == "high" and v.source == "explicit_marker" for v in votes
+        )
 
     def test_explicit_vol_marker(self):
         votes = extract_position_signals("Cradle Vol 1.5 - Title.epub", is_filename=True)
@@ -110,7 +109,10 @@ class TestPositionSignals:
             is_filename=True,
         )
         # The bare "12" after series name is HIGH weight via after_series_name source.
-        assert any(v.value == 12.0 and v.weight == "high" and v.source == "after_series_name" for v in votes)
+        assert any(
+            v.value == 12.0 and v.weight == "high" and v.source == "after_series_name"
+            for v in votes
+        )
 
     def test_year_in_parens_is_ignored(self):
         votes = extract_position_signals("Title - Author (2024).epub", is_filename=True)
@@ -206,22 +208,33 @@ class TestAttributionDecisions:
     """Reproduces each known mis-attribution from the user's screenshots/audit."""
 
     def test_rise_of_living_forge_book4_rejected_for_book1_candidate(self):
-        # File is Book 4; only candidate is Book 1 — must REJECT
+        # File is Book 4; only candidate is Book 1 — must REJECT.
+        # Title-borne position contradiction (explicit "(Book 4)" marker vs
+        # book #1) hard-rejects, leaving pick_best_attribution with no
+        # surviving candidate of any tier.
         r = pick_best_attribution(
             path="/lib/Actus/Rise of the Living Forge/04. Rise of the Living Forge (Book 4) - Actus (2025).epub",
-            books=[_book("Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge")],
+            books=[
+                _book(
+                    "Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge"
+                )
+            ],
             author_name="Actus",
         )
         assert r.book is None
-        assert r.match_reason == "v2_below_floor"
+        assert r.match_reason == "v2_no_candidate"
 
     def test_rise_of_living_forge_book2_audio_rejected_for_book1_and_book4(self):
         # Folder/file labelled Book 2 — neither #1 nor #4 candidate should attach
         r = pick_best_attribution(
             path="/lib/Actus/Rise of the Living Forge/Rise of the Living Forge (Book 2)/Rise of the Living Forge (Book 2) - Actus (2025).m4b",
             books=[
-                _book("Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge"),
-                _book("Rise of the Living Forge (Book 4)", pos=4.0, series="Rise of the Living Forge"),
+                _book(
+                    "Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge"
+                ),
+                _book(
+                    "Rise of the Living Forge (Book 4)", pos=4.0, series="Rise of the Living Forge"
+                ),
             ],
             author_name="Actus",
         )
@@ -231,8 +244,12 @@ class TestAttributionDecisions:
         r = pick_best_attribution(
             path="/lib/Actus/Rise of the Living Forge/01. Rise of the Living Forge (Book 1) - Actus (2024).epub",
             books=[
-                _book("Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge"),
-                _book("Rise of the Living Forge (Book 4)", pos=4.0, series="Rise of the Living Forge"),
+                _book(
+                    "Rise of the Living Forge (Book 1)", pos=1.0, series="Rise of the Living Forge"
+                ),
+                _book(
+                    "Rise of the Living Forge (Book 4)", pos=4.0, series="Rise of the Living Forge"
+                ),
             ],
             author_name="Actus",
         )
@@ -242,8 +259,11 @@ class TestAttributionDecisions:
     def test_hwfwm_book01_rejected_for_book12_candidate(self):
         r = pick_best_attribution(
             path="/audiobooks/Fiction/Shirtaloon/He Who Fights with Monsters/He Who Fights with Monsters, Book 01.mp3",
-            books=[_book("He Who Fights with Monsters 12", pos=12.0,
-                         series="He Who Fights with Monsters")],
+            books=[
+                _book(
+                    "He Who Fights with Monsters 12", pos=12.0, series="He Who Fights with Monsters"
+                )
+            ],
             author_name="Shirtaloon",
         )
         assert r.book is None
@@ -259,8 +279,11 @@ class TestAttributionDecisions:
     def test_murderbot_book2_file_rejected_for_book9_untitled(self):
         r = pick_best_attribution(
             path="/lib/Martha Wells/The Murderbot Diaries Book 1-4/The Murderbot Diaries Book 1-4 - Martha Wells/Murderbot Diaries Book 2 ArtificialCondition.m4b",
-            books=[_book("The Murderbot Diaries #9 (Untitled)", pos=9.0,
-                         series="The Murderbot Diaries")],
+            books=[
+                _book(
+                    "The Murderbot Diaries #9 (Untitled)", pos=9.0, series="The Murderbot Diaries"
+                )
+            ],
             author_name="Martha Wells",
         )
         assert r.book is None
@@ -284,8 +307,7 @@ class TestAttributionDecisions:
         # regardless of weaker path signals.
         from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
 
-        embedded = EmbeddedMetadata(title="Some Translation",
-                                    isbn_13="9780441018864")
+        embedded = EmbeddedMetadata(title="Some Translation", isbn_13="9780441018864")
         r = pick_best_attribution(
             path="/lib/random/folder/some_other_title.epub",
             books=[_book("House of Suns", pos=1.0, isbn_13="9780441018864")],
@@ -300,8 +322,7 @@ class TestAttributionDecisions:
         # regardless of how strong the path signals are.
         from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
 
-        embedded = EmbeddedMetadata(title="House of Suns",
-                                    isbn_13="9999999999999")  # wrong ISBN
+        embedded = EmbeddedMetadata(title="House of Suns", isbn_13="9999999999999")  # wrong ISBN
         r = pick_best_attribution(
             path="/lib/Alastair Reynolds/House of Suns/House of Suns - Alastair Reynolds (2008).epub",
             books=[_book("House of Suns", pos=1.0, isbn_13="9780441018864")],
@@ -348,10 +369,547 @@ class TestAttributionDecisions:
         )
         r = pick_best_attribution(
             path="/lib/Matt Dinniman/Dungeon Crawler Carl/Carl's Doomsday Scenario - Matt Dinniman.epub",
-            books=[_book("In the City of Demons", pos=2.0,
-                         series="Dungeon Crawler Carl", isbn_13="9780441018864")],
+            books=[
+                _book(
+                    "In the City of Demons",
+                    pos=2.0,
+                    series="Dungeon Crawler Carl",
+                    isbn_13="9780441018864",
+                )
+            ],
             author_name="Matt Dinniman",
             embedded=embedded,
         )
         assert r.book is not None
         assert r.evidence.hard_reject is False
+
+
+class TestTierClassification:
+    """Three-tier outcome: confirmed / candidate / rejected."""
+
+    def test_tier_confirmed_full_agreement(self):
+        # All four signals agree (author + series + position + path title), no
+        # contradicting metadata → confirmed.
+        r = pick_best_attribution(
+            path="/lib/Brandon Sanderson/Mistborn/01. The Final Empire - Brandon Sanderson (2006).epub",
+            books=[_book("The Final Empire", pos=1.0, series="Mistborn")],
+            author_name="Brandon Sanderson",
+        )
+        assert r.tier == "confirmed"
+        assert r.evidence.tier == "confirmed"
+        assert r.evidence.accept is True
+        assert r.book is not None
+
+    def test_tier_confirmed_identifier_overrides(self):
+        # Identifier match alone confirms — file's filename can be totally
+        # wrong; the ISBN/ASIN is a hard identity claim (priority 1).
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(title="Some Translation", isbn_13="9780441018864")
+        r = pick_best_attribution(
+            path="/lib/random/folder/some_other_title.epub",
+            books=[_book("House of Suns", pos=1.0, isbn_13="9780441018864")],
+            author_name="Alastair Reynolds",
+            embedded=embedded,
+        )
+        assert r.tier == "confirmed"
+        assert r.book is not None
+
+    def test_tier_candidate_strong_title_no_position(self):
+        # Strong path-side title + author match, but no series folder and
+        # position disagrees (legit cross-source numbering). Falls into
+        # Candidate — Children-of-Ruin case.
+        r = pick_best_attribution(
+            path="/audiobooks/Fiction/Adrian Tchaikovsky/Adrian Tchaikovsky/01. Children of Ruin - Adrian Tchaikovsky (2019)",
+            books=[_book("Children of Ruin", pos=2.0, series="Children of Time")],
+            author_name="Adrian Tchaikovsky",
+        )
+        assert r.tier == "candidate"
+        assert r.book is not None
+        assert r.evidence.accept is False  # Candidate doesn't count toward owned.
+
+    def test_tier_rejected_title_borne_position_explicit_marker(self):
+        # File explicitly names Book 2 via "(Book 2)" marker; candidate is at
+        # series_position=1. Title-borne position mismatch must hard-reject
+        # regardless of other matching signals.
+        r = pick_best_attribution(
+            path="/lib/Rhaegar/Azarinth Healer/Azarinth Healer (Book 2) - Rhaegar.m4b",
+            books=[_book("Azarinth Healer (Book 1)", pos=1.0, series="Azarinth Healer")],
+            author_name="Rhaegar",
+        )
+        assert r.tier == "rejected"
+        assert r.book is None
+        assert r.evidence.hard_reject is True
+        assert r.evidence.hard_reject_reason == "title_borne_position_mismatch"
+
+    def test_leading_num_disagreement_does_not_trigger_title_borne_reject(self):
+        # "01." in the folder is the user's local numbering, NOT a title-borne
+        # marker. Should still attach (Children-of-Ruin pattern) — leading_num
+        # alone must not trigger title_borne_position_mismatch.
+        r = pick_best_attribution(
+            path="/audiobooks/Adrian Tchaikovsky/01. Children of Ruin/01. Children of Ruin - Adrian Tchaikovsky.m4b",
+            books=[_book("Children of Ruin", pos=2.0, series="Children of Time")],
+            author_name="Adrian Tchaikovsky",
+        )
+        assert r.evidence.hard_reject is False
+        assert r.tier in ("candidate", "confirmed")
+        assert r.book is not None
+
+    def test_low_band_stopword_only_overlap_demoted(self):
+        # "The Strength of the Few" vs "The Justice of One" — char-fuzz 0.564
+        # is just above LOW threshold, but ONLY because of "The/of/the"
+        # stopword overlap. Guard 3a must demote both LOW positives to
+        # title_mismatch, triggering the both-sides hard-reject.
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(
+            title="The Strength of the Few",
+            authors=["James Islington"],
+        )
+        r = pick_best_attribution(
+            path="/lib/James Islington/Hierarchy/The Strength of the Few - James Islington (2025).m4b",
+            books=[_book("The Justice of One", pos=None, series=None)],
+            author_name="James Islington",
+            embedded=embedded,
+        )
+        assert r.tier == "rejected"
+        assert r.evidence.hard_reject is True
+        assert r.evidence.hard_reject_reason == "title_mismatch_both_sides"
+
+    def test_embedded_position_disagree_strips_series_before_fuzz(self):
+        # File path: "Azarinth Healer Book 2", embedded: "Azarinth Healer Book 2",
+        # candidate book: "Azarinth Healer (Book 1)" pos=1.
+        # Without the symmetric series-strip the raw embedded-vs-book fuzz is
+        # ~0.95 → +1.0 carry-the-match. With it, both strip to bare position
+        # markers → fuzz drops → embedded_title_mismatch fires → hard reject.
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(
+            title="Azarinth Healer Book 2",
+            authors=["Rhaegar"],
+            series_name="Azarinth Healer",
+            series_position=2.0,
+        )
+        r = pick_best_attribution(
+            path="/audiobooks/Rhaegar/Azarinth Healer/Azarinth Healer Book 2 - Rhaegar.m4b",
+            books=[_book("Azarinth Healer (Book 1)", pos=1.0, series="Azarinth Healer")],
+            author_name="Rhaegar",
+            embedded=embedded,
+        )
+        assert r.tier == "rejected"
+        assert r.evidence.hard_reject is True
+        assert r.evidence.hard_reject_reason in (
+            "title_borne_position_mismatch",
+            "title_mismatch_both_sides",
+        )
+
+    def test_bare_number_inside_alphanumeric_id_not_extracted(self):
+        # B0B75MS6F3 contains digits but they're embedded in an alphanumeric
+        # ID — the bare-number regex must not emit phantom votes.
+        votes = extract_position_signals(
+            "Dawnshard: Stormlight Archive [B0B75MS6F3].m4b",
+            series_name="The Stormlight Archive",
+            is_filename=True,
+        )
+        bare = [v for v in votes if v.source == "bare_number"]
+        assert bare == [], f"unexpected bare-number votes from ASIN string: {bare}"
+
+    def test_review_of_lord_of_the_rings_not_low_match(self):
+        # "Review of Lord of the Rings" vs "Lord of the Rings": share content
+        # tokens in same order, but different books — content-token equality
+        # check must demote the LOW positive to mismatch.
+        r = pick_best_attribution(
+            path="/lib/J.R.R. Tolkien/Review of Lord of the Rings - J.R.R. Tolkien (2001).epub",
+            books=[_book("Lord of the Rings", pos=None, series=None)],
+            author_name="J.R.R. Tolkien",
+        )
+        assert r.tier != "confirmed"
+
+    def test_lord_of_the_rings_vs_rings_of_the_lord_demoted(self):
+        # Reverse-order same-content-tokens must not pass the LOW band guard.
+        r = pick_best_attribution(
+            path="/lib/J.R.R. Tolkien/Rings of the Lord - J.R.R. Tolkien.epub",
+            books=[_book("Lord of the Rings", pos=None, series=None)],
+            author_name="J.R.R. Tolkien",
+        )
+        assert r.tier != "confirmed"
+
+    def test_multi_series_position_not_penalized(self):
+        # "The Alloy of Law" is Wax & Wayne #1 AND Mistborn Saga #4 AND
+        # Cosmere #8. ABS catalogs it as Mistborn #4 — must not be penalised
+        # for picking the alternate-series numbering.
+        import json as _json
+
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "The Alloy of Law",
+            "series_name": "Mistborn: Wax & Wayne",
+            "series_position": 1.0,
+            "all_series": _json.dumps(
+                [
+                    {"name": "The Mistborn Saga", "position": 4, "count": 10},
+                    {"name": "The Cosmere", "position": 8, "count": 34},
+                    {"name": "Mistborn: Wax & Wayne", "position": 1, "count": 4},
+                ]
+            ),
+        }
+        src = SourceMetadata(
+            title="The Alloy of Law",
+            author="Brandon Sanderson",
+            series_name="Mistborn",
+            series_position=4.0,
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path=None,
+            books=[book],
+            author_name="Brandon Sanderson",
+            embedded=None,
+            source_metadata=src,
+        )
+        assert r.tier == "confirmed"
+        assert not any(p["name"].endswith("_position_disagree") for p in r.evidence.penalties)
+
+    def test_multi_series_path_alternate_numbering_not_rejected(self):
+        # Filename uses Mistborn Saga numbering ("04") for a book whose
+        # primary series_position is 1 (Wax & Wayne). Must not trigger the
+        # title-borne position hard-reject because 4 matches an alternate
+        # series position.
+        import json as _json
+
+        book = {
+            "title": "The Alloy of Law",
+            "series_name": "Mistborn: Wax & Wayne",
+            "series_position": 1.0,
+            "all_series": _json.dumps(
+                [
+                    {"name": "The Mistborn Saga", "position": 4, "count": 10},
+                    {"name": "Mistborn: Wax & Wayne", "position": 1, "count": 4},
+                ]
+            ),
+        }
+        r = pick_best_attribution(
+            path="/audiobooks/Brandon Sanderson/Mistborn/Mistborn 04 - The Alloy of Law - Brandon Sanderson.m4b",
+            books=[book],
+            author_name="Brandon Sanderson",
+        )
+        assert r.evidence.hard_reject is False
+        assert r.evidence.hard_reject_reason != "title_borne_position_mismatch"
+
+    def test_author_with_initials_stripped_from_filename(self):
+        # Filename: "Dennis E. Taylor - Quantum Earth, Book 1 - Outland".
+        # The author name has a middle initial with a dot — previously the
+        # \\s+ pattern in extract_title_core couldn't span the dot, leaving
+        # "Dennis E. Taylor - " in title_core and tanking the fuzz to ~0.47.
+        from shelfmark.core.monitored_attribution_v2 import (
+            SourceMetadata,
+            extract_title_core,
+        )
+
+        title_core = extract_title_core(
+            "Dennis E. Taylor - Quantum Earth, Book 1 - Outland",
+            series_name="Quantum Earth",
+            author_name="Dennis E. Taylor",
+        )
+        assert title_core == "Outland"
+
+        book = {"title": "Outland", "series_position": 1.0, "series_name": "Quantum Earth"}
+        src = SourceMetadata(
+            title="Outland",
+            author="Dennis E. Taylor",
+            series_name="Quantum Earth",
+            series_position=1.0,
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path="/audiobooks/Audiobooks - Fiction/DennisETaylor/Quantum Earth/Dennis E. Taylor - Quantum Earth, Book 1 - Outland.m4b",
+            books=[book],
+            author_name="Dennis E. Taylor",
+            source_metadata=src,
+        )
+        assert r.tier == "confirmed"
+
+    def test_subtitle_after_colon_stripped_for_fuzz(self):
+        # Metadata title has a subtitle ("Beware of Chicken 2: A Xianxia
+        # Cultivation Novel") that the canonical book title lacks
+        # ("Beware of Chicken 2"). Must not trigger title_mismatch.
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "Beware of Chicken 2",
+            "series_position": 2.0,
+            "series_name": "Beware of Chicken",
+        }
+        src = SourceMetadata(
+            title="Beware of Chicken 2: A Xianxia Cultivation Novel",
+            author="Casualfarmer",
+            series_name="Beware of Chicken",
+            series_position=2.0,
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path="/audiobooks/CasualFarmer/Beware of Chicken/Beware of Chicken 2.m4b",
+            books=[book],
+            author_name="CasualFarmer",
+            source_metadata=src,
+        )
+        assert r.tier == "confirmed"
+        assert not any(p["name"].endswith("_title_mismatch") for p in r.evidence.penalties)
+
+    def test_parenthetical_series_info_stripped_for_fuzz(self):
+        # Metadata title carries the series + book number in parens
+        # ("Critical Mass (Expeditionary Force Book 10)") that Hardcover's
+        # canonical title ("Critical Mass") doesn't. Must not penalise.
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "Critical Mass",
+            "series_position": 10.0,
+            "series_name": "Expeditionary Force",
+        }
+        src = SourceMetadata(
+            title="Critical Mass (Expeditionary Force Book 10)",
+            author="Craig Alanson",
+            series_name="Expeditionary Force",
+            series_position=10.0,
+            source_label="booklore",
+        )
+        r = pick_best_attribution(
+            path="/Library/fiction/Craig Alanson/Expeditionary Force/Critical Mass (Expeditionary Force Book 10) - Craig Alanson (2020).epub",
+            books=[book],
+            author_name="Craig Alanson",
+            source_metadata=src,
+        )
+        assert r.tier == "confirmed"
+        assert not any(p["name"].endswith("_title_mismatch") for p in r.evidence.penalties)
+
+    def test_author_in_title_stripped_across_name_variants(self):
+        # The metadata title can carry the author name in any of several
+        # surface forms — "First Last", "Last, First", "by Author", etc.
+        # Each should strip cleanly so the residual matches the book title.
+        from shelfmark.core.monitored_attribution_v2 import _title_core_fuzz
+
+        cases = [
+            ("Dennis E. Taylor - Outland", "Outland"),
+            ("Taylor, Dennis - Outland", "Outland"),
+            ("Taylor, Dennis E. - Outland", "Outland"),
+            ("Outland by Dennis E. Taylor", "Outland"),
+            ("Outland — Dennis E. Taylor", "Outland"),
+        ]
+        for raw, canonical in cases:
+            fuzz = _title_core_fuzz(raw, canonical, author_name="Dennis E. Taylor")
+            assert fuzz >= TITLE_CORE_HIGH, f"{raw!r} vs {canonical!r}: fuzz={fuzz:.2f}"
+
+    def test_fuzz_author_matches_bibliographic_and_initial_forms(self):
+        # _fuzz_author must match the canonical author against every common
+        # surface form catalogs use: "Last, First", "Last, F.", "F. Last".
+        from shelfmark.core.monitored_attribution_v2 import _fuzz_author
+
+        canonical = "Dennis E. Taylor"
+        for candidate in (
+            "Dennis E. Taylor",
+            "DennisETaylor",
+            "Taylor, Dennis E.",
+            "Taylor, Dennis",
+            "D. Taylor",
+        ):
+            assert _fuzz_author(candidate, canonical) == 1.0, candidate
+
+    def test_filename_trailer_recognises_author_variants(self):
+        # The trailer recognizer must handle every common author form used
+        # in filenames.
+        from shelfmark.core.monitored_attribution_v2 import _author_in_filename_trailer
+
+        canonical = "Dennis E. Taylor"
+        for leaf in (
+            "Outland - Dennis E. Taylor",
+            "Outland - Taylor, Dennis E.",
+            "Outland by Dennis E. Taylor",
+            "Dennis E. Taylor - Outland",
+            "Taylor, Dennis - Outland",
+            "Outland - Dennis E. Taylor (2019)",
+        ):
+            assert _author_in_filename_trailer(leaf, canonical), leaf
+
+    def test_metadata_with_multiple_series_pairs_picks_matching_one(self):
+        # ABS commonly returns multi-series strings like
+        # "Stormlight Archive #5, Cosmere #19". When the book belongs to
+        # both series at different numbering schemes per catalog, the
+        # scorer must check every metadata pair against the book's all_series
+        # and pick the pair that matches.
+        import json as _json
+
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "Wind and Truth",
+            "series_name": "The Stormlight Archive",
+            "series_position": 5.0,
+            "all_series": _json.dumps(
+                [
+                    {"name": "The Stormlight Archive", "position": 5, "count": 10},
+                    {"name": "The Cosmere", "position": 33, "count": 34},
+                ]
+            ),
+        }
+        src = SourceMetadata(
+            title="Wind and Truth",
+            author="Brandon Sanderson",
+            series_name="Stormlight Archive",
+            series_position=5.0,
+            all_series_pairs=[("Stormlight Archive", 5.0), ("Cosmere", 19.0)],
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path=None,
+            books=[book],
+            author_name="Brandon Sanderson",
+            source_metadata=src,
+        )
+        assert r.tier == "confirmed"
+        assert not any(p["name"].endswith("_position_disagree") for p in r.evidence.penalties)
+
+    def test_title_equals_series_name_does_not_mismatch_on_position_disagree(self):
+        # Warbreaker: title == series_name. When metadata's position
+        # disagrees with book's position, the symmetric series-strip
+        # leaves both sides empty — but the original titles ARE equal,
+        # so this must be a match (title_agree), not a mismatch.
+        import json as _json
+
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "Warbreaker",
+            "series_name": "Warbreaker",
+            "series_position": 1.0,
+            "all_series": _json.dumps(
+                [
+                    {"name": "Warbreaker", "position": 1, "count": 2},
+                    {"name": "The Cosmere", "position": 6, "count": 34},
+                ]
+            ),
+        }
+        src = SourceMetadata(
+            title="Warbreaker",
+            author="Brandon Sanderson",
+            series_name="Cosmere",
+            series_position=5.0,
+            all_series_pairs=[("Cosmere", 5.0)],
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path=None,
+            books=[book],
+            author_name="Brandon Sanderson",
+            source_metadata=src,
+        )
+        assert not any(p["name"].endswith("_title_mismatch") for p in r.evidence.penalties), (
+            f"unexpected title_mismatch: {r.evidence.penalties}"
+        )
+        assert any(p["name"].endswith("_title_agree") for p in r.evidence.positives)
+
+    def test_source_metadata_all_series_pairs_survive_json_roundtrip(self):
+        # The Fix-match dialog rebuilds SourceMetadata from evidence_json's
+        # source_data. all_series_pairs must round-trip cleanly so multi-
+        # series matching benefits interactive re-scoring the same way it
+        # benefits the original sync.
+        import json as _json
+
+        from shelfmark.core.monitored_attribution_v2 import (
+            SourceMetadata,
+            _metadata_to_dict,
+        )
+
+        pairs = [("Stormlight Archive", 5.0), ("Cosmere", 19.0)]
+        serialized = _metadata_to_dict(
+            title="Wind and Truth",
+            authors=["Brandon Sanderson"],
+            series_name="Stormlight Archive",
+            series_position=5.0,
+            isbn_13=None,
+            isbn_10=None,
+            asin=None,
+            year=None,
+            all_series_pairs=pairs,
+        )
+        roundtripped = _json.loads(_json.dumps(serialized))
+        assert "all_series_pairs" in roundtripped
+        assert roundtripped["all_series_pairs"] == [["Stormlight Archive", 5.0], ["Cosmere", 19.0]]
+
+        restored = SourceMetadata(
+            title=roundtripped["title"],
+            series_name=roundtripped["series_name"],
+            series_position=roundtripped["series_position"],
+            all_series_pairs=[(p[0], float(p[1])) for p in roundtripped["all_series_pairs"]],
+        )
+        assert restored.all_series_pairs == pairs
+
+    def test_brackets_stripped_from_title_core(self):
+        # Catalog identifiers (`[B0B75MS6F3]`), Graphicaudio markers
+        # (`[GA]`), and edition tags (`[Unabridged]`) must NOT leak into
+        # title_core or into the canonical-title forms used for fuzz.
+        from shelfmark.core.monitored_attribution_v2 import _canonical_title_forms
+
+        assert (
+            extract_title_core(
+                "Tress of the Emerald Sea [GA]",
+                series_name="The Cosmere",
+                author_name="Brandon Sanderson",
+            )
+            == "Tress of the Emerald Sea"
+        )
+
+        assert (
+            extract_title_core(
+                "Dawnshard: Stormlight Archive [B0B75MS6F3].m4b",
+                series_name="The Stormlight Archive",
+                author_name="Brandon Sanderson",
+            )
+            == "Dawnshard: Stormlight Archive"
+        )
+
+        # Canonical-title forms must also strip brackets so metadata-side
+        # titles with embedded ASIN codes don't tank the fuzz.
+        forms = _canonical_title_forms(
+            "Critical Mass [B0CHMZX4DK]",
+            series_name="Expeditionary Force",
+        )
+        assert "Critical Mass" in forms, forms
+
+    def test_multi_author_folder_matches_canonical(self):
+        # Folder name contains multiple comma-separated authors; the canonical
+        # author for the monitored entity is one of them. _fuzz_author must
+        # split on commas and treat each token independently.
+        from shelfmark.core.monitored_attribution_v2 import _fuzz_author
+
+        # Wheel of Time collaboratively finished by Sanderson.
+        folder = "Robert Jordan, Brandon Sanderson"
+        assert _fuzz_author(folder, "Brandon Sanderson") == 1.0
+        assert _fuzz_author(folder, "Robert Jordan") == 1.0
+        # Also ampersand / "and" / "with"
+        assert _fuzz_author("Brandon Sanderson & Janci Patterson", "Brandon Sanderson") == 1.0
+        assert _fuzz_author("Brandon Sanderson and Janci Patterson", "Brandon Sanderson") == 1.0
+        # Unrelated author still returns low fuzz.
+        assert _fuzz_author("Some Other Author", "Brandon Sanderson") < 0.5
+
+    def test_series_folder_matches_via_substring_containment(self):
+        # Folder uses a fuller / longer form than canonical
+        # ("The Mistborn Saga_ The Original Trilogy" vs canonical
+        # "The Mistborn Saga"), or filesystem substitutes underscore for
+        # colon. Plain SequenceMatcher fuzz drops below threshold here;
+        # substring-containment fallback must rescue.
+        book = {
+            "title": "The Final Empire",
+            "series_name": "The Mistborn Saga",
+            "series_position": 1.0,
+        }
+        r = pick_best_attribution(
+            path="/books/ebooks/fiction/Brandon Sanderson/The Mistborn Saga_ The Original Trilogy/Mistborn_ The Final Empire - Brandon Sanderson (2006).epub",
+            books=[book],
+            author_name="Brandon Sanderson",
+        )
+        # series_folder should fire via the substring rescue.
+        assert any(p["name"] == "series_folder" for p in r.evidence.positives), (
+            f"series_folder did not match: {r.evidence.positives}"
+        )

@@ -8,7 +8,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from shelfmark.core.logger import setup_logger
 
@@ -93,14 +93,24 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
     match_reason TEXT,
     evidence_json TEXT,
     manual_override INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'matched',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(entity_id, path, source),
-    UNIQUE(entity_id, provider, provider_book_id, file_type, source)
+    UNIQUE(entity_id, path, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
 ON monitored_book_files (entity_id, updated_at DESC);
+
+-- Partial UNIQUE INDEX: only one confirmed match per (book, file_type,
+-- source). Candidate-tier rows are exempt — multiple alternates can coexist
+-- in the Possible Candidates UI until the user picks one via Accept.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_book_files_one_matched_per_book
+ON monitored_book_files (entity_id, provider, provider_book_id, file_type, source)
+WHERE status = 'matched'
+  AND provider IS NOT NULL
+  AND provider_book_id IS NOT NULL
+  AND file_type IS NOT NULL;
 
 -- User-rejected (file, book) attribution pairs. When the user detaches an
 -- attribution via "Fix match → Detach", the (entity, source, path, book) tuple
@@ -327,9 +337,7 @@ def _migrate_monitored_book_files_v4(conn: sqlite3.Connection) -> None:
     penalties, position_votes, etc.) as JSON, surfaced in the BookDetailsModal
     "Why?" UI.
     """
-    cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()
-    }
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()}
     if "evidence_json" in cols:
         return  # already migrated
     conn.execute("ALTER TABLE monitored_book_files ADD COLUMN evidence_json TEXT")
@@ -366,7 +374,8 @@ def _migrate_monitored_book_files_v5(conn: sqlite3.Connection) -> None:
     if deleted:
         logger.info(
             "Migration v5: wiped %d legacy attribution rows; next scan/sync "
-            "will repopulate under the unified matcher.", deleted,
+            "will repopulate under the unified matcher.",
+            deleted,
         )
 
 
@@ -377,13 +386,127 @@ def _migrate_monitored_book_files_v6(conn: sqlite3.Connection) -> None:
     scanner and integration sync loops must not overwrite it. Centralised
     enforcement lives in ``upsert_monitored_book_file``.
     """
-    cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()
-    }
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()}
     if "manual_override" in cols:
         return
     conn.execute(
         "ALTER TABLE monitored_book_files ADD COLUMN manual_override INTEGER NOT NULL DEFAULT 0"
+    )
+    conn.commit()
+
+
+def _migrate_monitored_book_files_v7(conn: sqlite3.Connection) -> None:
+    """Add ``status`` column for the three-tier attribution model.
+
+    Values: ``'matched'`` (default, confirmed match — counts toward "book is
+    owned"), ``'candidate'`` (weak match needing user Accept/Reject review —
+    does NOT count toward owned). Existing rows backfill as ``'matched'`` —
+    they were accepted by the prior binary classifier; the scanner will
+    re-evaluate on the next run.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(monitored_book_files)").fetchall()}
+    if "status" in cols:
+        return
+    conn.execute(
+        "ALTER TABLE monitored_book_files ADD COLUMN status TEXT NOT NULL DEFAULT 'matched'"
+    )
+    conn.commit()
+
+
+def _migrate_monitored_book_files_v8(conn: sqlite3.Connection) -> None:
+    """Relax the per-book UNIQUE constraint to apply only to confirmed matches.
+
+    Original constraint:
+        UNIQUE(entity_id, provider, provider_book_id, file_type, source)
+
+    enforced "one ABS audiobook per book per source" even for candidates.
+    That hid legitimate alternates: when ABS exposes both a clean copy and a
+    Graphicaudio multi-part of the same book, only one could be persisted —
+    the user couldn't see the other in the Possible Candidates UI to pick.
+
+    Replacement: partial UNIQUE INDEX that only enforces uniqueness when
+    ``status = 'matched'``. Multiple candidate rows per (book, file_type,
+    source) are now allowed; the user picks one and Accept promotes it.
+
+    SQLite can't DROP a UNIQUE constraint inline, so this is a table rebuild.
+    """
+    # Skip when the partial index already exists (idempotent).
+    idx_rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_monitored_book_files_one_matched_per_book'"
+    ).fetchone()
+    if idx_rows:
+        return
+
+    # Check whether the old UNIQUE constraint is still present in the table
+    # SQL. If it isn't, just create the partial index and return.
+    table_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='monitored_book_files'"
+    ).fetchone()
+    has_old_unique = table_sql_row is not None and (
+        "UNIQUE(entity_id, provider, provider_book_id, file_type, source)"
+        in (table_sql_row[0] or "")
+    )
+
+    if has_old_unique:
+        # Standard SQLite recipe for ALTER-TABLE-DROP-CONSTRAINT:
+        # toggle foreign_keys OFF, RENAME + recreate, INSERT-SELECT, DROP
+        # old, toggle back ON. With foreign_keys=ON the RENAME would
+        # rewrite child-table references and the new CREATE TABLE's FK
+        # validation can fail mid-script. The toggle MUST happen outside
+        # any transaction — executescript implicitly commits.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.executescript(
+                """
+                ALTER TABLE monitored_book_files RENAME TO monitored_book_files_v8_old;
+                CREATE TABLE monitored_book_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+                    provider TEXT,
+                    provider_book_id TEXT,
+                    path TEXT NOT NULL,
+                    ext TEXT,
+                    file_type TEXT,
+                    source TEXT NOT NULL DEFAULT 'filesystem',
+                    size_bytes INTEGER,
+                    mtime TIMESTAMP,
+                    confidence REAL,
+                    match_reason TEXT,
+                    evidence_json TEXT,
+                    manual_override INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'matched',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(entity_id, path, source)
+                );
+                INSERT INTO monitored_book_files
+                    (id, entity_id, provider, provider_book_id, path, ext, file_type, source,
+                     size_bytes, mtime, confidence, match_reason, evidence_json,
+                     manual_override, status, created_at, updated_at)
+                SELECT
+                    id, entity_id, provider, provider_book_id, path, ext, file_type, source,
+                    size_bytes, mtime, confidence, match_reason, evidence_json,
+                    manual_override, status, created_at, updated_at
+                FROM monitored_book_files_v8_old;
+                DROP TABLE monitored_book_files_v8_old;
+                CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
+                    ON monitored_book_files (entity_id, updated_at DESC);
+                """
+            )
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
+    # Partial UNIQUE INDEX: only one confirmed match per (entity, book,
+    # file_type, source). Candidates are exempt — multiple per book allowed.
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_book_files_one_matched_per_book
+        ON monitored_book_files (entity_id, provider, provider_book_id, file_type, source)
+        WHERE status = 'matched'
+          AND provider IS NOT NULL
+          AND provider_book_id IS NOT NULL
+          AND file_type IS NOT NULL
+        """
     )
     conn.commit()
 
@@ -396,7 +519,9 @@ def _migrate_monitored_events_backfill_thumbnails(conn: sqlite3.Connection) -> N
     where the referenced rows still exist. Idempotent; safe to skip when
     those rows have already been unmonitored.
     """
-    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'").fetchone():
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'"
+    ).fetchone():
         return
     conn.execute(
         """
@@ -435,7 +560,9 @@ def _migrate_monitored_events_backfill_user_id(conn: sqlite3.Connection) -> None
     pass it through. Recover via the FK to ``monitored_entities`` where possible.
     Idempotent.
     """
-    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'").fetchone():
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='monitored_events'"
+    ).fetchone():
         return
     conn.execute(
         """
@@ -528,43 +655,59 @@ class MonitoredDB:
                 # once per DB. v5 wipes legacy attributions; v6 adds the
                 # manual_override column.
                 user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-                if user_version < 6:
+                if user_version < 8:
                     if user_version < 5:
                         _migrate_monitored_book_files_v5(conn)
-                    _migrate_monitored_book_files_v6(conn)
-                    conn.execute("PRAGMA user_version = 6")
+                    if user_version < 6:
+                        _migrate_monitored_book_files_v6(conn)
+                    if user_version < 7:
+                        _migrate_monitored_book_files_v7(conn)
+                    _migrate_monitored_book_files_v8(conn)
+                    conn.execute("PRAGMA user_version = 8")
                     conn.commit()
                 _migrate_monitored_events_cascade_to_set_null(conn)
                 _migrate_monitored_events_backfill_user_id(conn)
                 # Lazy migration: column is in CREATE TABLE for new DBs but
                 # existing tables need ALTER TABLE (CREATE IF NOT EXISTS is a no-op).
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_checked_at TIMESTAMP")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN release_date_checked_at TIMESTAMP"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN release_date_manual INTEGER NOT NULL DEFAULT 0")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN release_date_manual INTEGER NOT NULL DEFAULT 0"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN saved_monitor_ebook INTEGER")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN saved_monitor_ebook INTEGER"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN saved_monitor_audiobook INTEGER")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN saved_monitor_audiobook INTEGER"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_books ADD COLUMN monitor_locked INTEGER NOT NULL DEFAULT 0")
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN monitor_locked INTEGER NOT NULL DEFAULT 0"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -599,7 +742,9 @@ class MonitoredDB:
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN session_id TEXT")
+                    conn.execute(
+                        "ALTER TABLE monitored_pending_releases ADD COLUMN session_id TEXT"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -608,13 +753,31 @@ class MonitoredDB:
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+
+                # Reset any entities left in sync_status='syncing' at startup.
+                # The sync runs in a daemon thread; if the container crashes
+                # or restarts mid-sync, the flag stays set and the per-author
+                # refresh button permanently short-circuits with "already
+                # syncing". On boot, no sync is actually in flight, so this
+                # is safe to clear unconditionally.
+                stuck = conn.execute(
+                    "UPDATE monitored_entities SET sync_status = 'idle' WHERE sync_status = 'syncing'"
+                ).rowcount
+                if stuck:
+                    logger.info(
+                        "Cleared sync_status='syncing' on %d entities at startup (no sync is in flight after restart).",
+                        stuck,
+                    )
+                    conn.commit()
                 try:
                     conn.execute("ALTER TABLE monitored_events ADD COLUMN triggered_by TEXT")
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
                 try:
-                    conn.execute("ALTER TABLE monitored_pending_releases ADD COLUMN triggered_by TEXT")
+                    conn.execute(
+                        "ALTER TABLE monitored_pending_releases ADD COLUMN triggered_by TEXT"
+                    )
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
@@ -751,7 +914,7 @@ class MonitoredDB:
             finally:
                 conn.close()
 
-    def list_monitored_entities(self, *, user_ids: list[int]) -> List[Dict[str, Any]]:
+    def list_monitored_entities(self, *, user_ids: list[int]) -> list[dict[str, Any]]:
         """List monitored entities visible to any of *user_ids*."""
         conn = self._connect()
         try:
@@ -765,7 +928,7 @@ class MonitoredDB:
                 """,
                 params,
             ).fetchall()
-            results: List[Dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
             for row in rows:
                 payload = dict(row)
                 raw_settings = payload.get("settings_json")
@@ -782,7 +945,7 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def get_monitored_entity(self, *, user_ids: list[int], entity_id: int) -> Optional[Dict[str, Any]]:
+    def get_monitored_entity(self, *, user_ids: list[int], entity_id: int) -> dict[str, Any] | None:
         """Return a monitored entity by id (visible to any of *user_ids*)."""
         conn = self._connect()
         try:
@@ -808,7 +971,7 @@ class MonitoredDB:
             conn.close()
 
     @staticmethod
-    def _serialize_json(value: Any, field: str) -> Optional[str]:
+    def _serialize_json(value: Any, field: str) -> str | None:
         if value is None:
             return None
         try:
@@ -825,8 +988,8 @@ class MonitoredDB:
         provider_id: str | None,
         name: str,
         enabled: bool = True,
-        settings: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any]:
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Create or return existing monitored entity."""
         normalized_kind = (kind or "").strip().lower()
         if normalized_kind not in {"author", "book"}:
@@ -1022,7 +1185,9 @@ class MonitoredDB:
     # Book CRUD
     # =========================================================================
 
-    def list_monitored_books(self, *, user_ids: list[int], entity_id: int) -> List[Dict[str, Any]] | None:
+    def list_monitored_books(
+        self, *, user_ids: list[int], entity_id: int
+    ) -> list[dict[str, Any]] | None:
         """List discovered books for a monitored entity (None if entity not found)."""
         conn = self._connect()
         try:
@@ -1238,7 +1403,7 @@ class MonitoredDB:
         if release_date and isinstance(release_date, str):
             try:
                 publish_year = int(release_date[:4])
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         with self._lock:
@@ -1247,7 +1412,12 @@ class MonitoredDB:
                 if not self._entity_exists(conn, entity_id, user_ids):
                     return False
 
-                updates = ["release_date = ?", "publish_year = ?", "release_date_checked_at = CURRENT_TIMESTAMP", "release_date_manual = ?"]
+                updates = [
+                    "release_date = ?",
+                    "publish_year = ?",
+                    "release_date_checked_at = CURRENT_TIMESTAMP",
+                    "release_date_manual = ?",
+                ]
                 params: list[Any] = [release_date, publish_year, 1 if release_date else 0]
 
                 if audible_asin:
@@ -1360,7 +1530,6 @@ class MonitoredDB:
             conn = self._connect()
             try:
                 if not self._entity_exists(conn, entity_id, user_ids):
-
                     return
 
                 conn.execute(
@@ -1503,7 +1672,9 @@ class MonitoredDB:
 
         safe_limit = max(1, min(int(limit or 20), 100))
         # Escape LIKE wildcard characters in user input
-        escaped_query = normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped_query = (
+            normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
         like = f"%{escaped_query}%"
         prefix_like = f"{escaped_query}%"
 
@@ -1512,7 +1683,11 @@ class MonitoredDB:
 
         # Build user_id IN clause with named params for this named-param query
         uid_names = [f":uid_{i}" for i in range(len(user_ids))]
-        uid_clause = f"me.user_id IN ({','.join(uid_names)})" if len(user_ids) > 1 else f"me.user_id = {uid_names[0]}"
+        uid_clause = (
+            f"me.user_id IN ({','.join(uid_names)})"
+            if len(user_ids) > 1
+            else f"me.user_id = {uid_names[0]}"
+        )
         uid_binds = {f"uid_{i}": uid for i, uid in enumerate(user_ids)}
 
         conn = self._connect()
@@ -1610,7 +1785,7 @@ class MonitoredDB:
         if publish_year is not None:
             try:
                 year_value = int(publish_year)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 year_value = None
 
         release_date_value: str | None = None
@@ -1635,28 +1810,28 @@ class MonitoredDB:
         if rating is not None:
             try:
                 rating_value = float(rating)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 rating_value = None
 
         ratings_count_value: int | None = None
         if ratings_count is not None:
             try:
                 ratings_count_value = int(ratings_count)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 ratings_count_value = None
 
         readers_count_value: int | None = None
         if readers_count is not None:
             try:
                 readers_count_value = int(readers_count)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 readers_count_value = None
 
         pages_value: int | None = None
         if pages is not None:
             try:
                 pages_value = int(pages)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pages_value = None
 
         isbns_json: str | None = None
@@ -1881,7 +2056,7 @@ class MonitoredDB:
                 updated = 0
                 # SQLite has a variable limit (~999); batch in chunks of 400
                 for i in range(0, len(keys), 400):
-                    chunk = keys[i:i + 400]
+                    chunk = keys[i : i + 400]
                     or_clauses = " OR ".join(
                         ["(provider = ? AND provider_book_id = ?)"] * len(chunk)
                     )
@@ -1926,6 +2101,7 @@ class MonitoredDB:
         source: str = "filesystem",
         evidence_json: str | None = None,
         manual_override: bool = False,
+        status: str = "matched",
     ) -> None:
         """Upsert a matched file for a monitored book.
 
@@ -1948,6 +2124,8 @@ class MonitoredDB:
             return
 
         manual_flag = 1 if manual_override else 0
+        if status not in ("matched", "candidate"):
+            raise ValueError(f"invalid status: {status!r}")
 
         with self._lock:
             conn = self._connect()
@@ -1967,131 +2145,298 @@ class MonitoredDB:
                         """,
                         (entity_id, normalized_path, source),
                     ).fetchone()
-                    if existing and (existing["manual_override"] if isinstance(existing, sqlite3.Row) else existing[0]):
+                    if existing and (
+                        existing["manual_override"]
+                        if isinstance(existing, sqlite3.Row)
+                        else existing[0]
+                    ):
                         return
 
-                if provider and provider_book_id and file_type:
-                    # Prevent path-key collisions when re-pointing an existing
-                    # (provider, provider_book_id, file_type, source) match to a new file path.
+                # ---- Enforce "one matched per book" while allowing multiple
+                # candidates per book. ----
+                # The full per-book UNIQUE constraint was relaxed in v8 to a
+                # partial UNIQUE INDEX that fires only for status='matched'
+                # rows. That means:
+                #   * Multiple candidate rows can coexist for the same
+                #     (entity, book, file_type, source).
+                #   * Only one matched row may exist for the same tuple —
+                #     enforced by the partial index.
+                # When upserting a matched row, evict any other matched row
+                # at the same book that has lower (or equal) confidence and
+                # isn't manually-overridden. The new row then becomes the
+                # canonical matched entry. Candidates at the same book are
+                # left alone — they remain visible as alternates to the user.
+                if (
+                    status == "matched"
+                    and provider
+                    and provider_book_id
+                    and file_type
+                    and not manual_override
+                ):
+                    existing_better = conn.execute(
+                        """
+                        SELECT confidence FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND file_type = ?
+                          AND source = ?
+                          AND status = 'matched'
+                          AND path != ?
+                          AND (COALESCE(manual_override, 0) = 1
+                               OR COALESCE(confidence, 0) >= COALESCE(?, 0))
+                        ORDER BY COALESCE(manual_override, 0) DESC,
+                                 COALESCE(confidence, 0) DESC
+                        LIMIT 1
+                        """,
+                        (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            file_type,
+                            source,
+                            normalized_path,
+                            confidence,
+                        ),
+                    ).fetchone()
+                    if existing_better is not None:
+                        # A better matched row already exists for this book.
+                        # Demote the incoming row to candidate so it surfaces
+                        # in the UI as an alternate without displacing the
+                        # winner.
+                        status = "candidate"
+                if status == "matched" and provider and provider_book_id and file_type:
+                    # A manual_override matched row at a different path for
+                    # the same (book, file_type, source) would violate the
+                    # partial unique index. Demote the incoming row to
+                    # candidate rather than overwrite the user's prior
+                    # explicit choice. (Cannot reach here when manual_override
+                    # is True AND already-matched — the early manual-skip
+                    # guard above returned out.)
+                    if not manual_override:
+                        blocking_manual = conn.execute(
+                            """
+                            SELECT 1 FROM monitored_book_files
+                            WHERE entity_id = ?
+                              AND provider = ?
+                              AND provider_book_id = ?
+                              AND file_type = ?
+                              AND source = ?
+                              AND status = 'matched'
+                              AND path != ?
+                              AND COALESCE(manual_override, 0) = 1
+                            LIMIT 1
+                            """,
+                            (
+                                entity_id,
+                                provider,
+                                provider_book_id,
+                                file_type,
+                                source,
+                                normalized_path,
+                            ),
+                        ).fetchone()
+                        if blocking_manual is not None:
+                            status = "candidate"
+
+                if status == "matched" and provider and provider_book_id and file_type:
+                    # New row wins (or is the only matched candidate) — evict
+                    # other non-manual matched rows for the same book so the
+                    # partial unique index doesn't conflict.
                     conn.execute(
                         """
                         DELETE FROM monitored_book_files
                         WHERE entity_id = ?
-                          AND path = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND file_type = ?
                           AND source = ?
-                          AND NOT (
-                            provider = ?
-                            AND provider_book_id = ?
-                            AND file_type = ?
-                          )
+                          AND status = 'matched'
+                          AND path != ?
+                          AND COALESCE(manual_override, 0) = 0
                         """,
-                        (entity_id, normalized_path, source, provider, provider_book_id, file_type),
+                        (
+                            entity_id,
+                            provider,
+                            provider_book_id,
+                            file_type,
+                            source,
+                            normalized_path,
+                        ),
                     )
 
-                    conn.execute(
-                        """
-                        INSERT INTO monitored_book_files (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            path,
-                            ext,
-                            file_type,
-                            source,
-                            size_bytes,
-                            mtime,
-                            confidence,
-                            match_reason,
-                            evidence_json,
-                            manual_override,
-                            updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(entity_id, provider, provider_book_id, file_type, source)
-                        DO UPDATE SET
-                            path=excluded.path,
-                            ext=excluded.ext,
-                            size_bytes=excluded.size_bytes,
-                            mtime=excluded.mtime,
-                            confidence=excluded.confidence,
-                            match_reason=excluded.match_reason,
-                            evidence_json=excluded.evidence_json,
-                            manual_override=excluded.manual_override,
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
-                        (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            normalized_path,
-                            ext,
-                            file_type,
-                            source,
-                            size_bytes,
-                            mtime,
-                            confidence,
-                            match_reason,
-                            evidence_json,
-                            manual_flag,
-                        ),
+                # Always upsert by path. This handles re-scans of the same
+                # file (updates in place) AND lets multiple candidate rows
+                # coexist for the same book (different paths). The matched
+                # uniqueness was already enforced above.
+                conn.execute(
+                    """
+                    INSERT INTO monitored_book_files (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        path,
+                        ext,
+                        file_type,
+                        source,
+                        size_bytes,
+                        mtime,
+                        confidence,
+                        match_reason,
+                        evidence_json,
+                        manual_override,
+                        status,
+                        updated_at
                     )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO monitored_book_files (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            path,
-                            ext,
-                            file_type,
-                            source,
-                            size_bytes,
-                            mtime,
-                            confidence,
-                            match_reason,
-                            evidence_json,
-                            manual_override,
-                            updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(entity_id, path, source)
-                        DO UPDATE SET
-                            provider=excluded.provider,
-                            provider_book_id=excluded.provider_book_id,
-                            ext=excluded.ext,
-                            file_type=excluded.file_type,
-                            size_bytes=excluded.size_bytes,
-                            mtime=excluded.mtime,
-                            confidence=excluded.confidence,
-                            match_reason=excluded.match_reason,
-                            evidence_json=excluded.evidence_json,
-                            manual_override=excluded.manual_override,
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
-                        (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            normalized_path,
-                            ext,
-                            file_type,
-                            source,
-                            size_bytes,
-                            mtime,
-                            confidence,
-                            match_reason,
-                            evidence_json,
-                            manual_flag,
-                        ),
-                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(entity_id, path, source)
+                    DO UPDATE SET
+                        provider=excluded.provider,
+                        provider_book_id=excluded.provider_book_id,
+                        ext=excluded.ext,
+                        file_type=excluded.file_type,
+                        size_bytes=excluded.size_bytes,
+                        mtime=excluded.mtime,
+                        confidence=excluded.confidence,
+                        match_reason=excluded.match_reason,
+                        evidence_json=excluded.evidence_json,
+                        manual_override=excluded.manual_override,
+                        status=excluded.status,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        entity_id,
+                        provider,
+                        provider_book_id,
+                        normalized_path,
+                        ext,
+                        file_type,
+                        source,
+                        size_bytes,
+                        mtime,
+                        confidence,
+                        match_reason,
+                        evidence_json,
+                        manual_flag,
+                        status,
+                    ),
+                )
 
                 conn.commit()
             finally:
                 conn.close()
 
+    def promote_candidate_to_matched(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int,
+        file_id: int,
+    ) -> bool:
+        """Promote a Possible Candidate row to a confirmed Matched file.
+
+        Atomically: evict any prior matched row for the same book/file_type/
+        source (since only one matched is allowed per the partial unique
+        index), then set this row's ``status='matched'`` and
+        ``manual_override=1`` so the next scanner pass won't demote it back.
+
+        Returns True iff the row was updated. Raises ``ValueError`` when a
+        user-confirmed manual_override matched row already occupies the
+        slot — promoting would violate the partial unique index. The
+        caller (API endpoint) should surface this as a clear "already
+        manually attached" message; the user can detach the existing
+        match first if they want to swap.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    return False
+                # Find the candidate row's identity so we can clear matched
+                # siblings for the same book before flipping its status.
+                row = conn.execute(
+                    """
+                    SELECT provider, provider_book_id, file_type, source
+                    FROM monitored_book_files
+                    WHERE id = ? AND entity_id = ? AND status = 'candidate'
+                    """,
+                    (file_id, entity_id),
+                ).fetchone()
+                if row is None:
+                    return False
+                provider = row["provider"] if isinstance(row, sqlite3.Row) else row[0]
+                provider_book_id = (
+                    row["provider_book_id"] if isinstance(row, sqlite3.Row) else row[1]
+                )
+                file_type = row["file_type"] if isinstance(row, sqlite3.Row) else row[2]
+                source = row["source"] if isinstance(row, sqlite3.Row) else row[3]
+
+                if provider and provider_book_id and file_type and source:
+                    # Refuse to promote if a manual_override matched row
+                    # already occupies the same (book, file_type, source).
+                    # The partial unique index would otherwise raise on
+                    # the UPDATE, and silently destroying the user's prior
+                    # explicit choice would be worse than asking.
+                    blocking = conn.execute(
+                        """
+                        SELECT id FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND file_type = ?
+                          AND source = ?
+                          AND status = 'matched'
+                          AND id != ?
+                          AND COALESCE(manual_override, 0) = 1
+                        LIMIT 1
+                        """,
+                        (entity_id, provider, provider_book_id, file_type, source, file_id),
+                    ).fetchone()
+                    if blocking is not None:
+                        raise ValueError(
+                            "A manually-attached match already exists for this "
+                            "book in the same source. Detach it first, then "
+                            "accept this candidate."
+                        )
+
+                    # Evict non-manual matched siblings so the partial unique
+                    # index doesn't conflict on promotion.
+                    conn.execute(
+                        """
+                        DELETE FROM monitored_book_files
+                        WHERE entity_id = ?
+                          AND provider = ?
+                          AND provider_book_id = ?
+                          AND file_type = ?
+                          AND source = ?
+                          AND status = 'matched'
+                          AND id != ?
+                          AND COALESCE(manual_override, 0) = 0
+                        """,
+                        (entity_id, provider, provider_book_id, file_type, source, file_id),
+                    )
+
+                cur = conn.execute(
+                    """
+                    UPDATE monitored_book_files
+                    SET status = 'matched',
+                        manual_override = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND entity_id = ? AND status = 'candidate'
+                    """,
+                    (file_id, entity_id),
+                )
+                conn.commit()
+                return (cur.rowcount or 0) > 0
+            finally:
+                conn.close()
+
     def delete_monitored_book_file_by_id(
-        self, *, user_ids: list[int], entity_id: int, file_id: int,
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int,
+        file_id: int,
     ) -> bool:
         """Delete a monitored_book_files row by id.
 
@@ -2114,8 +2459,14 @@ class MonitoredDB:
                 conn.close()
 
     def record_file_rejection(
-        self, *, user_ids: list[int], entity_id: int, source: str, path: str,
-        provider: str, provider_book_id: str,
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int,
+        source: str,
+        path: str,
+        provider: str,
+        provider_book_id: str,
     ) -> bool:
         """Record that the user rejected attributing ``(source, path)`` to
         ``(provider, provider_book_id)``. Idempotent — duplicate rejections
@@ -2151,7 +2502,9 @@ class MonitoredDB:
                 conn.close()
 
     def list_file_rejections_for_entity(
-        self, *, entity_id: int,
+        self,
+        *,
+        entity_id: int,
     ) -> set[tuple[str, str, str, str]]:
         """Return the set of rejected ``(source, path, provider, provider_book_id)``
         tuples for an entity. Sync code consults this to skip re-attributing
@@ -2169,8 +2522,7 @@ class MonitoredDB:
                     (entity_id,),
                 ).fetchall()
                 return {
-                    (r["source"], r["path"], r["provider"], r["provider_book_id"])
-                    for r in rows
+                    (r["source"], r["path"], r["provider"], r["provider_book_id"]) for r in rows
                 }
             finally:
                 conn.close()
@@ -2548,11 +2900,23 @@ class MonitoredDB:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        event_type, entity_id, book_provider, book_provider_id,
-                        book_title, author_name, content_type,
-                        source, source_display_name, status, message,
-                        metadata_json, session_id, user_id,
-                        book_cover_url, author_photo_url, triggered_by,
+                        event_type,
+                        entity_id,
+                        book_provider,
+                        book_provider_id,
+                        book_title,
+                        author_name,
+                        content_type,
+                        source,
+                        source_display_name,
+                        status,
+                        message,
+                        metadata_json,
+                        session_id,
+                        user_id,
+                        book_cover_url,
+                        author_photo_url,
+                        triggered_by,
                     ),
                 )
                 conn.commit()
@@ -2602,7 +2966,8 @@ class MonitoredDB:
             where = f" WHERE {' AND '.join(conditions)}"
 
             count_row = conn.execute(
-                f"SELECT COUNT(*) FROM monitored_events{where}", params,
+                f"SELECT COUNT(*) FROM monitored_events{where}",
+                params,
             ).fetchone()
             total = count_row[0] if count_row else 0
 
@@ -2616,7 +2981,9 @@ class MonitoredDB:
         finally:
             conn.close()
 
-    def count_events_by_type(self, *, user_ids: list[int], since: str | None = None) -> dict[str, int]:
+    def count_events_by_type(
+        self, *, user_ids: list[int], since: str | None = None
+    ) -> dict[str, int]:
         """Return event counts grouped by type, scoped to *user_ids*."""
         if not user_ids:
             return {}
@@ -2730,4 +3097,3 @@ class MonitoredDB:
             return [dict(r) for r in rows]
         finally:
             conn.close()
-

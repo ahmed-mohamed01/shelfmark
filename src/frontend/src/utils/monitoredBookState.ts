@@ -3,6 +3,9 @@ export type MonitoredBookStateLike = {
   monitor_audiobook?: unknown;
   has_ebook_available?: unknown;
   has_audiobook_available?: unknown;
+  /** Awaiting user Accept/Reject — file found but not confirmed. */
+  has_ebook_candidate?: unknown;
+  has_audiobook_candidate?: unknown;
   ebook_path?: unknown;
   audiobook_path?: unknown;
   ebook_available_format?: unknown;
@@ -22,17 +25,14 @@ export const isEnabledMonitoredFlag = (value: unknown): boolean => {
   return false;
 };
 
-const hasNonEmptyString = (value: unknown): boolean => (
-  typeof value === 'string' && value.trim().length > 0
-);
+const hasNonEmptyString = (value: unknown): boolean =>
+  typeof value === 'string' && value.trim().length > 0;
 
-export const monitoredBookTracksEbook = (book: MonitoredBookStateLike): boolean => (
-  isEnabledMonitoredFlag(book.monitor_ebook)
-);
+export const monitoredBookTracksEbook = (book: MonitoredBookStateLike): boolean =>
+  isEnabledMonitoredFlag(book.monitor_ebook);
 
-export const monitoredBookTracksAudiobook = (book: MonitoredBookStateLike): boolean => (
-  isEnabledMonitoredFlag(book.monitor_audiobook)
-);
+export const monitoredBookTracksAudiobook = (book: MonitoredBookStateLike): boolean =>
+  isEnabledMonitoredFlag(book.monitor_audiobook);
 
 export const monitoredBookHasFormatAvailable = (
   book: MonitoredBookStateLike,
@@ -40,38 +40,44 @@ export const monitoredBookHasFormatAvailable = (
 ): boolean => {
   if (format === 'ebook') {
     return (
-      isEnabledMonitoredFlag(book.has_ebook_available)
-      || hasNonEmptyString(book.ebook_path)
-      || hasNonEmptyString(book.ebook_available_format)
+      isEnabledMonitoredFlag(book.has_ebook_available) ||
+      hasNonEmptyString(book.ebook_path) ||
+      hasNonEmptyString(book.ebook_available_format)
     );
   }
 
   return (
-    isEnabledMonitoredFlag(book.has_audiobook_available)
-    || hasNonEmptyString(book.audiobook_path)
-    || hasNonEmptyString(book.audiobook_available_format)
+    isEnabledMonitoredFlag(book.has_audiobook_available) ||
+    hasNonEmptyString(book.audiobook_path) ||
+    hasNonEmptyString(book.audiobook_available_format)
   );
 };
 
-export const monitoredBookHasAnyAvailable = (book: MonitoredBookStateLike): boolean => (
-  monitoredBookHasFormatAvailable(book, 'ebook') || monitoredBookHasFormatAvailable(book, 'audiobook')
-);
+export const monitoredBookHasAnyAvailable = (book: MonitoredBookStateLike): boolean =>
+  monitoredBookHasFormatAvailable(book, 'ebook') ||
+  monitoredBookHasFormatAvailable(book, 'audiobook');
 
 // A book is "missing" if any tracked format lacks a file. Aligns the
 // Monitored Books tab with the per-format badges and per-format auto-search:
 // a book with ebook present but a tracked-and-missing audiobook still counts.
-export const monitoredBookHasMissingTrackedFormat = (book: MonitoredBookStateLike): boolean => (
-  (monitoredBookTracksEbook(book) && !monitoredBookHasFormatAvailable(book, 'ebook'))
-  || (monitoredBookTracksAudiobook(book) && !monitoredBookHasFormatAvailable(book, 'audiobook'))
-);
+export const monitoredBookHasMissingTrackedFormat = (book: MonitoredBookStateLike): boolean =>
+  (monitoredBookTracksEbook(book) && !monitoredBookHasFormatAvailable(book, 'ebook')) ||
+  (monitoredBookTracksAudiobook(book) && !monitoredBookHasFormatAvailable(book, 'audiobook'));
 
-export const isMonitoredBookDormantState = (book: MonitoredBookStateLike): boolean => (
-  !monitoredBookTracksEbook(book)
-  && !monitoredBookTracksAudiobook(book)
-  && !monitoredBookHasAnyAvailable(book)
-);
+export const isMonitoredBookDormantState = (book: MonitoredBookStateLike): boolean =>
+  !monitoredBookTracksEbook(book) &&
+  !monitoredBookTracksAudiobook(book) &&
+  !monitoredBookHasAnyAvailable(book);
 
-export type FormatAvailabilityStatus = 'available' | 'wanted' | 'missing';
+export type FormatAvailabilityStatus = 'available' | 'candidate' | 'wanted' | 'missing';
+
+export const monitoredBookHasFormatCandidate = (
+  book: MonitoredBookStateLike,
+  format: 'ebook' | 'audiobook',
+): boolean =>
+  isEnabledMonitoredFlag(
+    format === 'ebook' ? book.has_ebook_candidate : book.has_audiobook_candidate,
+  );
 
 const MISSING_SEARCH_STATUSES = new Set(['no_match', 'below_cutoff', 'download_failed', 'error']);
 
@@ -130,14 +136,21 @@ export const getFormatStatus = (
   book: MonitoredBookStateLike,
   format: 'ebook' | 'audiobook',
 ): FormatAvailabilityStatus | null => {
-  // Show "available" whenever a file exists, even if monitoring is disabled
+  // Show "available" whenever a confirmed file exists, even if monitoring is disabled.
   if (monitoredBookHasFormatAvailable(book, format)) return 'available';
 
+  // "candidate" surfaces when there's an unconfirmed file awaiting user
+  // review — distinct from "available" because we don't auto-suppress
+  // auto-search; user needs to Accept/Reject.
+  if (monitoredBookHasFormatCandidate(book, format)) return 'candidate';
+
   // "wanted" / "missing" only apply when actively monitoring
-  const tracks = format === 'ebook' ? monitoredBookTracksEbook(book) : monitoredBookTracksAudiobook(book);
+  const tracks =
+    format === 'ebook' ? monitoredBookTracksEbook(book) : monitoredBookTracksAudiobook(book);
   if (!tracks) return null;
 
-  const rawStatus = format === 'ebook' ? book.ebook_last_search_status : book.audiobook_last_search_status;
+  const rawStatus =
+    format === 'ebook' ? book.ebook_last_search_status : book.audiobook_last_search_status;
   const lastStatus = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : null;
   if (lastStatus && MISSING_SEARCH_STATUSES.has(lastStatus)) return 'missing';
 

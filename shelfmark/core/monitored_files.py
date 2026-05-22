@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,10 @@ import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
-from shelfmark.download.postprocess.policy import get_supported_audiobook_formats, get_supported_formats
+from shelfmark.download.postprocess.policy import (
+    get_supported_audiobook_formats,
+    get_supported_formats,
+)
 
 logger = setup_logger(__name__)
 
@@ -114,9 +117,15 @@ def _record_scan_match_v2(
     # Drop books the user explicitly rejected for this (source=filesystem, path).
     if rejections:
         eligible_books = [
-            b for b in books
-            if ("filesystem", path_str,
-                (b.get("provider") or ""), (b.get("provider_book_id") or "")) not in rejections
+            b
+            for b in books
+            if (
+                "filesystem",
+                path_str,
+                (b.get("provider") or ""),
+                (b.get("provider_book_id") or ""),
+            )
+            not in rejections
         ]
     else:
         eligible_books = books
@@ -134,32 +143,41 @@ def _record_scan_match_v2(
     try:
         evidence_payload = asdict(evidence)
         evidence_json: str | None = json.dumps(evidence_payload, default=str)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         evidence_json = None
 
     top_matches: list[dict[str, Any]] = []
     if result.book is not None:
-        top_matches.append({
-            "title": result.book.get("title"),
-            "provider": result.book.get("provider"),
-            "provider_book_id": result.book.get("provider_book_id"),
-            "score": float(result.confidence),
-        })
+        top_matches.append(
+            {
+                "title": result.book.get("title"),
+                "provider": result.book.get("provider"),
+                "provider_book_id": result.book.get("provider_book_id"),
+                "score": float(result.confidence),
+            }
+        )
 
-    if result.book is None or not evidence.accept:
-        unmatched.append({
-            "path": path_str,
-            "ext": file_type,
-            "file_type": file_type,
-            "size_bytes": size_bytes,
-            "mtime": mtime,
-            "candidate": evidence.title_core or "",
-            "best_score": float(result.confidence),
-            "top_matches": top_matches,
-            "reason": result.match_reason,
-        })
+    # Three-tier outcome: confirmed → write status='matched' and count toward
+    # owned; candidate → write status='candidate' (surfaces in Possible
+    # Candidates UI, does NOT count toward owned); rejected → unmatched.
+    tier = getattr(result, "tier", None) or evidence.tier
+    if result.book is None or tier == "rejected":
+        unmatched.append(
+            {
+                "path": path_str,
+                "ext": file_type,
+                "file_type": file_type,
+                "size_bytes": size_bytes,
+                "mtime": mtime,
+                "candidate": evidence.title_core or "",
+                "best_score": float(result.confidence),
+                "top_matches": top_matches,
+                "reason": result.match_reason,
+            }
+        )
         return
 
+    db_status = "matched" if tier == "confirmed" else "candidate"
     best_book = result.book
     p_val = best_book.get("provider")
     bid_val = best_book.get("provider_book_id")
@@ -182,25 +200,28 @@ def _record_scan_match_v2(
             confidence=float(result.confidence),
             match_reason=result.match_reason,
             evidence_json=evidence_json,
+            status=db_status,
         )
 
-    matched.append({
-        "path": path_str,
-        "ext": file_type,
-        "file_type": file_type,
-        "size_bytes": size_bytes,
-        "mtime": mtime,
-        "candidate": evidence.title_core or "",
-        "match": {
-            "provider": provider,
-            "provider_book_id": provider_book_id,
-            "title": best_book.get("title"),
-            "confidence": float(result.confidence),
-            "reason": result.match_reason,
-            "top_matches": top_matches,
-            "evidence": evidence_payload if evidence_json else None,
-        },
-    })
+    matched.append(
+        {
+            "path": path_str,
+            "ext": file_type,
+            "file_type": file_type,
+            "size_bytes": size_bytes,
+            "mtime": mtime,
+            "candidate": evidence.title_core or "",
+            "match": {
+                "provider": provider,
+                "provider_book_id": provider_book_id,
+                "title": best_book.get("title"),
+                "confidence": float(result.confidence),
+                "reason": result.match_reason,
+                "top_matches": top_matches,
+                "evidence": evidence_payload if evidence_json else None,
+            },
+        }
+    )
 
 
 def _normalize_alias_series_position(value: Any) -> float | None:
@@ -208,7 +229,7 @@ def _normalize_alias_series_position(value: Any) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -228,7 +249,11 @@ def _books_are_alias_equivalent(left: dict[str, Any], right: dict[str, Any]) -> 
     if not left_base or left_base != right_base:
         return False
 
-    if left_series_pos is not None and right_series_pos is not None and abs(left_series_pos - right_series_pos) > 1e-6:
+    if (
+        left_series_pos is not None
+        and right_series_pos is not None
+        and abs(left_series_pos - right_series_pos) > 1e-6
+    ):
         return False
 
     if left_series_name and right_series_name and left_series_name != right_series_name:
@@ -299,7 +324,9 @@ def expand_monitored_file_rows_for_equivalent_books(
             continue
 
         _append_row(provider, provider_book_id, row)
-        for alias_provider, alias_provider_book_id in alias_map.get((provider, provider_book_id), set()):
+        for alias_provider, alias_provider_book_id in alias_map.get(
+            (provider, provider_book_id), set()
+        ):
             _append_row(alias_provider, alias_provider_book_id, row)
 
     return expanded
@@ -314,7 +341,7 @@ def iso_mtime(p: Path) -> str | None:
     """Return ISO 8601 UTC mtime for a path, or None on error."""
     try:
         ts = p.stat().st_mtime
-        return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.fromtimestamp(ts, UTC).isoformat().replace("+00:00", "Z")
     except Exception:
         return None
 
@@ -327,7 +354,9 @@ def _iter_files_recursive_safe(root: Path) -> list[Path]:
         logger.warning("Skipping unreadable monitored scan path root=%s: %s", root, err)
 
     try:
-        for dirpath, _, filenames in os.walk(root, topdown=True, followlinks=False, onerror=_onerror):
+        for dirpath, _, filenames in os.walk(
+            root, topdown=True, followlinks=False, onerror=_onerror
+        ):
             for filename in filenames:
                 files.append(Path(dirpath) / filename)
     except Exception as exc:
@@ -400,7 +429,9 @@ def _normalize_ordered_extensions(values: Any) -> list[str]:
     return ordered
 
 
-def _build_format_rank_map(*, preferred_order: list[str], allowed_formats: set[str]) -> dict[str, int]:
+def _build_format_rank_map(
+    *, preferred_order: list[str], allowed_formats: set[str]
+) -> dict[str, int]:
     rank: dict[str, int] = {}
     for ext in preferred_order:
         if ext in allowed_formats and ext not in rank:
@@ -444,7 +475,9 @@ def resolve_monitored_format_rankings(
 
     return (
         _build_format_rank_map(preferred_order=ebook_priority, allowed_formats=ebook_formats),
-        _build_format_rank_map(preferred_order=audiobook_priority, allowed_formats=audiobook_formats),
+        _build_format_rank_map(
+            preferred_order=audiobook_priority, allowed_formats=audiobook_formats
+        ),
     )
 
 
@@ -559,6 +592,8 @@ def summarize_monitored_book_availability(
             payload = {
                 "has_ebook_available": False,
                 "has_audiobook_available": False,
+                "has_ebook_candidate": False,
+                "has_audiobook_candidate": False,
                 "ebook_path": None,
                 "audiobook_path": None,
                 "ebook_available_format": None,
@@ -572,6 +607,15 @@ def summarize_monitored_book_availability(
             audiobook_formats=audio_formats,
         )
         if kind not in {"ebook", "audiobook"}:
+            continue
+
+        # Candidates (status='candidate') do NOT count toward "owned" — only
+        # confirmed matches mark a book as available. Older rows without a
+        # status column are treated as 'matched' (back-compat with pre-tier DBs).
+        row_status = row.get("status") or "matched"
+        if row_status == "candidate":
+            candidate_flag = "has_ebook_candidate" if kind == "ebook" else "has_audiobook_candidate"
+            payload[candidate_flag] = True
             continue
 
         _fields = _AVAILABILITY_FIELDS[kind]
@@ -620,6 +664,18 @@ def with_monitored_book_availability(
         enriched = dict(row)
         enriched["has_ebook_available"] = bool(payload.get("has_ebook_available", False))
         enriched["has_audiobook_available"] = bool(payload.get("has_audiobook_available", False))
+        # Awaiting-user-review state for the book card UI (rendered as a
+        # distinct color from "available"). Only True when there's a
+        # candidate-tier file row for the format AND no confirmed match
+        # exists for the same format (don't double-up the indicator).
+        enriched["has_ebook_candidate"] = bool(
+            payload.get("has_ebook_candidate", False)
+            and not payload.get("has_ebook_available", False)
+        )
+        enriched["has_audiobook_candidate"] = bool(
+            payload.get("has_audiobook_candidate", False)
+            and not payload.get("has_audiobook_available", False)
+        )
         enriched["ebook_path"] = payload.get("ebook_path")
         enriched["audiobook_path"] = payload.get("audiobook_path")
         enriched["ebook_available_format"] = payload.get("ebook_available_format")
@@ -640,7 +696,9 @@ def clear_entity_matched_files(
     entity_id: int,
 ) -> int:
     """Clear all filesystem-sourced matched file rows for an entity. Returns count deleted."""
-    return monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=[], source="filesystem")
+    return monitored_db.prune_monitored_book_files(
+        entity_id=entity_id, keep_paths=[], source="filesystem"
+    )
 
 
 def prune_stale_matched_files(
@@ -659,7 +717,9 @@ def prune_stale_matched_files(
         return
 
     try:
-        existing_files = monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+        existing_files = (
+            monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+        )
         keep: list[str] = []
         for row in existing_files:
             path = row.get("path")
@@ -678,7 +738,9 @@ def prune_stale_matched_files(
                 continue
             if path in seen_paths and Path(path).exists():
                 keep.append(path)
-        monitored_db.prune_monitored_book_files(entity_id=entity_id, keep_paths=keep, source="filesystem")
+        monitored_db.prune_monitored_book_files(
+            entity_id=entity_id, keep_paths=keep, source="filesystem"
+        )
     except Exception as exc:
         logger.warning("Failed pruning monitored book files entity_id=%s: %s", entity_id, exc)
 
@@ -726,6 +788,7 @@ def scan_monitored_author_files(
     # Per-scan embedded-metadata cache (eager, per design). Filled lazily as we
     # encounter each file — keeps the call inline rather than re-walking.
     from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
+
     metadata_cache: dict[str, Any] = {}
 
     if ebook_path is not None:
@@ -796,7 +859,9 @@ def scan_monitored_author_files(
                 audio_files = [
                     fp
                     for fp in parent.iterdir()
-                    if fp.is_file() and (not fp.is_symlink()) and fp.suffix.lower() in effective_audio_ext
+                    if fp.is_file()
+                    and (not fp.is_symlink())
+                    and fp.suffix.lower() in effective_audio_ext
                 ]
             except Exception:
                 continue
@@ -853,7 +918,9 @@ def scan_monitored_author_files(
         seen_paths=seen_paths,
     )
 
-    existing_files = monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+    existing_files = (
+        monitored_db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+    )
     expanded_existing_files = expand_monitored_file_rows_for_equivalent_books(
         books=books,
         file_rows=existing_files,
@@ -929,9 +996,7 @@ def compute_monitor_flag(
         return not has_available
     # "upcoming": only monitor future books we don't have yet
     return bool(
-        explicit_release_date is not None
-        and explicit_release_date > today
-        and not has_available
+        explicit_release_date is not None and explicit_release_date > today and not has_available
     )
 
 
@@ -1029,7 +1094,9 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
             dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
             if dest:
                 allowed.append(Path(dest).resolve())
-            dest_audio = _normalize_root(app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id))
+            dest_audio = _normalize_root(
+                app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id)
+            )
             if dest_audio:
                 allowed.append(Path(dest_audio).resolve())
         except Exception:

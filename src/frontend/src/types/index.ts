@@ -47,6 +47,8 @@ export interface Book {
   display_fields?: DisplayField[]; // Provider-specific display data
   has_ebook_available?: boolean;
   has_audiobook_available?: boolean;
+  has_ebook_candidate?: boolean;
+  has_audiobook_candidate?: boolean;
   ebook_path?: string;
   audiobook_path?: string;
   ebook_available_format?: string;

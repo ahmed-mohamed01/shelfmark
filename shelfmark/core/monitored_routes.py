@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Callable
-
 import re
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
 from flask import Flask, jsonify, request, session
 
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
@@ -18,7 +18,6 @@ from shelfmark.core.monitored_files import (
     resolve_allowed_roots,
 )
 from shelfmark.core.monitored_operations import (
-    sync_availability_sources,
     compute_book_availability,
     filter_search_candidates,
     record_scan_error,
@@ -27,9 +26,14 @@ from shelfmark.core.monitored_operations import (
     run_batch_sync,
     search_missing_books,
     start_author_background_sync,
+    sync_availability_sources,
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
-from shelfmark.core.monitored_types import AvailabilitySyncResult, MonitoredEntityNotFound, MonitoredPathError
+from shelfmark.core.monitored_types import (
+    AvailabilitySyncResult,
+    MonitoredEntityNotFound,
+    MonitoredPathError,
+)
 from shelfmark.core.monitored_utils import (
     extract_author_photo_url,
     normalize_preferred_languages,
@@ -38,7 +42,6 @@ from shelfmark.core.monitored_utils import (
 )
 from shelfmark.core.request_policy import PolicyMode, normalize_content_type, resolve_policy_mode
 from shelfmark.core.settings_registry import load_config_file
-from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -46,9 +49,19 @@ logger = setup_logger(__name__)
 # Audio file extensions used to bucket monitored_book_files rows into
 # audiobook-vs-ebook for the candidates endpoint. A row counts as audiobook
 # when its file_type is the explicit string "audiobook" OR an audio extension.
-_AUDIO_FILE_TYPES: frozenset[str] = frozenset({
-    "m4b", "mp3", "m4a", "flac", "opus", "aac", "ogg", "wav", "aax",
-})
+_AUDIO_FILE_TYPES: frozenset[str] = frozenset(
+    {
+        "m4b",
+        "mp3",
+        "m4a",
+        "flac",
+        "opus",
+        "aac",
+        "ogg",
+        "wav",
+        "aax",
+    }
+)
 
 # Total Link: rel=preload header size we'll emit on the entities-list
 # response. Kept well under common nginx proxy_buffer_size (4 KiB) so
@@ -65,7 +78,14 @@ def _resolve_global_monitor_user_id(user_db: UserDB) -> int:
     user = user_db.get_user(username="global")
     if user:
         return int(user["id"])
-    created = user_db.create_user(username="global", password_hash=None, email=None, display_name="Global", auth_source="builtin", role="admin")
+    created = user_db.create_user(
+        username="global",
+        password_hash=None,
+        email=None,
+        display_name="Global",
+        auth_source="builtin",
+        role="admin",
+    )
     return int(created["id"])
 
 
@@ -88,25 +108,43 @@ def _resolve_visible_user_ids(
         if raw is not None:
             try:
                 uid = int(raw)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
         uid = uid or global_user_id
         return uid, global_user_id, [uid] if uid == global_user_id else [uid, global_user_id], None
 
     raw = session.get("db_user_id")
     if raw is None:
-        return 0, global_user_id, [], (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
+        return (
+            0,
+            global_user_id,
+            [],
+            (
+                jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}),
+                403,
+            ),
+        )
     try:
         session_user_id = int(raw)
-    except (TypeError, ValueError):
-        return 0, global_user_id, [], (jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}), 403)
+    except TypeError, ValueError:
+        return (
+            0,
+            global_user_id,
+            [],
+            (
+                jsonify({"error": "Authentication required", "code": "user_identity_unavailable"}),
+                403,
+            ),
+        )
 
     if session_user_id == global_user_id:
         return session_user_id, global_user_id, [session_user_id], None
     return session_user_id, global_user_id, [session_user_id, global_user_id], None
 
 
-def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tuple[bool, str | None]:
+def _policy_allows_monitoring(
+    *, user_db: UserDB, db_user_id: int | None
+) -> tuple[bool, str | None]:
     try:
         global_settings = load_config_file("users")
     except Exception:
@@ -135,7 +173,9 @@ def _policy_allows_monitoring(*, user_db: UserDB, db_user_id: int | None) -> tup
     return True, None
 
 
-def _resolve_preferred_languages_for_user(user_db: UserDB, db_user_id: int | None) -> set[str] | None:
+def _resolve_preferred_languages_for_user(
+    user_db: UserDB, db_user_id: int | None
+) -> set[str] | None:
     from shelfmark.core.config import config as app_config
 
     user_langs: set[str] | None = None
@@ -151,7 +191,9 @@ def _resolve_preferred_languages_for_user(user_db: UserDB, db_user_id: int | Non
     return normalize_preferred_languages(app_config.get("BOOK_LANGUAGE", []))
 
 
-def resolve_download_db_user_id(session_obj: Any, auth_mode: str, user_db: UserDB | None) -> int | None:
+def resolve_download_db_user_id(
+    session_obj: Any, auth_mode: str, user_db: UserDB | None
+) -> int | None:
     """Resolve DB user id for download queue ownership/history writes.
 
     In auth-none mode, sessions may not carry db_user_id. Fall back to the
@@ -162,7 +204,7 @@ def resolve_download_db_user_id(session_obj: Any, auth_mode: str, user_db: UserD
     if raw_db_user_id is not None:
         try:
             return int(raw_db_user_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     if auth_mode != "none" or user_db is None:
@@ -191,7 +233,7 @@ def enrich_release_for_monitored(
         try:
             release_payload = dict(release_payload)
             release_payload["monitored_entity_id"] = int(monitored_entity_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             release_payload = dict(release_payload)
             release_payload.pop("monitored_entity_id", None)
 
@@ -222,7 +264,9 @@ def enrich_release_for_monitored(
                 settings = {}
 
             dest_override, org_override, tmpl_override = resolve_monitored_output_overrides(
-                settings, content_type=ct, user_id=db_user_id,
+                settings,
+                content_type=ct,
+                user_id=db_user_id,
             )
             release_payload = dict(release_payload)
             if dest_override is not None:
@@ -238,15 +282,14 @@ def enrich_release_for_monitored(
             # the Release object, so without this the precheck is silent.
             book_provider = str(release_payload.get("monitored_book_provider") or "").strip()
             book_provider_id = str(release_payload.get("monitored_book_provider_id") or "").strip()
-            if (
-                book_provider
-                and book_provider_id
-                and not release_payload.get("release_date")
-            ):
-                books = monitored_db.list_monitored_books(
-                    user_ids=lookup_ids,
-                    entity_id=int(monitored_entity_id_int),
-                ) or []
+            if book_provider and book_provider_id and not release_payload.get("release_date"):
+                books = (
+                    monitored_db.list_monitored_books(
+                        user_ids=lookup_ids,
+                        entity_id=int(monitored_entity_id_int),
+                    )
+                    or []
+                )
                 for b in books:
                     if (
                         str(b.get("provider") or "").strip() == book_provider
@@ -257,12 +300,16 @@ def enrich_release_for_monitored(
                             release_payload["release_date"] = rd
                         break
     except Exception:
-        logger.warning("Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True)
+        logger.warning(
+            "Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True
+        )
 
     return release_payload
 
 
-def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tuple[dict[str, Any], int | None]:
+def get_monitored_config_additions(
+    app_config: Any, raw_db_user_id: Any
+) -> tuple[dict[str, Any], int | None]:
     """Return monitored-feature config dict entries and the resolved user_id.
 
     Extracted from api_config() to keep main.py lean. Returns a tuple of
@@ -272,10 +319,12 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
     config_user_id: int | None = None
     try:
         config_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         config_user_id = None
 
-    default_action_raw = str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
+    default_action_raw = (
+        str(app_config.get("RELEASE_PRIMARY_DEFAULT_ACTION", "") or "").strip().lower()
+    )
 
     default_action_map: dict[str, tuple[str, str]] = {
         "ebook_interactive_search": ("ebook", "interactive_search"),
@@ -290,7 +339,9 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
     if default_content_type is None or default_action is None:
         # Backward compatibility for legacy split settings.
         fallback_content_type = app_config.get("RELEASE_PRIMARY_CONTENT_TYPE", "ebook")
-        fallback_content_type = "audiobook" if str(fallback_content_type).strip().lower() == "audiobook" else "ebook"
+        fallback_content_type = (
+            "audiobook" if str(fallback_content_type).strip().lower() == "audiobook" else "ebook"
+        )
         fallback_action = app_config.get(
             "RELEASE_PRIMARY_ACTION_AUDIOBOOK"
             if fallback_content_type == "audiobook"
@@ -307,16 +358,28 @@ def get_monitored_config_additions(app_config: Any, raw_db_user_id: Any) -> tupl
     is_combined = default_content_type == "combined"
 
     return {
-        "show_release_match_score": app_config.get("SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id),
+        "show_release_match_score": app_config.get(
+            "SHOW_RELEASE_MATCH_SCORE", True, user_id=config_user_id
+        ),
         "release_primary_default_action": f"{default_content_type}_{default_action}",
         "release_primary_content_type": "ebook" if is_combined else default_content_type,
         "release_combined_mode": is_combined,
-        "release_primary_action_ebook": default_action if is_combined or default_content_type == "ebook" else "interactive_search",
-        "release_primary_action_audiobook": default_action if is_combined or default_content_type == "audiobook" else "interactive_search",
-        "auto_download_min_match_score": app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id),
-        "show_dual_get_buttons": app_config.get("SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id),
+        "release_primary_action_ebook": default_action
+        if is_combined or default_content_type == "ebook"
+        else "interactive_search",
+        "release_primary_action_audiobook": default_action
+        if is_combined or default_content_type == "audiobook"
+        else "interactive_search",
+        "auto_download_min_match_score": app_config.get(
+            "AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=config_user_id
+        ),
+        "show_dual_get_buttons": app_config.get(
+            "SHOW_DUAL_GET_BUTTONS", False, user_id=config_user_id
+        ),
         "show_books_in_multiple_series": app_config.get("SHOW_BOOKS_IN_MULTIPLE_SERIES", True),
-        "default_to_monitored_view": app_config.get("DEFAULT_TO_MONITORED_VIEW", False, user_id=config_user_id),
+        "default_to_monitored_view": app_config.get(
+            "DEFAULT_TO_MONITORED_VIEW", False, user_id=config_user_id
+        ),
     }, config_user_id
 
 
@@ -337,7 +400,7 @@ def _backfill_search_author_photos(
             continue
         try:
             id_map[int(pid)] = a
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
     if not id_map:
         return
@@ -383,14 +446,14 @@ def register_monitored_routes(
         creates so that auth-none mode has exactly ONE user identity.
         """
         if resolve_auth_mode() != "none":
-            return None
+            return
         if "db_user_id" in session:
-            return None
+            return
         global_uid = _resolve_global_monitor_user_id(user_db)
         session["user_id"] = "global"
         session["db_user_id"] = global_uid
         session["is_admin"] = True
-        return None
+        return
 
     def _can_edit_entity(entity: dict, *, db_user_id: int, global_user_id: int) -> bool:
         """Return True if the session user may edit/delete *entity*.
@@ -408,7 +471,7 @@ def register_monitored_routes(
         if created_by is not None:
             try:
                 return int(created_by) == db_user_id
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
         return False
 
@@ -431,8 +494,6 @@ def register_monitored_routes(
                 unique.append(part)
 
         return unique or ["02:00", "14:00"]
-
-
 
     def _collect_enabled_author_entities() -> list[tuple[int, dict]]:
         """Collect all enabled author entities across all users. Returns ``(user_id, entity)`` tuples."""
@@ -464,23 +525,38 @@ def register_monitored_routes(
                 from shelfmark.core.config import config as app_config
 
                 refresh_enabled = app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True)
-                auto_download_enabled = app_config.get("MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True)
+                auto_download_enabled = app_config.get(
+                    "MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True
+                )
 
                 if refresh_enabled:
                     batch_result = run_batch_sync(
-                        ents, monitored_db, ws_manager, user_db,
-                        batch_id=bid, triggered_by="scheduled",
+                        ents,
+                        monitored_db,
+                        ws_manager,
+                        user_db,
+                        batch_id=bid,
+                        triggered_by="scheduled",
                     )
                     logger.info(
                         "Scheduled monitored refresh complete slot=%s total=%s successful=%s failed=%s retried=%s",
-                        s, batch_result.total, batch_result.successful,
-                        batch_result.failed, batch_result.retried,
+                        s,
+                        batch_result.total,
+                        batch_result.successful,
+                        batch_result.failed,
+                        batch_result.retried,
                     )
                 else:
-                    logger.info("Scheduled refresh skipped slot=%s: MONITORED_SCHEDULED_REFRESH_ENABLED=false", s)
+                    logger.info(
+                        "Scheduled refresh skipped slot=%s: MONITORED_SCHEDULED_REFRESH_ENABLED=false",
+                        s,
+                    )
 
                 if not auto_download_enabled:
-                    logger.info("Scheduled auto-download skipped slot=%s: MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED=false", s)
+                    logger.info(
+                        "Scheduled auto-download skipped slot=%s: MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED=false",
+                        s,
+                    )
                     return
 
                 # Compute total candidate count upfront so the run-started event
@@ -499,6 +575,7 @@ def register_monitored_routes(
                 run_id = str(uuid.uuid4())
                 try:
                     from shelfmark.core.monitored_history import record_run_started
+
                     record_run_started(
                         run_id=run_id,
                         trigger="scheduled",
@@ -516,8 +593,13 @@ def register_monitored_routes(
                     eid = int(entity.get("id") or 0)
                     ename = str(entity.get("name") or "Author")
 
-                    config_additions, _ = get_monitored_config_additions(app_config, raw_db_user_id=uid)
-                    threshold = float(config_additions.get("auto_download_min_match_score", 75) or 75) / 100.0
+                    config_additions, _ = get_monitored_config_additions(
+                        app_config, raw_db_user_id=uid
+                    )
+                    threshold = (
+                        float(config_additions.get("auto_download_min_match_score", 75) or 75)
+                        / 100.0
+                    )
 
                     for content_type in ("ebook", "audiobook"):
                         try:
@@ -535,23 +617,43 @@ def register_monitored_routes(
                                 total_queued += result.queued
                                 logger.info(
                                     "Scheduled auto-search slot=%s entity=%s(%s) type=%s candidates=%s queued=%s unreleased=%s no_match=%s below_cutoff=%s skipped=%s failed=%s",
-                                    s, ename, eid, content_type,
-                                    result.total_candidates, result.queued,
-                                    result.unreleased, result.no_match,
+                                    s,
+                                    ename,
+                                    eid,
+                                    content_type,
+                                    result.total_candidates,
+                                    result.queued,
+                                    result.unreleased,
+                                    result.no_match,
                                     result.below_cutoff,
-                                    result.skipped_existing_file + result.skipped_history_final_path_exists,
+                                    result.skipped_existing_file
+                                    + result.skipped_history_final_path_exists,
                                     result.failed,
                                 )
                         except MonitoredEntityNotFound:
-                            logger.debug("Scheduled auto-search skipped slot=%s entity=%s(%s) — entity not found", s, ename, eid)
+                            logger.debug(
+                                "Scheduled auto-search skipped slot=%s entity=%s(%s) — entity not found",
+                                s,
+                                ename,
+                                eid,
+                            )
                         except Exception as exc:
                             logger.warning(
                                 "Scheduled auto-search failed slot=%s entity=%s(%s) type=%s error=%s",
-                                s, ename, eid, content_type, exc,
+                                s,
+                                ename,
+                                eid,
+                                content_type,
+                                exc,
                             )
 
                 if total_searched > 0:
-                    logger.info("Scheduled auto-search complete slot=%s searched=%s queued=%s", s, total_searched, total_queued)
+                    logger.info(
+                        "Scheduled auto-search complete slot=%s searched=%s queued=%s",
+                        s,
+                        total_searched,
+                        total_queued,
+                    )
             finally:
                 with _batch_sync_lock:
                     app.extensions["monitored_batch_sync_running"] = False
@@ -563,7 +665,9 @@ def register_monitored_routes(
             while not stop_event.is_set():
                 try:
                     refresh_enabled = app_config.get("MONITORED_SCHEDULED_REFRESH_ENABLED", True)
-                    auto_download_enabled = app_config.get("MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True)
+                    auto_download_enabled = app_config.get(
+                        "MONITORED_SCHEDULED_AUTO_DOWNLOAD_ENABLED", True
+                    )
                     if not (refresh_enabled or auto_download_enabled):
                         stop_event.wait(30)
                         continue
@@ -574,7 +678,9 @@ def register_monitored_routes(
                     # config cache: bound fields inside CustomComponentField
                     # are not loaded into Config._cache (upstream bug), so the
                     # cache always returns the default fallback.
-                    raw_times = load_config_file("monitoring_schedules").get("MONITORED_REFRESH_TIMES")
+                    raw_times = load_config_file("monitoring_schedules").get(
+                        "MONITORED_REFRESH_TIMES"
+                    )
                     schedule_times = _parse_schedule_times(raw_times)
 
                     if slot in schedule_times:
@@ -583,7 +689,10 @@ def register_monitored_routes(
                             last_run_marker = marker
                             with _batch_sync_lock:
                                 if app.extensions.get("monitored_batch_sync_running"):
-                                    logger.info("Scheduled refresh skipped slot=%s — batch sync already running", slot)
+                                    logger.info(
+                                        "Scheduled refresh skipped slot=%s — batch sync already running",
+                                        slot,
+                                    )
                                     continue
                                 app.extensions["monitored_batch_sync_running"] = True
 
@@ -594,8 +703,10 @@ def register_monitored_routes(
                                 continue
 
                             threading.Thread(
-                                target=_run_scheduled, args=(entities, marker, slot),
-                                daemon=True, name=f"MonitoredBatchSync-{marker}",
+                                target=_run_scheduled,
+                                args=(entities, marker, slot),
+                                daemon=True,
+                                name=f"MonitoredBatchSync-{marker}",
                             ).start()
                 except Exception as exc:
                     logger.warning("Scheduled monitored refresh loop error: %s", exc)
@@ -611,7 +722,9 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -623,13 +736,20 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["PATCH", "PUT"])
     def api_patch_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
@@ -667,20 +787,28 @@ def register_monitored_routes(
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        should_reapply_monitor_modes = (
-            str(updated.get("kind") or "").strip().lower() == "author"
-            and (
-                "monitor_ebook_mode" in settings_patch
-                or "monitor_audiobook_mode" in settings_patch
-            )
+        should_reapply_monitor_modes = str(
+            updated.get("kind") or ""
+        ).strip().lower() == "author" and (
+            "monitor_ebook_mode" in settings_patch or "monitor_audiobook_mode" in settings_patch
         )
         if should_reapply_monitor_modes:
             # User explicitly changed monitor mode — unlock all books so the new mode applies
             monitored_db.unlock_all_monitor_flags(entity_id=entity_id)
-            books = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
-            existing_files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
+            books = (
+                monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id)
+                or []
+            )
+            existing_files = (
+                monitored_db.list_monitored_book_files(
+                    user_ids=visible_user_ids, entity_id=entity_id
+                )
+                or []
+            )
             if books and existing_files:
-                from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+                from shelfmark.core.monitored_files import (
+                    expand_monitored_file_rows_for_equivalent_books,
+                )
 
                 existing_files = expand_monitored_file_rows_for_equivalent_books(
                     books=books,
@@ -699,9 +827,12 @@ def register_monitored_routes(
     @app.route("/api/monitored", methods=["GET"])
     def api_list_monitored():
         import time as _time
+
         _t0 = _time.perf_counter()
 
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -711,6 +842,7 @@ def register_monitored_routes(
         # Enrich with cached author details (bio, source_url) if available
         try:
             from shelfmark.core.metadata_cache import get_metadata_file_cache
+
             mcache = get_metadata_file_cache()
             for row in rows:
                 provider = row.get("provider")
@@ -732,12 +864,12 @@ def register_monitored_routes(
         author_ids_needing_cover = [
             int(row["id"])
             for row in rows
-            if row.get("kind") == "author"
-            and not (row.get("settings") or {}).get("photo_url")
+            if row.get("kind") == "author" and not (row.get("settings") or {}).get("photo_url")
         ]
         if author_ids_needing_cover:
             try:
                 from shelfmark.core.utils import transform_cover_url
+
                 cover_by_entity = monitored_db.get_best_book_cover_urls_batch(
                     user_ids=visible_user_ids, entity_ids=author_ids_needing_cover
                 )
@@ -754,21 +886,27 @@ def register_monitored_routes(
                             if provider and book_id
                             else f"monitored_author_{entity_id}"
                         )
-                        row["best_book_cover_url"] = transform_cover_url(info["cover_url"], cache_id)
+                        row["best_book_cover_url"] = transform_cover_url(
+                            info["cover_url"], cache_id
+                        )
             except Exception:
                 logger.warning("Failed to compute best book covers for fallback", exc_info=True)
         _t_covers = _time.perf_counter()
 
         # Tag each entity with its visibility (public = global user, private = session user)
         for row in rows:
-            row["visibility"] = "private" if row.get("user_id") == db_user_id and db_user_id != global_user_id else "public"
+            row["visibility"] = (
+                "private"
+                if row.get("user_id") == db_user_id and db_user_id != global_user_id
+                else "public"
+            )
 
         resp = jsonify(rows)
         resp.headers["Server-Timing"] = (
-            f"db;dur={(_t_db - _t0)*1000:.1f},"
-            f"meta;dur={(_t_meta - _t_db)*1000:.1f},"
-            f"covers;dur={(_t_covers - _t_meta)*1000:.1f},"
-            f"total;dur={(_t_covers - _t0)*1000:.1f}"
+            f"db;dur={(_t_db - _t0) * 1000:.1f},"
+            f"meta;dur={(_t_meta - _t_db) * 1000:.1f},"
+            f"covers;dur={(_t_covers - _t_meta) * 1000:.1f},"
+            f"total;dur={(_t_covers - _t0) * 1000:.1f}"
         )
 
         # Emit Link: rel=preload for cover images so the browser can start
@@ -797,7 +935,9 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/search/books", methods=["GET"])
     def api_search_monitored_author_books():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -808,10 +948,12 @@ def register_monitored_routes(
         raw_limit = request.args.get("limit")
         try:
             limit = int(raw_limit) if raw_limit is not None else 20
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             limit = 20
 
-        rows = monitored_db.search_monitored_author_books(user_ids=visible_user_ids, query=query, limit=limit)
+        rows = monitored_db.search_monitored_author_books(
+            user_ids=visible_user_ids, query=query, limit=limit
+        )
         if rows:
             from shelfmark.core.monitored_files import (
                 expand_monitored_file_rows_for_equivalent_books,
@@ -828,7 +970,12 @@ def register_monitored_routes(
 
             availability_by_entity: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
             for entity_id, entity_rows in rows_by_entity.items():
-                files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
+                files = (
+                    monitored_db.list_monitored_book_files(
+                        user_ids=visible_user_ids, entity_id=entity_id
+                    )
+                    or []
+                )
                 if not files:
                     availability_by_entity[entity_id] = {}
                     continue
@@ -860,25 +1007,36 @@ def register_monitored_routes(
                     entity_id = -1
                 provider = str(row.get("book_provider") or "").strip()
                 provider_book_id = str(row.get("book_provider_id") or "").strip()
-                payload = availability_by_entity.get(entity_id, {}).get((provider, provider_book_id), {})
+                payload = availability_by_entity.get(entity_id, {}).get(
+                    (provider, provider_book_id), {}
+                )
                 row["has_ebook_available"] = bool(payload.get("has_ebook_available", False))
                 row["has_audiobook_available"] = bool(payload.get("has_audiobook_available", False))
                 row["ebook_path"] = payload.get("ebook_path")
                 row["audiobook_path"] = payload.get("audiobook_path")
                 row["ebook_available_format"] = payload.get("ebook_available_format")
                 row["audiobook_available_format"] = payload.get("audiobook_available_format")
-        transform_cached_cover_urls(rows, provider_key="book_provider", provider_id_key="book_provider_id")
+        transform_cached_cover_urls(
+            rows, provider_key="book_provider", provider_id_key="book_provider_id"
+        )
         return jsonify({"results": rows})
 
     @app.route("/api/monitored", methods=["POST"])
     def api_create_monitored():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -895,7 +1053,11 @@ def register_monitored_routes(
         provider = data.get("provider")
         provider_id = data.get("provider_id")
         provider = str(provider).strip() if isinstance(provider, str) and provider.strip() else None
-        provider_id = str(provider_id).strip() if isinstance(provider_id, str) and provider_id.strip() else None
+        provider_id = (
+            str(provider_id).strip()
+            if isinstance(provider_id, str) and provider_id.strip()
+            else None
+        )
 
         if kind == "book" and (not provider or not provider_id):
             return jsonify({"error": "provider and provider_id are required for kind='book'"}), 400
@@ -924,13 +1086,16 @@ def register_monitored_routes(
         # Auto-convert: if creating as public, check if any user has this as private.
         # Preserve the original owner as created_by so they keep edit rights.
         if visibility == "public" and provider and provider_id:
-            for uid_row in (user_db.list_users() or []):
+            for uid_row in user_db.list_users() or []:
                 uid_int = uid_row.get("id")
                 if uid_int is None or int(uid_int) == global_user_id:
                     continue
                 try:
                     existing_id = monitored_db.find_entity_id_by_provider(
-                        user_id=int(uid_int), kind=kind, provider=provider, provider_id=provider_id,
+                        user_id=int(uid_int),
+                        kind=kind,
+                        provider=provider,
+                        provider_id=provider_id,
                     )
                     if existing_id is not None:
                         monitored_db.reassign_entity_owner(
@@ -941,10 +1106,15 @@ def register_monitored_routes(
                         # Stamp created_by onto the resulting global entity so
                         # the original owner retains edit rights.
                         target = monitored_db.find_entity_id_by_provider(
-                            user_id=global_user_id, kind=kind, provider=provider, provider_id=provider_id,
+                            user_id=global_user_id,
+                            kind=kind,
+                            provider=provider,
+                            provider_id=provider_id,
                         )
                         if target is not None:
-                            ent = monitored_db.get_monitored_entity(user_ids=[global_user_id], entity_id=target)
+                            ent = monitored_db.get_monitored_entity(
+                                user_ids=[global_user_id], entity_id=target
+                            )
                             if ent and not (ent.get("settings") or {}).get("created_by"):
                                 merged = dict(ent.get("settings") or {})
                                 merged["created_by"] = int(uid_int)
@@ -977,6 +1147,7 @@ def register_monitored_routes(
 
         try:
             from shelfmark.core.monitored_history import record_author_added
+
             record_author_added(
                 entity_id=int(row["id"]),
                 author_name=name,
@@ -1008,13 +1179,20 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>", methods=["DELETE"])
     def api_delete_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         # Check ownership: only admins can delete public (global) entities
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
@@ -1029,6 +1207,7 @@ def register_monitored_routes(
         # Recording after delete would IntegrityError on the FK.
         try:
             from shelfmark.core.monitored_history import record_author_removed
+
             record_author_removed(
                 entity_id=entity_id,
                 author_name=str(entity.get("name") or "Unknown"),
@@ -1037,7 +1216,9 @@ def register_monitored_routes(
         except Exception as exc:
             logger.debug("Failed to record author_removed event: %s", exc)
 
-        deleted = monitored_db.delete_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
+        deleted = monitored_db.delete_monitored_entity(
+            user_ids=visible_user_ids, entity_id=entity_id
+        )
         if not deleted:
             return jsonify({"error": "Not found"}), 404
 
@@ -1045,7 +1226,9 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books", methods=["GET"])
     def api_list_monitored_books(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -1056,9 +1239,14 @@ def register_monitored_routes(
         for row in rows:
             row["no_release_date"] = parse_release_date(row.get("release_date")) is None
 
-        files = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id) or []
+        files = (
+            monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id)
+            or []
+        )
         if rows and files:
-            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+            from shelfmark.core.monitored_files import (
+                expand_monitored_file_rows_for_equivalent_books,
+            )
 
             files = expand_monitored_file_rows_for_equivalent_books(
                 books=rows,
@@ -1077,6 +1265,7 @@ def register_monitored_routes(
         # Enrich books with additional_series from the metadata file cache
         try:
             from shelfmark.core.metadata_cache import get_metadata_file_cache
+
             mcache = get_metadata_file_cache()
             for row in rows:
                 row_provider = row.get("provider")
@@ -1096,20 +1285,30 @@ def register_monitored_routes(
         last_checked_at = entity.get("last_checked_at") if entity else None
         sync_status = entity.get("sync_status", "idle") if entity else "idle"
 
-        return jsonify({"books": rows, "last_checked_at": last_checked_at, "sync_status": sync_status})
+        return jsonify(
+            {"books": rows, "last_checked_at": last_checked_at, "sync_status": sync_status}
+        )
 
     @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])
     def api_list_monitored_book_files(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
-        rows = monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id)
+        rows = monitored_db.list_monitored_book_files(
+            user_ids=visible_user_ids, entity_id=entity_id
+        )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
-        books = monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
+        books = (
+            monitored_db.list_monitored_books(user_ids=visible_user_ids, entity_id=entity_id) or []
+        )
         if books and rows:
-            from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+            from shelfmark.core.monitored_files import (
+                expand_monitored_file_rows_for_equivalent_books,
+            )
 
             rows = expand_monitored_file_rows_for_equivalent_books(
                 books=books,
@@ -1119,6 +1318,7 @@ def register_monitored_routes(
         # Parse evidence_json (v2 attribution breakdown) so the frontend gets a
         # structured object rather than a string.
         import json as _json
+
         for r in rows:
             raw = r.get("evidence_json")
             if isinstance(raw, str) and raw:
@@ -1152,6 +1352,7 @@ def register_monitored_routes(
         """
         import json as _json
         from dataclasses import asdict as _asdict
+
         from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
         from shelfmark.core.monitored_attribution_v2 import (
             SourceMetadata,
@@ -1175,26 +1376,31 @@ def register_monitored_routes(
             attached_pbid: str | None,
         ) -> None:
             ev = evaluate_match(
-                path=cand_path, book=target_book, author_name=author_name,
-                embedded=embedded, source_metadata=src_meta,
+                path=cand_path,
+                book=target_book,
+                author_name=author_name,
+                embedded=embedded,
+                source_metadata=src_meta,
             )
-            ranked.append({
-                "file": {
-                    "id": cand_id,
-                    "path": cand_path,
-                    "source": cand_source,
-                    "ext": cand_ext,
-                    "file_type": cand_file_type,
-                    "currently_attached_book": {
-                        "provider": attached_provider,
-                        "provider_book_id": attached_pbid,
+            ranked.append(
+                {
+                    "file": {
+                        "id": cand_id,
+                        "path": cand_path,
+                        "source": cand_source,
+                        "ext": cand_ext,
+                        "file_type": cand_file_type,
+                        "currently_attached_book": {
+                            "provider": attached_provider,
+                            "provider_book_id": attached_pbid,
+                        },
                     },
-                },
-                "confidence": ev.confidence,
-                "net_score": ev.net_score,
-                "is_current": cand_id is not None and cand_id == anchor_file_id,
-                "evidence": _asdict(ev),
-            })
+                    "confidence": ev.confidence,
+                    "net_score": ev.net_score,
+                    "is_current": cand_id is not None and cand_id == anchor_file_id,
+                    "evidence": _asdict(ev),
+                }
+            )
 
         # ---- 1. Existing monitored_book_files rows matching this file_type ----
         for cand in existing_rows:
@@ -1221,12 +1427,30 @@ def register_monitored_routes(
                             source_data = parsed.get("source_data") or {}
                     except Exception:
                         source_data = {}
+                # Restore all_series_pairs from the serialised form
+                # (list of [name, pos] pairs) so the Fix-match re-score
+                # benefits from multi-series matching the same way the
+                # original sync did.
+                raw_pairs = source_data.get("all_series_pairs") or []
+                parsed_pairs: list[tuple[str, float]] = []
+                if isinstance(raw_pairs, list):
+                    for entry in raw_pairs:
+                        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                            name = entry[0]
+                            try:
+                                pos = float(entry[1])
+                            except TypeError, ValueError:
+                                continue
+                            if isinstance(name, str) and name.strip():
+                                parsed_pairs.append((name.strip(), pos))
                 src_meta = SourceMetadata(
                     title=source_data.get("title"),
                     author=(source_data.get("authors") or [None])[0]
-                           if isinstance(source_data.get("authors"), list) else None,
+                    if isinstance(source_data.get("authors"), list)
+                    else None,
                     series_name=source_data.get("series_name"),
                     series_position=source_data.get("series_position"),
+                    all_series_pairs=parsed_pairs,
                     isbn_13=source_data.get("isbn_13"),
                     isbn_10=source_data.get("isbn_10"),
                     asin=source_data.get("asin"),
@@ -1234,9 +1458,13 @@ def register_monitored_routes(
                 )
 
             _score_and_append(
-                cand_id=cand.get("id"), cand_path=cand_path, cand_source=cand_source,
-                cand_ext=cand.get("ext"), cand_file_type=cand.get("file_type"),
-                embedded=embedded, src_meta=src_meta,
+                cand_id=cand.get("id"),
+                cand_path=cand_path,
+                cand_source=cand_source,
+                cand_ext=cand.get("ext"),
+                cand_file_type=cand.get("file_type"),
+                embedded=embedded,
+                src_meta=src_meta,
                 attached_provider=cand.get("provider"),
                 attached_pbid=cand.get("provider_book_id"),
             )
@@ -1247,14 +1475,19 @@ def register_monitored_routes(
         if is_audiobook and author_name:
             try:
                 from shelfmark.core.monitored_audiobookshelf_integration import (
-                    get_abs_config, _abs_item_to_source_metadata, _find_abs_author_items,
+                    _abs_item_to_source_metadata,
+                    _find_abs_author_items,
                     _get_abs_library_ids,
+                    get_abs_config,
                 )
+
                 cfg = get_abs_config()
                 if cfg:
                     seen_item_ids: set[str] = set()
                     for lib_id in _get_abs_library_ids(cfg["url"], cfg["token"]):
-                        for item in _find_abs_author_items(cfg["url"], cfg["token"], lib_id, author_name):
+                        for item in _find_abs_author_items(
+                            cfg["url"], cfg["token"], lib_id, author_name
+                        ):
                             item_id = str(item.get("id") or "")
                             if item_id and item_id in seen_item_ids:
                                 continue
@@ -1266,13 +1499,20 @@ def register_monitored_routes(
                                 continue
                             seen_keys.add(("audiobookshelf", item_path))
                             _score_and_append(
-                                cand_id=None, cand_path=item_path, cand_source="audiobookshelf",
-                                cand_ext=None, cand_file_type="audiobook",
-                                embedded=None, src_meta=_abs_item_to_source_metadata(item),
-                                attached_provider=None, attached_pbid=None,
+                                cand_id=None,
+                                cand_path=item_path,
+                                cand_source="audiobookshelf",
+                                cand_ext=None,
+                                cand_file_type="audiobook",
+                                embedded=None,
+                                src_meta=_abs_item_to_source_metadata(item),
+                                attached_provider=None,
+                                attached_pbid=None,
                             )
             except Exception as exc:
-                logger.warning("Failed to live-fetch ABS candidates for entity %s: %s", entity_id, exc)
+                logger.warning(
+                    "Failed to live-fetch ABS candidates for entity %s: %s", entity_id, exc
+                )
 
         # Booklore live-fetch deliberately omitted: Booklore's path-per-book
         # requires an N+1 follow-up API call. Add later if users need it.
@@ -1288,13 +1528,15 @@ def register_monitored_routes(
         a book that already has an attribution.
         """
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
-            user_db, resolve_auth_mode=resolve_auth_mode,
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
         )
         if gate is not None:
             return gate
 
         rows = monitored_db.list_monitored_book_files(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
@@ -1302,38 +1544,52 @@ def register_monitored_routes(
         if file_row is None:
             return jsonify({"error": "File not found"}), 404
 
-        books = monitored_db.list_monitored_books(
-            user_ids=visible_user_ids, entity_id=entity_id,
-        ) or []
+        books = (
+            monitored_db.list_monitored_books(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+            )
+            or []
+        )
         target_book = next(
-            (b for b in books
-             if b.get("provider") == file_row.get("provider")
-             and b.get("provider_book_id") == file_row.get("provider_book_id")),
+            (
+                b
+                for b in books
+                if b.get("provider") == file_row.get("provider")
+                and b.get("provider_book_id") == file_row.get("provider_book_id")
+            ),
             None,
         )
         if target_book is None:
             return jsonify({"error": "Currently-attached book not found"}), 404
 
         entity = monitored_db.get_monitored_entity(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         author_name = (entity or {}).get("name") if entity else None
         file_type = "audiobook" if _row_is_audiobook(file_row.get("file_type")) else "ebook"
 
         candidates = _build_match_candidates(
-            entity_id=entity_id, target_book=target_book, file_type=file_type,
-            anchor_file_id=file_id, author_name=author_name, existing_rows=rows,
+            entity_id=entity_id,
+            target_book=target_book,
+            file_type=file_type,
+            anchor_file_id=file_id,
+            author_name=author_name,
+            existing_rows=rows,
         )
-        return jsonify({
-            "candidates": candidates,
-            "target_book": {
-                "title": target_book.get("title"),
-                "series_name": target_book.get("series_name"),
-                "series_position": target_book.get("series_position"),
-                "provider": target_book.get("provider"),
-                "provider_book_id": target_book.get("provider_book_id"),
-            },
-        })
+        return jsonify(
+            {
+                "candidates": candidates,
+                "target_book": {
+                    "title": target_book.get("title"),
+                    "series_name": target_book.get("series_name"),
+                    "series_position": target_book.get("series_position"),
+                    "provider": target_book.get("provider"),
+                    "provider_book_id": target_book.get("provider_book_id"),
+                },
+            }
+        )
 
     @app.route(
         "/api/monitored/<int:entity_id>/books/<string:provider>/<path:provider_book_id>/candidates",
@@ -1348,47 +1604,63 @@ def register_monitored_routes(
             return jsonify({"error": "file_type must be ebook or audiobook"}), 400
 
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
-            user_db, resolve_auth_mode=resolve_auth_mode,
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
         )
         if gate is not None:
             return gate
 
         rows = monitored_db.list_monitored_book_files(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
-        books = monitored_db.list_monitored_books(
-            user_ids=visible_user_ids, entity_id=entity_id,
-        ) or []
+        books = (
+            monitored_db.list_monitored_books(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+            )
+            or []
+        )
         target_book = next(
-            (b for b in books
-             if b.get("provider") == provider and b.get("provider_book_id") == provider_book_id),
+            (
+                b
+                for b in books
+                if b.get("provider") == provider and b.get("provider_book_id") == provider_book_id
+            ),
             None,
         )
         if target_book is None:
             return jsonify({"error": "Book not found"}), 404
 
         entity = monitored_db.get_monitored_entity(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         author_name = (entity or {}).get("name") if entity else None
 
         candidates = _build_match_candidates(
-            entity_id=entity_id, target_book=target_book, file_type=ft_param,
-            anchor_file_id=None, author_name=author_name, existing_rows=rows,
+            entity_id=entity_id,
+            target_book=target_book,
+            file_type=ft_param,
+            anchor_file_id=None,
+            author_name=author_name,
+            existing_rows=rows,
         )
-        return jsonify({
-            "candidates": candidates,
-            "target_book": {
-                "title": target_book.get("title"),
-                "series_name": target_book.get("series_name"),
-                "series_position": target_book.get("series_position"),
-                "provider": target_book.get("provider"),
-                "provider_book_id": target_book.get("provider_book_id"),
-            },
-        })
+        return jsonify(
+            {
+                "candidates": candidates,
+                "target_book": {
+                    "title": target_book.get("title"),
+                    "series_name": target_book.get("series_name"),
+                    "series_position": target_book.get("series_position"),
+                    "provider": target_book.get("provider"),
+                    "provider_book_id": target_book.get("provider_book_id"),
+                },
+            }
+        )
 
     def _apply_manual_attribution(
         *,
@@ -1408,8 +1680,9 @@ def register_monitored_routes(
         Re-scores the (path, book) pair so evidence_json reflects the manual
         choice; confidence forced to 1.0. Shared by both match endpoints.
         """
-        from dataclasses import asdict as _asdict
         import json as _json
+        from dataclasses import asdict as _asdict
+
         from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
         from shelfmark.core.monitored_attribution_v2 import evaluate_match
 
@@ -1421,7 +1694,9 @@ def register_monitored_routes(
                 embedded = None
         ev = evaluate_match(
             path=chosen_path if chosen_source == "filesystem" else "",
-            book=target_book, author_name=author_name, embedded=embedded,
+            book=target_book,
+            author_name=author_name,
+            embedded=embedded,
         )
         monitored_db.upsert_monitored_book_file(
             user_ids=visible_user_ids,
@@ -1455,7 +1730,8 @@ def register_monitored_routes(
           { "detach": true }                             → delete this row
         """
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
-            user_db, resolve_auth_mode=resolve_auth_mode,
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
         )
         if gate is not None:
             return gate
@@ -1463,7 +1739,8 @@ def register_monitored_routes(
         payload = request.get_json(silent=True) or {}
 
         rows = monitored_db.list_monitored_book_files(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
@@ -1484,11 +1761,15 @@ def register_monitored_routes(
                 monitored_db.record_file_rejection(
                     user_ids=visible_user_ids,
                     entity_id=entity_id,
-                    source=anchor_source, path=anchor_path,
-                    provider=anchor_provider, provider_book_id=anchor_pbid,
+                    source=anchor_source,
+                    path=anchor_path,
+                    provider=anchor_provider,
+                    provider_book_id=anchor_pbid,
                 )
             monitored_db.delete_monitored_book_file_by_id(
-                user_ids=visible_user_ids, entity_id=entity_id, file_id=file_id,
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+                file_id=file_id,
             )
             return jsonify({"ok": True, "detached": True})
 
@@ -1508,9 +1789,12 @@ def register_monitored_routes(
             chosen_file_type = chosen_row.get("file_type") or chosen_file_type
         elif chosen_source and chosen_path:
             chosen_row = next(
-                (r for r in rows
-                 if (r.get("source") or "") == chosen_source
-                 and (r.get("path") or "") == chosen_path),
+                (
+                    r
+                    for r in rows
+                    if (r.get("source") or "") == chosen_source
+                    and (r.get("path") or "") == chosen_path
+                ),
                 None,
             )
             if chosen_row is not None:
@@ -1530,26 +1814,36 @@ def register_monitored_routes(
         if not target_provider or not target_pbid:
             return jsonify({"error": "Anchor row has no attached book"}), 400
 
-        books = monitored_db.list_monitored_books(
-            user_ids=visible_user_ids, entity_id=entity_id,
-        ) or []
+        books = (
+            monitored_db.list_monitored_books(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+            )
+            or []
+        )
         target_book = next(
-            (b for b in books
-             if b.get("provider") == target_provider
-             and b.get("provider_book_id") == target_pbid),
+            (
+                b
+                for b in books
+                if b.get("provider") == target_provider and b.get("provider_book_id") == target_pbid
+            ),
             None,
         )
         if target_book is None:
             return jsonify({"error": "Target book not found in this entity"}), 404
 
         entity = monitored_db.get_monitored_entity(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         author_name = (entity or {}).get("name") if entity else None
 
         _apply_manual_attribution(
-            entity_id=entity_id, visible_user_ids=visible_user_ids,
-            target_book=target_book, chosen_source=chosen_source, chosen_path=chosen_path,
+            entity_id=entity_id,
+            visible_user_ids=visible_user_ids,
+            target_book=target_book,
+            chosen_source=chosen_source,
+            chosen_path=chosen_path,
             chosen_file_type=chosen_file_type,
             chosen_ext=(chosen_row.get("ext") if chosen_row else None),
             chosen_size_bytes=(chosen_row.get("size_bytes") if chosen_row else None),
@@ -1557,6 +1851,76 @@ def register_monitored_routes(
             author_name=author_name,
         )
         return jsonify({"ok": True})
+
+    @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/promote", methods=["POST"])
+    def api_promote_candidate(entity_id: int, file_id: int):
+        """User accepts a Possible Candidate. Promotes the row's status from
+        'candidate' to 'matched' and sets manual_override=1 so the scanner
+        won't demote it back.
+        """
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if gate is not None:
+            return gate
+
+        try:
+            ok = monitored_db.promote_candidate_to_matched(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+                file_id=file_id,
+            )
+        except ValueError as exc:
+            # Raised when a manual_override matched row already occupies
+            # the slot — promoting would violate the partial unique index.
+            return jsonify({"error": str(exc), "code": "conflict_manual_match"}), 409
+        if not ok:
+            return jsonify({"error": "Candidate not found"}), 404
+        return jsonify({"ok": True})
+
+    @app.route("/api/monitored/<int:entity_id>/files/<int:file_id>/reject", methods=["POST"])
+    def api_reject_candidate(entity_id: int, file_id: int):
+        """User rejects a Possible Candidate. Records the (file, book) pair
+        in monitored_file_rejections so future scans won't re-attribute, then
+        deletes the row. Mirrors the `detach` branch of api_set_manual_match.
+        """
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
+        )
+        if gate is not None:
+            return gate
+
+        rows = monitored_db.list_monitored_book_files(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+        )
+        if rows is None:
+            return jsonify({"error": "Not found"}), 404
+        anchor_row = next((r for r in rows if r.get("id") == file_id), None)
+        if anchor_row is None:
+            return jsonify({"error": "File not found"}), 404
+
+        anchor_provider = (anchor_row.get("provider") or "").strip()
+        anchor_pbid = (anchor_row.get("provider_book_id") or "").strip()
+        anchor_path = (anchor_row.get("path") or "").strip()
+        anchor_source = (anchor_row.get("source") or "").strip()
+        if anchor_provider and anchor_pbid and anchor_path and anchor_source:
+            monitored_db.record_file_rejection(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+                source=anchor_source,
+                path=anchor_path,
+                provider=anchor_provider,
+                provider_book_id=anchor_pbid,
+            )
+        monitored_db.delete_monitored_book_file_by_id(
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
+            file_id=file_id,
+        )
+        return jsonify({"ok": True, "rejected": True})
 
     @app.route(
         "/api/monitored/<int:entity_id>/books/<string:provider>/<path:provider_book_id>/match",
@@ -1573,7 +1937,8 @@ def register_monitored_routes(
                                                      row is created if missing
         """
         db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
-            user_db, resolve_auth_mode=resolve_auth_mode,
+            user_db,
+            resolve_auth_mode=resolve_auth_mode,
         )
         if gate is not None:
             return gate
@@ -1581,17 +1946,25 @@ def register_monitored_routes(
         payload = request.get_json(silent=True) or {}
 
         rows = monitored_db.list_monitored_book_files(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
-        books = monitored_db.list_monitored_books(
-            user_ids=visible_user_ids, entity_id=entity_id,
-        ) or []
+        books = (
+            monitored_db.list_monitored_books(
+                user_ids=visible_user_ids,
+                entity_id=entity_id,
+            )
+            or []
+        )
         target_book = next(
-            (b for b in books
-             if b.get("provider") == provider and b.get("provider_book_id") == provider_book_id),
+            (
+                b
+                for b in books
+                if b.get("provider") == provider and b.get("provider_book_id") == provider_book_id
+            ),
             None,
         )
         if target_book is None:
@@ -1611,9 +1984,12 @@ def register_monitored_routes(
             chosen_file_type = chosen_row.get("file_type") or chosen_file_type
         elif chosen_source and chosen_path and chosen_file_type:
             chosen_row = next(
-                (r for r in rows
-                 if (r.get("source") or "") == chosen_source
-                 and (r.get("path") or "") == chosen_path),
+                (
+                    r
+                    for r in rows
+                    if (r.get("source") or "") == chosen_source
+                    and (r.get("path") or "") == chosen_path
+                ),
                 None,
             )
         else:
@@ -1623,13 +1999,17 @@ def register_monitored_routes(
             return jsonify({"error": "file_type must be ebook or audiobook"}), 400
 
         entity = monitored_db.get_monitored_entity(
-            user_ids=visible_user_ids, entity_id=entity_id,
+            user_ids=visible_user_ids,
+            entity_id=entity_id,
         )
         author_name = (entity or {}).get("name") if entity else None
 
         _apply_manual_attribution(
-            entity_id=entity_id, visible_user_ids=visible_user_ids,
-            target_book=target_book, chosen_source=chosen_source, chosen_path=chosen_path,
+            entity_id=entity_id,
+            visible_user_ids=visible_user_ids,
+            target_book=target_book,
+            chosen_source=chosen_source,
+            chosen_path=chosen_path,
             chosen_file_type=chosen_file_type,
             chosen_ext=(chosen_row.get("ext") if chosen_row else None),
             chosen_size_bytes=(chosen_row.get("size_bytes") if chosen_row else None),
@@ -1647,7 +2027,9 @@ def register_monitored_routes(
         auto-search precheck). The ``/api/monitored/events`` endpoints are
         the audit-log layer; this endpoint exposes the structured rows.
         """
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -1659,7 +2041,7 @@ def register_monitored_routes(
         raw_limit = request.args.get("limit")
         try:
             limit = int(raw_limit) if raw_limit is not None else 50
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             limit = 50
 
         rows = monitored_db.list_monitored_book_download_history(
@@ -1684,7 +2066,9 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/auto-search-precheck", methods=["POST"])
     def api_monitored_auto_search_precheck(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -1713,6 +2097,7 @@ def register_monitored_routes(
         if session_id:
             try:
                 from shelfmark.core.monitored_history import record_search_started
+
                 record_search_started(
                     entity_id=entity_id,
                     book_provider=provider,
@@ -1725,7 +2110,12 @@ def register_monitored_routes(
                     triggered_by="manual",
                 )
             except Exception as exc:
-                logger.debug("Failed to record search_started for precheck %s/%s: %s", provider, provider_book_id, exc)
+                logger.debug(
+                    "Failed to record search_started for precheck %s/%s: %s",
+                    provider,
+                    provider_book_id,
+                    exc,
+                )
 
         try:
             skip, reason, detail = resolve_book_auto_search_precheck(
@@ -1739,20 +2129,24 @@ def register_monitored_routes(
         except MonitoredEntityNotFound:
             return jsonify({"error": "Not found"}), 404
 
-        return jsonify({
-            "ok": True,
-            "entity_id": entity_id,
-            "provider": provider,
-            "provider_book_id": provider_book_id,
-            "content_type": content_type,
-            "skip": bool(skip),
-            "reason": reason,
-            "detail": detail,
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "entity_id": entity_id,
+                "provider": provider,
+                "provider_book_id": provider_book_id,
+                "content_type": content_type,
+                "skip": bool(skip),
+                "reason": reason,
+                "detail": detail,
+            }
+        )
 
     @app.route("/api/monitored/<int:entity_id>/books/attempt", methods=["POST"])
     def api_record_monitored_book_attempt(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -1773,7 +2167,14 @@ def register_monitored_routes(
             return jsonify({"error": "provider and provider_book_id are required"}), 400
         if content_type not in {"ebook", "audiobook"}:
             return jsonify({"error": "content_type must be ebook or audiobook"}), 400
-        if status not in {"queued", "no_match", "below_cutoff", "not_released", "download_failed", "error"}:
+        if status not in {
+            "queued",
+            "no_match",
+            "below_cutoff",
+            "not_released",
+            "download_failed",
+            "error",
+        }:
             return jsonify({"error": "invalid status"}), 400
 
         source = str(payload.get("source") or "").strip() or None
@@ -1787,14 +2188,15 @@ def register_monitored_routes(
         if raw_match_score is not None:
             try:
                 match_score = float(raw_match_score)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 match_score = None
 
         attempt_session_id = str(payload.get("session_id") or "").strip() or None
         attempt_run_id = str(payload.get("run_id") or "").strip() or None
         attempt_metadata = {"run_id": attempt_run_id} if attempt_run_id else None
 
-        write_monitored_book_attempt(monitored_db,
+        write_monitored_book_attempt(
+            monitored_db,
             user_id=int(entity["user_id"]),
             entity_id=entity_id,
             provider=provider,
@@ -1814,13 +2216,20 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/scan-files", methods=["POST"])
     def api_scan_monitored_files(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
@@ -1852,17 +2261,25 @@ def register_monitored_routes(
                 msg = str(fs_err)
                 if msg == "ebook_author_dir or audiobook_author_dir must be set":
                     return jsonify({"error": msg}), 400
-                if msg in {"ebook_author_dir is not within allowed roots", "audiobook_author_dir is not within allowed roots"}:
+                if msg in {
+                    "ebook_author_dir is not within allowed roots",
+                    "audiobook_author_dir is not within allowed roots",
+                }:
                     return jsonify({"error": "Path not allowed"}), 403
                 if msg in {"Invalid ebook_author_dir", "Invalid audiobook_author_dir"}:
                     return jsonify({"error": msg}), 400
                 if msg == "directories_not_found":
-                    return jsonify({"error": "Directory not found", "details": {}, "files_cleared": True}), 404
+                    return jsonify(
+                        {"error": "Directory not found", "details": {}, "files_cleared": True}
+                    ), 404
                 return jsonify({"error": msg}), 400
             # Unknown exception — log a scan_error event for the History UI.
             settings = entity.get("settings") or {}
             record_scan_error(
-                monitored_db, entity_id=entity_id, user_id=entity_owner_id, error=fs_err,
+                monitored_db,
+                entity_id=entity_id,
+                user_id=entity_owner_id,
+                error=fs_err,
                 ebook_dir=str(settings.get("ebook_author_dir") or "").strip().rstrip("/"),
                 audiobook_dir=str(settings.get("audiobook_author_dir") or "").strip().rstrip("/"),
             )
@@ -1872,30 +2289,34 @@ def register_monitored_routes(
         if scan is None:
             return jsonify({"error": "Scan produced no result"}), 500
 
-        return jsonify({
-            "ok": True,
-            "entity_id": entity_id,
-            "scanned": {
-                "ebook_author_dir": scan.ebook_dir,
-                "audiobook_author_dir": scan.audiobook_dir,
-            },
-            "warnings": scan.warnings,
-            "stats": {
-                "ebook_files_scanned": scan.scanned_ebook_files,
-                "audiobook_folders_scanned": scan.scanned_audio_folders,
-                "matched": len(scan.matched),
-                "unmatched": len(scan.unmatched),
-            },
-            "matched": scan.matched,
-            "unmatched": scan.unmatched,
-            "missing_books": scan.missing_books,
-            "abs": sync_result.abs,
-            "booklore": sync_result.bl,
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "entity_id": entity_id,
+                "scanned": {
+                    "ebook_author_dir": scan.ebook_dir,
+                    "audiobook_author_dir": scan.audiobook_dir,
+                },
+                "warnings": scan.warnings,
+                "stats": {
+                    "ebook_files_scanned": scan.scanned_ebook_files,
+                    "audiobook_folders_scanned": scan.scanned_audio_folders,
+                    "matched": len(scan.matched),
+                    "unmatched": len(scan.unmatched),
+                },
+                "matched": scan.matched,
+                "unmatched": scan.unmatched,
+                "missing_books": scan.missing_books,
+                "abs": sync_result.abs,
+                "booklore": sync_result.bl,
+            }
+        )
 
     @app.route("/api/monitored/<int:entity_id>/books/monitor-flags", methods=["PATCH"])
     def api_update_monitored_books_monitor_flags(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -1919,7 +2340,9 @@ def register_monitored_routes(
                 continue
 
             monitor_ebook = item.get("monitor_ebook") if "monitor_ebook" in item else None
-            monitor_audiobook = item.get("monitor_audiobook") if "monitor_audiobook" in item else None
+            monitor_audiobook = (
+                item.get("monitor_audiobook") if "monitor_audiobook" in item else None
+            )
             hidden = item.get("hidden") if "hidden" in item else None
 
             if monitor_ebook is not None:
@@ -1933,7 +2356,11 @@ def register_monitored_routes(
                 continue
 
             # Lock monitor flags when user explicitly changes them (not via hide/unhide)
-            lock = True if hidden is None and (monitor_ebook is not None or monitor_audiobook is not None) else None
+            lock = (
+                True
+                if hidden is None and (monitor_ebook is not None or monitor_audiobook is not None)
+                else None
+            )
 
             result = monitored_db.set_monitored_book_monitor_flags(
                 user_ids=visible_user_ids,
@@ -1947,11 +2374,13 @@ def register_monitored_routes(
             )
             if result is not None:
                 updated += 1
-                results.append({
-                    "provider": provider,
-                    "provider_book_id": provider_book_id,
-                    **result,
-                })
+                results.append(
+                    {
+                        "provider": provider,
+                        "provider_book_id": provider_book_id,
+                        **result,
+                    }
+                )
 
         return jsonify({"ok": True, "updated": updated, "results": results})
 
@@ -1976,11 +2405,14 @@ def register_monitored_routes(
             params["author"] = author
         try:
             import requests as http_requests
+
             from shelfmark.download.network import get_ssl_verify
 
             resp = http_requests.get(
-                f"{base_url}/search", params=params,
-                headers={"User-Agent": user_agent}, timeout=15,
+                f"{base_url}/search",
+                params=params,
+                headers={"User-Agent": user_agent},
+                timeout=15,
                 verify=get_ssl_verify(base_url),
             )
             resp.raise_for_status()
@@ -1999,27 +2431,37 @@ def register_monitored_routes(
             if release_date:
                 try:
                     pub_year = int(release_date[:4])
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     pass
-            authors = [a.get("name", "") for a in (item.get("authors") or []) if isinstance(a, dict)]
-            results.append({
-                "asin": item.get("asin") or "",
-                "title": item.get("title") or "",
-                "authors": authors,
-                "release_date": release_date,
-                "publish_year": pub_year,
-                "cover_url": item.get("imageUrl") or None,
-                "series_name": next(
-                    (s.get("name") for s in (item.get("series") or []) if isinstance(s, dict) and s.get("name")),
-                    None,
-                ),
-                "source": "audible",
-            })
+            authors = [
+                a.get("name", "") for a in (item.get("authors") or []) if isinstance(a, dict)
+            ]
+            results.append(
+                {
+                    "asin": item.get("asin") or "",
+                    "title": item.get("title") or "",
+                    "authors": authors,
+                    "release_date": release_date,
+                    "publish_year": pub_year,
+                    "cover_url": item.get("imageUrl") or None,
+                    "series_name": next(
+                        (
+                            s.get("name")
+                            for s in (item.get("series") or [])
+                            if isinstance(s, dict) and s.get("name")
+                        ),
+                        None,
+                    ),
+                    "source": "audible",
+                }
+            )
         return results
 
     @app.route("/api/monitored/release-date-search")
     def api_release_date_search():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -2046,34 +2488,44 @@ def register_monitored_routes(
         try:
             from shelfmark.metadata_providers import get_configured_provider
             from shelfmark.metadata_providers.hardcover import HardcoverProvider
+
             provider = get_configured_provider()
             if isinstance(provider, HardcoverProvider):
-                from shelfmark.metadata_providers.base import MetadataSearchOptions, SearchType, SortOrder
+                from shelfmark.metadata_providers.base import (
+                    MetadataSearchOptions,
+                    SearchType,
+                    SortOrder,
+                )
+
                 query = title or author
                 fields: dict[str, str] = {}
                 if title:
                     fields["title"] = title
                 if author:
                     fields["author"] = author
-                sr = provider.search(MetadataSearchOptions(
-                    query=query,
-                    search_type=SearchType.BOOK,
-                    sort=SortOrder.RELEVANCE,
-                    limit=10,
-                    page=1,
-                    fields=fields,
-                ))
+                sr = provider.search(
+                    MetadataSearchOptions(
+                        query=query,
+                        search_type=SearchType.BOOK,
+                        sort=SortOrder.RELEVANCE,
+                        limit=10,
+                        page=1,
+                        fields=fields,
+                    )
+                )
                 for book in sr.books:
-                    hardcover_results.append({
-                        "asin": "",
-                        "title": book.title or "",
-                        "authors": list(book.authors) if book.authors else [],
-                        "release_date": book.release_date,
-                        "publish_year": book.publish_year,
-                        "cover_url": book.cover_url,
-                        "series_name": book.series_name,
-                        "source": "hardcover",
-                    })
+                    hardcover_results.append(
+                        {
+                            "asin": "",
+                            "title": book.title or "",
+                            "authors": list(book.authors) if book.authors else [],
+                            "release_date": book.release_date,
+                            "publish_year": book.publish_year,
+                            "cover_url": book.cover_url,
+                            "series_name": book.series_name,
+                            "source": "hardcover",
+                        }
+                    )
         except Exception:
             pass
 
@@ -2083,7 +2535,9 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/books/release-date", methods=["PATCH"])
     def api_set_release_date(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -2111,13 +2565,20 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/<int:entity_id>/search", methods=["POST"])
     def api_search_monitored_entity(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict):
@@ -2132,7 +2593,10 @@ def register_monitored_routes(
             return jsonify({"error": "Not found"}), 404
 
         from shelfmark.core.config import config as app_config
-        threshold = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75)
+
+        threshold = float(
+            app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=int(db_user_id or 0)) or 75
+        )
 
         try:
             result = search_missing_books(
@@ -2145,29 +2609,38 @@ def register_monitored_routes(
         except MonitoredEntityNotFound:
             return jsonify({"error": "Not found"}), 404
 
-        return jsonify({
-            "ok": True,
-            "entity_id": result.entity_id,
-            "content_type": result.content_type,
-            "total_candidates": result.total_candidates,
-            "skipped_history_final_path_exists": result.skipped_history_final_path_exists,
-            "skipped_existing_file": result.skipped_existing_file,
-            "queued": result.queued,
-            "unreleased": result.unreleased,
-            "no_match": result.no_match,
-            "below_cutoff": result.below_cutoff,
-            "failed": result.failed,
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "entity_id": result.entity_id,
+                "content_type": result.content_type,
+                "total_candidates": result.total_candidates,
+                "skipped_history_final_path_exists": result.skipped_history_final_path_exists,
+                "skipped_existing_file": result.skipped_existing_file,
+                "queued": result.queued,
+                "unreleased": result.unreleased,
+                "no_match": result.no_match,
+                "below_cutoff": result.below_cutoff,
+                "failed": result.failed,
+            }
+        )
 
     @app.route("/api/monitored/<int:entity_id>/sync", methods=["POST"])
     def api_sync_monitored(entity_id: int):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
@@ -2178,7 +2651,11 @@ def register_monitored_routes(
                 return jsonify({"ok": True, "syncing": True, "already_syncing": True})
             monitored_db.update_entity_sync_status(entity_id, "syncing")
             start_author_background_sync(
-                entity_id, int(entity["user_id"]), monitored_db, ws_manager=ws_manager, user_db=user_db
+                entity_id,
+                int(entity["user_id"]),
+                monitored_db,
+                ws_manager=ws_manager,
+                user_db=user_db,
             )
             return jsonify({"ok": True, "syncing": True})
 
@@ -2188,15 +2665,24 @@ def register_monitored_routes(
     # Delete a single monitored book
     # ------------------------------------------------------------------
 
-    @app.route("/api/monitored/<int:entity_id>/books/<provider>/<provider_book_id>", methods=["DELETE"])
+    @app.route(
+        "/api/monitored/<int:entity_id>/books/<provider>/<provider_book_id>", methods=["DELETE"]
+    )
     def api_delete_monitored_book(entity_id: int, provider: str, provider_book_id: str):
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
         if entity is None:
@@ -2218,13 +2704,20 @@ def register_monitored_routes(
 
     @app.route("/api/monitored/sync-all", methods=["POST"])
     def api_sync_all_monitored():
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         allowed, message = _policy_allows_monitoring(user_db=user_db, db_user_id=db_user_id)
         if not allowed:
-            return jsonify({"error": message or "Monitoring is unavailable by policy", "code": "policy_blocked"}), 403
+            return jsonify(
+                {
+                    "error": message or "Monitoring is unavailable by policy",
+                    "code": "policy_blocked",
+                }
+            ), 403
 
         # Guard against concurrent batch syncs (atomic check-then-set)
         with _batch_sync_lock:
@@ -2247,7 +2740,9 @@ def register_monitored_routes(
                 with _batch_sync_lock:
                     app.extensions["monitored_batch_sync_running"] = False
 
-        t = threading.Thread(target=_run_and_clear, daemon=True, name=f"MonitoredBatchSync-{batch_id}")
+        t = threading.Thread(
+            target=_run_and_clear, daemon=True, name=f"MonitoredBatchSync-{batch_id}"
+        )
         t.start()
 
         return jsonify({"ok": True, "batch_id": batch_id, "total": len(entities)})
@@ -2260,7 +2755,9 @@ def register_monitored_routes(
         anchor the History UI's run grouping. Scheduled runs call the
         recorder directly from the scheduler thread.
         """
-        db_user_id, _, _, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, _, _, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -2277,13 +2774,14 @@ def register_monitored_routes(
 
         try:
             total_candidates = int(payload.get("total_candidates") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             total_candidates = 0
 
         slot = str(payload.get("slot") or "").strip() or None
 
         try:
             from shelfmark.core.monitored_history import record_run_started
+
             record_run_started(
                 run_id=run_id,
                 trigger=trigger,
@@ -2319,7 +2817,7 @@ def register_monitored_routes(
         raw_user_id = session.get("db_user_id")
         try:
             db_user_id = int(raw_user_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return jsonify({"error": "Invalid user context"}), 400
 
         requested = (request.args.get("path") or "").strip()
@@ -2338,7 +2836,9 @@ def register_monitored_routes(
             dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
             if dest:
                 allowed_roots.append(Path(dest).resolve())
-            dest_audio = _normalize_root(app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id))
+            dest_audio = _normalize_root(
+                app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id)
+            )
             if dest_audio:
                 allowed_roots.append(Path(dest_audio).resolve())
         except Exception:
@@ -2367,14 +2867,15 @@ def register_monitored_routes(
                 unique_roots.append(root)
 
         if not requested:
-            return jsonify({
-                "path": None,
-                "parent": None,
-                "directories": [
-                    {"name": p.name or str(p), "path": str(p)}
-                    for p in unique_roots
-                ],
-            })
+            return jsonify(
+                {
+                    "path": None,
+                    "parent": None,
+                    "directories": [
+                        {"name": p.name or str(p), "path": str(p)} for p in unique_roots
+                    ],
+                }
+            )
 
         if not requested.startswith("/"):
             return jsonify({"error": "path must be absolute"}), 400
@@ -2424,11 +2925,13 @@ def register_monitored_routes(
         except Exception:
             parent = None
 
-        return jsonify({
-            "path": str(requested_path),
-            "parent": parent,
-            "directories": children,
-        })
+        return jsonify(
+            {
+                "path": str(requested_path),
+                "parent": parent,
+                "directories": children,
+            }
+        )
 
     @app.route("/api/fs/mkdir", methods=["POST"])
     def api_fs_mkdir():
@@ -2446,7 +2949,7 @@ def register_monitored_routes(
         raw_user_id = session.get("db_user_id")
         try:
             db_user_id = int(raw_user_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return jsonify({"error": "Invalid user context"}), 400
 
         data = request.get_json(silent=True) or {}
@@ -2471,7 +2974,9 @@ def register_monitored_routes(
             dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
             if dest:
                 allowed_roots.append(Path(dest).resolve())
-            dest_audio = _normalize_root(app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id))
+            dest_audio = _normalize_root(
+                app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id)
+            )
             if dest_audio:
                 allowed_roots.append(Path(dest_audio).resolve())
         except Exception:
@@ -2527,13 +3032,15 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/search", methods=["GET"])
     def api_metadata_author_search():
         """Search for authors using the configured metadata provider."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         try:
-            from shelfmark.metadata_providers import get_configured_provider
             from shelfmark.core.utils import transform_cover_url
+            from shelfmark.metadata_providers import get_configured_provider
 
             query = request.args.get("query", "").strip()
             content_type = request.args.get("content_type", "ebook").strip()
@@ -2553,35 +3060,44 @@ def register_monitored_routes(
 
             provider = get_configured_provider(content_type=content_type)
             if not provider:
-                return jsonify({
-                    "error": "No metadata provider configured",
-                    "message": "No metadata provider configured. Enable one in Settings."
-                }), 503
+                return jsonify(
+                    {
+                        "error": "No metadata provider configured",
+                        "message": "No metadata provider configured. Enable one in Settings.",
+                    }
+                ), 503
 
             if not provider.is_available():
-                return jsonify({
-                    "error": f"Metadata provider '{provider.name}' is not available",
-                    "message": f"{getattr(provider, 'display_name', provider.name)} is not available. Check configuration in Settings."
-                }), 503
+                return jsonify(
+                    {
+                        "error": f"Metadata provider '{provider.name}' is not available",
+                        "message": f"{getattr(provider, 'display_name', provider.name)} is not available. Check configuration in Settings.",
+                    }
+                ), 503
 
             if provider.name != "hardcover":
-                return jsonify({
-                    "provider": provider.name,
-                    "query": query,
-                    "page": page,
-                    "supports_authors": False,
-                    "authors": [],
-                })
+                return jsonify(
+                    {
+                        "provider": provider.name,
+                        "query": query,
+                        "page": page,
+                        "supports_authors": False,
+                        "authors": [],
+                    }
+                )
 
             from shelfmark.metadata_providers.hardcover import HardcoverProvider
+
             if not isinstance(provider, HardcoverProvider):
-                return jsonify({
-                    "provider": provider.name,
-                    "query": query,
-                    "page": page,
-                    "supports_authors": False,
-                    "authors": [],
-                })
+                return jsonify(
+                    {
+                        "provider": provider.name,
+                        "query": query,
+                        "page": page,
+                        "supports_authors": False,
+                        "authors": [],
+                    }
+                )
 
             graphql_query = """
             query SearchAuthors($query: String!, $limit: Int!, $page: Int!) {
@@ -2591,19 +3107,24 @@ def register_monitored_routes(
             }
             """
 
-            result = provider._execute_query(graphql_query, {
-                "query": query,
-                "limit": limit,
-                "page": page,
-            })
-            if not result:
-                return jsonify({
-                    "provider": provider.name,
+            result = provider._execute_query(
+                graphql_query,
+                {
                     "query": query,
+                    "limit": limit,
                     "page": page,
-                    "supports_authors": True,
-                    "authors": [],
-                })
+                },
+            )
+            if not result:
+                return jsonify(
+                    {
+                        "provider": provider.name,
+                        "query": query,
+                        "page": page,
+                        "supports_authors": True,
+                        "authors": [],
+                    }
+                )
 
             results_obj = result.get("search", {}).get("results", {})
             hits = []
@@ -2626,7 +3147,11 @@ def register_monitored_routes(
                     continue
 
                 raw_photo = extract_author_photo_url(item)
-                photo_url = transform_cover_url(raw_photo, f"hardcover_author_{author_id}") if raw_photo else None
+                photo_url = (
+                    transform_cover_url(raw_photo, f"hardcover_author_{author_id}")
+                    if raw_photo
+                    else None
+                )
 
                 author_payload: dict[str, Any] = {
                     "provider": "hardcover",
@@ -2655,7 +3180,9 @@ def register_monitored_routes(
             authors_missing_photo = [a for a in authors if not a.get("photo_url")]
             if authors_missing_photo:
                 try:
-                    _backfill_search_author_photos(provider, authors_missing_photo, transform_cover_url)
+                    _backfill_search_author_photos(
+                        provider, authors_missing_photo, transform_cover_url
+                    )
                 except Exception:
                     logger.debug("Failed to backfill search author photos", exc_info=True)
 
@@ -2666,15 +3193,17 @@ def register_monitored_routes(
             else:
                 has_more = len(authors) >= limit
 
-            return jsonify({
-                "provider": provider.name,
-                "query": query,
-                "page": page,
-                "total_found": found_count,
-                "has_more": has_more,
-                "supports_authors": True,
-                "authors": authors,
-            })
+            return jsonify(
+                {
+                    "provider": provider.name,
+                    "query": query,
+                    "page": page,
+                    "total_found": found_count,
+                    "has_more": has_more,
+                    "supports_authors": True,
+                    "authors": authors,
+                }
+            )
 
         except Exception as e:
             logger.error_trace(f"Metadata author search error: {e}")
@@ -2683,17 +3212,19 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/<provider>/<author_id>", methods=["GET"])
     def api_metadata_author(provider: str, author_id: str):
         """Get detailed author information from a metadata provider."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         try:
+            from shelfmark.core.utils import transform_cover_url
             from shelfmark.metadata_providers import (
                 get_provider,
-                is_provider_registered,
                 get_provider_kwargs,
+                is_provider_registered,
             )
-            from shelfmark.core.utils import transform_cover_url
 
             if not is_provider_registered(provider):
                 return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
@@ -2704,23 +3235,29 @@ def register_monitored_routes(
                 return jsonify({"error": f"Provider '{provider}' is not available"}), 503
 
             if provider != "hardcover":
-                return jsonify({
-                    "provider": provider,
-                    "provider_id": str(author_id),
-                    "supports_authors": False,
-                    "author": None,
-                })
+                return jsonify(
+                    {
+                        "provider": provider,
+                        "provider_id": str(author_id),
+                        "supports_authors": False,
+                        "author": None,
+                    }
+                )
 
             from shelfmark.metadata_providers.hardcover import HardcoverProvider
+
             if not isinstance(prov, HardcoverProvider):
-                return jsonify({
-                    "provider": provider,
-                    "provider_id": str(author_id),
-                    "supports_authors": False,
-                    "author": None,
-                })
+                return jsonify(
+                    {
+                        "provider": provider,
+                        "provider_id": str(author_id),
+                        "supports_authors": False,
+                        "author": None,
+                    }
+                )
 
             from shelfmark.core.metadata_cache import get_metadata_file_cache
+
             mcache = get_metadata_file_cache()
             cached = mcache.get("authors", provider, author_id)
             if cached is not None:
@@ -2746,21 +3283,25 @@ def register_monitored_routes(
 
             result = prov._execute_query(graphql_query, {"id": author_id_int})
             if not result:
-                return jsonify({
-                    "provider": provider,
-                    "provider_id": str(author_id),
-                    "supports_authors": True,
-                    "author": None,
-                }), 404
+                return jsonify(
+                    {
+                        "provider": provider,
+                        "provider_id": str(author_id),
+                        "supports_authors": True,
+                        "author": None,
+                    }
+                ), 404
 
             authors = result.get("authors", [])
             if not authors:
-                return jsonify({
-                    "provider": provider,
-                    "provider_id": str(author_id),
-                    "supports_authors": True,
-                    "author": None,
-                }), 404
+                return jsonify(
+                    {
+                        "provider": provider,
+                        "provider_id": str(author_id),
+                        "supports_authors": True,
+                        "author": None,
+                    }
+                ), 404
 
             author = authors[0]
 
@@ -2808,22 +3349,24 @@ def register_monitored_routes(
     @app.route("/api/metadata/authors/<provider>/<author_id>/books", methods=["GET"])
     def api_metadata_author_books(provider: str, author_id: str):
         """Fetch an author's book list directly from a metadata provider (no DB writes)."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
         try:
             limit = min(int(request.args.get("limit", 200)), 500)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             limit = 200
 
         try:
+            from shelfmark.core.utils import transform_cover_url
             from shelfmark.metadata_providers import (
                 get_provider,
-                is_provider_registered,
                 get_provider_kwargs,
+                is_provider_registered,
             )
-            from shelfmark.core.utils import transform_cover_url
 
             if not is_provider_registered(provider):
                 return jsonify({"error": f"Unknown metadata provider: {provider}"}), 400
@@ -2837,6 +3380,7 @@ def register_monitored_routes(
                 return jsonify({"provider": provider, "provider_id": str(author_id), "books": []})
 
             from shelfmark.core.monitored_hardcover_ext import MonitoredHardcoverProvider
+
             if not isinstance(prov, MonitoredHardcoverProvider):
                 # Upgrade the provider instance to the monitored subclass
                 mono_prov = MonitoredHardcoverProvider(**kwargs)
@@ -2903,7 +3447,7 @@ def register_monitored_routes(
                 if release_date:
                     try:
                         publish_year = int(str(release_date)[:4])
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         pass
 
                 # ISBN
@@ -2944,13 +3488,15 @@ def register_monitored_routes(
             return None
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     @app.route("/api/monitored/events", methods=["GET"])
     def api_list_monitored_events():
         """List monitored events with optional filters and pagination."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -2964,11 +3510,11 @@ def register_monitored_routes(
 
         try:
             limit = int(request.args.get("limit", 100))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             limit = 100
         try:
             offset = int(request.args.get("offset", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             offset = 0
 
         events, total = monitored_db.list_events(
@@ -2988,7 +3534,9 @@ def register_monitored_routes(
     @app.route("/api/monitored/<int:entity_id>/books/events", methods=["GET"])
     def api_list_monitored_book_events(entity_id: int):
         """List events for a specific book within a monitored entity."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -2997,11 +3545,11 @@ def register_monitored_routes(
 
         try:
             limit = int(request.args.get("limit", 50))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             limit = 50
         try:
             offset = int(request.args.get("offset", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             offset = 0
 
         events, total = monitored_db.list_events(
@@ -3018,7 +3566,9 @@ def register_monitored_routes(
     @app.route("/api/monitored/events/stats", methods=["GET"])
     def api_monitored_event_stats():
         """Return event counts by type for the stats dashboard."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -3030,22 +3580,28 @@ def register_monitored_routes(
         syncs = monitored_db.count_sync_batches(user_ids=visible_user_ids, since=since)
         authors_added = raw_counts.get("author_added", 0)
         authors_removed = raw_counts.get("author_removed", 0)
-        failures = sum(v for k, v in raw_counts.items() if k in ("download_failed", "author_sync_failed"))
+        failures = sum(
+            v for k, v in raw_counts.items() if k in ("download_failed", "author_sync_failed")
+        )
 
-        return jsonify({
-            "downloads": downloads,
-            "searches": searches,
-            "syncs": syncs,
-            "authors_added": authors_added,
-            "authors_removed": authors_removed,
-            "failures": failures,
-            "raw": raw_counts,
-        })
+        return jsonify(
+            {
+                "downloads": downloads,
+                "searches": searches,
+                "syncs": syncs,
+                "authors_added": authors_added,
+                "authors_removed": authors_removed,
+                "failures": failures,
+                "raw": raw_counts,
+            }
+        )
 
     @app.route("/api/monitored/events", methods=["DELETE"])
     def api_clear_monitored_events():
         """Clear monitored event history."""
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -3065,7 +3621,9 @@ def register_monitored_routes(
         import csv
         import io
 
-        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(user_db, resolve_auth_mode=resolve_auth_mode)
+        db_user_id, global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
         if gate is not None:
             return gate
 
@@ -3092,6 +3650,7 @@ def register_monitored_routes(
             output.write("No events found.\n")
 
         from flask import Response as FlaskResponse
+
         return FlaskResponse(
             output.getvalue(),
             mimetype="text/csv",

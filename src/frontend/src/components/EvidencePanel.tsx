@@ -76,8 +76,7 @@ const friendlyEvidenceLabel = (name: string): string => {
   return name;
 };
 
-const friendlyPositionSource = (s: string): string =>
-  POSITION_SOURCE_LABELS[s] ?? s;
+const friendlyPositionSource = (s: string): string => POSITION_SOURCE_LABELS[s] ?? s;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -89,18 +88,16 @@ const MetadataDl = ({ title, data }: { title: string; data: EmbeddedData | undef
   if (!data || Object.keys(data).length === 0) {
     return (
       <section>
-        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+        <h4 className="mb-1 text-[11px] font-semibold tracking-wide text-gray-600 uppercase dark:text-gray-400">
           {title}
         </h4>
-        <div className="text-gray-500 dark:text-gray-400 italic">
-          (no fields)
-        </div>
+        <div className="text-gray-500 italic dark:text-gray-400">(no fields)</div>
       </section>
     );
   }
   return (
     <section>
-      <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+      <h4 className="mb-1 text-[11px] font-semibold tracking-wide text-gray-600 uppercase dark:text-gray-400">
         {title}
       </h4>
       <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-gray-700 dark:text-gray-300">
@@ -156,19 +153,39 @@ const MetadataDl = ({ title, data }: { title: string; data: EmbeddedData | undef
   );
 };
 
+// Friendly labels for hard_reject_reason codes.
+const REJECT_REASON_LABELS: Record<string, string> = {
+  embedded_identifier_mismatch: 'identifier mismatch',
+  source_abs_identifier_mismatch: 'identifier mismatch',
+  source_booklore_identifier_mismatch: 'identifier mismatch',
+  title_mismatch_both_sides: 'title mismatches on both path and metadata',
+  title_borne_position_mismatch: 'filename names a different book number',
+};
+
 export const EvidencePanel = ({ evidence }: { evidence: AttributionEvidence }) => {
   const confidencePct = Math.round((evidence.confidence ?? 0) * 100);
-  const accepted = !!evidence.accept;
+  const tier = evidence.tier ?? (evidence.accept ? 'confirmed' : 'rejected');
+
+  let headerLabel: string;
+  if (evidence.hard_reject) {
+    const reason = evidence.hard_reject_reason
+      ? (REJECT_REASON_LABELS[evidence.hard_reject_reason] ??
+        evidence.hard_reject_reason.replace(/_/g, ' '))
+      : 'identifier mismatch';
+    headerLabel = `Rejected — ${reason}`;
+  } else if (tier === 'confirmed') {
+    headerLabel = 'Match accepted';
+  } else if (tier === 'candidate') {
+    headerLabel = 'Awaiting your review';
+  } else {
+    headerLabel = 'Match below threshold';
+  }
 
   return (
-    <div className="mt-2 rounded-lg border border-[var(--border-muted)] bg-black/5 dark:bg-white/5 p-3 text-xs space-y-3">
+    <div className="mt-2 space-y-3 rounded-lg border border-[var(--border-muted)] bg-black/5 p-3 text-xs dark:bg-white/5">
       {/* Header — overall decision */}
       <div className="flex items-baseline justify-between gap-3">
-        <div className="font-medium text-gray-800 dark:text-gray-200">
-          {evidence.hard_reject
-            ? 'Rejected — identifier mismatch'
-            : accepted ? 'Match accepted' : 'Match below threshold'}
-        </div>
+        <div className="font-medium text-gray-800 dark:text-gray-200">{headerLabel}</div>
         <div className="text-gray-500 dark:text-gray-400">
           {confidencePct}% confidence
           <span className="ml-1 opacity-60">(score {(evidence.net_score ?? 0).toFixed(2)})</span>
@@ -176,28 +193,28 @@ export const EvidencePanel = ({ evidence }: { evidence: AttributionEvidence }) =
       </div>
 
       {evidence.hard_reject && evidence.hard_reject_reason ? (
-        <div className="text-red-600 dark:text-red-400">
-          Reason: {evidence.hard_reject_reason}
-        </div>
+        <div className="text-red-600 dark:text-red-400">Reason: {evidence.hard_reject_reason}</div>
       ) : null}
 
       {/* Positives */}
       {evidence.positives && evidence.positives.length > 0 ? (
         <section>
-          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-green-700 dark:text-green-400">
+          <h4 className="mb-1 text-[11px] font-semibold tracking-wide text-green-700 uppercase dark:text-green-400">
             Evidence found
           </h4>
           <ul className="space-y-1 text-gray-700 dark:text-gray-300">
             {evidence.positives.map((p, i) => (
               <li key={i} className="flex items-start gap-2">
-                <span className="text-green-600 dark:text-green-400" aria-hidden>✓</span>
+                <span className="text-green-600 dark:text-green-400" aria-hidden>
+                  ✓
+                </span>
                 <span className="flex-1">
                   <span>{friendlyEvidenceLabel(p.name)}</span>
                   {p.detail ? (
                     <span className="ml-1 text-gray-500 dark:text-gray-400">— {p.detail}</span>
                   ) : null}
                 </span>
-                <span className="tabular-nums text-gray-500 dark:text-gray-400">
+                <span className="text-gray-500 tabular-nums dark:text-gray-400">
                   +{p.weight.toFixed(2)}
                 </span>
               </li>
@@ -209,20 +226,22 @@ export const EvidencePanel = ({ evidence }: { evidence: AttributionEvidence }) =
       {/* Penalties */}
       {evidence.penalties && evidence.penalties.length > 0 ? (
         <section>
-          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+          <h4 className="mb-1 text-[11px] font-semibold tracking-wide text-red-700 uppercase dark:text-red-400">
             Conflicts
           </h4>
           <ul className="space-y-1 text-gray-700 dark:text-gray-300">
             {evidence.penalties.map((p, i) => (
               <li key={i} className="flex items-start gap-2">
-                <span className="text-red-600 dark:text-red-400" aria-hidden>✗</span>
+                <span className="text-red-600 dark:text-red-400" aria-hidden>
+                  ✗
+                </span>
                 <span className="flex-1">
                   <span>{friendlyEvidenceLabel(p.name)}</span>
                   {p.detail ? (
                     <span className="ml-1 text-gray-500 dark:text-gray-400">— {p.detail}</span>
                   ) : null}
                 </span>
-                <span className="tabular-nums text-gray-500 dark:text-gray-400">
+                <span className="text-gray-500 tabular-nums dark:text-gray-400">
                   {p.weight.toFixed(2)}
                 </span>
               </li>
@@ -234,7 +253,7 @@ export const EvidencePanel = ({ evidence }: { evidence: AttributionEvidence }) =
       {/* Position signals */}
       {evidence.position_votes && evidence.position_votes.length > 0 ? (
         <section>
-          <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+          <h4 className="mb-1 text-[11px] font-semibold tracking-wide text-gray-600 uppercase dark:text-gray-400">
             Book numbers detected in path
           </h4>
           <ul className="space-y-0.5 text-gray-700 dark:text-gray-300">

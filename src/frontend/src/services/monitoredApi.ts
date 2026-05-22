@@ -44,7 +44,7 @@ export const searchMetadataAuthors = async (
   query: string,
   limit: number = 20,
   page: number = 1,
-  contentType: string = 'ebook'
+  contentType: string = 'ebook',
 ): Promise<MetadataAuthorSearchResult> => {
   const q = query?.trim() || '';
   if (!q) {
@@ -84,13 +84,18 @@ export const searchMetadataAuthors = async (
   };
 };
 
-export const getMetadataAuthorInfo = async (provider: string, authorId: string): Promise<MetadataAuthorDetailsResult> => {
+export const getMetadataAuthorInfo = async (
+  provider: string,
+  authorId: string,
+): Promise<MetadataAuthorDetailsResult> => {
   const response = await fetchJSON<{
     provider: string;
     provider_id: string;
     supports_authors: boolean;
     author: MetadataAuthor | null;
-  }>(`${API_BASE}/metadata/authors/${encodeURIComponent(provider)}/${encodeURIComponent(authorId)}`);
+  }>(
+    `${API_BASE}/metadata/authors/${encodeURIComponent(provider)}/${encodeURIComponent(authorId)}`,
+  );
 
   return {
     provider: response.provider,
@@ -154,6 +159,11 @@ export interface MonitoredBookRow {
   audiobook_last_search_at?: string | null;
   has_ebook_available?: number | boolean;
   has_audiobook_available?: number | boolean;
+  /** True when an unconfirmed candidate-tier file exists for this format
+   *  AND no confirmed match exists. Rendered as a distinct "awaiting review"
+   *  indicator on the book card. */
+  has_ebook_candidate?: number | boolean;
+  has_audiobook_candidate?: number | boolean;
   ebook_path?: string | null;
   audiobook_path?: string | null;
   ebook_available_format?: string | null;
@@ -196,7 +206,7 @@ export const getMonitoredEntity = async (entityId: number): Promise<MonitoredEnt
 
 export const patchMonitoredEntity = async (
   entityId: number,
-  payload: { settings: Record<string, unknown> }
+  payload: { settings: Record<string, unknown> },
 ): Promise<MonitoredEntity> => {
   try {
     return await fetchJSON<MonitoredEntity>(`${API_BASE}/monitored/${entityId}`, {
@@ -214,22 +224,39 @@ export const patchMonitoredEntity = async (
   }
 };
 
-export const syncMonitoredEntity = async (entityId: number): Promise<{ ok: boolean; discovered?: number }> => {
+export const syncMonitoredEntity = async (
+  entityId: number,
+): Promise<{ ok: boolean; discovered?: number }> => {
   return fetchJSON<{ ok: boolean; discovered?: number }>(`${API_BASE}/monitored/${entityId}/sync`, {
     method: 'POST',
   });
 };
 
-export const syncAllMonitoredEntities = async (): Promise<{ ok: boolean; batch_id?: string; total?: number; already_running?: boolean }> => {
-  return fetchJSON<{ ok: boolean; batch_id?: string; total?: number; already_running?: boolean }>(`${API_BASE}/monitored/sync-all`, {
-    method: 'POST',
-  });
+export const syncAllMonitoredEntities = async (): Promise<{
+  ok: boolean;
+  batch_id?: string;
+  total?: number;
+  already_running?: boolean;
+}> => {
+  return fetchJSON<{ ok: boolean; batch_id?: string; total?: number; already_running?: boolean }>(
+    `${API_BASE}/monitored/sync-all`,
+    {
+      method: 'POST',
+    },
+  );
 };
 
-export const deleteMonitoredBook = async (entityId: number, provider: string, providerBookId: string): Promise<{ ok: boolean; deleted: boolean }> => {
-  return fetchJSON<{ ok: boolean; deleted: boolean }>(`${API_BASE}/monitored/${entityId}/books/${encodeURIComponent(provider)}/${encodeURIComponent(providerBookId)}`, {
-    method: 'DELETE',
-  });
+export const deleteMonitoredBook = async (
+  entityId: number,
+  provider: string,
+  providerBookId: string,
+): Promise<{ ok: boolean; deleted: boolean }> => {
+  return fetchJSON<{ ok: boolean; deleted: boolean }>(
+    `${API_BASE}/monitored/${entityId}/books/${encodeURIComponent(provider)}/${encodeURIComponent(providerBookId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -271,6 +298,11 @@ export interface AttributionEvidence {
   source_data?: AttributionMetadataData;
   hard_reject?: boolean;
   hard_reject_reason?: string;
+  /**
+   * Three-tier outcome from the scorer. Older rows (pre-tier-refactor) may
+   * omit this — EvidencePanel falls back to `accept` when absent.
+   */
+  tier?: 'confirmed' | 'candidate' | 'rejected';
   positives?: { name: string; weight: number; detail?: string }[];
   penalties?: { name: string; weight: number; detail?: string }[];
 }
@@ -290,6 +322,13 @@ export interface MonitoredBookFileRow {
   match_reason?: string | null;
   evidence?: AttributionEvidence | null;
   manual_override?: number | boolean | null;
+  /**
+   * 'matched' (confirmed — counts toward "book is owned") or 'candidate'
+   * (weak match awaiting user Accept/Reject in the Possible Candidates UI;
+   * does NOT count toward owned). Older API responses may omit this; treat
+   * absent as 'matched'.
+   */
+  status?: 'matched' | 'candidate' | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -341,13 +380,18 @@ export interface MonitoredAuthorBookSearchRow {
   series_count?: number | null;
   has_ebook_available?: number | boolean;
   has_audiobook_available?: number | boolean;
+  has_ebook_candidate?: number | boolean;
+  has_audiobook_candidate?: number | boolean;
   ebook_path?: string | null;
   audiobook_path?: string | null;
   ebook_available_format?: string | null;
   audiobook_available_format?: string | null;
 }
 
-const inFlightMonitoredBookFilesRequests = new Map<number, Promise<{ files: MonitoredBookFileRow[] }>>();
+const inFlightMonitoredBookFilesRequests = new Map<
+  number,
+  Promise<{ files: MonitoredBookFileRow[] }>
+>();
 const inFlightMonitoredBooksRequests = new Map<number, Promise<MonitoredBooksResponse>>();
 
 export const searchMonitoredAuthorBooks = async (
@@ -357,16 +401,22 @@ export const searchMonitoredAuthorBooks = async (
   const params = new URLSearchParams();
   params.set('q', query);
   params.set('limit', String(limit));
-  return fetchJSON<{ results: MonitoredAuthorBookSearchRow[] }>(`${API_BASE}/monitored/search/books?${params.toString()}`);
+  return fetchJSON<{ results: MonitoredAuthorBookSearchRow[] }>(
+    `${API_BASE}/monitored/search/books?${params.toString()}`,
+  );
 };
 
-export const listMonitoredBookFiles = async (entityId: number): Promise<{ files: MonitoredBookFileRow[] }> => {
+export const listMonitoredBookFiles = async (
+  entityId: number,
+): Promise<{ files: MonitoredBookFileRow[] }> => {
   const existing = inFlightMonitoredBookFilesRequests.get(entityId);
   if (existing) {
     return existing;
   }
 
-  const request = fetchJSON<{ files: MonitoredBookFileRow[] }>(`${API_BASE}/monitored/${entityId}/files`).finally(() => {
+  const request = fetchJSON<{ files: MonitoredBookFileRow[] }>(
+    `${API_BASE}/monitored/${entityId}/files`,
+  ).finally(() => {
     inFlightMonitoredBookFilesRequests.delete(entityId);
   });
 
@@ -426,14 +476,11 @@ export const setManualMatch = async (
   fileId: number,
   chosen: ChosenCandidate,
 ): Promise<{ ok: boolean }> =>
-  fetchJSON<{ ok: boolean }>(
-    `${API_BASE}/monitored/${entityId}/files/${fileId}/match`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(_candidateBody(chosen)),
-    },
-  );
+  fetchJSON<{ ok: boolean }>(`${API_BASE}/monitored/${entityId}/files/${fileId}/match`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(_candidateBody(chosen)),
+  });
 
 /**
  * Attach a file to a book that has no existing attribution of that file_type.
@@ -469,6 +516,31 @@ export const detachMatch = async (
     },
   );
 
+/**
+ * User accepts a Possible Candidate. Promotes the row to status='matched'
+ * and sets manual_override=1 so the scanner won't demote it back.
+ */
+export const promoteCandidate = async (
+  entityId: number,
+  fileId: number,
+): Promise<{ ok: boolean }> =>
+  fetchJSON<{ ok: boolean }>(`${API_BASE}/monitored/${entityId}/files/${fileId}/promote`, {
+    method: 'POST',
+  });
+
+/**
+ * User rejects a Possible Candidate. Records the (file, book) pair in
+ * monitored_file_rejections so future scans skip it, then deletes the row.
+ */
+export const rejectCandidate = async (
+  entityId: number,
+  fileId: number,
+): Promise<{ ok: boolean; rejected: boolean }> =>
+  fetchJSON<{ ok: boolean; rejected: boolean }>(
+    `${API_BASE}/monitored/${entityId}/files/${fileId}/reject`,
+    { method: 'POST' },
+  );
+
 export interface MonitoredAutoSearchPrecheckResponse {
   ok: boolean;
   entity_id: number;
@@ -491,10 +563,13 @@ export const precheckMonitoredAutoSearch = async (
     run_id?: string;
   },
 ): Promise<MonitoredAutoSearchPrecheckResponse> => {
-  return fetchJSON<MonitoredAutoSearchPrecheckResponse>(`${API_BASE}/monitored/${entityId}/books/auto-search-precheck`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return fetchJSON<MonitoredAutoSearchPrecheckResponse>(
+    `${API_BASE}/monitored/${entityId}/books/auto-search-precheck`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
 };
 
 interface RecordMonitoredBookAttemptPayload {
@@ -531,7 +606,7 @@ export const recordMonitoredRunStarted = async (params: {
   } catch (err) {
     console.warn(
       'Failed to record monitored run-started:',
-      err instanceof Error ? err.message : String(err)
+      err instanceof Error ? err.message : String(err),
     );
   }
 };
@@ -588,7 +663,7 @@ export const recordMonitoredAutoSearchAttempt = async (
   } catch (err) {
     console.warn(
       'Failed to record monitored auto-search attempt:',
-      err instanceof Error ? err.message : String(err)
+      err instanceof Error ? err.message : String(err),
     );
   }
 };
@@ -650,7 +725,9 @@ export interface MonitoredFilesScanResult {
   last_scan_at?: string;
 }
 
-export const scanMonitoredEntityFiles = async (entityId: number): Promise<MonitoredFilesScanResult> => {
+export const scanMonitoredEntityFiles = async (
+  entityId: number,
+): Promise<MonitoredFilesScanResult> => {
   return fetchJSON<MonitoredFilesScanResult>(`${API_BASE}/monitored/${entityId}/scan-files`, {
     method: 'POST',
   });
@@ -668,14 +745,15 @@ export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBoo
     return existing;
   }
 
-  const request = fetchJSON<MonitoredBooksResponse>(`${API_BASE}/monitored/${entityId}/books`).finally(() => {
+  const request = fetchJSON<MonitoredBooksResponse>(
+    `${API_BASE}/monitored/${entityId}/books`,
+  ).finally(() => {
     inFlightMonitoredBooksRequests.delete(entityId);
   });
 
   inFlightMonitoredBooksRequests.set(entityId, request);
   return request;
 };
-
 
 export interface MonitoredBookMonitorFlagsPatch {
   provider: string;
@@ -696,10 +774,13 @@ export const updateMonitoredBooksMonitorFlags = async (
   entityId: number,
   updates: MonitoredBookMonitorFlagsPatch[] | MonitoredBookMonitorFlagsPatch,
 ): Promise<{ ok: boolean; updated: number; results?: MonitorFlagsResult[] }> => {
-  return fetchJSON<{ ok: boolean; updated: number; results?: MonitorFlagsResult[] }>(`${API_BASE}/monitored/${entityId}/books/monitor-flags`, {
-    method: 'PATCH',
-    body: JSON.stringify(updates),
-  });
+  return fetchJSON<{ ok: boolean; updated: number; results?: MonitorFlagsResult[] }>(
+    `${API_BASE}/monitored/${entityId}/books/monitor-flags`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    },
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -722,7 +803,9 @@ export const fsListDirectories = async (path?: string | null): Promise<FsListRes
   if (path) {
     params.set('path', path);
   }
-  const url = params.toString() ? `${API_BASE}/fs/list?${params.toString()}` : `${API_BASE}/fs/list`;
+  const url = params.toString()
+    ? `${API_BASE}/fs/list?${params.toString()}`
+    : `${API_BASE}/fs/list`;
   return fetchJSON<FsListResponse>(url);
 };
 
@@ -772,7 +855,9 @@ export interface DeleteMonitoredAuthorsResult {
   failedIds: number[];
 }
 
-export const deleteMonitoredAuthorsByIds = async (entityIds: number[]): Promise<DeleteMonitoredAuthorsResult> => {
+export const deleteMonitoredAuthorsByIds = async (
+  entityIds: number[],
+): Promise<DeleteMonitoredAuthorsResult> => {
   const uniqueIds = Array.from(new Set(entityIds.filter((id) => Number.isFinite(id) && id > 0)));
   if (uniqueIds.length === 0) {
     return { successfulIds: [], failedIds: [] };
@@ -916,9 +1001,7 @@ export const listMonitoredBookEvents = async (
   return fetchJSON(`${API_BASE}/monitored/${entityId}/books/events?${query.toString()}`);
 };
 
-export const getMonitoredEventStats = async (
-  since?: string,
-): Promise<MonitoredEventStats> => {
+export const getMonitoredEventStats = async (since?: string): Promise<MonitoredEventStats> => {
   const query = since ? `?since=${encodeURIComponent(since)}` : '';
   return fetchJSON(`${API_BASE}/monitored/events/stats${query}`);
 };

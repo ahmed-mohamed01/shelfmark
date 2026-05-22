@@ -24,7 +24,11 @@ from shelfmark.core.monitored_attribution_v2 import (
 )
 from shelfmark.core.monitored_integration_matching import (
     AUTHOR_SPLIT_RE as _AUTHOR_SPLIT_RE,
+)
+from shelfmark.core.monitored_integration_matching import (
     SERIES_POS_RE as _SERIES_POS_RE,
+)
+from shelfmark.core.monitored_integration_matching import (
     norm as _norm,
 )
 
@@ -63,7 +67,9 @@ def get_abs_config() -> dict[str, str] | None:
 def _build_ssl_ctx(url: str):
     """Return an ssl.SSLContext that respects the CERTIFICATE_VALIDATION setting."""
     import ssl
+
     from shelfmark.download.network import get_ssl_verify
+
     ctx = ssl.create_default_context()
     if not get_ssl_verify(url):
         ctx.check_hostname = False
@@ -76,7 +82,7 @@ def _abs_get(base_url: str, token: str, path: str, timeout: int = 10) -> Any:
         f"{base_url}{path}",
         headers={"Authorization": f"Bearer {token}"},
     )
-    with urlopen(req, timeout=timeout, context=_build_ssl_ctx(base_url)) as resp:  # noqa: S310
+    with urlopen(req, timeout=timeout, context=_build_ssl_ctx(base_url)) as resp:
         return json.loads(resp.read())
 
 
@@ -138,7 +144,9 @@ def _find_abs_author_items(
     # Split on commas/semicolons so name suffixes like "(Author)" or co-author
     # lists don't drop the per-pair ratio below threshold. target_parts is
     # constant across all authors — compute once outside the loop.
-    target_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(author_name) if p.strip()] or [author_name]
+    target_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(author_name) if p.strip()] or [
+        author_name
+    ]
     best_author: dict[str, Any] | None = None
     best_ratio = 0.0
     for author in authors:
@@ -155,7 +163,10 @@ def _find_abs_author_items(
     if best_author is None or best_ratio < 0.70:
         logger.warning(
             "ABS: no author match for %r in library %s (best ratio=%.2f, %d authors checked)",
-            author_name, library_id, best_ratio, len(authors),
+            author_name,
+            library_id,
+            best_ratio,
+            len(authors),
         )
         return []
 
@@ -171,7 +182,12 @@ def _find_abs_author_items(
     try:
         author_data = _abs_get(url, token, f"/api/authors/{author_id}?include=items", timeout=60)
         items: list[dict[str, Any]] = author_data.get("libraryItems") or []
-        logger.info("ABS: fetched %d library items for author %r (id=%s)", len(items), best_author.get("name"), author_id)
+        logger.info(
+            "ABS: fetched %d library items for author %r (id=%s)",
+            len(items),
+            best_author.get("name"),
+            author_id,
+        )
         return items
     except Exception as exc:
         logger.warning("ABS: failed to fetch items for author %s: %s", author_id, exc)
@@ -247,9 +263,11 @@ def _parse_abs_series_pairs(
 def _abs_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
     """Translate an ABS library item into the unified ``SourceMetadata`` shape.
 
-    ABS items can carry multiple series pairs; we take the first one for
-    matching (the unified scorer accepts only one series_name+position). The
-    rest, if any, are noise as far as Hardcover attribution goes.
+    ABS items can carry multiple series pairs (e.g.
+    "Stormlight Archive #5, Cosmere #19"). All pairs are forwarded via
+    ``all_series_pairs`` so the scorer can match any of them against the
+    book's own ``all_series``. The primary ``series_name`` / ``series_position``
+    fields keep the first pair for back-compat with non-multi-series callers.
     """
     meta = (item.get("media") or {}).get("metadata") or {}
     series_pairs = _parse_abs_series_pairs(
@@ -262,6 +280,7 @@ def _abs_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
         author=(meta.get("authorName") or "").strip() or None,
         series_name=first_series,
         series_position=first_pos,
+        all_series_pairs=list(series_pairs),
         asin=(meta.get("asin") or "").strip() or None,
         source_label="abs",
     )
@@ -361,14 +380,15 @@ def sync_abs_availability_for_entity(
     # isInvalid: files present but ABS considers the metadata/files broken.
     # isMissing: files are gone from disk.
     candidate_items = [
-        item for item in abs_items
-        if not item.get("isMissing") and not item.get("isInvalid")
+        item for item in abs_items if not item.get("isMissing") and not item.get("isInvalid")
     ]
     skipped = len(abs_items) - len(candidate_items)
     if skipped:
         logger.warning(
             "ABS entity_id=%s: %d/%d items skipped (isMissing or isInvalid)",
-            entity_id, skipped, len(abs_items),
+            entity_id,
+            skipped,
+            len(abs_items),
         )
 
     matched = 0
@@ -381,16 +401,35 @@ def sync_abs_availability_for_entity(
         item_path = (item.get("path") or "").strip()
 
         # Drop books the user explicitly rejected for this (source, path).
-        item_books = [
-            b for b in books
-            if ("audiobookshelf", item_path,
-                (b.get("provider") or ""), (b.get("provider_book_id") or "")) not in rejections
-        ] if item_path else books
+        item_books = (
+            [
+                b
+                for b in books
+                if (
+                    "audiobookshelf",
+                    item_path,
+                    (b.get("provider") or ""),
+                    (b.get("provider_book_id") or ""),
+                )
+                not in rejections
+            ]
+            if item_path
+            else books
+        )
 
         src_meta = _abs_item_to_source_metadata(item)
+        # Pass the ABS path through to pick_best_attribution. The path string
+        # follows the same author/series/book conventions as local files, so
+        # path-side signals (author_folder, series_folder, position votes
+        # from "Book N" markers, etc.) are valuable corroboration on top of
+        # the source_metadata. evaluate_match never touches the filesystem;
+        # it only decomposes the string.
         result = pick_best_attribution(
-            path=None, books=item_books, author_name=entity_name,
-            embedded=None, source_metadata=src_meta,
+            path=item_path or None,
+            books=item_books,
+            author_name=entity_name,
+            embedded=None,
+            source_metadata=src_meta,
         )
         if result.book is None:
             unmatched_titles.append(abs_title)
@@ -409,19 +448,29 @@ def sync_abs_availability_for_entity(
             item_id = item.get("id")
             if item_id:
                 try:
-                    full_item = _abs_get(cfg["url"], cfg["token"], f"/api/items/{item_id}", timeout=10)
+                    full_item = _abs_get(
+                        cfg["url"], cfg["token"], f"/api/items/{item_id}", timeout=10
+                    )
                     item_ext = _get_abs_item_format(full_item)
                 except Exception as _fmt_exc:
-                    logger.debug("ABS: could not fetch full item %s for format: %s", item_id, _fmt_exc)
+                    logger.debug(
+                        "ABS: could not fetch full item %s for format: %s", item_id, _fmt_exc
+                    )
 
         # Serialise the v2 evidence vector for the API + UI "Why?" panel.
         try:
-            from dataclasses import asdict as _asdict
             import json as _json
+            from dataclasses import asdict as _asdict
+
             evidence_json = _json.dumps(_asdict(result.evidence), default=str)
         except Exception:
             evidence_json = None
 
+        # Tier maps to status: confirmed → 'matched' (counts toward owned);
+        # candidate → 'candidate' (Possible Candidates UI). Rejected returns
+        # book=None and was handled above.
+        tier = getattr(result, "tier", None) or getattr(result.evidence, "tier", "rejected")
+        db_status = "matched" if tier == "confirmed" else "candidate"
         try:
             monitored_db.upsert_monitored_book_file(
                 user_ids=[user_id],
@@ -437,6 +486,7 @@ def sync_abs_availability_for_entity(
                 match_reason=result.match_reason,
                 source="audiobookshelf",
                 evidence_json=evidence_json,
+                status=db_status,
             )
             kept_paths.append(path)
             matched += 1
