@@ -1295,8 +1295,24 @@ def _all_book_positions(book: dict[str, Any]) -> list[float]:
 
 
 def _position_matches_book(value: float, all_positions: list[float]) -> bool:
-    """Does ``value`` match any of the book's series positions (any series)?"""
-    return any(abs(value - p) < 1e-6 for p in all_positions)
+    """Does ``value`` match any of the book's series positions (any series)?
+
+    Exact match (within float tolerance) is the primary rule.
+
+    Prequel / novella tolerance: a position in the half-open interval
+    ``[0, 1)`` is treated as compatible with any other position in the same
+    interval. Different catalogs use different conventions for "this is a
+    short work that precedes Book 1" — Hardcover commonly stores 0.0,
+    AudioBookShelf often stores 0.5 — and forcing exact equality there
+    surfaces these as false-positive conflicts in the Possible Candidates
+    UI (real case: ``The Daughters' War`` Hardcover=0.0 vs ABS=0.5).
+    The tolerance is intentionally narrow: 1.0 vs 1.5 are NOT considered
+    equivalent because 1.5 is a novella *between* books 1 and 2, a
+    distinct work from book 1.
+    """
+    if any(abs(value - p) < 1e-6 for p in all_positions):
+        return True
+    return 0.0 <= value < 1.0 and any(0.0 <= p < 1.0 for p in all_positions)
 
 
 def _metadata_to_dict(
@@ -2179,18 +2195,28 @@ def evaluate_match(
             or evidence.series_in_filename
             or any(p["name"].endswith("_series_agree") for p in evidence.positives)
         )
+        # `position_disagree_high` is a RAW flag set whenever any high-weight
+        # vote disagrees, regardless of whether agreement votes cancelled it
+        # out. The actual scored signal is the penalty: it only emits when
+        # there's a NET disagreement (disagree_high AND NOT agree_high). Use
+        # penalty presence — not the raw flag — for compatibility checks, so
+        # a spurious title-borne vote (e.g. "Part Two" inside "Sins of Our
+        # Fathers 03 Part Two" extracting #2) doesn't demote an otherwise
+        # clean match to candidate when the bulk of votes agree on the
+        # actual book number.
+        has_position_disagree_penalty = any(
+            p["name"].endswith("_position_disagree") for p in evidence.penalties
+        )
         position_match = (
             evidence.position_agree_high or evidence.position_agree_med
-        ) and not evidence.position_disagree_high
+        ) and not has_position_disagree_penalty
         # Position is "compatible" when it doesn't disagree — either it
         # actively agrees, or there's no position evidence either way
         # (typical for files in a book sub-folder with no "01." prefix or
         # "(Book N)" marker). Used for the confirmed-tier check so a clean
         # title+author+series match doesn't get demoted to candidate just
         # because the file isn't position-numbered.
-        position_does_not_disagree = not evidence.position_disagree_high and not any(
-            p["name"].endswith("_position_disagree") for p in evidence.penalties
-        )
+        position_does_not_disagree = not has_position_disagree_penalty
 
         # ---- Tier 1: Confirmed ----
         # Identifier (ISBN/ASIN) match is priority-1 — file is unambiguously

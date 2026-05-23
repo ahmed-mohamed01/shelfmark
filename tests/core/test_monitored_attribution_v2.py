@@ -913,3 +913,105 @@ class TestTierClassification:
         assert any(p["name"] == "series_folder" for p in r.evidence.positives), (
             f"series_folder did not match: {r.evidence.positives}"
         )
+
+    def test_tier_confirmed_when_position_disagree_is_cancelled_by_agreement(self):
+        # Real case: "The Sins of Our Fathers" novella, series_position=9.5.
+        # The filename "The Expanse 9.5 - The Sins of Our Fathers (novella) -
+        # 03 Part Two.mp3" extracts MULTIPLE position votes:
+        #   * explicit_marker  @ 9.5   (high, AGREES)
+        #   * after_series_name @ 9.5  (high, AGREES)
+        #   * word_number_marker @ 2  ("Part **Two**") (high, DISAGREES)
+        # The wrong vote raises the raw `position_disagree_high` flag but
+        # cancels against the agreement votes -- no `_position_disagree`
+        # penalty is emitted. The tier classifier must rely on penalty
+        # presence (the actual scored signal), not the raw flag. Otherwise
+        # an obviously-correct match falls to candidate.
+        book = {
+            "title": "The Sins of Our Fathers",
+            "series_name": "The Expanse",
+            "series_position": 9.5,
+        }
+        r = pick_best_attribution(
+            path=(
+                "/books/audiobooks/fiction/James S A Correy/The Expanse/"
+                "The Sins of Our Fathers (The Expanse #9.5)/"
+                "Corey, James S. A. - The Expanse 9.5 - "
+                "The Sins of Our Fathers (novella) - 03 Part Two.mp3"
+            ),
+            books=[book],
+            author_name="James S. A. Corey",
+        )
+        # Sanity: the wrong vote IS extracted (confirms the test reproduces
+        # the original conditions), but the agreement votes also fire and
+        # cancel it -- so no penalty is emitted.
+        position_votes = {round(v["value"], 4) for v in r.evidence.position_votes}
+        assert 2.0 in position_votes, (
+            f"expected stray vote at 2.0 from 'Part Two': {position_votes}"
+        )
+        assert 9.5 in position_votes, f"expected correct vote at 9.5: {position_votes}"
+        position_disagree_penalty = [
+            p for p in r.evidence.penalties if p["name"].endswith("_position_disagree")
+        ]
+        assert not position_disagree_penalty, (
+            f"penalty must not emit when agreement cancels: {position_disagree_penalty}"
+        )
+        # Real assertion: this should confirm cleanly.
+        assert r.tier == "confirmed", (
+            f"expected confirmed, got {r.tier} "
+            f"(net_score={r.evidence.net_score:.2f}, "
+            f"position_agree_high={r.evidence.position_agree_high}, "
+            f"position_disagree_high={r.evidence.position_disagree_high})"
+        )
+        assert r.book is not None
+        assert r.evidence.accept is True
+
+    def test_prequel_position_0_and_half_are_compatible(self):
+        # Real case: The Daughters' War. Hardcover stores series_position=0.0,
+        # ABS metadata says series_position=0.5. Both conventions mean
+        # "prequel novella before Book 1" -- forcing exact equality emits a
+        # spurious source_abs_position_disagree penalty that demotes an
+        # otherwise unanimous match to candidate. The novella-tolerance rule
+        # in _position_matches_book treats any two positions in [0, 1) as
+        # compatible.
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata, _position_matches_book
+
+        # Helper-level check.
+        assert _position_matches_book(0.5, [0.0]) is True
+        assert _position_matches_book(0.0, [0.5]) is True
+        # Tolerance is narrow: 1.0 vs 1.5 are different works (novella
+        # between books 1 and 2 vs book 1 itself) and must NOT match.
+        assert _position_matches_book(1.0, [1.5]) is False
+        assert _position_matches_book(1.5, [1.0]) is False
+        # Two positions both in the prequel band:
+        assert _position_matches_book(0.25, [0.75]) is True
+        # End-to-end: Daughters' War scenario through pick_best_attribution.
+        book = {
+            "title": "The Daughters' War",
+            "series_name": "Blacktongue",
+            "series_position": 0.0,
+        }
+        source_meta = SourceMetadata(
+            title="The Daughters' War",
+            author="Christopher Buehlman",
+            series_name="Blacktongue",
+            series_position=0.5,
+            asin="B0CH1G8NTL",
+            source_label="source_abs",
+        )
+        r = pick_best_attribution(
+            path=None,
+            books=[book],
+            author_name="Christopher Buehlman",
+            source_metadata=source_meta,
+        )
+        # No position-disagree penalty should emit.
+        position_disagrees = [
+            p for p in r.evidence.penalties if p["name"].endswith("_position_disagree")
+        ]
+        assert not position_disagrees, (
+            f"0.0 vs 0.5 should not emit position-disagree: {position_disagrees}"
+        )
+        # Should confirm (full title + author + series + tolerated position).
+        assert r.tier == "confirmed", (
+            f"expected confirmed, got {r.tier} (net_score={r.evidence.net_score:.2f})"
+        )
