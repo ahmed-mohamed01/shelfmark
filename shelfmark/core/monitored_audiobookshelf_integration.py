@@ -127,12 +127,21 @@ def _find_abs_author_items(
     library_id: str,
     author_name: str,
 ) -> list[dict[str, Any]]:
-    """Return all library items for the ABS author best-matching *author_name*.
+    """Return all library items for ABS authors best-matching *author_name*.
 
     Steps:
     1. GET /api/libraries/{library_id}/authors  (all authors)
-    2. Fuzzy-match against author_name
-    3. GET /api/authors/{id}?include=items  for the winner
+    2. Fuzzy-match against author_name; keep ALL authors tied at the top
+       ratio (within a small epsilon). ABS commonly has multiple author
+       entities for the same person when items were originally added
+       under slightly different name spellings — e.g. "James S. A. Corey"
+       (canonical), "James S A Corey" (no dots), "James S.A. Corey" (no
+       spaces). Older versions of this integration grabbed the first
+       top-ratio entity and silently dropped books filed under the others.
+    3. GET /api/authors/{id}?include=items  for each winning entity.
+    4. Deduplicate items by ID (an item nominally belongs to only one
+       author in ABS, so cross-entity duplicates should be rare — but
+       dedupe defensively).
     """
     try:
         data = _abs_get(url, token, f"/api/libraries/{library_id}/authors")
@@ -150,8 +159,7 @@ def _find_abs_author_items(
     target_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(author_name) if p.strip()] or [
         author_name
     ]
-    best_author: dict[str, Any] | None = None
-    best_ratio = 0.0
+    scored: list[tuple[float, dict[str, Any]]] = []
     for author in authors:
         name = str(author.get("name") or "")
         name_parts = [p.strip() for p in _AUTHOR_SPLIT_RE.split(name) if p.strip()] or [name]
@@ -160,10 +168,10 @@ def _find_abs_author_items(
             for a in target_parts
             for b in name_parts
         )
-        if ratio > best_ratio:
-            best_ratio, best_author = ratio, author
+        scored.append((ratio, author))
 
-    if best_author is None or best_ratio < 0.70:
+    best_ratio = max((r for r, _ in scored), default=0.0)
+    if best_ratio < 0.70:
         logger.warning(
             "ABS: no author match for %r in library %s (best ratio=%.2f, %d authors checked)",
             author_name,
@@ -173,26 +181,59 @@ def _find_abs_author_items(
         )
         return []
 
-    author_id = best_author.get("id")
-    logger.info(
-        "ABS: matched author %r → %r (ratio=%.2f, id=%s)",
-        author_name,
-        best_author.get("name"),
-        best_ratio,
-        author_id,
-    )
+    # Keep every author entity tied at the top (within a small float
+    # epsilon). Using "all at best_ratio" rather than "all above some
+    # threshold" intentionally excludes weaker matches like a false
+    # positive at 0.77 — we only merge entities we're equally confident in.
+    tied = [a for r, a in scored if r >= best_ratio - 1e-6]
+    if len(tied) > 1:
+        names = [str(a.get("name") or "") for a in tied]
+        logger.info(
+            "ABS: %d author entities tied at ratio %.2f for %r in library %s — querying all: %r",
+            len(tied),
+            best_ratio,
+            author_name,
+            library_id,
+            names,
+        )
 
-    try:
-        author_data = _abs_get(url, token, f"/api/authors/{author_id}?include=items", timeout=60)
-        items: list[dict[str, Any]] = author_data.get("libraryItems") or []
-    except Exception as exc:  # noqa: BLE001 — ABS is external; treat fetch failure as zero items for this author.
-        logger.warning("ABS: failed to fetch items for author %s: %s", author_id, exc)
-        return []
+    items_by_id: dict[str, dict[str, Any]] = {}
+    for author in tied:
+        author_id = author.get("id")
+        if not author_id:
+            continue
+        try:
+            author_data = _abs_get(
+                url, token, f"/api/authors/{author_id}?include=items", timeout=60
+            )
+            entity_items: list[dict[str, Any]] = author_data.get("libraryItems") or []
+        except Exception as exc:  # noqa: BLE001 — ABS is external; skip this entity on fetch failure rather than abort the whole library scan.
+            logger.warning(
+                "ABS: failed to fetch items for author %s (%r): %s",
+                author_id,
+                author.get("name"),
+                exc,
+            )
+            continue
+        if len(tied) > 1:
+            logger.info(
+                "ABS: fetched %d items from entity %r (id=%s)",
+                len(entity_items),
+                author.get("name"),
+                author_id,
+            )
+        for item in entity_items:
+            item_id = item.get("id")
+            if item_id and item_id not in items_by_id:
+                items_by_id[item_id] = item
+
+    items = list(items_by_id.values())
     logger.info(
-        "ABS: fetched %d library items for author %r (id=%s)",
+        "ABS: fetched %d library items total for %r in library %s (%d author entities)",
         len(items),
-        best_author.get("name"),
-        author_id,
+        author_name,
+        library_id,
+        len(tied),
     )
     return items
 
