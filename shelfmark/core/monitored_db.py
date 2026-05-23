@@ -103,15 +103,15 @@ CREATE TABLE IF NOT EXISTS monitored_book_files (
 CREATE INDEX IF NOT EXISTS idx_monitored_book_files_entity
 ON monitored_book_files (entity_id, updated_at DESC);
 
--- Partial UNIQUE INDEX: only one confirmed match per (book, file_type,
--- source). Candidate-tier rows are exempt — multiple alternates can coexist
--- in the Possible Candidates UI until the user picks one via Accept.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_monitored_book_files_one_matched_per_book
-ON monitored_book_files (entity_id, provider, provider_book_id, file_type, source)
-WHERE status = 'matched'
-  AND provider IS NOT NULL
-  AND provider_book_id IS NOT NULL
-  AND file_type IS NOT NULL;
+-- NOTE: the partial UNIQUE INDEX `idx_monitored_book_files_one_matched_per_book`
+-- (which scopes uniqueness to `status = 'matched'`) is created by the v8
+-- migration, NOT here. CREATE INDEX runs eagerly inside this script even on
+-- existing DBs where the `status` column hasn't been added yet (v7 migration
+-- runs after this script), and SQLite would fail with "no such column: status"
+-- before any migration could rescue it. The v8 migration is idempotent and
+-- runs for both fresh and existing DBs (user_version < 8 covers user_version=0),
+-- so deferring the index creation to v8 keeps fresh-DB behaviour identical
+-- while unblocking existing-DB upgrades.
 
 -- User-rejected (file, book) attribution pairs. When the user detaches an
 -- attribution via "Fix match → Detach", the (entity, source, path, book) tuple
@@ -785,10 +785,14 @@ class MonitoredDB:
                 # Create the session_id index now that the column is guaranteed to exist.
                 conn.executescript(_SESSION_ID_INDEX_SQL)
                 conn.commit()
-                # v7: backfill snapshotted thumbnails on pre-existing event rows.
+                # Backfill snapshotted thumbnails on pre-existing event rows.
+                # Gated by the local `user_version` captured before any
+                # migration ran, so it executes once per DB (the first block
+                # above bumps user_version to 8 — must NOT overwrite it back
+                # to 7 here, which would cause user_version to oscillate
+                # 6 -> 8 -> 7 on first init and only self-heal on restart).
                 if user_version < 7:
                     _migrate_monitored_events_backfill_thumbnails(conn)
-                    conn.execute("PRAGMA user_version = 7")
                     conn.commit()
             finally:
                 conn.close()
