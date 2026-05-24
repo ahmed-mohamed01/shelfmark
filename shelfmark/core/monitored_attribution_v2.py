@@ -1773,14 +1773,26 @@ def _score_metadata_signals(
                 series_name=book_series_name,
                 author_name=author_name,
             )
-            # Guard: when meta positions disagree AND the post-strip residues
+            # Guard: when meta positions disagree AND the originals are
+            # NEARLY identical (raw fuzz >= 0.90) AND the post-strip residues
             # are essentially identical, the original "match" was driven
             # entirely by series + position overlap — there's no distinguishing
-            # content. Demote to mismatch. (Real case: HWFWM 12 vs HWFWM 2
-            # both reduce to "A LitRPG Adventure" after series-name + position-
-            # marker strip → would otherwise fuzz to 1.0 and confirm a wrong
-            # attachment.)
-            if meta_will_disagree and fuzz >= TITLE_CORE_HIGH and _fuzz(title, book_title) < 1.0:
+            # content. Demote to mismatch.
+            #
+            # Real positive case (HWFWM 12 vs HWFWM 2): raw fuzz≈0.99 — the
+            # originals differ only by a digit, and stripping makes them
+            # identical → genuinely different books distinguished only by the
+            # conflicting position.
+            #
+            # Real negative case ("Arcanum Unbounded" vs "Arcanum Unbounded:
+            # The Cosmere Collection"): raw fuzz≈0.59 — the originals differ
+            # by a real descriptive subtitle, not by a position. ABS and
+            # Hardcover just count this in different sub-series (Cosmere
+            # #8 vs Cosmere #18) — same book, cross-catalog numbering. The
+            # raw fuzz threshold of 0.90 excludes this case so title_agree
+            # fires correctly.
+            raw_fuzz = _fuzz(title, book_title) if title and book_title else 0.0
+            if meta_will_disagree and fuzz >= TITLE_CORE_HIGH and 0.90 <= raw_fuzz < 1.0:
                 evidence.penalties.append(
                     {
                         "name": f"{label}_title_mismatch",

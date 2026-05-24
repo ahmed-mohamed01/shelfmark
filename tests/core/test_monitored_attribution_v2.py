@@ -1149,6 +1149,57 @@ class TestTierClassification:
             f"series-name-only canonical forms must be filtered: {bare_series_variants}"
         )
 
+    def test_subtitle_difference_with_position_disagreement_does_not_mismatch(self):
+        # Real production case: Arcanum Unbounded.
+        #   Hardcover: "Arcanum Unbounded: The Cosmere Collection"
+        #              series_name="The Cosmere", series_position=18.0
+        #   ABS:       title="Arcanum Unbounded" (no subtitle)
+        #              series_name="Cosmere", series_position=8.0
+        # Same book, different cross-catalog metadata. The HWFWM guard
+        # (when meta_will_disagree AND stripped-residue fuzz is high)
+        # was firing source_abs_title_mismatch even though the originals
+        # differ by a real descriptive subtitle, not by a position digit.
+        # The fix tightens the guard to raw fuzz >= 0.90 — HWFWM's
+        # "...12: A LitRPG Adventure" vs "...2: A LitRPG Adventure"
+        # has raw fuzz ~0.99 (passes); Arcanum's raw fuzz is ~0.59
+        # (correctly excluded).
+        from shelfmark.core.monitored_attribution_v2 import (
+            SourceMetadata,
+            evaluate_match,
+        )
+
+        book = {
+            "title": "Arcanum Unbounded: The Cosmere Collection",
+            "series_name": "The Cosmere",
+            "series_position": 18.0,
+        }
+        abs_src = SourceMetadata(
+            title="Arcanum Unbounded",
+            author="Brandon Sanderson",
+            series_name="Cosmere",
+            series_position=8.0,
+            asin="B01LX6S0XM",
+            source_label="abs",
+        )
+        ev = evaluate_match(
+            path="/audiobooks/Audiobooks - Fiction/Brandon Sanderson/Arcanum Unbounded",
+            book=book,
+            author_name="Brandon Sanderson",
+            source_metadata=abs_src,
+        )
+        # The metadata-side title MUST register as agreeing, not as
+        # mismatching. The originals differ by a descriptive subtitle,
+        # not by a conflicting position number.
+        title_mismatch = [p for p in ev.penalties if p["name"].endswith("_title_mismatch")]
+        assert not title_mismatch, (
+            f"subtitle-only difference must not produce title mismatch: {title_mismatch}"
+        )
+        title_agree = [p for p in ev.positives if p["name"].endswith("_title_agree")]
+        assert title_agree, (
+            f"meta-side title_agree should fire when originals share the core title: "
+            f"positives={[p['name'] for p in ev.positives]}"
+        )
+
     def test_book_asins_json_list_of_dicts_matches_embedded_asin(self):
         # Real production case: Hardcover stores asins/isbns as a JSON
         # list-of-dicts on the monitored_books row:
