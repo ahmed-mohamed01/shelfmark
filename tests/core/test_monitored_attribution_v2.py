@@ -1149,6 +1149,49 @@ class TestTierClassification:
             f"series-name-only canonical forms must be filtered: {bare_series_variants}"
         )
 
+    def test_bare_series_name_file_picks_position_one_not_arbitrary_book(self):
+        # Real case (server-only manifestation): The Primal Hunter Book 1
+        # audiobook is named just "The Primal Hunter - Zogarth (2022).m4b"
+        # — no position number. Books 1-16 all exist in monitored_books.
+        # Every book passes the title_core_high threshold (Book 1's title
+        # fuzzes at 1.00, Book 2 at 0.94, Book 16 at 0.92) and yields the
+        # same net_score (3.40). Without a tiebreaker, pick_best_attribution
+        # picked whichever book iteration encountered first — Book 1 on
+        # localhost (alphabetical), Book 16 on the server (different order).
+        #
+        # The tiebreaker on title fuzz makes the most-precise title match
+        # (Book 1, fuzz=1.00 exact) the principled winner regardless of
+        # iteration order.
+        books = [
+            {
+                "id": 1,
+                "title": "The Primal Hunter",
+                "series_name": "The Primal Hunter",
+                "series_position": 1.0,
+            },
+            {
+                "id": 2,
+                "title": "The Primal Hunter 2",
+                "series_name": "The Primal Hunter",
+                "series_position": 2.0,
+            },
+            {
+                "id": 16,
+                "title": "The Primal Hunter 16",
+                "series_name": "The Primal Hunter",
+                "series_position": 16.0,
+            },
+        ]
+        path = "/books/audiobooks/fiction/Zogarth/The Primal Hunter/The Primal Hunter/The Primal Hunter - Zogarth (2022).m4b"
+        # Try both iteration orders — winner must be the same.
+        for orderlabel, ordered in (("ascending", books), ("reverse", list(reversed(books)))):
+            r = pick_best_attribution(path=path, books=ordered, author_name="Zogarth")
+            assert r.book is not None, f"no winner ({orderlabel})"
+            assert r.book["id"] == 1, (
+                f"with books in {orderlabel} order, expected Book 1 (exact title match), "
+                f"got book #{r.book['id']} '{r.book['title']}'"
+            )
+
     def test_dash_subtitle_separator_treated_same_as_colon(self):
         # Real case: The Primal Hunter 7 by Zogarth. Hardcover book title
         # is "The Primal Hunter 7"; Booklore metadata writes it as

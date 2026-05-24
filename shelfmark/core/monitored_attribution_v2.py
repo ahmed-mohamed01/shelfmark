@@ -2587,8 +2587,28 @@ def pick_best_attribution(
 
     # Track the best confirmed and best candidate independently — confirmed
     # always wins; if no confirmed, the best candidate is surfaced.
-    best_confirmed: tuple[float, AttributionEvidence, dict[str, Any]] | None = None
-    best_candidate: tuple[float, AttributionEvidence, dict[str, Any]] | None = None
+    #
+    # Tiebreaker on net_score: prefer the book with the highest title fuzz
+    # (most precise title match). Necessary when a file's title is just the
+    # series name (e.g. "The Primal Hunter - Zogarth (2022).m4b") — every
+    # book in the series passes the title_core_high threshold at slightly
+    # different fuzz values (Book 1 fuzz=1.00, Book 2 fuzz=0.94, Book 16
+    # fuzz=0.92) but all yield the same weighted score. Without a
+    # tiebreaker, iteration order determined the winner: Book 1 on one
+    # database, Book 16 on another. The most-precise title match (Book 1's
+    # fuzz=1.00 against the bare-series filename) is the principled winner.
+    def _sort_key(ev: AttributionEvidence) -> tuple[float, float]:
+        title_fuzz_best = ev.title_core_fuzz
+        for p in ev.positives:
+            if p["name"].endswith("_title_agree") or p["name"].endswith("_title_agree_med"):
+                # Detail format: "'<title>' fuzz=N.NN[...]"
+                m = re.search(r"fuzz=(\d+\.\d+)", p.get("detail", ""))
+                if m:
+                    title_fuzz_best = max(title_fuzz_best, float(m.group(1)))
+        return (ev.net_score, title_fuzz_best)
+
+    best_confirmed: tuple[tuple[float, float], AttributionEvidence, dict[str, Any]] | None = None
+    best_candidate: tuple[tuple[float, float], AttributionEvidence, dict[str, Any]] | None = None
     all_evidence: list[tuple[float, AttributionEvidence, dict[str, Any]]] = []
 
     for book in books:
@@ -2603,12 +2623,11 @@ def pick_best_attribution(
         all_evidence.append((ev.net_score, ev, book))
         if ev.hard_reject:
             continue
-        if ev.tier == "confirmed" and (best_confirmed is None or ev.net_score > best_confirmed[0]):
-            best_confirmed = (ev.net_score, ev, book)
-        elif ev.tier == "candidate" and (
-            best_candidate is None or ev.net_score > best_candidate[0]
-        ):
-            best_candidate = (ev.net_score, ev, book)
+        key = _sort_key(ev)
+        if ev.tier == "confirmed" and (best_confirmed is None or key > best_confirmed[0]):
+            best_confirmed = (key, ev, book)
+        elif ev.tier == "candidate" and (best_candidate is None or key > best_candidate[0]):
+            best_candidate = (key, ev, book)
 
     chosen = best_confirmed or best_candidate
 
