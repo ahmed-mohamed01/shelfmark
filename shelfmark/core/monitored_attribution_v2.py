@@ -1017,6 +1017,27 @@ def extract_title_core(
     # Strip leading "NN. " / "NN - " / "NN_ "
     s = _LEADING_NUM_RE.sub(" ", s)
 
+    # When the filename uses a "<series prefix> #N - <real title>" or
+    # "<series prefix> Book N - <real title>" pattern (common for audiobook
+    # libraries — e.g. "Epeditionary Force #08 - Armageddon" or "Mistborn
+    # 04 - The Alloy of Law"), keep ONLY the part after the position marker
+    # as the title core. The prefix is always the series name (possibly
+    # misspelled — series-name strip can't handle e.g. the missing 'x' in
+    # 'Epeditionary'), so trying to fuzz the whole thing against the book
+    # title 'Armageddon' returns 0.51 and emits a spurious title_mismatch.
+    # The suffix is the real title and matches cleanly.
+    m = re.search(
+        r"\b(?:book|vol(?:ume)?|part|arc|tome)\s*[-:#]?\s*\d{1,3}(?:\.\d+)?\s*[-–—:]\s*(.+)$",
+        s,
+        flags=re.IGNORECASE,
+    )
+    if m and m.group(1).strip():
+        s = m.group(1).strip()
+    else:
+        m = re.search(r"#\s*\d{1,3}(?:\.\d+)?\s*[-–—:]\s*(.+)$", s)
+        if m and m.group(1).strip():
+            s = m.group(1).strip()
+
     # Strip explicit volume markers like "(Book 4)", "Book 4", "Vol 1.5", "#15"
     s = _EXPLICIT_VOL_RE.sub(" ", s)
 
@@ -1032,6 +1053,15 @@ def extract_title_core(
         if sn_pat:
             s = re.sub(rf"^\s*{sn_pat}[\s\-:,]+", " ", s, flags=re.IGNORECASE)
             s = re.sub(rf"\b{sn_pat}\b", " ", s, flags=re.IGNORECASE, count=1)
+            # Re-run the leading-number strip — series-strip may have just
+            # exposed a leading "NN - " or "NN. " pattern that wasn't at the
+            # start of the original string ("Mistborn 04 - The Alloy of Law"
+            # -> " 04 - The Alloy of Law" -> "The Alloy of Law"). Also handle
+            # the bare leading number followed by a `:` colon separator
+            # which the existing regex doesn't cover.
+            s = s.lstrip()
+            s = _LEADING_NUM_RE.sub(" ", s)
+            s = re.sub(r"^\s*\d{1,3}(?:\.\d+)?\s*:\s*", " ", s)
 
     # Strip remaining edition-style parentheticals — only those that don't
     # contain a year or a book-marker (those were already handled).
@@ -1053,11 +1083,54 @@ def extract_title_core(
 # ---------------------------------------------------------------------------
 
 
+def _content_token_count(
+    text: str,
+    *,
+    series_name: str | None,
+    author_name: str | None,
+) -> int:
+    """Count distinguishing content tokens in `text` after stripping series
+    name, author name, position markers, years, and stopwords. Used by the
+    Channel 2 suppression to decide whether a title is essentially "just
+    the series" (low count) or has its own identity (high count).
+    """
+    s = text.lower()
+    if series_name:
+        s = re.sub(rf"\b{re.escape(series_name.lower())}\b", " ", s, flags=re.IGNORECASE)
+    if author_name:
+        for variant in _author_name_variants_cached(author_name):
+            s = re.sub(rf"\b{re.escape(variant.lower())}\b", " ", s, flags=re.IGNORECASE)
+    # Position markers: "Book N", "Vol N", "#N", "Part N", "Book One", etc.
+    s = re.sub(
+        r"\b(?:book|vol(?:ume)?|part|arc|tome|chapter|episode)\s*"
+        r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+        r"eleven|twelve|thirteen|fourteen|fifteen|i{1,3}|iv|vi{0,3}|ix|x{1,3})\b",
+        " ",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"#\s*\d+", " ", s)
+    # Year (4-digit 1800-2099).
+    s = re.sub(r"\b(?:1[89]|20)\d{2}\b", " ", s)
+    # Bare numbers (positions, edition numbers).
+    s = re.sub(r"\b\d{1,3}\b", " ", s)
+    # Common series/edition descriptor words that aren't real content.
+    s = re.sub(
+        r"\b(?:untitled|series|trilogy|collection|complete|saga|anthology)\b",
+        " ",
+        s,
+        flags=re.IGNORECASE,
+    )
+    tokens = [t for t in re.split(r"[^a-z0-9]+", s) if t]
+    return sum(1 for t in tokens if t not in _STOPWORDS and len(t) > 1)
+
+
 def _canonical_title_forms(
     title: str,
     *,
     series_name: str | None = None,
     author_name: str | None = None,
+    companion_title: str | None = None,
 ) -> list[str]:
     """Return successive canonicalisations of a title for fuzzy comparison.
 
@@ -1085,6 +1158,7 @@ def _canonical_title_forms(
 
     out: list[str] = [title]
     seen: set[str] = {_norm(title)}
+    norm_series = _norm(series_name) if series_name else None
 
     def _add(form: str) -> None:
         form = re.sub(r"\s+", " ", form).strip()
@@ -1100,17 +1174,94 @@ def _canonical_title_forms(
             seen.add(norm)
             out.append(form)
 
+    def _subtitle_split_distinguishes(before: str, after: str) -> bool:
+        """True when subtitle-splitting `"<series><sep><after>"` would emit
+        a before-form (the bare series name) that doesn't distinguish books
+        within the series, because `after` contains real content beyond
+        position markers and series/author metadata.
+
+        Used by Channel 2 for every subtitle separator (':', ' - ', ' — ',
+        ' – '). The name is generic; the logic is the same regardless of
+        which separator triggered the call.
+
+        Pocket Companion case → True (after = "A Pocket Companion to The
+        Way of Kings and Words of Radiance" — distinguishing content).
+        Wandering Inn Book One Part One case → False (after = "Book One,
+        Part One of the Wandering Inn Series" — only position + series +
+        stopwords; bare-series form is the legitimate short title).
+
+        Dominion of Blades case → False (after = "A LitRPG Adventure" has
+        2 content tokens, but the COMPANION title is just the series name
+        itself — Dominion of Blades is a one-book "series", so the bare
+        form is the only sensible match). Companion-aware suppression
+        avoids over-restricting standalone-titled books.
+        """
+        if not (norm_series and _norm(before) == norm_series):
+            return False  # The before-side isn't the series name; nothing to suppress.
+        # Companion-aware: if the OTHER side being compared is essentially
+        # just the series name itself (no distinguishing content beyond
+        # series + position + author + stopwords), this is the standalone-
+        # book case (book.title == series_name). Keep the bare form so it
+        # can match at fuzz=1.0.
+        if companion_title is not None:
+            companion_content = _content_token_count(
+                companion_title,
+                series_name=series_name,
+                author_name=author_name,
+            )
+            if companion_content < 2:
+                return False
+        residue = after.lower()
+        if series_name:
+            residue = re.sub(
+                rf"\b{re.escape(series_name.lower())}\b", " ", residue, flags=re.IGNORECASE
+            )
+        if author_name:
+            for variant in _author_name_variants_cached(author_name):
+                residue = re.sub(
+                    rf"\b{re.escape(variant.lower())}\b", " ", residue, flags=re.IGNORECASE
+                )
+        # Position-marker words with adjacent digits or number-words.
+        residue = re.sub(
+            r"\b(?:book|vol(?:ume)?|part|arc|tome|chapter|episode)\s*"
+            r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+            r"eleven|twelve|thirteen|fourteen|fifteen|i{1,3}|iv|vi{0,3}|ix|x{1,3})\b",
+            " ",
+            residue,
+            flags=re.IGNORECASE,
+        )
+        residue = re.sub(r"#\s*\d+", " ", residue)
+        tokens = [t for t in re.split(r"[^a-z0-9]+", residue) if t]
+        content = [t for t in tokens if t not in _STOPWORDS and not t.isdigit() and len(t) > 1]
+        return len(content) >= 2
+
     # Channel 1: strip parens AND brackets (year, edition, ASIN, catalog
     # markers like [GA]). The `_add` cleanup re-collapses whitespace.
     no_parens = re.sub(r"\s*\([^)]*\)\s*", " ", title)
     no_parens = re.sub(r"\s*\[[^\]]*\]\s*", " ", no_parens)
     _add(no_parens)
 
-    # Channel 2: strip subtitle after ":".
-    if ":" in title:
-        _add(title.split(":", 1)[0])
-    if ":" in no_parens:
-        _add(no_parens.split(":", 1)[0])
+    # Channel 2: strip subtitle after any common subtitle separator —
+    # colon, space-dash-space, em-dash, or en-dash. External catalogs
+    # are inconsistent: Booklore typically writes Title-colon-Subtitle,
+    # ABS writes Title-dash-Subtitle, publishers sometimes use em-dash.
+    # Every separator produces a bare before-form so cross-catalog
+    # title fuzz can find a match. The _subtitle_split_distinguishes
+    # guard suppresses the bare form only when it would normalize to
+    # the series name AND the subtitle carries real distinguishing
+    # content — the Pocket-Companion failure mode where dropping the
+    # subtitle would let a real different book mimic the series's #N
+    # entry. When the subtitle is just position/series metadata, or
+    # when the before-form includes a position number distinct from
+    # the series name, the bare form is the legitimate short title
+    # and is kept.
+    for base in (title, no_parens):
+        for sep in (":", " - ", " — ", " – "):
+            if sep not in base:
+                continue
+            before, _, after = base.partition(sep)
+            if not _subtitle_split_distinguishes(before, after):
+                _add(before)
 
     # Channel 3: strip series_name (any variant — tolerant pattern handles
     # naming differences across catalogs).
@@ -1190,11 +1341,13 @@ def _title_core_fuzz(
         title_core,
         series_name=series_name,
         author_name=author_name,
+        companion_title=book_title,
     )
     forms_book = _canonical_title_forms(
         book_title,
         series_name=series_name,
         author_name=author_name,
+        companion_title=title_core,
     )
     best = 0.0
     for a in forms_core:
@@ -1290,6 +1443,34 @@ def _all_book_positions(book: dict[str, Any]) -> list[float]:
                 positions.add(round(float(pos_raw), 4))
             except TypeError, ValueError:
                 continue
+
+    # Fallback: parse the position out of book.title when neither
+    # `series_position` nor `all_series` carries it. Hardcover entries
+    # sometimes bake the position into the title ("He Who Fights with
+    # Monsters, Book 2") without populating the structured position field.
+    # Without this, all_book_positions stays empty -> position scoring is
+    # skipped entirely -> Layer 2 title-borne reject can't fire -> a Book 9
+    # file can attach to a Book 2 entry uncontested. Restrict to
+    # high-confidence sources only (explicit Book/Vol markers, after-series-name
+    # tokens, word-number-markers, roman numerals) so noisy signals like
+    # bare digits in subtitles can never inject a false position.
+    if not positions:
+        title = book.get("title")
+        series_name = book.get("series_name")
+        if isinstance(title, str) and title.strip():
+            high_conf_sources = {
+                "explicit_marker",
+                "after_series_name",
+                "word_number_marker",
+                "roman_marker",
+            }
+            for v in extract_position_signals(
+                title,
+                series_name=series_name if isinstance(series_name, str) else None,
+                is_filename=False,
+            ):
+                if v.source in high_conf_sources:
+                    positions.add(round(v.value, 4))
 
     return sorted(positions)
 
@@ -1457,10 +1638,32 @@ def _score_metadata_signals(
         if meta_will_disagree and book_series_name:
             sn_pat = _flexible_tolerant_pattern_cached(book_series_name)
             if sn_pat:
-                title_for_fuzz = re.sub(rf"\b{sn_pat}\b", " ", title, flags=re.IGNORECASE)
-                title_for_fuzz = re.sub(r"\s+", " ", title_for_fuzz).strip()
-                book_title_for_fuzz = re.sub(rf"\b{sn_pat}\b", " ", book_title, flags=re.IGNORECASE)
-                book_title_for_fuzz = _strip_non_year_parens(book_title_for_fuzz)
+
+                def _strip_for_disagree(text: str) -> str:
+                    """Strip series name + position markers when meta positions
+                    disagree, so the remaining fuzz reflects only DISTINGUISHING
+                    content. Catches cases where the book number is baked into
+                    the title ('He Who Fights with Monsters 12: A LitRPG
+                    Adventure' vs '...2: A LitRPG Adventure' — char fuzz=0.95
+                    despite being unambiguously different books).
+                    """
+                    s = re.sub(rf"\b{sn_pat}\b", " ", text, flags=re.IGNORECASE)
+                    # "Book N" / "Vol N" / "#N" / "Part N".
+                    s = _EXPLICIT_VOL_RE.sub(" ", s)
+                    # Leading "NN." / "NN -" / "NN_".
+                    s = _LEADING_NUM_RE.sub(" ", s)
+                    # Leading bare "NN:" or "NN: " — Hardcover/ABS use a colon
+                    # separator between position and subtitle in titles like
+                    # 'He Who Fights with Monsters 12: A LitRPG Adventure'.
+                    # Existing _LEADING_NUM_RE only handles . - _, not :.
+                    s = re.sub(r"^\s*\d{1,3}(?:\.\d+)?\s*:\s*", " ", s)
+                    # Any remaining bare 1-3 digit token (e.g. mid-string
+                    # 'Series 12 Subtitle' after series strip leaves '12').
+                    s = _BARE_NUM_RE.sub(" ", s)
+                    return re.sub(r"\s+", " ", s).strip(" :-")
+
+                title_for_fuzz = _strip_for_disagree(title)
+                book_title_for_fuzz = _strip_non_year_parens(_strip_for_disagree(book_title))
                 book_title_for_fuzz = re.sub(r"\s+", " ", book_title_for_fuzz).strip()
 
         if not title_for_fuzz or not book_title_for_fuzz:
@@ -1498,7 +1701,27 @@ def _score_metadata_signals(
                 series_name=book_series_name,
                 author_name=author_name,
             )
-            if fuzz >= TITLE_CORE_HIGH:
+            # Guard: when meta positions disagree AND the post-strip residues
+            # are essentially identical, the original "match" was driven
+            # entirely by series + position overlap — there's no distinguishing
+            # content. Demote to mismatch. (Real case: HWFWM 12 vs HWFWM 2
+            # both reduce to "A LitRPG Adventure" after series-name + position-
+            # marker strip → would otherwise fuzz to 1.0 and confirm a wrong
+            # attachment.)
+            if meta_will_disagree and fuzz >= TITLE_CORE_HIGH and _fuzz(title, book_title) < 1.0:
+                evidence.penalties.append(
+                    {
+                        "name": f"{label}_title_mismatch",
+                        "weight": -P_TITLE_MISMATCH,
+                        "detail": (
+                            f"'{title}' vs '{book_title}' — distinguishing content "
+                            f"stripped to identical residue; only the conflicting "
+                            f"position differentiated the originals"
+                        ),
+                    }
+                )
+                evidence.net_score -= P_TITLE_MISMATCH
+            elif fuzz >= TITLE_CORE_HIGH:
                 evidence.positives.append(
                     {
                         "name": f"{label}_title_agree",
@@ -2290,21 +2513,51 @@ def evaluate_match(
             evidence.tier = "rejected"
             evidence.accept = False
 
-        # Bounded confidence (unchanged from prior behavior).
-        denom = (
-            W_TITLE_CORE_HIGH
-            + W_AUTHOR_FOLDER
-            + W_AUTHOR_TRAILER
-            + W_SERIES_FOLDER
-            + W_SERIES_IN_FILENAME
-            + W_POSITION_AGREE_HIGH
-        )
+        # Adaptive confidence denominator: only count weights for signals
+        # that COULD have fired for this (book, file) pair. The previous
+        # static denominator over-penalised legitimate matches -- a
+        # standalone non-fiction book (no series, no position) matched
+        # perfectly on title + author would show as 41% confidence because
+        # the denominator still included series, position, and identifier
+        # weights that were never in scope.
+        #
+        # In-scope rules:
+        #   * title fuzz       -- always in scope (every book has a title).
+        #   * path-side author -- only when a filesystem path was supplied.
+        #   * series signals   -- only when the book has a series_name.
+        #   * position signals -- only when the book has at least one
+        #                         known series position (primary or any
+        #                         entry in all_series).
+        #   * embedded fields  -- only when EmbeddedMetadata was supplied
+        #                         AND the book carries the matching field
+        #                         (e.g. don't count W_EMBEDDED_SERIES_AGREE
+        #                         when the book has no series).
+        #   * source fields    -- same shape as embedded, for ABS/Booklore.
+        #   * identifier       -- only when the (book, source) pair has an
+        #                         identifier match positive; otherwise the
+        #                         book's identifier is opaque to scoring.
+        has_path = bool(decomp.leaf)
+        has_series = bool(book_series_name)
+        has_positions = bool(all_book_positions)
+
+        denom = W_TITLE_CORE_HIGH
+        if has_path:
+            denom += W_AUTHOR_FOLDER + W_AUTHOR_TRAILER
+        if has_series:
+            denom += W_SERIES_FOLDER + W_SERIES_IN_FILENAME
+        if has_positions:
+            denom += W_POSITION_AGREE_HIGH
         if evidence.embedded_metadata_used:
-            denom += W_EMBEDDED_TITLE_AGREE + W_EMBEDDED_SERIES_AGREE
+            denom += W_EMBEDDED_TITLE_AGREE
+            if has_series:
+                denom += W_EMBEDDED_SERIES_AGREE
         if evidence.source_metadata_used:
-            denom += W_EMBEDDED_TITLE_AGREE + W_EMBEDDED_SERIES_AGREE
+            denom += W_EMBEDDED_TITLE_AGREE
+            if has_series:
+                denom += W_EMBEDDED_SERIES_AGREE
         if identifier_match:
             denom += W_IDENTIFIER_MATCH
+
         evidence.confidence = max(0.0, min(1.0, evidence.net_score / max(denom, 1.0)))
 
     return evidence

@@ -965,6 +965,323 @@ class TestTierClassification:
         assert r.book is not None
         assert r.evidence.accept is True
 
+    def test_position_baked_into_title_does_not_match_different_position(self):
+        # Real case: He Who Fights with Monsters. Hardcover stores book titles
+        # with the position number baked into the title itself
+        # ("He Who Fights with Monsters 2: A LitRPG Adventure"). The file tag's
+        # title is the same shape ("He Who Fights with Monsters 12: A LitRPG
+        # Adventure"). After the existing series-name strip, residues are
+        # "2: A LitRPG Adventure" vs "12: A LitRPG Adventure" — char fuzz=0.95,
+        # which previously emitted source_title_agree (+1.00) even though
+        # the books are unambiguously different (positions 2 vs 12). The
+        # position-marker strip removes the leading "N:" prefix so the
+        # residues become identical generic subtitles → both-empty fallback
+        # detects the conflict and emits title_mismatch instead.
+        from shelfmark.core.monitored_attribution_v2 import SourceMetadata
+
+        book = {
+            "title": "He Who Fights with Monsters 2: A LitRPG Adventure",
+            "series_name": "He Who Fights with Monsters",
+            "series_position": 2.0,
+        }
+        # File tags for book 12, masquerading as monitored book 2.
+        source_meta = SourceMetadata(
+            title="He Who Fights with Monsters 12: A LitRPG Adventure",
+            author="Shirtaloon",
+            series_name="He Who Fights with Monsters 12: A LitRPG Adventure",
+            series_position=12.0,
+            source_label="source_filetag",
+        )
+        r = pick_best_attribution(
+            path="/books/audiobooks/fiction/Shirtaloon/He Who Fights with Monsters/He Who Fights with Monsters 12/He Who Fights with Monsters 12 - Shirtaloon (2025).m4b",
+            books=[book],
+            author_name="Shirtaloon",
+            source_metadata=source_meta,
+        )
+        # The metadata-side title MUST NOT register as agreeing — the books
+        # are different positions and the title overlap is only the series
+        # name + a different position number.
+        title_agree_positives = [
+            p
+            for p in r.evidence.positives
+            if p["name"].endswith("_title_agree") or p["name"].endswith("_title_agree_med")
+        ]
+        assert not title_agree_positives, (
+            f"file-tag title for book 12 must not register as agreeing with book 2: "
+            f"{title_agree_positives}"
+        )
+        # Should land as candidate or rejected — not confirmed.
+        assert r.tier != "confirmed", (
+            f"book 12 attached to book 2 monitored entity as confirmed: "
+            f"net_score={r.evidence.net_score:.2f}, "
+            f"positives={[p['name'] for p in r.evidence.positives]}"
+        )
+
+    def test_title_borne_position_falls_back_to_book_title_when_series_position_missing(self):
+        # Real case: Hardcover stored the He Who Fights with Monsters entries
+        # with the position baked into the title ("He Who Fights with Monsters,
+        # Book 2") but didn't populate series_position. Without a fallback,
+        # `_all_book_positions` returned [], the position-scoring block was
+        # skipped entirely, and the Layer 2 title-borne reject couldn't fire.
+        # Result: a Book 9 audiobook attached to a Book 2 monitored entity as
+        # a 53% candidate. The fallback parses the position out of the title
+        # using high-confidence sources only.
+        book = {
+            "title": "He Who Fights with Monsters, Book 2",
+            "series_name": "He Who Fights with Monsters",
+            "series_position": None,  # Hardcover didn't populate it
+        }
+        r = pick_best_attribution(
+            path="/books/audiobooks/fiction/Shirtaloon/He Who Fights with Monsters/He Who Fights with Monsters, Book 09/He Who Fights with Monsters, Book 09.m4b",
+            books=[book],
+            author_name="Shirtaloon",
+        )
+        # File explicitly says Book 9 via "Book 09" — explicit_marker high.
+        # Book title says Book 2 (parsed via fallback) — also explicit_marker high.
+        # Layer 2 must hard-reject (title-borne position mismatch).
+        assert r.evidence.hard_reject is True, (
+            f"expected hard reject, got tier={r.tier}, "
+            f"hard_reject={r.evidence.hard_reject}, "
+            f"reason={r.evidence.hard_reject_reason}"
+        )
+        assert r.evidence.hard_reject_reason == "title_borne_position_mismatch"
+        assert r.tier == "rejected"
+        assert r.book is None
+
+    def test_book_title_position_fallback_uses_only_high_confidence_sources(self):
+        # Sanity: the fallback must NOT extract noise like bare digits inside
+        # subtitles or years. Only explicit Book/Vol markers, after-series-name
+        # tokens, word-number-markers, and roman numerals are trusted.
+        from shelfmark.core.monitored_attribution_v2 import _all_book_positions
+
+        # Position correctly parsed via explicit_marker:
+        assert _all_book_positions(
+            {
+                "title": "He Who Fights with Monsters, Book 2",
+                "series_name": "He Who Fights with Monsters",
+            }
+        ) == [2.0]
+        # Position correctly parsed via #N marker:
+        assert _all_book_positions(
+            {"title": "Mistborn: Wax & Wayne #1", "series_name": "Mistborn: Wax & Wayne"}
+        ) == [1.0]
+        # No-position titles must NOT yield phantom positions:
+        assert (
+            _all_book_positions({"title": "Children of Time", "series_name": "Children of Time"})
+            == []
+        )
+        assert (
+            _all_book_positions(
+                {"title": "The Alloy of Law", "series_name": "Mistborn: Wax & Wayne"}
+            )
+            == []
+        )
+        # Year in title must not be extracted as a position:
+        assert _all_book_positions({"title": "Tor.com 2024 Best of"}) == []
+        # Fallback ONLY runs when structured fields are empty. Explicit
+        # series_position wins:
+        assert _all_book_positions({"title": "Foo, Book 2", "series_position": 7.0}) == [7.0]
+
+    def test_companion_book_does_not_match_untitled_series_placeholder(self):
+        # Real case: monitored entity is Hardcover's placeholder "Untitled
+        # Stormlight Archive #10" (unreleased book). A companion guidebook
+        # in the same series ("The Stormlight Archive: A Pocket Companion
+        # to The Way of Kings and Words of Radiance") was incorrectly
+        # surfaced as a candidate at 53%.
+        #
+        # Root cause: `_canonical_title_forms` Channel 2 splits the meta
+        # title on ":" and emits the before-colon part as a canonical form,
+        # producing "The Stormlight Archive" -- which is just the series
+        # name. That variant then matched against book variants (also
+        # containing "Stormlight Archive") at high fuzz. The series name
+        # alone can't distinguish books WITHIN the series, so such forms
+        # are now filtered out.
+        book = {
+            "title": "Untitled Stormlight Archive #10",
+            "series_name": "The Stormlight Archive",
+            "series_position": 10.0,
+        }
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        embedded = EmbeddedMetadata(
+            title="The Stormlight Archive: A Pocket Companion to The Way of Kings and Words of Radiance",
+            authors=["Brandon Sanderson"],
+            isbn_13="9780765393043",
+        )
+        r = pick_best_attribution(
+            path="/books/ebooks/fiction/Brandon Sanderson/The Stormlight Archive/The Stormlight Archive_ A Pocket Companion to The Way of Kings and Words of Radiance/The Stormlight Archive_ A Pocket Companion to The Way of Kings and Words of Radiance - Brandon Sanderson.epub",
+            books=[book],
+            author_name="Brandon Sanderson",
+            embedded=embedded,
+        )
+        # No title-agree positive should fire on either channel -- the
+        # apparent overlap was pure series-name overlap.
+        title_agree_positives = [
+            p
+            for p in r.evidence.positives
+            if p["name"].endswith("_title_agree") or p["name"].endswith("_title_agree_med")
+        ]
+        assert not title_agree_positives, (
+            f"title-agree must not fire from series-name overlap: {title_agree_positives}"
+        )
+        assert r.tier != "confirmed", (
+            f"companion book attached to unreleased #10 entity: "
+            f"tier={r.tier}, net_score={r.evidence.net_score:.2f}"
+        )
+
+    def test_canonical_title_forms_skips_series_name_only_variants(self):
+        # Unit-level coverage for the Channel 2 filter: when subtitle-strip
+        # yields just the series name AND the subtitle carries real
+        # distinguishing content, that variant must be dropped.
+        from shelfmark.core.monitored_attribution_v2 import _canonical_title_forms
+
+        forms = _canonical_title_forms(
+            "The Stormlight Archive: A Pocket Companion to The Way of Kings",
+            series_name="The Stormlight Archive",
+        )
+        # Original is always kept (out[0]); the bare series-name variant
+        # produced by Channel 2 must NOT be in the list.
+        from shelfmark.core.monitored_attribution_v2 import _norm
+
+        series_norm = _norm("The Stormlight Archive")
+        bare_series_variants = [f for f in forms if _norm(f) == series_norm]
+        assert not bare_series_variants, (
+            f"series-name-only canonical forms must be filtered: {bare_series_variants}"
+        )
+
+    def test_dash_subtitle_separator_treated_same_as_colon(self):
+        # Real case: The Primal Hunter 7 by Zogarth. Hardcover book title
+        # is "The Primal Hunter 7"; Booklore metadata writes it as
+        # "The Primal Hunter 7: A LitRPG Adventure" (colon) and ABS as
+        # "The Primal Hunter 7 - A LitRPG Adventure" (dash). Channel 2
+        # previously only split on ":" so the Booklore variant got a
+        # bare 'The Primal Hunter 7' canonical form and matched at
+        # fuzz=1.0, but the ABS variant did NOT and dropped to fuzz=0.67
+        # → source_abs_title_mismatch → tier=candidate.
+        from shelfmark.core.monitored_attribution_v2 import (
+            SourceMetadata,
+            _canonical_title_forms,
+            _norm,
+        )
+
+        # Unit: ABS dash-form must produce the bare 'The Primal Hunter 7'
+        # canonical, same as the colon-form does.
+        forms_dash = _canonical_title_forms(
+            "The Primal Hunter 7 - A LitRPG Adventure",
+            series_name="The Primal Hunter",
+            author_name="Zogarth",
+        )
+        forms_colon = _canonical_title_forms(
+            "The Primal Hunter 7: A LitRPG Adventure",
+            series_name="The Primal Hunter",
+            author_name="Zogarth",
+        )
+        bare = _norm("The Primal Hunter 7")
+        assert any(_norm(f) == bare for f in forms_dash), (
+            f"dash subtitle separator must produce bare-before form: {forms_dash}"
+        )
+        assert any(_norm(f) == bare for f in forms_colon), (
+            f"colon subtitle separator must produce bare-before form: {forms_colon}"
+        )
+
+        # Integration: the ABS-shaped match must now confirm.
+        book = {
+            "title": "The Primal Hunter 7",
+            "series_name": "The Primal Hunter",
+            "series_position": 7.0,
+        }
+        abs_src = SourceMetadata(
+            title="The Primal Hunter 7 - A LitRPG Adventure",
+            author="Zogarth",
+            series_name="The Primal Hunter",
+            series_position=7.0,
+            source_label="abs",
+        )
+        r = pick_best_attribution(
+            path="/audiobooks/Audiobooks - Fiction/Zogarth/The Primal Hunter/7 - The Primal Hunter 7 (The Primal Hunter 7)",
+            books=[book],
+            author_name="Zogarth",
+            source_metadata=abs_src,
+        )
+        assert r.tier == "confirmed", (
+            f"ABS-titled book with dash-separator subtitle must confirm: "
+            f"tier={r.tier}, confidence={r.evidence.confidence:.2f}"
+        )
+        # And NO source_abs_title_mismatch penalty should remain.
+        title_mismatch = [p for p in r.evidence.penalties if p["name"].endswith("_title_mismatch")]
+        assert not title_mismatch, (
+            f"dash-separator suffix must not trigger title mismatch: {title_mismatch}"
+        )
+
+    def test_standalone_book_with_generic_subtitle_keeps_bare_form(self):
+        # Real case: Dominion of Blades by Matt Dinniman. The book is a
+        # one-book "series" — book.title == series_name == "Dominion of
+        # Blades". The EPUB's embedded title carries a generic genre
+        # descriptor subtitle ("Dominion of Blades: A LitRPG Adventure").
+        #
+        # Without companion-aware suppression, the bare "Dominion of
+        # Blades" form from Channel 2 colon-split is dropped (after-content
+        # has 2 distinguishing tokens — "litrpg", "adventure"), leaving
+        # only the long-form embedded title which fuzzes against the book
+        # title at 0.65 → embedded_title_mismatch → tier=candidate.
+        #
+        # The companion-aware fix: when the OTHER side being compared has
+        # at most 1 distinguishing content token (i.e., it's essentially
+        # just the series name itself — the standalone case), the bare
+        # form is the only sensible match and must be kept.
+        from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+        book = {
+            "title": "Dominion of Blades",
+            "series_name": "Dominion of Blades",  # series_name == title (standalone)
+            "series_position": 1.0,
+        }
+        embedded = EmbeddedMetadata(
+            title="Dominion of Blades: A LitRPG Adventure",
+            authors=["Matt Dinniman"],
+            year=2017,
+        )
+        r = pick_best_attribution(
+            path="/books/ebooks/fiction/Matt Dinniman/Dominion of Blades/Dominion of Blades - Matt Dinniman (2017).epub",
+            books=[book],
+            author_name="Matt Dinniman",
+            embedded=embedded,
+        )
+        assert r.tier == "confirmed", (
+            f"standalone-titled book must confirm at fuzz=1.0 via bare form: "
+            f"tier={r.tier}, confidence={r.evidence.confidence:.2f}"
+        )
+        title_mismatch = [p for p in r.evidence.penalties if p["name"].endswith("_title_mismatch")]
+        assert not title_mismatch, (
+            f"generic genre subtitle on standalone book must not produce "
+            f"a title mismatch penalty: {title_mismatch}"
+        )
+
+    def test_canonical_title_forms_keeps_bare_series_when_subtitle_is_only_position(self):
+        # Inverse of the Pocket Companion case: when the subtitle is just
+        # position + series metadata ("Book One, Part One of the Wandering
+        # Inn Series"), the bare-series form IS the legitimate short title
+        # and must be kept. The pirateaba file
+        # "1. The Wandering Inn - Pirateaba.epub" needs to match book
+        # "The Wandering Inn: Book One, Part One of the Wandering Inn
+        # Series" at fuzz=1.0 via this variant. An over-aggressive filter
+        # that drops every series-name-only form regresses this match.
+        from shelfmark.core.monitored_attribution_v2 import (
+            _canonical_title_forms,
+            _norm,
+        )
+
+        forms = _canonical_title_forms(
+            "The Wandering Inn: Book One, Part One of the Wandering Inn Series",
+            series_name="The Wandering Inn",
+        )
+        series_norm = _norm("The Wandering Inn")
+        bare_series_variants = [f for f in forms if _norm(f) == series_norm]
+        assert bare_series_variants, (
+            f"bare-series form must be kept when subtitle has no distinguishing "
+            f"content (only position + series metadata): forms={forms}"
+        )
+
     def test_prequel_position_0_and_half_are_compatible(self):
         # Real case: The Daughters' War. Hardcover stores series_position=0.0,
         # ABS metadata says series_position=0.5. Both conventions mean
