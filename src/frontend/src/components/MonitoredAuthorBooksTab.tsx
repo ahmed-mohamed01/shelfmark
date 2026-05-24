@@ -1917,7 +1917,7 @@ export const MonitoredAuthorBooksTab = ({
                 close();
                 setActiveBookDetails(withMonitoredAvailability(book, monitoredBookRows));
               }}
-              className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+              className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
             >
               View info
             </button>
@@ -1937,7 +1937,7 @@ export const MonitoredAuthorBooksTab = ({
                           combined: false,
                         });
                       }}
-                      className={`hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap ${isDefault ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
+                      className={`hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap ${isDefault ? 'font-medium text-emerald-600 dark:text-emerald-400' : ''}`}
                     >
                       {option.label}
                     </button>
@@ -1952,7 +1952,7 @@ export const MonitoredAuthorBooksTab = ({
                   href={book.source_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="hover-surface block w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+                  className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
                   onClick={() => close()}
                 >
                   View source
@@ -1970,72 +1970,78 @@ export const MonitoredAuthorBooksTab = ({
                   onClick={() => {
                     void toggleBookMonitor(book, 'both');
                   }}
-                  className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                  className="hover-surface block px-3 py-2 text-left text-sm"
                 >
-                  <span>Monitor Both</span>
-                  {isFullyMonitored ? (
-                    <svg
-                      className="h-4 w-4 text-emerald-500"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m4.5 12.75 6 6 9-13.5"
-                      />
-                    </svg>
-                  ) : null}
+                  <span className="flex w-full items-center justify-between gap-6">
+                    <span>Monitor Both</span>
+                    {isFullyMonitored ? (
+                      <svg
+                        className="h-4 w-4 text-emerald-500"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="m4.5 12.75 6 6 9-13.5"
+                        />
+                      </svg>
+                    ) : null}
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     void toggleBookMonitor(book, 'ebook');
                   }}
-                  className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                  className="hover-surface block px-3 py-2 text-left text-sm"
                 >
-                  <span>Monitor eBook</span>
-                  {monitorState.monitorEbook ? (
-                    <svg
-                      className="h-4 w-4 text-emerald-500"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m4.5 12.75 6 6 9-13.5"
-                      />
-                    </svg>
-                  ) : null}
+                  <span className="flex w-full items-center justify-between gap-6">
+                    <span>Monitor eBook</span>
+                    {monitorState.monitorEbook ? (
+                      <svg
+                        className="h-4 w-4 text-emerald-500"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="m4.5 12.75 6 6 9-13.5"
+                        />
+                      </svg>
+                    ) : null}
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     void toggleBookMonitor(book, 'audiobook');
                   }}
-                  className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                  className="hover-surface block px-3 py-2 text-left text-sm"
                 >
-                  <span>Monitor Audiobook</span>
-                  {monitorState.monitorAudiobook ? (
-                    <svg
-                      className="h-4 w-4 text-emerald-500"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m4.5 12.75 6 6 9-13.5"
-                      />
-                    </svg>
-                  ) : null}
+                  <span className="flex w-full items-center justify-between gap-6">
+                    <span>Monitor Audiobook</span>
+                    {monitorState.monitorAudiobook ? (
+                      <svg
+                        className="h-4 w-4 text-emerald-500"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="m4.5 12.75 6 6 9-13.5"
+                        />
+                      </svg>
+                    ) : null}
+                  </span>
                 </button>
                 {(() => {
                   const p = (book.provider || '').trim();
@@ -2064,7 +2070,7 @@ export const MonitoredAuthorBooksTab = ({
                             );
                           });
                         }}
-                        className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap text-red-600 dark:text-red-400"
+                        className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap text-red-600 dark:text-red-400"
                       >
                         Delete permanently
                       </button>
@@ -2081,7 +2087,7 @@ export const MonitoredAuthorBooksTab = ({
                     close();
                     onMonitorBook(book);
                   }}
-                  className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+                  className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
                 >
                   Monitor this book
                 </button>
@@ -2109,7 +2115,7 @@ export const MonitoredAuthorBooksTab = ({
         <Dropdown
           widthClassName="w-auto"
           align="right"
-          panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+          panelClassName="z-[2200] rounded-xl border border-[var(--border-muted)] shadow-2xl"
           noScrollLimit={true}
           usePortal={true}
           renderTrigger={({ isOpen, toggle }) => (
@@ -2250,7 +2256,7 @@ export const MonitoredAuthorBooksTab = ({
           <Dropdown
             widthClassName="w-auto"
             align="right"
-            panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+            panelClassName="z-[2200] rounded-xl border border-[var(--border-muted)] shadow-2xl"
             noScrollLimit={true}
             usePortal={true}
             renderTrigger={({ isOpen, toggle }) => (

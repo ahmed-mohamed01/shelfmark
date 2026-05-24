@@ -3084,7 +3084,7 @@ export const MonitoredPage = ({
               close();
               openMonitoredBookDetails(book);
             }}
-            className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
           >
             Open details
           </button>
@@ -3095,7 +3095,7 @@ export const MonitoredPage = ({
               close();
               openMonitoredBookInAuthorPage(book, 'ebook', 'interactive_search');
             }}
-            className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
           >
             Search eBooks
           </button>
@@ -3105,7 +3105,7 @@ export const MonitoredPage = ({
               close();
               openMonitoredBookInAuthorPage(book, 'audiobook', 'interactive_search');
             }}
-            className="hover-surface w-full px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm whitespace-nowrap"
           >
             Search audiobooks
           </button>
@@ -3118,60 +3118,66 @@ export const MonitoredPage = ({
             onClick={() => {
               void toggleSingleBookMonitor(book, 'both');
             }}
-            className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm"
           >
-            <span>Monitor Both</span>
-            {isFullyMonitored ? (
-              <svg
-                className="h-4 w-4 text-emerald-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-              </svg>
-            ) : null}
+            <span className="flex w-full items-center justify-between gap-6">
+              <span>Monitor Both</span>
+              {isFullyMonitored ? (
+                <svg
+                  className="h-4 w-4 text-emerald-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </span>
           </button>
           <button
             type="button"
             onClick={() => {
               void toggleSingleBookMonitor(book, 'ebook');
             }}
-            className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm"
           >
-            <span>Monitor eBook</span>
-            {tracksEbook ? (
-              <svg
-                className="h-4 w-4 text-emerald-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-              </svg>
-            ) : null}
+            <span className="flex w-full items-center justify-between gap-6">
+              <span>Monitor eBook</span>
+              {tracksEbook ? (
+                <svg
+                  className="h-4 w-4 text-emerald-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </span>
           </button>
           <button
             type="button"
             onClick={() => {
               void toggleSingleBookMonitor(book, 'audiobook');
             }}
-            className="hover-surface flex w-full items-center justify-between px-3 py-2 text-left text-sm whitespace-nowrap"
+            className="hover-surface block px-3 py-2 text-left text-sm"
           >
-            <span>Monitor Audiobook</span>
-            {tracksAudiobook ? (
-              <svg
-                className="h-4 w-4 text-emerald-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-              </svg>
-            ) : null}
+            <span className="flex w-full items-center justify-between gap-6">
+              <span>Monitor Audiobook</span>
+              {tracksAudiobook ? (
+                <svg
+                  className="h-4 w-4 text-emerald-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              ) : null}
+            </span>
           </button>
         </div>
       );
@@ -3181,7 +3187,7 @@ export const MonitoredPage = ({
           <Dropdown
             widthClassName="w-auto"
             align="right"
-            panelClassName="z-[2200] min-w-[250px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+            panelClassName="z-[2200] rounded-xl border border-[var(--border-muted)] shadow-2xl"
             noScrollLimit={true}
             usePortal={true}
             renderTrigger={({ isOpen, toggle }) => (
@@ -3240,7 +3246,7 @@ export const MonitoredPage = ({
           <Dropdown
             widthClassName="w-auto"
             align="right"
-            panelClassName="z-[2200] min-w-[220px] rounded-xl border border-[var(--border-muted)] shadow-2xl"
+            panelClassName="z-[2200] rounded-xl border border-[var(--border-muted)] shadow-2xl"
             noScrollLimit={true}
             usePortal={true}
             renderTrigger={({ isOpen, toggle }) => (
