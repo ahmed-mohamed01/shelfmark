@@ -10,14 +10,21 @@ Low-quality entries (translations without metadata, bare stubs) are auto-hidden
 via a data quality score that combines edition availability, language confirmation,
 metadata completeness, and popularity.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# An unreleased book is "trusted" (skips the data-quality threshold) when its
+# release date falls inside this window from today.  ~18 months matches the
+# Hardcover GraphQL upcoming-book carve-out in monitored_hardcover_ext.py.
+TRUSTED_UNRELEASED_WINDOW_DAYS = 548
 
 # ---------------------------------------------------------------------------
 # Title normalisation
@@ -28,7 +35,7 @@ _ARTICLES = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 # Matches split suffixes at end of title:
 #   ", Part 1"  " Part 1"  ", Part One"  " Part One"
 #   ", Vol. 1"  " Vol 1"   ", Volume 1"  " Volume One"
-#   "(Part 2 of 2)"  "(Part 1 of 3)"
+#   "(Part 2 of 2)"  "(Part 1 of 3)"  # noqa: ERA001
 _SPLIT_SUFFIX = re.compile(
     r"(?:"
     r"[,\s]+(?:part|vol\.?|volume)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
@@ -76,7 +83,7 @@ def _get_series_entries(book: dict[str, Any]) -> list[tuple[str, float | None]]:
     if isinstance(all_series, str):
         try:
             all_series = json.loads(all_series)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return []
     if isinstance(all_series, list):
         return [
@@ -89,13 +96,13 @@ def _get_series_entries(book: dict[str, Any]) -> list[tuple[str, float | None]]:
 
 def _get_readers_count(book: dict[str, Any]) -> int | None:
     """Extract readers count from either GraphQL or DB shape."""
-    # GraphQL: users_read_count; DB: readers_count
+    # GraphQL: users_read_count; DB: readers_count  # noqa: ERA001
     for key in ("users_read_count", "readers_count"):
         val = book.get(key)
         if val is not None:
             try:
                 return int(val)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
     return None
 
@@ -245,7 +252,7 @@ def filter_split_books(
                 continue
             try:
                 fpos = float(pos)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if fpos == int(fpos):
                 key = (series_name.strip().lower(), int(fpos))
@@ -286,7 +293,7 @@ def filter_split_books(
                 continue
             try:
                 fpos = float(pos)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             frac = fpos - int(fpos)
             # Only fractional positions like .1, .2 — skip integers and .5 (novellas)
@@ -332,24 +339,26 @@ def filter_split_books(
 
 # Title patterns that indicate non-primary editions / noise entries.
 _NOISE_TITLE_PATTERNS = [
-    re.compile(r"\((?:part\s+)?\d+\s+of\s+\d+\)", re.IGNORECASE),      # "(1 of 5)", "(Part 2 of 2)" dramatized/split entries
+    re.compile(
+        r"\((?:part\s+)?\d+\s+of\s+\d+\)", re.IGNORECASE
+    ),  # "(1 of 5)", "(Part 2 of 2)" dramatized/split entries
     re.compile(r"Boxed Set|Box Set|\d-Book Bundle", re.IGNORECASE),  # boxed sets
-    re.compile(r"Sneak Peek|Free Preview", re.IGNORECASE),           # previews
-    re.compile(r"Chapters?[\s-]+\d", re.IGNORECASE),                  # "Chapters-1-7", "Chapter 1" excerpts
-    re.compile(r"Annotations$", re.IGNORECASE),                      # annotations
-    re.compile(r":\s*The Play$", re.IGNORECASE),                     # stage plays
-    re.compile(r"Dramatized Adaptation", re.IGNORECASE),             # dramatized adaptations
-    re.compile(r"Graphic Novel", re.IGNORECASE),                     # graphic novel adaptations
-    re.compile(r"Diary \d{4}", re.IGNORECASE),                       # diaries "Diary 1999"
-    re.compile(r"Yearbook", re.IGNORECASE),                          # yearbooks
-    re.compile(r"Handbook \d{4}", re.IGNORECASE),                    # handbooks
-    re.compile(r"Colou?ring Book", re.IGNORECASE),                   # colouring books
-    re.compile(r"Quizbook", re.IGNORECASE),                          # quiz books
-    re.compile(r"\bGURPS\b", re.IGNORECASE),                         # RPG sourcebooks
-    re.compile(r"Adventure Game\b", re.IGNORECASE),                  # tabletop RPG/adventure game books
-    re.compile(r"Magazine Issue|Magazine,", re.IGNORECASE),           # magazine issues
-    re.compile(r"\bSampler\b", re.IGNORECASE),                       # samplers/excerpts
-    re.compile(r"^[^/]{4,}\s/\s[^/]{4,}$"),                           # "Title / Title" combined volumes (4+ chars each side)
+    re.compile(r"Sneak Peek|Free Preview", re.IGNORECASE),  # previews
+    re.compile(r"Chapters?[\s-]+\d", re.IGNORECASE),  # "Chapters-1-7", "Chapter 1" excerpts
+    re.compile(r"Annotations$", re.IGNORECASE),  # annotations
+    re.compile(r":\s*The Play$", re.IGNORECASE),  # stage plays
+    re.compile(r"Dramatized Adaptation", re.IGNORECASE),  # dramatized adaptations
+    re.compile(r"Graphic Novel", re.IGNORECASE),  # graphic novel adaptations
+    re.compile(r"Diary \d{4}", re.IGNORECASE),  # diaries "Diary 1999"
+    re.compile(r"Yearbook", re.IGNORECASE),  # yearbooks
+    re.compile(r"Handbook \d{4}", re.IGNORECASE),  # handbooks
+    re.compile(r"Colou?ring Book", re.IGNORECASE),  # colouring books
+    re.compile(r"Quizbook", re.IGNORECASE),  # quiz books
+    re.compile(r"\bGURPS\b", re.IGNORECASE),  # RPG sourcebooks
+    re.compile(r"Adventure Game\b", re.IGNORECASE),  # tabletop RPG/adventure game books
+    re.compile(r"Magazine Issue|Magazine,", re.IGNORECASE),  # magazine issues
+    re.compile(r"\bSampler\b", re.IGNORECASE),  # samplers/excerpts
+    re.compile(r"^[^/]{4,}\s/\s[^/]{4,}$"),  # "Title / Title" combined volumes (4+ chars each side)
 ]
 
 # Non-Latin script characters (Cyrillic, CJK, Arabic, Thai) — strong translation signal.
@@ -363,9 +372,9 @@ _NON_LATIN_RE = re.compile(
 _DIACRITIC_RE = re.compile(
     r"[àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþ"
     r"ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ"
-    r"ąćęłńśźżĄĆĘŁŃŚŹŻ"        # Polish
-    r"ğışĞİŞ"                     # Turkish
-    r"ěřůĚŘŮ"                     # Czech
+    r"ąćęłńśźżĄĆĘŁŃŚŹŻ"  # Polish
+    r"ğışĞİŞ"  # Turkish
+    r"ěřůĚŘŮ"  # Czech
     r"]"
 )
 
@@ -384,7 +393,7 @@ def _get_contrib_count(book: dict[str, Any]) -> int:
     if val is not None:
         try:
             return int(val)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
     return 0
 
@@ -437,27 +446,41 @@ def compute_data_quality(
     score = 0
 
     # ── Edition availability (strongest signals) ──
-    if book.get("preferred_isbns"):                              score += 35
-    if book.get("preferred_asins"):                              score += 25
+    if book.get("preferred_isbns"):
+        score += 35
+    if book.get("preferred_asins"):
+        score += 25
 
     # ── Language confirmation ──
-    if book_langs and any(lc in preferred for lc in book_langs): score += 20
+    if book_langs and any(lc in preferred for lc in book_langs):
+        score += 20
 
     # ── Metadata completeness ──
-    if (book.get("description") or "").strip():                  score += 5
-    if (book.get("image") or {}).get("url"):                     score += 3
-    if phys.get("isbn_13") or phys.get("isbn_10"):               score += 8
-    if phys.get("pages"):                                        score += 5
-    if book.get("rating"):                                       score += 2
-    if readers > 0:                                              score += 3
-    if book.get("cached_tags"):                                  score += 2
+    if (book.get("description") or "").strip():
+        score += 5
+    if (book.get("image") or {}).get("url"):
+        score += 3
+    if phys.get("isbn_13") or phys.get("isbn_10"):
+        score += 8
+    if phys.get("pages"):
+        score += 5
+    if book.get("rating"):
+        score += 2
+    if readers > 0:
+        score += 3
+    if book.get("cached_tags"):
+        score += 2
 
     # ── Popularity bonus (compensates for popular books missing
     #    edition data on Hardcover) ──
-    if   uc >= 50: score += 25
-    elif uc >= 20: score += 20
-    elif uc >= 10: score += 12
-    elif uc >=  5: score += 5
+    if uc >= 50:
+        score += 25
+    elif uc >= 20:
+        score += 20
+    elif uc >= 10:
+        score += 12
+    elif uc >= 5:
+        score += 5
 
     # ── Penalties ──
     diac = len(_DIACRITIC_RE.findall(title))
@@ -477,6 +500,65 @@ def compute_data_quality(
         score -= 15
 
     return max(0, min(100, score))
+
+
+def _parse_release_date(value: Any) -> date | None:
+    """Parse a release date in the same shapes the orchestrator accepts."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    token = raw
+    if "T" in token:
+        token = token.split("T", 1)[0]
+    elif " " in token:
+        token = token.split(" ", 1)[0]
+
+    try:
+        return date.fromisoformat(token)
+    except ValueError:
+        return None
+
+
+def _has_trusted_identifier(book: dict[str, Any]) -> bool:
+    """True if the book carries a concrete publisher signal in the user's language.
+
+    Series position, OR a preferred-language ASIN, OR a preferred-language ISBN.
+    Mirrors the upcoming-book carve-out in the Hardcover GraphQL filter so the
+    API and the post-processing filter agree on what counts as "real."
+
+    Deliberately does NOT trust ``default_physical_edition.isbn_*`` — that
+    field has no language constraint, so a Japanese-only upcoming edition
+    would pass.  ``preferred_isbns``/``preferred_asins`` are filtered to the
+    user's preferred languages at the query level (see ``preferred_isbns``
+    in ``monitored_hardcover_ext.py``).
+    """
+    for _name, pos in _get_series_entries(book):
+        if pos is not None:
+            return True
+
+    return bool(book.get("preferred_asins") or book.get("preferred_isbns"))
+
+
+def _is_trusted_unreleased(
+    book: dict[str, Any],
+    *,
+    today: date,
+    max_future: date,
+) -> bool:
+    """True if ``book`` qualifies for the relaxed reader-count threshold.
+
+    Both conditions must hold: a release date inside ``[today, max_future]``
+    AND at least one concrete publisher signal (series position, ASIN, ISBN).
+    Without both, the standard data-quality scoring still applies.
+    """
+    rd = _parse_release_date(book.get("release_date"))
+    if rd is None or rd < today or rd > max_future:
+        return False
+    return _has_trusted_identifier(book)
 
 
 def classify_noise(book: dict[str, Any]) -> str | None:
@@ -502,6 +584,7 @@ def filter_noise_books(
     books: list[dict[str, Any]],
     *,
     lang_codes: list[str] | None = None,
+    today: date | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Separate books into kept, noise (discard), and auto-hide.
 
@@ -511,6 +594,11 @@ def filter_noise_books(
     - *auto_hide*: compilations, anthologies (>N contributors), or books
       with data quality below ``DATA_QUALITY_THRESHOLD`` — upsert with
       ``hidden=1`` (user can unhide).
+
+    Trusted unreleased books (future release within
+    ``TRUSTED_UNRELEASED_WINDOW_DAYS`` *and* a concrete publisher signal)
+    skip the data-quality threshold so we surface real upcoming releases
+    that haven't accumulated readers yet.
     """
     kept: list[dict[str, Any]] = []
     noise: list[dict[str, Any]] = []
@@ -518,6 +606,9 @@ def filter_noise_books(
 
     noise_reasons: list[tuple[str, str]] = []
     hide_reasons: list[tuple[str, str]] = []
+
+    today_date = today or datetime.now(UTC).date()
+    max_future = today_date + timedelta(days=TRUSTED_UNRELEASED_WINDOW_DAYS)
 
     for book in books:
         title = book.get("title", "")
@@ -540,6 +631,11 @@ def filter_noise_books(
         if cc > ANTHOLOGY_CONTRIBUTOR_THRESHOLD:
             auto_hide.append(book)
             hide_reasons.append((title, f"contributors:{cc}"))
+            continue
+
+        # Trusted upcoming releases bypass the data-quality threshold.
+        if _is_trusted_unreleased(book, today=today_date, max_future=max_future):
+            kept.append(book)
             continue
 
         # Auto-hide: low data quality (translations, bare metadata)

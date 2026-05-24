@@ -1,5 +1,7 @@
 """Tests for monitored_book_filter — split detection, dedup, and noise filtering."""
+
 import json
+from datetime import date, timedelta
 
 import pytest
 
@@ -17,239 +19,483 @@ from shelfmark.core.monitored_book_filter import (
 # ---------------------------------------------------------------------------
 
 SANDERSON_BOOKS = [
-    {"title": "Mistborn: The Final Empire", "users_read_count": 5276, "book_series": [
-        {"position": 1, "series": {"name": "The Mistborn Saga"}},
-        {"position": 2, "series": {"name": "The Cosmere"}},
-        {"position": 1, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
-    ]},
-    {"title": "The Way of Kings", "users_read_count": 4016, "book_series": [
-        {"position": 1, "series": {"name": "The Stormlight Archive"}},
-        {"position": 7, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "The Well of Ascension", "users_read_count": 4176, "book_series": [
-        {"position": 2, "series": {"name": "The Mistborn Saga"}},
-        {"position": 4, "series": {"name": "The Cosmere"}},
-        {"position": 2, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
-    ]},
-    {"title": "The Hero of Ages", "users_read_count": 3824, "book_series": [
-        {"position": 3, "series": {"name": "The Mistborn Saga"}},
-        {"position": 5, "series": {"name": "The Cosmere"}},
-        {"position": 3, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
-    ]},
-    {"title": "Words of Radiance", "users_read_count": 3352, "book_series": [
-        {"position": 2, "series": {"name": "The Stormlight Archive"}},
-        {"position": 12, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Tress of the Emerald Sea", "users_read_count": 1500, "book_series": [
-        {"position": 29, "series": {"name": "The Cosmere"}},
-        {"position": 1, "series": {"name": "Secret Projects"}},
-        {"position": 1, "series": {"name": "Hoid's Travails"}},
-    ]},
-    {"title": "Oathbringer", "users_read_count": 2800, "book_series": [
-        {"position": 3, "series": {"name": "The Stormlight Archive"}},
-        {"position": 21, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Elantris", "users_read_count": 3000, "book_series": [
-        {"position": 1, "series": {"name": "Elantris"}},
-        {"position": 1, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Rhythm of War", "users_read_count": 2200, "book_series": [
-        {"position": 4, "series": {"name": "The Stormlight Archive"}},
-        {"position": 25, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "The Alloy of Law", "users_read_count": 2000, "book_series": [
-        {"position": 4, "series": {"name": "The Mistborn Saga"}},
-        {"position": 8, "series": {"name": "The Cosmere"}},
-        {"position": 1, "series": {"name": "Mistborn: Wax & Wayne"}},
-    ]},
-    {"title": "Warbreaker", "users_read_count": 2500, "book_series": [
-        {"position": 1, "series": {"name": "Warbreaker"}},
-        {"position": 6, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Shadows of Self", "users_read_count": 1800, "book_series": [
-        {"position": 5, "series": {"name": "The Mistborn Saga"}},
-        {"position": 15, "series": {"name": "The Cosmere"}},
-        {"position": 2, "series": {"name": "Mistborn: Wax & Wayne"}},
-    ]},
-    {"title": "The Bands of Mourning", "users_read_count": 1600, "book_series": [
-        {"position": 6, "series": {"name": "The Mistborn Saga"}},
-        {"position": 16, "series": {"name": "The Cosmere"}},
-        {"position": 3, "series": {"name": "Mistborn: Wax & Wayne"}},
-    ]},
-    {"title": "Edgedancer", "users_read_count": 1400, "book_series": [
-        {"position": 2.5, "series": {"name": "The Stormlight Archive"}},
-        {"position": 19, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "The Lost Metal", "users_read_count": 1200, "book_series": [
-        {"position": 7, "series": {"name": "The Mistborn Saga"}},
-        {"position": 27, "series": {"name": "The Cosmere"}},
-        {"position": 4, "series": {"name": "Mistborn: Wax & Wayne"}},
-    ]},
-    {"title": "Skyward", "users_read_count": 1500, "book_series": [
-        {"position": 1, "series": {"name": "Skyward"}},
-        {"position": 1, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Wind and Truth", "users_read_count": 1000, "book_series": [
-        {"position": 5, "series": {"name": "The Stormlight Archive"}},
-        {"position": 33, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Yumi and the Nightmare Painter", "users_read_count": 800, "book_series": [
-        {"position": 31, "series": {"name": "The Cosmere"}},
-        {"position": 3, "series": {"name": "Secret Projects"}},
-        {"position": 2, "series": {"name": "Hoid's Travails"}},
-    ]},
-    {"title": "Dawnshard", "users_read_count": 900, "book_series": [
-        {"position": 3.5, "series": {"name": "The Stormlight Archive"}},
-        {"position": 26, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "The Emperor's Soul", "users_read_count": 1100, "book_series": [
-        {"position": None, "series": {"name": "Elantris"}},
-        {"position": 10, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "The Sunlit Man", "users_read_count": 600, "book_series": [
-        {"position": 32, "series": {"name": "The Cosmere"}},
-        {"position": 4, "series": {"name": "Secret Projects"}},
-    ]},
-    {"title": "Steelheart", "users_read_count": 1300, "book_series": [
-        {"position": 1, "series": {"name": "The Reckoners"}},
-    ]},
-    {"title": "The Frugal Wizard's Handbook for Surviving Medieval England", "users_read_count": 500, "book_series": [
-        {"position": 2, "series": {"name": "Secret Projects"}},
-    ]},
-    {"title": "The Gathering Storm", "users_read_count": 700, "book_series": [
-        {"position": 12, "series": {"name": "The Wheel of Time"}},
-    ]},
-    {"title": "Starsight", "users_read_count": 800, "book_series": [
-        {"position": 2, "series": {"name": "Skyward"}},
-        {"position": 2, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Towers of Midnight", "users_read_count": 600, "book_series": [
-        {"position": 13, "series": {"name": "The Wheel of Time"}},
-    ]},
-    {"title": "A Memory of Light", "users_read_count": 550, "book_series": [
-        {"position": 14, "series": {"name": "The Wheel of Time"}},
-    ]},
-    {"title": "Cytonic", "users_read_count": 500, "book_series": [
-        {"position": 3, "series": {"name": "Skyward"}},
-        {"position": 3, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Firefight", "users_read_count": 900, "book_series": [
-        {"position": 2, "series": {"name": "The Reckoners"}},
-    ]},
-    {"title": "Calamity", "users_read_count": 800, "book_series": [
-        {"position": 3, "series": {"name": "The Reckoners"}},
-    ]},
-    {"title": "The Rithmatist", "users_read_count": 700, "book_series": [
-        {"position": 1, "series": {"name": "Rithmatist"}},
-    ]},
-    {"title": "Isles of the Emberdark", "users_read_count": 300, "book_series": [
-        {"position": 34, "series": {"name": "The Cosmere"}},
-        {"position": 5, "series": {"name": "Secret Projects"}},
-    ]},
-    {"title": "The Hope of Elantris", "users_read_count": 400, "book_series": [
-        {"position": 1.5, "series": {"name": "Elantris"}},
-        {"position": 3, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Defiant", "users_read_count": 400, "book_series": [
-        {"position": 4, "series": {"name": "Skyward"}},
-        {"position": 4, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Shadows for Silence in the Forests of Hell", "users_read_count": 500, "book_series": [
-        {"position": 11, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Sixth of the Dusk", "users_read_count": 400, "book_series": [
-        {"position": 13, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "White Sand, Vol. 1", "users_read_count": 300, "book_series": [
-        {"position": 1, "series": {"name": "White Sand"}},
-        {"position": 20, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Mitosis: A Reckoners Story", "users_read_count": 200, "book_series": [
-        {"position": 1.5, "series": {"name": "The Reckoners"}},
-    ]},
-    {"title": "Sunreach", "users_read_count": 200, "book_series": [
-        {"position": 2.1, "series": {"name": "Skyward"}},
-        {"position": 1, "series": {"name": "Skyward Flight"}},
-        {"position": 2.1, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "ReDawn", "users_read_count": 180, "book_series": [
-        {"position": 2.2, "series": {"name": "Skyward"}},
-        {"position": 2, "series": {"name": "Skyward Flight"}},
-        {"position": 2.2, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Evershore", "users_read_count": 170, "book_series": [
-        {"position": 3.1, "series": {"name": "Skyward"}},
-        {"position": 3, "series": {"name": "Skyward Flight"}},
-        {"position": 3.1, "series": {"name": "Cytoverse"}},
-    ]},
-    {"title": "Alcatraz vs. the Evil Librarians", "users_read_count": 500, "book_series": [
-        {"position": 1, "series": {"name": "Alcatraz vs. the Evil Librarians"}},
-    ]},
-    {"title": "White Sand, Vol. 2", "users_read_count": 200, "book_series": [
-        {"position": 2, "series": {"name": "White Sand"}},
-        {"position": 23, "series": {"name": "The Cosmere"}},
-    ]},
+    {
+        "title": "Mistborn: The Final Empire",
+        "users_read_count": 5276,
+        "book_series": [
+            {"position": 1, "series": {"name": "The Mistborn Saga"}},
+            {"position": 2, "series": {"name": "The Cosmere"}},
+            {"position": 1, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
+        ],
+    },
+    {
+        "title": "The Way of Kings",
+        "users_read_count": 4016,
+        "book_series": [
+            {"position": 1, "series": {"name": "The Stormlight Archive"}},
+            {"position": 7, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "The Well of Ascension",
+        "users_read_count": 4176,
+        "book_series": [
+            {"position": 2, "series": {"name": "The Mistborn Saga"}},
+            {"position": 4, "series": {"name": "The Cosmere"}},
+            {"position": 2, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
+        ],
+    },
+    {
+        "title": "The Hero of Ages",
+        "users_read_count": 3824,
+        "book_series": [
+            {"position": 3, "series": {"name": "The Mistborn Saga"}},
+            {"position": 5, "series": {"name": "The Cosmere"}},
+            {"position": 3, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
+        ],
+    },
+    {
+        "title": "Words of Radiance",
+        "users_read_count": 3352,
+        "book_series": [
+            {"position": 2, "series": {"name": "The Stormlight Archive"}},
+            {"position": 12, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Tress of the Emerald Sea",
+        "users_read_count": 1500,
+        "book_series": [
+            {"position": 29, "series": {"name": "The Cosmere"}},
+            {"position": 1, "series": {"name": "Secret Projects"}},
+            {"position": 1, "series": {"name": "Hoid's Travails"}},
+        ],
+    },
+    {
+        "title": "Oathbringer",
+        "users_read_count": 2800,
+        "book_series": [
+            {"position": 3, "series": {"name": "The Stormlight Archive"}},
+            {"position": 21, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Elantris",
+        "users_read_count": 3000,
+        "book_series": [
+            {"position": 1, "series": {"name": "Elantris"}},
+            {"position": 1, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Rhythm of War",
+        "users_read_count": 2200,
+        "book_series": [
+            {"position": 4, "series": {"name": "The Stormlight Archive"}},
+            {"position": 25, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "The Alloy of Law",
+        "users_read_count": 2000,
+        "book_series": [
+            {"position": 4, "series": {"name": "The Mistborn Saga"}},
+            {"position": 8, "series": {"name": "The Cosmere"}},
+            {"position": 1, "series": {"name": "Mistborn: Wax & Wayne"}},
+        ],
+    },
+    {
+        "title": "Warbreaker",
+        "users_read_count": 2500,
+        "book_series": [
+            {"position": 1, "series": {"name": "Warbreaker"}},
+            {"position": 6, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Shadows of Self",
+        "users_read_count": 1800,
+        "book_series": [
+            {"position": 5, "series": {"name": "The Mistborn Saga"}},
+            {"position": 15, "series": {"name": "The Cosmere"}},
+            {"position": 2, "series": {"name": "Mistborn: Wax & Wayne"}},
+        ],
+    },
+    {
+        "title": "The Bands of Mourning",
+        "users_read_count": 1600,
+        "book_series": [
+            {"position": 6, "series": {"name": "The Mistborn Saga"}},
+            {"position": 16, "series": {"name": "The Cosmere"}},
+            {"position": 3, "series": {"name": "Mistborn: Wax & Wayne"}},
+        ],
+    },
+    {
+        "title": "Edgedancer",
+        "users_read_count": 1400,
+        "book_series": [
+            {"position": 2.5, "series": {"name": "The Stormlight Archive"}},
+            {"position": 19, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "The Lost Metal",
+        "users_read_count": 1200,
+        "book_series": [
+            {"position": 7, "series": {"name": "The Mistborn Saga"}},
+            {"position": 27, "series": {"name": "The Cosmere"}},
+            {"position": 4, "series": {"name": "Mistborn: Wax & Wayne"}},
+        ],
+    },
+    {
+        "title": "Skyward",
+        "users_read_count": 1500,
+        "book_series": [
+            {"position": 1, "series": {"name": "Skyward"}},
+            {"position": 1, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Wind and Truth",
+        "users_read_count": 1000,
+        "book_series": [
+            {"position": 5, "series": {"name": "The Stormlight Archive"}},
+            {"position": 33, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Yumi and the Nightmare Painter",
+        "users_read_count": 800,
+        "book_series": [
+            {"position": 31, "series": {"name": "The Cosmere"}},
+            {"position": 3, "series": {"name": "Secret Projects"}},
+            {"position": 2, "series": {"name": "Hoid's Travails"}},
+        ],
+    },
+    {
+        "title": "Dawnshard",
+        "users_read_count": 900,
+        "book_series": [
+            {"position": 3.5, "series": {"name": "The Stormlight Archive"}},
+            {"position": 26, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "The Emperor's Soul",
+        "users_read_count": 1100,
+        "book_series": [
+            {"position": None, "series": {"name": "Elantris"}},
+            {"position": 10, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "The Sunlit Man",
+        "users_read_count": 600,
+        "book_series": [
+            {"position": 32, "series": {"name": "The Cosmere"}},
+            {"position": 4, "series": {"name": "Secret Projects"}},
+        ],
+    },
+    {
+        "title": "Steelheart",
+        "users_read_count": 1300,
+        "book_series": [
+            {"position": 1, "series": {"name": "The Reckoners"}},
+        ],
+    },
+    {
+        "title": "The Frugal Wizard's Handbook for Surviving Medieval England",
+        "users_read_count": 500,
+        "book_series": [
+            {"position": 2, "series": {"name": "Secret Projects"}},
+        ],
+    },
+    {
+        "title": "The Gathering Storm",
+        "users_read_count": 700,
+        "book_series": [
+            {"position": 12, "series": {"name": "The Wheel of Time"}},
+        ],
+    },
+    {
+        "title": "Starsight",
+        "users_read_count": 800,
+        "book_series": [
+            {"position": 2, "series": {"name": "Skyward"}},
+            {"position": 2, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Towers of Midnight",
+        "users_read_count": 600,
+        "book_series": [
+            {"position": 13, "series": {"name": "The Wheel of Time"}},
+        ],
+    },
+    {
+        "title": "A Memory of Light",
+        "users_read_count": 550,
+        "book_series": [
+            {"position": 14, "series": {"name": "The Wheel of Time"}},
+        ],
+    },
+    {
+        "title": "Cytonic",
+        "users_read_count": 500,
+        "book_series": [
+            {"position": 3, "series": {"name": "Skyward"}},
+            {"position": 3, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Firefight",
+        "users_read_count": 900,
+        "book_series": [
+            {"position": 2, "series": {"name": "The Reckoners"}},
+        ],
+    },
+    {
+        "title": "Calamity",
+        "users_read_count": 800,
+        "book_series": [
+            {"position": 3, "series": {"name": "The Reckoners"}},
+        ],
+    },
+    {
+        "title": "The Rithmatist",
+        "users_read_count": 700,
+        "book_series": [
+            {"position": 1, "series": {"name": "Rithmatist"}},
+        ],
+    },
+    {
+        "title": "Isles of the Emberdark",
+        "users_read_count": 300,
+        "book_series": [
+            {"position": 34, "series": {"name": "The Cosmere"}},
+            {"position": 5, "series": {"name": "Secret Projects"}},
+        ],
+    },
+    {
+        "title": "The Hope of Elantris",
+        "users_read_count": 400,
+        "book_series": [
+            {"position": 1.5, "series": {"name": "Elantris"}},
+            {"position": 3, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Defiant",
+        "users_read_count": 400,
+        "book_series": [
+            {"position": 4, "series": {"name": "Skyward"}},
+            {"position": 4, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Shadows for Silence in the Forests of Hell",
+        "users_read_count": 500,
+        "book_series": [
+            {"position": 11, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Sixth of the Dusk",
+        "users_read_count": 400,
+        "book_series": [
+            {"position": 13, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "White Sand, Vol. 1",
+        "users_read_count": 300,
+        "book_series": [
+            {"position": 1, "series": {"name": "White Sand"}},
+            {"position": 20, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Mitosis: A Reckoners Story",
+        "users_read_count": 200,
+        "book_series": [
+            {"position": 1.5, "series": {"name": "The Reckoners"}},
+        ],
+    },
+    {
+        "title": "Sunreach",
+        "users_read_count": 200,
+        "book_series": [
+            {"position": 2.1, "series": {"name": "Skyward"}},
+            {"position": 1, "series": {"name": "Skyward Flight"}},
+            {"position": 2.1, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "ReDawn",
+        "users_read_count": 180,
+        "book_series": [
+            {"position": 2.2, "series": {"name": "Skyward"}},
+            {"position": 2, "series": {"name": "Skyward Flight"}},
+            {"position": 2.2, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Evershore",
+        "users_read_count": 170,
+        "book_series": [
+            {"position": 3.1, "series": {"name": "Skyward"}},
+            {"position": 3, "series": {"name": "Skyward Flight"}},
+            {"position": 3.1, "series": {"name": "Cytoverse"}},
+        ],
+    },
+    {
+        "title": "Alcatraz vs. the Evil Librarians",
+        "users_read_count": 500,
+        "book_series": [
+            {"position": 1, "series": {"name": "Alcatraz vs. the Evil Librarians"}},
+        ],
+    },
+    {
+        "title": "White Sand, Vol. 2",
+        "users_read_count": 200,
+        "book_series": [
+            {"position": 2, "series": {"name": "White Sand"}},
+            {"position": 23, "series": {"name": "The Cosmere"}},
+        ],
+    },
     {"title": "Snapshot", "users_read_count": 300, "book_series": []},
-    {"title": "White Sand, Vol. 3", "users_read_count": 150, "book_series": [
-        {"position": 3, "series": {"name": "White Sand"}},
-        {"position": 24, "series": {"name": "The Cosmere"}},
-    ]},
-    {"title": "Legion: Skin Deep", "users_read_count": 200, "book_series": [
-        {"position": 2, "series": {"name": "Legion"}},
-    ]},
+    {
+        "title": "White Sand, Vol. 3",
+        "users_read_count": 150,
+        "book_series": [
+            {"position": 3, "series": {"name": "White Sand"}},
+            {"position": 24, "series": {"name": "The Cosmere"}},
+        ],
+    },
+    {
+        "title": "Legion: Skin Deep",
+        "users_read_count": 200,
+        "book_series": [
+            {"position": 2, "series": {"name": "Legion"}},
+        ],
+    },
     {"title": "Perfect State", "users_read_count": 200, "book_series": []},
-    {"title": "Defending Elysium", "users_read_count": 150, "book_series": [
-        {"position": 0.5, "series": {"name": "Cytoverse"}},
-    ]},
+    {
+        "title": "Defending Elysium",
+        "users_read_count": 150,
+        "book_series": [
+            {"position": 0.5, "series": {"name": "Cytoverse"}},
+        ],
+    },
     # --- Split books that should be filtered ---
-    {"title": "The Way of Kings, Part 1", "users_read_count": 213, "book_series": [
-        {"position": 1.1, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "The Way of Kings, Part 2", "users_read_count": 27, "book_series": [
-        {"position": 1.2, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": " Words of Radiance, Part 2", "users_read_count": 69, "book_series": [
-        {"position": 2.2, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Oathbringer Part One", "users_read_count": 50, "book_series": [
-        {"position": 3.1, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Oathbringer Part Two", "users_read_count": 40, "book_series": [
-        {"position": 3.2, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Rhythm of War Part One", "users_read_count": 30, "book_series": [
-        {"position": 4.1, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Rhythm of War, Part Two", "users_read_count": 25, "book_series": [
-        {"position": 4.2, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "The Well of Ascension, Part 1", "users_read_count": 18, "book_series": [
-        {"position": 2, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
-    ]},
-    {"title": "The Bands of Mourning, Part 1", "users_read_count": 15, "book_series": [
-        {"position": 6, "series": {"name": "Mistborn GraphicAudio"}},
-    ]},
-    {"title": "The Bands of Mourning, Part 2", "users_read_count": 12, "book_series": [
-        {"position": 6, "series": {"name": "Mistborn GraphicAudio"}},
-    ]},
+    {
+        "title": "The Way of Kings, Part 1",
+        "users_read_count": 213,
+        "book_series": [
+            {"position": 1.1, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "The Way of Kings, Part 2",
+        "users_read_count": 27,
+        "book_series": [
+            {"position": 1.2, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": " Words of Radiance, Part 2",
+        "users_read_count": 69,
+        "book_series": [
+            {"position": 2.2, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Oathbringer Part One",
+        "users_read_count": 50,
+        "book_series": [
+            {"position": 3.1, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Oathbringer Part Two",
+        "users_read_count": 40,
+        "book_series": [
+            {"position": 3.2, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Rhythm of War Part One",
+        "users_read_count": 30,
+        "book_series": [
+            {"position": 4.1, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Rhythm of War, Part Two",
+        "users_read_count": 25,
+        "book_series": [
+            {"position": 4.2, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "The Well of Ascension, Part 1",
+        "users_read_count": 18,
+        "book_series": [
+            {"position": 2, "series": {"name": "The Mistborn Saga: The Original Trilogy"}},
+        ],
+    },
+    {
+        "title": "The Bands of Mourning, Part 1",
+        "users_read_count": 15,
+        "book_series": [
+            {"position": 6, "series": {"name": "Mistborn GraphicAudio"}},
+        ],
+    },
+    {
+        "title": "The Bands of Mourning, Part 2",
+        "users_read_count": 12,
+        "book_series": [
+            {"position": 6, "series": {"name": "Mistborn GraphicAudio"}},
+        ],
+    },
     # --- Non-split books that should be kept ---
     {"title": "The Original", "users_read_count": 100, "book_series": []},
-    {"title": "The Scrivener's Bones", "users_read_count": 200, "book_series": [
-        {"position": 2, "series": {"name": "Alcatraz vs. the Evil Librarians"}},
-    ]},
-    {"title": "The Way of Kings Prime", "users_read_count": 100, "book_series": [
-        {"position": 0.1, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Elsecaller / King Lopen The First of Alethkar", "users_read_count": 6, "book_series": [
-        {"position": 2.1, "series": {"name": "The Stormlight Archive"}},
-    ]},
-    {"title": "Ghostbloods 1", "users_read_count": 50, "book_series": [
-        {"position": 8, "series": {"name": "The Mistborn Saga"}},
-        {"position": 1, "series": {"name": "Mistborn: Ghostbloods"}},
-    ]},
-    {"title": "Dark One: Forgotten", "users_read_count": 30, "book_series": [
-        {"position": None, "series": {"name": "Dark One"}},
-    ]},
+    {
+        "title": "The Scrivener's Bones",
+        "users_read_count": 200,
+        "book_series": [
+            {"position": 2, "series": {"name": "Alcatraz vs. the Evil Librarians"}},
+        ],
+    },
+    {
+        "title": "The Way of Kings Prime",
+        "users_read_count": 100,
+        "book_series": [
+            {"position": 0.1, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Elsecaller / King Lopen The First of Alethkar",
+        "users_read_count": 6,
+        "book_series": [
+            {"position": 2.1, "series": {"name": "The Stormlight Archive"}},
+        ],
+    },
+    {
+        "title": "Ghostbloods 1",
+        "users_read_count": 50,
+        "book_series": [
+            {"position": 8, "series": {"name": "The Mistborn Saga"}},
+            {"position": 1, "series": {"name": "Mistborn: Ghostbloods"}},
+        ],
+    },
+    {
+        "title": "Dark One: Forgotten",
+        "users_read_count": 30,
+        "book_series": [
+            {"position": None, "series": {"name": "Dark One"}},
+        ],
+    },
     {"title": "Songs of the Dead", "users_read_count": 50, "book_series": []},
     {"title": "Dreamer", "users_read_count": 40, "book_series": []},
 ]
@@ -318,12 +564,20 @@ def test_filter_split_books_empty():
 
 def test_filter_split_books_no_splits():
     books = [
-        {"title": "Book One", "users_read_count": 100, "book_series": [
-            {"position": 1, "series": {"name": "My Series"}},
-        ]},
-        {"title": "Book Two", "users_read_count": 80, "book_series": [
-            {"position": 2, "series": {"name": "My Series"}},
-        ]},
+        {
+            "title": "Book One",
+            "users_read_count": 100,
+            "book_series": [
+                {"position": 1, "series": {"name": "My Series"}},
+            ],
+        },
+        {
+            "title": "Book Two",
+            "users_read_count": 80,
+            "book_series": [
+                {"position": 2, "series": {"name": "My Series"}},
+            ],
+        },
     ]
     canonical, filtered = filter_split_books(books)
     assert len(canonical) == 2
@@ -336,19 +590,23 @@ def test_filter_works_with_db_shape():
         {
             "title": "The Way of Kings",
             "readers_count": 4016,
-            "all_series": json.dumps([
-                {"name": "The Stormlight Archive", "position": 1, "count": 10},
-            ]),
+            "all_series": json.dumps(
+                [
+                    {"name": "The Stormlight Archive", "position": 1, "count": 10},
+                ]
+            ),
         },
         {
             "title": "The Way of Kings, Part 1",
             "readers_count": 213,
-            "all_series": json.dumps([
-                {"name": "The Stormlight Archive", "position": 1.1, "count": 10},
-            ]),
+            "all_series": json.dumps(
+                [
+                    {"name": "The Stormlight Archive", "position": 1.1, "count": 10},
+                ]
+            ),
         },
     ]
-    canonical, filtered = filter_split_books(books)
+    _canonical, filtered = filter_split_books(books)
     assert len(filtered) == 1
     assert filtered[0]["title"] == "The Way of Kings, Part 1"
 
@@ -356,15 +614,27 @@ def test_filter_works_with_db_shape():
 def test_novellas_not_filtered():
     """Novellas at .5 positions must not be treated as splits."""
     books = [
-        {"title": "Words of Radiance", "users_read_count": 3352, "book_series": [
-            {"position": 2, "series": {"name": "The Stormlight Archive"}},
-        ]},
-        {"title": "Edgedancer", "users_read_count": 1400, "book_series": [
-            {"position": 2.5, "series": {"name": "The Stormlight Archive"}},
-        ]},
-        {"title": "Oathbringer", "users_read_count": 2800, "book_series": [
-            {"position": 3, "series": {"name": "The Stormlight Archive"}},
-        ]},
+        {
+            "title": "Words of Radiance",
+            "users_read_count": 3352,
+            "book_series": [
+                {"position": 2, "series": {"name": "The Stormlight Archive"}},
+            ],
+        },
+        {
+            "title": "Edgedancer",
+            "users_read_count": 1400,
+            "book_series": [
+                {"position": 2.5, "series": {"name": "The Stormlight Archive"}},
+            ],
+        },
+        {
+            "title": "Oathbringer",
+            "users_read_count": 2800,
+            "book_series": [
+                {"position": 3, "series": {"name": "The Stormlight Archive"}},
+            ],
+        },
     ]
     canonical, filtered = filter_split_books(books)
     assert len(filtered) == 0
@@ -374,6 +644,7 @@ def test_novellas_not_filtered():
 # ---------------------------------------------------------------------------
 # Noise filter tests
 # ---------------------------------------------------------------------------
+
 
 def _book(title, *, users_read=100, users_count=100, lang="en", contrib=1):
     """Helper to build a book dict suitable for both classify_noise and filter_noise_books.
@@ -405,52 +676,59 @@ def _book(title, *, users_read=100, users_count=100, lang="en", contrib=1):
 
 # --- Title pattern tests ---
 
-@pytest.mark.parametrize("title", [
-    "The Way of Kings (1 of 5) [Dramatized Adaptation]",
-    "Red Rising (2 of 2) Dramatized Adaptation",
-    "Stormlight Archive MM Boxed Set I, Books 1-3",
-    "The Farseer Trilogy 3-Book Bundle",
-    "Sneak Peek for Witch King",
-    "The Emperor's Blades: Chapters-1-7",
-    "Mistborn: The Final Empire - Annotations",
-    "Unseen Academicals: The Play",
-    "Jingo: The Play",
-    "Way of Shadows: The Graphic Novel",
-    "Discworld's Ankh-Morpork City Watch Diary 1999",
-    "Lu-Tze's Yearbook of Enlightenment 2008",
-    "Ankh-Morpork Post Office Handbook 2007",
-    "A Court of Thorns and Roses Colouring Book",
-    "Terry Pratchett's Discworld Coloring Book",
-    "The Unseen University Challenge Quizbook",
-    "GURPS Discworld",
-    "Grimdark Magazine Issue #4",
-    "Lightspeed Magazine, February 2015",
-    "Steelheart Chapter Sampler",
-    "Mistborn Adventure Game",
-    "Snapshot / Dreamer",
-    "Elsecaller / King Lopen The First of Alethkar",
-])
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "The Way of Kings (1 of 5) [Dramatized Adaptation]",
+        "Red Rising (2 of 2) Dramatized Adaptation",
+        "Stormlight Archive MM Boxed Set I, Books 1-3",
+        "The Farseer Trilogy 3-Book Bundle",
+        "Sneak Peek for Witch King",
+        "The Emperor's Blades: Chapters-1-7",
+        "Mistborn: The Final Empire - Annotations",
+        "Unseen Academicals: The Play",
+        "Jingo: The Play",
+        "Way of Shadows: The Graphic Novel",
+        "Discworld's Ankh-Morpork City Watch Diary 1999",
+        "Lu-Tze's Yearbook of Enlightenment 2008",
+        "Ankh-Morpork Post Office Handbook 2007",
+        "A Court of Thorns and Roses Colouring Book",
+        "Terry Pratchett's Discworld Coloring Book",
+        "The Unseen University Challenge Quizbook",
+        "GURPS Discworld",
+        "Grimdark Magazine Issue #4",
+        "Lightspeed Magazine, February 2015",
+        "Steelheart Chapter Sampler",
+        "Mistborn Adventure Game",
+        "Snapshot / Dreamer",
+        "Elsecaller / King Lopen The First of Alethkar",
+    ],
+)
 def test_title_pattern_filters_noise(title):
     reason = classify_noise(_book(title))
     assert reason is not None, f"Expected '{title}' to be classified as noise"
     assert reason.startswith("title:"), f"Expected title pattern match, got: {reason}"
 
 
-@pytest.mark.parametrize("title", [
-    "Scion",
-    "The Way of Kings",
-    "Mistborn: The Final Empire",
-    "Edge of the Dream: An Epic Fantasy Adventure",
-    "The Sunlit Man",
-    "Trailer Park Fairy Tales",
-    "The Unholy Consult",
-    "Allomancer Jak and the Pits of Eltania",
-    "The Eleventh Metal",
-    "Forsworn",
-    "Messenger's Legacy",
-    "He Who Fights with Monsters",
-    "Dungeon Crawler Carl",
-])
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Scion",
+        "The Way of Kings",
+        "Mistborn: The Final Empire",
+        "Edge of the Dream: An Epic Fantasy Adventure",
+        "The Sunlit Man",
+        "Trailer Park Fairy Tales",
+        "The Unholy Consult",
+        "Allomancer Jak and the Pits of Eltania",
+        "The Eleventh Metal",
+        "Forsworn",
+        "Messenger's Legacy",
+        "He Who Fights with Monsters",
+        "Dungeon Crawler Carl",
+    ],
+)
 def test_title_pattern_keeps_real_books(title):
     reason = classify_noise(_book(title))
     assert reason is None, f"Real book '{title}' was wrongly classified as noise: {reason}"
@@ -458,10 +736,23 @@ def test_title_pattern_keeps_real_books(title):
 
 # --- Data quality score tests ---
 
-def _rich_book(title, *, lang="en", users_count=100, users_read=50,
-               preferred_isbns=True, preferred_asins=False,
-               description=True, cover=True, isbn=True, pages=True,
-               rating=True, tags=True, contrib=1):
+
+def _rich_book(
+    title,
+    *,
+    lang="en",
+    users_count=100,
+    users_read=50,
+    preferred_isbns=True,
+    preferred_asins=False,
+    description=True,
+    cover=True,
+    isbn=True,
+    pages=True,
+    rating=True,
+    tags=True,
+    contrib=1,
+):
     """Build a book dict with full GraphQL-shape fields for quality tests."""
     b = {
         "title": title,
@@ -487,68 +778,131 @@ def _rich_book(title, *, lang="en", users_count=100, users_read=50,
 
 
 def test_quality_high_for_english_book_with_editions():
-    book = _rich_book("Mistborn: The Final Empire", lang="en",
-                      preferred_isbns=True, preferred_asins=True, users_count=5000)
+    book = _rich_book(
+        "Mistborn: The Final Empire",
+        lang="en",
+        preferred_isbns=True,
+        preferred_asins=True,
+        users_count=5000,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q >= 80, f"Expected high quality for full English book, got {q}"
 
 
 def test_quality_low_for_translation_no_data():
     """Translation with no editions, no lang data → very low quality."""
-    book = _rich_book("A Liga da Lei", lang=None, users_count=2, users_read=0,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=False, cover=True, isbn=False,
-                      pages=False, rating=False, tags=False)
+    book = _rich_book(
+        "A Liga da Lei",
+        lang=None,
+        users_count=2,
+        users_read=0,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=False,
+        cover=True,
+        isbn=False,
+        pages=False,
+        rating=False,
+        tags=False,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q < 20, f"Expected low quality for bare translation, got {q}"
 
 
 def test_quality_low_for_confirmed_non_english():
     """Confirmed Spanish book → penalty drives quality down."""
-    book = _rich_book("La búsqueda del asesino", lang="es", users_count=5, users_read=5,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=True, cover=True, isbn=True, pages=True, rating=True, tags=True)
+    book = _rich_book(
+        "La búsqueda del asesino",
+        lang="es",
+        users_count=5,
+        users_read=5,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=True,
+        cover=True,
+        isbn=True,
+        pages=True,
+        rating=True,
+        tags=True,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q < 20, f"Expected low quality for confirmed non-English book, got {q}"
 
 
 def test_quality_high_for_popular_book_without_editions():
     """Popular English book that just lacks edition data on Hardcover."""
-    book = _rich_book("Warbreaker", lang=None, users_count=46, users_read=37,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=False, cover=False, isbn=False,
-                      pages=False, rating=True, tags=True)
+    book = _rich_book(
+        "Warbreaker",
+        lang=None,
+        users_count=46,
+        users_read=37,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=False,
+        cover=False,
+        isbn=False,
+        pages=False,
+        rating=True,
+        tags=True,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q >= 20, f"Expected passing quality for popular book, got {q}"
 
 
 def test_quality_penalizes_non_latin_title():
-    book = _rich_book("Имя ветра", lang="en", users_count=3, users_read=3,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=False, cover=False, isbn=False,
-                      pages=False, rating=True, tags=False)
+    book = _rich_book(
+        "Имя ветра",
+        lang="en",
+        users_count=3,
+        users_read=3,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=False,
+        cover=False,
+        isbn=False,
+        pages=False,
+        rating=True,
+        tags=False,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q < 20, f"Non-Latin title should have low quality, got {q}"
 
 
 def test_quality_penalizes_diacritics():
-    book = _rich_book("Coração de aço", lang=None, users_count=2, users_read=2,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=False, cover=True, isbn=False,
-                      pages=False, rating=True, tags=False)
+    book = _rich_book(
+        "Coração de aço",
+        lang=None,
+        users_count=2,
+        users_read=2,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=False,
+        cover=True,
+        isbn=False,
+        pages=False,
+        rating=True,
+        tags=False,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q < 20, f"Diacritic title should have low quality, got {q}"
 
 
 def test_quality_respects_preferred_languages():
     """If user prefers French, French books should score well."""
-    book = _rich_book("L'Assassin royal", lang="fr", users_count=50, users_read=50,
-                      preferred_isbns=True, preferred_asins=False)
+    book = _rich_book(
+        "L'Assassin royal",
+        lang="fr",
+        users_count=50,
+        users_read=50,
+        preferred_isbns=True,
+        preferred_asins=False,
+    )
     q = compute_data_quality(book, lang_codes=["en", "fr"])
     assert q >= 50, f"French book with French preference should score well, got {q}"
 
 
 # --- Contributor count / auto-hide tests ---
+
 
 def test_high_contrib_auto_hidden():
     books = [
@@ -556,7 +910,7 @@ def test_high_contrib_auto_hidden():
         _book("Year's Best SF", contrib=51),
         _book("The Way of Kings", contrib=1),
     ]
-    kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
+    kept, _noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
     assert len(auto_hide) == 2
     assert {b["title"] for b in auto_hide} == {"Unfettered", "Year's Best SF"}
     assert len(kept) == 1
@@ -569,7 +923,7 @@ def test_contrib_threshold_boundary():
         _book("Ten Contributors", contrib=10),
         _book("Eleven Contributors", contrib=11),
     ]
-    kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
+    kept, _noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
     assert len(kept) == 1
     assert kept[0]["title"] == "Ten Contributors"
     assert len(auto_hide) == 1
@@ -583,20 +937,21 @@ def test_coauthored_books_pass():
         _book("Good Omens", contrib=2),
         _book("Sandman: Overture #4", contrib=3),
     ]
-    kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
+    kept, _noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
     assert len(kept) == 3
     assert len(auto_hide) == 0
 
 
 # --- filter_noise_books integration ---
 
+
 def test_filter_noise_books_three_way_split():
     """Verify the three output lists are correctly populated."""
     books = [
         _book("Real Novel", contrib=1),
-        _book("Guards! Guards!: The Play", contrib=2),      # title noise
+        _book("Guards! Guards!: The Play", contrib=2),  # title noise
         _book("Die Gabe der Könige", lang="de", users_read=6),  # auto-hide (low quality)
-        _book("Unfettered III", contrib=31),                 # auto-hide (contrib count)
+        _book("Unfettered III", contrib=31),  # auto-hide (contrib count)
     ]
     kept, noise, auto_hide = filter_noise_books(books, lang_codes=["en"])
     assert [b["title"] for b in kept] == ["Real Novel"]
@@ -616,7 +971,7 @@ def test_filter_noise_books_empty():
 def test_noise_filter_priority_title_over_contrib():
     """Title pattern match takes priority — book is noise, not auto-hide."""
     book = _book("Grimdark Magazine Issue #4", contrib=20)
-    kept, noise, auto_hide = filter_noise_books([book], lang_codes=["en"])
+    _kept, noise, auto_hide = filter_noise_books([book], lang_codes=["en"])
     assert len(noise) == 1
     assert len(auto_hide) == 0
 
@@ -629,7 +984,11 @@ def test_noise_filter_priority_title_over_contrib():
 def test_dedup_subtitle_variants():
     """Books differing only by subtitle should be merged, keeping higher users."""
     books = [
-        {"id": 1, "title": "The Age of Diagnosis: Sickness, Health and How Modern Medicine Has Gone Too Far", "users_count": 6},
+        {
+            "id": 1,
+            "title": "The Age of Diagnosis: Sickness, Health and How Modern Medicine Has Gone Too Far",
+            "users_count": 6,
+        },
         {"id": 2, "title": "The Age of Diagnosis", "users_count": 3},
     ]
     deduped, count = deduplicate_books(books)
@@ -684,14 +1043,22 @@ def test_dedup_preserves_order():
     ]
     deduped, count = deduplicate_books(books)
     assert count == 1
-    assert [b["id"] for b in deduped] == [1, 3, 4]  # Beta Falling:subtitle dropped, Beta Falling kept
+    assert [b["id"] for b in deduped] == [
+        1,
+        3,
+        4,
+    ]  # Beta Falling:subtitle dropped, Beta Falling kept
 
 
 def test_dedup_article_insensitive():
     """Articles (the/a/an) should not affect dedup matching."""
     books = [
         {"id": 1, "title": "The Invention of Power", "users_count": 10},
-        {"id": 2, "title": "Invention of Power: Popes, Kings, and the Birth of the West", "users_count": 5},
+        {
+            "id": 2,
+            "title": "Invention of Power: Popes, Kings, and the Birth of the West",
+            "users_count": 5,
+        },
     ]
     deduped, count = deduplicate_books(books)
     assert count == 1
@@ -728,7 +1095,11 @@ def test_dedup_subtitle_variant_still_merges():
     """A short title should still merge with its longer subtitle variant."""
     books = [
         {"id": 1, "title": "The Dictator's Handbook", "users_count": 241},
-        {"id": 2, "title": "The Dictator's Handbook: Why Bad Behavior is Almost Always Good Politics", "users_count": 50},
+        {
+            "id": 2,
+            "title": "The Dictator's Handbook: Why Bad Behavior is Almost Always Good Politics",
+            "users_count": 50,
+        },
     ]
     deduped, count = deduplicate_books(books)
     assert count == 1
@@ -800,20 +1171,40 @@ def test_compilation_flag_auto_hides():
 
 def test_quality_score_clamps_to_zero():
     """Heavily penalised book should return 0, not negative."""
-    book = _rich_book("Пепел и сталь", lang="ru", users_count=2, users_read=0,
-                      preferred_isbns=False, preferred_asins=False,
-                      description=False, cover=False, isbn=False,
-                      pages=False, rating=False, tags=False)
+    book = _rich_book(
+        "Пепел и сталь",
+        lang="ru",
+        users_count=2,
+        users_read=0,
+        preferred_isbns=False,
+        preferred_asins=False,
+        description=False,
+        cover=False,
+        isbn=False,
+        pages=False,
+        rating=False,
+        tags=False,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q == 0
 
 
 def test_quality_score_clamps_to_100():
     """Maximally rich book should not exceed 100."""
-    book = _rich_book("Perfect Book", lang="en", users_count=10000, users_read=5000,
-                      preferred_isbns=True, preferred_asins=True,
-                      description=True, cover=True, isbn=True,
-                      pages=True, rating=True, tags=True)
+    book = _rich_book(
+        "Perfect Book",
+        lang="en",
+        users_count=10000,
+        users_read=5000,
+        preferred_isbns=True,
+        preferred_asins=True,
+        description=True,
+        cover=True,
+        isbn=True,
+        pages=True,
+        rating=True,
+        tags=True,
+    )
     q = compute_data_quality(book, lang_codes=["en"])
     assert q == 100
 
@@ -840,7 +1231,7 @@ def test_split_filter_parent_exactly_2x_readers():
         {"title": "The Way of Kings", "users_read_count": 200, "book_series": []},
         {"title": "The Way of Kings, Part 1", "users_read_count": 100, "book_series": []},
     ]
-    canonical, filtered = filter_split_books(books)
+    _canonical, filtered = filter_split_books(books)
     assert len(filtered) == 1
     assert filtered[0]["title"] == "The Way of Kings, Part 1"
 
@@ -848,13 +1239,173 @@ def test_split_filter_parent_exactly_2x_readers():
 def test_split_filter_bad_series_position_no_crash():
     """Non-numeric series position should not crash the filter."""
     books = [
-        {"title": "Book One", "users_read_count": 100, "book_series": [
-            {"position": "invalid", "series": {"name": "My Series"}},
-        ]},
-        {"title": "Book Two", "users_read_count": 80, "book_series": [
-            {"position": None, "series": {"name": "My Series"}},
-        ]},
+        {
+            "title": "Book One",
+            "users_read_count": 100,
+            "book_series": [
+                {"position": "invalid", "series": {"name": "My Series"}},
+            ],
+        },
+        {
+            "title": "Book Two",
+            "users_read_count": 80,
+            "book_series": [
+                {"position": None, "series": {"name": "My Series"}},
+            ],
+        },
     ]
     canonical, filtered = filter_split_books(books)
     assert len(canonical) == 2
     assert len(filtered) == 0
+
+
+# ---------------------------------------------------------------------------
+# Trusted-unreleased carve-out (matches monitored_hardcover_ext.py GraphQL
+# filter: future release within 18 months AND a concrete publisher signal).
+# ---------------------------------------------------------------------------
+
+TODAY = date(2026, 5, 24)
+FUTURE_NEAR = (TODAY + timedelta(days=60)).isoformat()  # ~2 months out
+FUTURE_FAR = (TODAY + timedelta(days=700)).isoformat()  # ~23 months out (outside window)
+PAST = (TODAY - timedelta(days=30)).isoformat()
+
+
+def _bare_upcoming(title: str, release_date: str, **overrides):
+    """Build a sparse upcoming book — no readers, no description, no language.
+
+    Mirrors how Hardcover serves a planned book before it has accumulated
+    reader/edition data.  Returns the minimal dict; pass overrides to add
+    individual trust signals.
+    """
+    book = {
+        "title": title,
+        "release_date": release_date,
+        "users_count": 0,
+        "users_read_count": 0,
+        "contributions_aggregate": {"aggregate": {"count": 1}},
+    }
+    book.update(overrides)
+    return book
+
+
+def test_unreleased_with_series_position_is_kept():
+    """Future release + book_series position → kept, not auto-hidden."""
+    book = _bare_upcoming(
+        "Rise of the Living Forge (Book 6)",
+        FUTURE_NEAR,
+        book_series=[{"position": 6, "series": {"name": "Rise of the Living Forge"}}],
+    )
+    kept, noise, auto_hide = filter_noise_books(
+        [book],
+        lang_codes=["en"],
+        today=TODAY,
+    )
+    assert [b["title"] for b in kept] == ["Rise of the Living Forge (Book 6)"]
+    assert auto_hide == []
+    assert noise == []
+
+
+def test_unreleased_with_asin_is_kept():
+    """Future release + preferred_asins → kept."""
+    book = _bare_upcoming(
+        "Untitled Upcoming",
+        FUTURE_NEAR,
+        preferred_asins=[{"asin": "B0GHPYDDJQ"}],
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert [b["title"] for b in kept] == ["Untitled Upcoming"]
+    assert auto_hide == []
+
+
+def test_unreleased_with_preferred_isbn_is_kept():
+    """Future release + preferred_isbns (language-filtered) → kept."""
+    book = _bare_upcoming(
+        "Untitled Upcoming",
+        FUTURE_NEAR,
+        preferred_isbns=[{"isbn_13": "9780000000000"}],
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert [b["title"] for b in kept] == ["Untitled Upcoming"]
+    assert auto_hide == []
+
+
+def test_unreleased_default_physical_edition_alone_is_not_trusted():
+    """An ISBN on default_physical_edition is NOT a trust signal — that field
+    isn't language-filtered, so a Japanese-only upcoming edition could pass.
+    Only language-filtered preferred_isbns/preferred_asins (or series position)
+    count.
+    """
+    book = _bare_upcoming(
+        "Foreign Edition",
+        FUTURE_NEAR,
+        default_physical_edition={"isbn_13": "9780000000000", "pages": 300},
+        # No preferred_isbns (would be empty after Hardcover's language filter)
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert kept == []
+    assert [b["title"] for b in auto_hide] == ["Foreign Edition"]
+
+
+def test_unreleased_without_signals_still_auto_hidden():
+    """Future release but no series position / ASIN / ISBN → still auto-hidden.
+
+    Placeholder protection — a bare title + future date isn't enough.
+    """
+    book = _bare_upcoming("Placeholder Entry", FUTURE_NEAR)
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert kept == []
+    assert [b["title"] for b in auto_hide] == ["Placeholder Entry"]
+
+
+def test_unreleased_outside_window_falls_back_to_quality():
+    """Future release beyond 18 months → trust check fails, quality score applies."""
+    book = _bare_upcoming(
+        "Far-Future Phantom",
+        FUTURE_FAR,
+        book_series=[{"position": 1, "series": {"name": "Series"}}],
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert kept == []
+    assert [b["title"] for b in auto_hide] == ["Far-Future Phantom"]
+
+
+def test_released_low_quality_book_still_auto_hidden():
+    """Already-released book with low quality data → still auto-hidden (no regression)."""
+    book = _bare_upcoming(
+        "Old Sparse Entry",
+        PAST,
+        book_series=[{"position": 1, "series": {"name": "Series"}}],
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert kept == []
+    assert [b["title"] for b in auto_hide] == ["Old Sparse Entry"]
+
+
+def test_unreleased_noise_title_still_discarded():
+    """Title noise patterns take priority over the trusted-unreleased carve-out."""
+    book = _bare_upcoming(
+        "Untitled Sneak Peek",
+        FUTURE_NEAR,
+        book_series=[{"position": 1, "series": {"name": "Series"}}],
+    )
+    kept, noise, auto_hide = filter_noise_books(
+        [book],
+        lang_codes=["en"],
+        today=TODAY,
+    )
+    assert kept == []
+    assert auto_hide == []
+    assert [b["title"] for b in noise] == ["Untitled Sneak Peek"]
+
+
+def test_unreleased_anthology_still_auto_hidden():
+    """Contributor-count check still applies before the trust carve-out."""
+    book = _bare_upcoming(
+        "Big Anthology",
+        FUTURE_NEAR,
+        book_series=[{"position": 1, "series": {"name": "Series"}}],
+        contributions_aggregate={"aggregate": {"count": 50}},
+    )
+    kept, _, auto_hide = filter_noise_books([book], lang_codes=["en"], today=TODAY)
+    assert kept == []
+    assert [b["title"] for b in auto_hide] == ["Big Anthology"]

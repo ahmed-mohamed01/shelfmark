@@ -7,13 +7,16 @@ The monitored sync path requires *strict* error handling — API failures must
 raise typed exceptions instead of silently returning None/[], which upstream's
 _execute_query() does.  _execute_query_strict() fills this role.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import requests as _requests
 
+from shelfmark.core.monitored_book_filter import TRUSTED_UNRELEASED_WINDOW_DAYS
 from shelfmark.core.monitored_types import (
     MonitoredProviderAPIError,
     MonitoredProviderAuthError,
@@ -35,7 +38,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
     # Strict query executor — raises typed exceptions on failure
     # ------------------------------------------------------------------
 
-    def _execute_query_strict(self, query: str, variables: Dict[str, Any]) -> Dict:
+    def _execute_query_strict(self, query: str, variables: dict[str, Any]) -> dict:
         """Execute a GraphQL query, raising typed exceptions on any failure.
 
         Unlike the base ``_execute_query()`` (which catches everything and
@@ -53,17 +56,11 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 verify=get_ssl_verify(HARDCOVER_API_URL),
             )
         except _requests.Timeout as exc:
-            raise MonitoredProviderTimeoutError(
-                f"Hardcover API request timed out: {exc}"
-            ) from exc
+            raise MonitoredProviderTimeoutError(f"Hardcover API request timed out: {exc}") from exc
         except _requests.ConnectionError as exc:
-            raise MonitoredProviderNetworkError(
-                f"Cannot reach Hardcover API: {exc}"
-            ) from exc
+            raise MonitoredProviderNetworkError(f"Cannot reach Hardcover API: {exc}") from exc
         except Exception as exc:
-            raise MonitoredProviderNetworkError(
-                f"Hardcover API request failed: {exc}"
-            ) from exc
+            raise MonitoredProviderNetworkError(f"Hardcover API request failed: {exc}") from exc
 
         # HTTP-level errors
         try:
@@ -78,9 +75,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
                 raise MonitoredProviderRateLimitError(
                     "Hardcover API rate limited (HTTP 429)"
                 ) from exc
-            raise MonitoredProviderAPIError(
-                f"Hardcover API HTTP error {status}: {exc}"
-            ) from exc
+            raise MonitoredProviderAPIError(f"Hardcover API HTTP error {status}: {exc}") from exc
 
         # Parse JSON
         try:
@@ -92,9 +87,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
 
         # GraphQL-level errors
         if "errors" in data:
-            msgs = "; ".join(
-                str(e.get("message", e)) for e in data["errors"]
-            )
+            msgs = "; ".join(str(e.get("message", e)) for e in data["errors"])
             raise MonitoredProviderAPIError(f"Hardcover GraphQL errors: {msgs}")
 
         return data.get("data") or {}
@@ -109,10 +102,15 @@ class MonitoredHardcoverProvider(HardcoverProvider):
     ) -> list[dict]:
         """Fetch books for an author via the direct books GraphQL query.
 
-        Filters books with <=1 user at API level (keeps all books with >= 2
-        users).  Post-processing filters in the sync pipeline further narrow
-        results via split-edition detection, title patterns, language
-        heuristic, duplicate merging, and contributor count.
+        Filters books with ``users_count > 1`` at the API level — UNLESS the
+        book has both a near-term future release (within 18 months) AND at
+        least one concrete publisher signal (series position, ASIN, or ISBN).
+        That carve-out lets us surface real upcoming releases that haven't
+        accumulated readers yet, while still rejecting low-signal placeholders.
+
+        Post-processing filters in the sync pipeline further narrow results
+        via split-edition detection, title patterns, language heuristic,
+        duplicate merging, and contributor count.
 
         Returns full data per book:
         - All series memberships with positions
@@ -122,12 +120,42 @@ class MonitoredHardcoverProvider(HardcoverProvider):
         - Contributor count via contributions_aggregate
         """
         codes = lang_codes or _DEFAULT_LANG_CODES
+        today = datetime.now(UTC).date()
+        max_future = today + timedelta(days=TRUSTED_UNRELEASED_WINDOW_DAYS)
         query = """
-        query GetAuthorBooks($authorId: Int!, $limit: Int!, $offset: Int!, $langCodes: [String!]!) {
+        query GetAuthorBooks(
+            $authorId: Int!,
+            $limit: Int!,
+            $offset: Int!,
+            $langCodes: [String!]!,
+            $today: date!,
+            $maxFuture: date!
+        ) {
             books(
                 where: {
                     contributions: { author: { id: { _eq: $authorId } } }
-                    users_count: { _gt: 1 }
+                    _or: [
+                        { users_count: { _gt: 1 } },
+                        {
+                            _and: [
+                                { release_date: { _gte: $today } },
+                                { release_date: { _lte: $maxFuture } },
+                                {
+                                    _or: [
+                                        { book_series: { position: { _is_null: false } } },
+                                        { editions: {
+                                            language: { code2: { _in: $langCodes } },
+                                            asin: { _is_null: false }
+                                        } },
+                                        { editions: {
+                                            language: { code2: { _in: $langCodes } },
+                                            isbn_13: { _is_null: false }
+                                        } }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
                 }
                 limit: $limit
                 offset: $offset
@@ -181,7 +209,14 @@ class MonitoredHardcoverProvider(HardcoverProvider):
         """
         result = self._execute_query_strict(
             query,
-            {"authorId": int(author_id), "limit": limit, "offset": offset, "langCodes": codes},
+            {
+                "authorId": int(author_id),
+                "limit": limit,
+                "offset": offset,
+                "langCodes": codes,
+                "today": today.isoformat(),
+                "maxFuture": max_future.isoformat(),
+            },
         )
         return result.get("books") or []
 
@@ -239,9 +274,7 @@ class MonitoredHardcoverProvider(HardcoverProvider):
         )
         return (result or {}).get("books") or []
 
-    def get_book_rich(
-        self, book_id: str, *, lang_codes: list[str] | None = None
-    ) -> dict | None:
+    def get_book_rich(self, book_id: str, *, lang_codes: list[str] | None = None) -> dict | None:
         """Fetch a single book with the same rich fields as get_author_books_paginated.
 
         Used for directly-monitored books (kind='book' entities).
