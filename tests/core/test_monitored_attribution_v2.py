@@ -1149,6 +1149,90 @@ class TestTierClassification:
             f"series-name-only canonical forms must be filtered: {bare_series_variants}"
         )
 
+    def test_book_asins_json_list_of_dicts_matches_embedded_asin(self):
+        # Real production case: Hardcover stores asins/isbns as a JSON
+        # list-of-dicts on the monitored_books row:
+        #   asins:  [{"asin": "B09MV3G8PG"}, ...]
+        #   isbns:  [{"isbn_13": "9..."}, ...]
+        # The DB column type is TEXT so the row dict gets the raw JSON
+        # string. Prior _parse_book_identifiers only handled legacy CSV
+        # strings; the JSON form yielded an empty set, so the embedded
+        # ASIN/ISBN in the EPUB never "matched" the book — instead the
+        # OTHER branch fired (`book_isbns or book_asins` non-empty via
+        # the isbn_13 scalar column) and the embedded_identifier_mismatch
+        # hard-reject killed the correct match.
+        #
+        # Symptom on the user's server: a Book 1 EPUB file was
+        # hard-rejected for Book 1 (its actual book), then fell through
+        # to Book 16 (the highest-numbered unreleased placeholder with
+        # no stored identifiers, so it wasn't hard-rejected) as a
+        # candidate. UI showed the Book 1 file polluting Book 16's
+        # candidate list.
+        from shelfmark.core.monitored_attribution_v2 import (
+            EmbeddedMetadata,
+            _parse_book_identifiers,
+            evaluate_match,
+        )
+
+        book = {
+            "title": "The Primal Hunter",
+            "series_name": "The Primal Hunter",
+            "series_position": 1.0,
+            # Note: the scalar isbn_13 is one edition's ISBN;
+            # the asins/isbns JSON lists carry the actual file's IDs.
+            "isbn_13": "9788426232427",
+            "isbn_10": "8426232426",
+            "asins": '[{"asin": "B09MV3G8PG"}, {"asin": "B09MWNZ94S"}]',
+            "isbns": '[{"isbn_13": "9798835275045"}, {"isbn_13": "9788426232427"}]',
+        }
+
+        # Unit: identifier parsing must recover the ASIN list.
+        isbns, asins = _parse_book_identifiers(book)
+        assert "B09MV3G8PG" in asins, f"expected B09MV3G8PG in parsed asins, got {asins}"
+        assert "B09MWNZ94S" in asins, f"expected B09MWNZ94S in parsed asins, got {asins}"
+        assert "9798835275045" in isbns, f"expected ISBN parsed from JSON list, got {isbns}"
+
+        # Integration: file with embedded ASIN matching the book MUST
+        # confirm via identifier (not hard-reject).
+        embedded = EmbeddedMetadata(
+            title="The Primal Hunter",
+            authors=["Zogarth"],
+            series_name="The Primal Hunter",
+            series_position=1.0,
+            isbn_13="9798426232426",  # not in the book's isbns list
+            asin="B09MV3G8PG",  # IS in the book's asins list
+            year=2022,
+        )
+        ev = evaluate_match(
+            path="/books/ebooks/fiction/Zogarth/The Primal Hunter/01. The Primal Hunter - Zogarth (2022).epub",
+            book=book,
+            author_name="Zogarth",
+            embedded=embedded,
+        )
+        assert not ev.hard_reject, (
+            f"file's embedded ASIN matches book's asins[].asin — must NOT hard-reject: "
+            f"reason={ev.hard_reject_reason!r}"
+        )
+        assert ev.tier == "confirmed", (
+            f"identifier-match should confirm: tier={ev.tier}, score={ev.net_score:.2f}"
+        )
+        assert any(p["name"] == "embedded_identifier" for p in ev.positives), (
+            f"expected embedded_identifier positive in {[p['name'] for p in ev.positives]}"
+        )
+
+    def test_book_identifiers_legacy_csv_format_still_parsed(self):
+        # Back-compat: older rows may have asins/isbns as a comma-separated
+        # string, not JSON. Must continue to parse.
+        from shelfmark.core.monitored_attribution_v2 import _parse_book_identifiers
+
+        book = {
+            "asins": "B09MV3G8PG, B09MWNZ94S",
+            "isbns": "9798835275045 9788426232427",
+        }
+        isbns, asins = _parse_book_identifiers(book)
+        assert asins == {"B09MV3G8PG", "B09MWNZ94S"}
+        assert isbns == {"9798835275045", "9788426232427"}
+
     def test_bare_series_name_file_picks_position_one_not_arbitrary_book(self):
         # Real case (server-only manifestation): The Primal Hunter Book 1
         # audiobook is named just "The Primal Hunter - Zogarth (2022).m4b"

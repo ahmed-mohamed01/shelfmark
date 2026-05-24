@@ -621,7 +621,26 @@ def _clean_isbn(raw: str | None) -> str | None:
 
 
 def _parse_book_identifiers(book: dict[str, Any]) -> tuple[set[str], set[str]]:
-    """Return (isbns, asins) collected from book row's isbn_13/isbn_10/isbns/asins."""
+    """Return (isbns, asins) collected from book row's isbn_13/isbn_10/isbns/asins.
+
+    Handles three storage shapes the columns may take:
+      * scalar isbn_13 / isbn_10 — direct string fields on the row.
+      * JSON list-of-dicts — Hardcover stores it as
+        ``[{"isbn_13": "9..."}, ...]`` / ``[{"asin": "B0..."}, ...]``.
+        The DB column type is TEXT so the row dict gets the raw JSON
+        string; we json.loads it and walk the structure.
+      * Already-parsed list (in-memory book dicts in tests or code
+        paths that pre-parse the JSON).
+      * Legacy comma/semicolon/whitespace-separated string (older
+        rows; kept for back-compat).
+
+    The original implementation only handled the legacy CSV form, so any
+    Hardcover-synced book whose identifiers are in the JSON list-of-dicts
+    form silently yielded empty sets. That made the embedded-identifier
+    hard-reject in ``_score_metadata_signals`` (line ~1604) misfire: the
+    file's ASIN/ISBN never "matched" the book's, so any embedded-tagged
+    file got rejected outright even when it was the correct book.
+    """
     isbns: set[str] = set()
     asins: set[str] = set()
 
@@ -630,19 +649,72 @@ def _parse_book_identifiers(book: dict[str, Any]) -> tuple[set[str], set[str]]:
         if cleaned:
             isbns.add(cleaned)
 
-    raw_isbns = book.get("isbns") or ""
-    if isinstance(raw_isbns, str):
-        for tok in re.split(r"[,;\s]+", raw_isbns):
-            cleaned = _clean_isbn(tok)
+    def _walk_for_field(value: Any, field_keys: tuple[str, ...]) -> list[str]:
+        """Pull string values out of (list[dict] | list[str] | dict | str)."""
+        out: list[str] = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    for k in field_keys:
+                        v = item.get(k)
+                        if isinstance(v, str):
+                            out.append(v)
+                elif isinstance(item, str):
+                    out.append(item)
+        elif isinstance(value, dict):
+            for k in field_keys:
+                v = value.get(k)
+                if isinstance(v, str):
+                    out.append(v)
+        elif isinstance(value, str):
+            out.append(value)
+        return out
+
+    raw_isbns = book.get("isbns")
+    if raw_isbns:
+        parsed: Any = raw_isbns
+        if isinstance(raw_isbns, str) and raw_isbns.strip().startswith(("[", "{")):
+            try:
+                parsed = json.loads(raw_isbns)
+            except ValueError, TypeError:
+                parsed = raw_isbns
+        for val in _walk_for_field(parsed, ("isbn_13", "isbn_10", "isbn")):
+            cleaned = _clean_isbn(val)
             if cleaned:
                 isbns.add(cleaned)
+        # Legacy CSV fallback: if nothing parsed and we still have a raw
+        # string, split on separators (handles older row formats).
+        if isinstance(raw_isbns, str) and not (isinstance(parsed, (list, dict))):
+            for tok in re.split(r"[,;\s]+", raw_isbns):
+                cleaned = _clean_isbn(tok)
+                if cleaned:
+                    isbns.add(cleaned)
 
-    raw_asins = book.get("asins") or ""
-    if isinstance(raw_asins, str):
-        for raw_tok in re.split(r"[,;\s]+", raw_asins):
-            tok = raw_tok.strip().upper()
+    raw_asins = book.get("asins")
+    if raw_asins:
+        parsed = raw_asins
+        if isinstance(raw_asins, str) and raw_asins.strip().startswith(("[", "{")):
+            try:
+                parsed = json.loads(raw_asins)
+            except ValueError, TypeError:
+                parsed = raw_asins
+        for val in _walk_for_field(parsed, ("asin",)):
+            tok = val.strip().upper()
             if _ASIN_RE.match(tok):
                 asins.add(tok)
+        if isinstance(raw_asins, str) and not (isinstance(parsed, (list, dict))):
+            for raw_tok in re.split(r"[,;\s]+", raw_asins):
+                tok = raw_tok.strip().upper()
+                if _ASIN_RE.match(tok):
+                    asins.add(tok)
+
+    # Also pick up the embedded asin field directly (some book rows carry
+    # an "asin" scalar in addition to the asins list).
+    direct_asin = book.get("asin")
+    if isinstance(direct_asin, str):
+        tok = direct_asin.strip().upper()
+        if _ASIN_RE.match(tok):
+            asins.add(tok)
 
     return isbns, asins
 
