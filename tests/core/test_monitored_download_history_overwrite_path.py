@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shelfmark.core.models import DownloadTask
 from shelfmark.core import monitored_downloads
+from shelfmark.core.models import DownloadTask
 
 
 class _FakeMonitoredDB:
@@ -40,13 +40,17 @@ def _build_task(*, content_type: str) -> DownloadTask:
 
 
 def test_record_download_history_does_not_mark_cross_content_type_overwrite(monkeypatch):
-    fake_db = _FakeMonitoredDB(previous_match={
-        "path": "/audiobooks/book.m4b",
-        "file_type": "m4b",
-        "ext": "m4b",
-    })
+    fake_db = _FakeMonitoredDB(
+        previous_match={
+            "path": "/audiobooks/book.m4b",
+            "file_type": "m4b",
+            "ext": "m4b",
+        }
+    )
     monkeypatch.setattr(monitored_downloads, "_user_db", fake_db)
-    monkeypatch.setattr(monitored_downloads, "_infer_monitored_match_content_type", lambda **_: "audiobook")
+    monkeypatch.setattr(
+        monitored_downloads, "_infer_monitored_match_content_type", lambda **_: "audiobook"
+    )
 
     task = _build_task(content_type="ebook")
     monitored_downloads._record_download_history(task)
@@ -56,13 +60,17 @@ def test_record_download_history_does_not_mark_cross_content_type_overwrite(monk
 
 
 def test_record_download_history_marks_same_content_type_overwrite(monkeypatch):
-    fake_db = _FakeMonitoredDB(previous_match={
-        "path": "/books/ebooks/book-old.epub",
-        "file_type": "epub",
-        "ext": "epub",
-    })
+    fake_db = _FakeMonitoredDB(
+        previous_match={
+            "path": "/books/ebooks/book-old.epub",
+            "file_type": "epub",
+            "ext": "epub",
+        }
+    )
     monkeypatch.setattr(monitored_downloads, "_user_db", fake_db)
-    monkeypatch.setattr(monitored_downloads, "_infer_monitored_match_content_type", lambda **_: "ebook")
+    monkeypatch.setattr(
+        monitored_downloads, "_infer_monitored_match_content_type", lambda **_: "ebook"
+    )
 
     task = _build_task(content_type="ebook")
     monitored_downloads._record_download_history(task)

@@ -3,46 +3,46 @@
 Pure helper functions with no external dependencies — importable from any
 monitored_* module without circular imports.
 """
+
 from __future__ import annotations
 
 import base64
 import re
-from typing import Any, Optional, Tuple
-
+from typing import Any
 
 # =============================================================================
 # Numeric parsing
 # =============================================================================
 
 
-def _parse_float_from_text(value: str) -> Optional[float]:
+def _parse_float_from_text(value: str) -> float | None:
     """Extract the first float-like number from an arbitrary text string."""
     match = re.search(r"-?\d+(?:\.\d+)?", value or "")
     if not match:
         return None
     try:
         parsed = float(match.group(0))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return parsed if parsed == parsed else None  # guard against NaN
 
 
-def _parse_int_from_text(value: str) -> Optional[int]:
+def _parse_int_from_text(value: str) -> int | None:
     """Extract a non-negative integer from an arbitrary text string (digits only)."""
     digits_only = re.sub(r"[^\d]", "", value or "")
     if not digits_only:
         return None
     try:
         return int(digits_only)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
-def parse_float_safe(value: Any) -> Optional[float]:
+def parse_float_safe(value: Any) -> float | None:
     """Return float(value) or None on failure."""
     try:
         return float(value) if value is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -68,17 +68,11 @@ def normalize_preferred_languages(raw: Any) -> set[str] | None:
     if raw is None:
         return None
 
-    values: list[Any]
-    if isinstance(raw, (list, tuple, set)):
-        values = list(raw)
-    else:
-        values = [part for part in str(raw).split(",")]
+    values: list[Any] = (
+        list(raw) if isinstance(raw, (list, tuple, set)) else list(str(raw).split(","))
+    )
 
-    normalized = {
-        lang
-        for lang in (normalize_language_code(value) for value in values)
-        if lang
-    }
+    normalized = {lang for lang in (normalize_language_code(value) for value in values) if lang}
     return normalized or None
 
 
@@ -186,7 +180,7 @@ def transform_cached_event_thumbnail_urls(events: list[dict[str, Any]]) -> None:
 
 def extract_book_popularity(
     display_fields: Any,
-) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+) -> tuple[float | None, int | None, int | None]:
     """Parse rating, ratings_count, and readers_count from provider display_fields.
 
     Args:
@@ -199,9 +193,9 @@ def extract_book_popularity(
     if not isinstance(display_fields, list):
         return None, None, None
 
-    rating: Optional[float] = None
-    ratings_count: Optional[int] = None
-    readers_count: Optional[int] = None
+    rating: float | None = None
+    ratings_count: int | None = None
+    readers_count: int | None = None
 
     for raw in display_fields:
         if not isinstance(raw, dict):
@@ -262,16 +256,15 @@ def extract_author_photo_url(author: dict) -> str | None:
 # =============================================================================
 
 
-_EBOOK_FORMATS = frozenset({"epub", "mobi", "azw", "azw3", "pdf", "fb2", "djvu", "cbz", "cbr", "lit", "lrf"})
+_EBOOK_FORMATS = frozenset(
+    {"epub", "mobi", "azw", "azw3", "pdf", "fb2", "djvu", "cbz", "cbr", "lit", "lrf"}
+)
 _AUDIOBOOK_FORMATS = frozenset({"m4b", "mp3", "m4a", "flac", "ogg", "wma", "aac", "wav", "opus"})
 
 
 def _release_field(release: Any, name: str) -> str:
     """Read a field from a release object or dict, normalised to lowercase string."""
-    if isinstance(release, dict):
-        value = release.get(name)
-    else:
-        value = getattr(release, name, None)
+    value = release.get(name) if isinstance(release, dict) else getattr(release, name, None)
     return str(value or "").strip().lower()
 
 
@@ -302,15 +295,11 @@ def release_matches_content_type(release: Any, requested: str) -> bool:
     if requested == "audiobook":
         if is_ebook_format:
             return False
-        if rct_says_ebook and not is_audio_format:
-            return False
-        return True
-    # requested == "ebook"
+        return not (rct_says_ebook and not is_audio_format)
+    # requested == "ebook"  # noqa: ERA001
     if is_audio_format:
         return False
-    if rct_says_audio and not is_ebook_format:
-        return False
-    return True
+    return not (rct_says_audio and not is_ebook_format)
 
 
 def source_supports_content_type(source_row: dict | None, requested: str) -> bool:
@@ -325,5 +314,6 @@ def source_supports_content_type(source_row: dict | None, requested: str) -> boo
     if not source_row:
         return False
     from shelfmark.core.request_policy import DEFAULT_SUPPORTED_CONTENT_TYPES
+
     supported = source_row.get("supported_content_types") or DEFAULT_SUPPORTED_CONTENT_TYPES
     return requested in supported

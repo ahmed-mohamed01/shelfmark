@@ -84,7 +84,7 @@ def _record(
             user_id=user_id,
             triggered_by=_normalize_triggered_by(triggered_by),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to record monitored event %s: %s", event_type, exc)
 
 
@@ -106,7 +106,7 @@ def record_download_queued(
     source_display_name: str | None = None,
     release_title: str | None = None,
     match_score: float | None = None,
-    format: str | None = None,
+    format: str | None = None,  # noqa: A002 -- matches caller-side `task.format` / `release["format"]`
     size: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
@@ -125,14 +125,17 @@ def record_download_queued(
         status="info",
         message=f"Download queued: {release_title or book_title or 'Unknown'}",
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "task_id": task_id,
                 "release_title": release_title,
                 "match_score": match_score,
                 "format": format,
                 "size": size,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         session_id=session_id,
         user_id=user_id,
         triggered_by=triggered_by,
@@ -170,13 +173,16 @@ def record_download_complete(
         status="success",
         message=f"Downloaded: {downloaded_filename or book_title or 'Unknown'}",
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "task_id": task_id,
                 "download_path": download_path,
                 "downloaded_filename": downloaded_filename,
                 "match_score": match_score,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         session_id=session_id,
         user_id=user_id,
         triggered_by=triggered_by,
@@ -214,13 +220,16 @@ def record_download_failed(
         status="error",
         message=error_message or f"Download failed: {release_title or book_title or 'Unknown'}",
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "task_id": task_id,
                 "release_title": release_title,
                 "match_score": match_score,
                 "error_message": error_message,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         session_id=session_id,
         user_id=user_id,
         triggered_by=triggered_by,
@@ -299,17 +308,23 @@ def record_search_result(
         "error": error_message or f"Search error: {book_title or 'Unknown'}",
         "download_failed": error_message or f"Download failed: {book_title or 'Unknown'}",
     }
-    event_type = f"search_{search_status}" if search_status in ("no_match", "below_cutoff", "not_released", "queued") else "search_result"
+    event_type = (
+        f"search_{search_status}"
+        if search_status in ("no_match", "below_cutoff", "not_released", "queued")
+        else "search_result"
+    )
 
     merged_metadata = {
-        k: v for k, v in {
+        k: v
+        for k, v in {
             "search_status": search_status,
             "releases_found": releases_found,
             "best_score": best_score,
             "cutoff_score": cutoff_score,
             "release_title": release_title,
             "error_message": error_message,
-        }.items() if v is not None
+        }.items()
+        if v is not None
     }
     if metadata:
         merged_metadata.update({k: v for k, v in metadata.items() if v is not None})
@@ -388,18 +403,23 @@ def record_author_synced(
         author_name=author_name,
         status="success",
         message=(
-            f"Synced {author_name}: {books_added} new, {books_removed} removed" if books_added
-            else f"Synced {author_name}: {books_removed} removed" if books_removed
+            f"Synced {author_name}: {books_added} new, {books_removed} removed"
+            if books_added
+            else f"Synced {author_name}: {books_removed} removed"
+            if books_removed
             else f"Synced {author_name}"
         ),
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "books_added": books_added,
                 "books_removed": books_removed,
                 "total_books": total_books,
                 "batch_id": batch_id,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         user_id=user_id,
         triggered_by=triggered_by,
     )
@@ -421,11 +441,14 @@ def record_author_sync_failed(
         status="error",
         message=error_message or f"Sync failed: {author_name}",
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "error_message": error_message,
                 "batch_id": batch_id,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         user_id=user_id,
         triggered_by=triggered_by,
     )
@@ -460,13 +483,16 @@ def record_run_started(
             else f"{label} search for monitored books"
         ),
         metadata={
-            k: v for k, v in {
+            k: v
+            for k, v in {
                 "run_id": run_id,
                 "trigger": trigger,
                 "total_candidates": total_candidates,
                 "slot": slot,
-            }.items() if v is not None
-        } or None,
+            }.items()
+            if v is not None
+        }
+        or None,
         user_id=user_id,
         triggered_by=trigger,
     )

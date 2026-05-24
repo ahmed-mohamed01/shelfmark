@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
-from difflib import SequenceMatcher
 import re
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from difflib import SequenceMatcher
+from typing import TYPE_CHECKING, Any, Iterable
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
-from shelfmark.metadata_providers import BookMetadata
-from shelfmark.release_sources import Release
+
+if TYPE_CHECKING:
+    from shelfmark.metadata_providers import BookMetadata
+    from shelfmark.release_sources import Release
 
 logger = setup_logger(__name__)
 
 
-_WORD_NUMBER_MAP: Dict[str, float] = {
+_WORD_NUMBER_MAP: dict[str, float] = {
     "zero": 0,
     "one": 1,
     "two": 2,
@@ -40,7 +42,7 @@ _WORD_NUMBER_MAP: Dict[str, float] = {
     "tenth": 10,
 }
 
-_ROMAN_MAP: Dict[str, float] = {
+_ROMAN_MAP: dict[str, float] = {
     "i": 1,
     "ii": 2,
     "iii": 3,
@@ -92,7 +94,7 @@ _LOW_INFORMATION_TITLE_TOKENS = {
 _LOW_INFORMATION_TITLE_MAX_SCORE = 20
 
 _SERIES_NUM_TOKEN_RE = (
-    r"([0-9]+(?:\.[0-9]+)?|[ivx]+\b|zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"([0-9]+(?:\.[0-9]+)?|[ivx]+\b|zero|one|two|three|four|five|six|seven|eight|nine|ten|"  # noqa: S105 -- regex pattern, not a password
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
 )
 
@@ -104,10 +106,10 @@ _PRIORITY_BOOST_BY_RANK = [12, 9, 6, 3, 1]
 @dataclass
 class ReleaseMatchScore:
     score: int
-    breakdown: Dict[str, int]
+    breakdown: dict[str, int]
     confidence: str
     hard_reject: bool = False
-    reject_reason: Optional[str] = None
+    reject_reason: str | None = None
 
 
 @dataclass
@@ -116,26 +118,24 @@ class ReleaseScoringConfig:
     min_title_score: int
     min_author_score: int
     prefer_freeleech_or_direct: bool
-    ebook_release_priority: Dict[str, int]
-    audiobook_release_priority: Dict[str, int]
-    ebook_format_priority: Dict[str, int]
-    audiobook_format_priority: Dict[str, int]
+    ebook_release_priority: dict[str, int]
+    audiobook_release_priority: dict[str, int]
+    ebook_format_priority: dict[str, int]
+    audiobook_format_priority: dict[str, int]
 
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
 
 
-def _tokens(value: str) -> List[str]:
+def _tokens(value: str) -> list[str]:
     normalized = _normalize_text(value)
     return [token for token in normalized.split(" ") if token]
 
 
-def _distinctive_tokens(value: str) -> List[str]:
+def _distinctive_tokens(value: str) -> list[str]:
     return [
-        token
-        for token in _tokens(value)
-        if len(token) > 2 and token not in _GENERIC_TITLE_TOKENS
+        token for token in _tokens(value) if len(token) > 2 and token not in _GENERIC_TITLE_TOKENS
     ]
 
 
@@ -179,13 +179,13 @@ def _extract_release_author(release: Release) -> str:
     return ""
 
 
-def _author_variants(value: str) -> List[str]:
+def _author_variants(value: str) -> list[str]:
     """Extract plausible author fragments from noisy source strings."""
     raw = re.sub(r"\s+", " ", (value or "").strip())
     if not raw:
         return []
 
-    variants: List[str] = [raw]
+    variants: list[str] = [raw]
     for part in re.split(r"\s*(?:,|;|\||/|&|\band\b)\s*", raw, flags=re.IGNORECASE):
         token = part.strip()
         if token and token not in variants:
@@ -193,7 +193,7 @@ def _author_variants(value: str) -> List[str]:
     return variants
 
 
-def _extract_release_year(release: Release) -> Optional[int]:
+def _extract_release_year(release: Release) -> int | None:
     value = release.extra.get("year") if isinstance(release.extra, dict) else None
     if value is not None:
         match = re.search(r"(19\d{2}|20\d{2})", str(value))
@@ -207,7 +207,7 @@ def _extract_release_year(release: Release) -> Optional[int]:
     return None
 
 
-def _extract_series_number_after_series_name(series_name: str, release_title: str) -> Optional[float]:
+def _extract_series_number_after_series_name(series_name: str, release_title: str) -> float | None:
     """Extract a number that appears immediately after the matched series name."""
     if not series_name or not release_title:
         return None
@@ -227,7 +227,7 @@ def _extract_series_number_after_series_name(series_name: str, release_title: st
         return None
 
     # Handle titles like:
-    # - "Dungeon Life 2: ..."
+    # - "Dungeon Life 2: ..."  # noqa: ERA001
     # - "Dungeon Life Book 2"
     # - "Dungeon Life #2"
     match = re.match(
@@ -248,11 +248,11 @@ def _extract_series_number_after_series_name(series_name: str, release_title: st
     return number
 
 
-def _extract_release_series_number(release: Release, series_name: Optional[str]) -> Optional[float]:
+def _extract_release_series_number(release: Release, series_name: str | None) -> float | None:
     """Best-effort series number extraction from source metadata first, then title."""
     extra = release.extra if isinstance(release.extra, dict) else {}
 
-    def _parse(raw: str) -> Optional[float]:
+    def _parse(raw: str) -> float | None:
         n = _word_to_number(raw.strip().lower())
         if n is not None and n <= 200:
             return n
@@ -260,8 +260,17 @@ def _extract_release_series_number(release: Release, series_name: Optional[str])
         return n if n is not None and n <= 200 else None
 
     # Prefer explicit metadata fields when available.
-    for key in ("series_position", "series_number", "book_number", "book_num",
-                "volume", "vol", "part", "book", "number"):
+    for key in (
+        "series_position",
+        "series_number",
+        "book_number",
+        "book_num",
+        "volume",
+        "vol",
+        "part",
+        "book",
+        "number",
+    ):
         value = extra.get(key)
         if value is None:
             continue
@@ -269,7 +278,9 @@ def _extract_release_series_number(release: Release, series_name: Optional[str])
         if result is not None:
             return result
 
-    torznab_attrs = extra.get("torznab_attrs") if isinstance(extra.get("torznab_attrs"), dict) else {}
+    torznab_attrs = (
+        extra.get("torznab_attrs") if isinstance(extra.get("torznab_attrs"), dict) else {}
+    )
     for key in ("series", "seriesnumber", "book", "booknumber", "volume", "vol", "part"):
         value = torznab_attrs.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -285,7 +296,7 @@ def _extract_release_series_number(release: Release, series_name: Optional[str])
     return _extract_series_number_after_series_name(series_name or "", release.title)
 
 
-def _word_to_number(token: str) -> Optional[float]:
+def _word_to_number(token: str) -> float | None:
     if not token:
         return None
     if token in _WORD_NUMBER_MAP:
@@ -294,11 +305,11 @@ def _word_to_number(token: str) -> Optional[float]:
         return _ROMAN_MAP[token]
     try:
         return float(token)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
-def _extract_series_number(text: str) -> Optional[float]:
+def _extract_series_number(text: str) -> float | None:
     if not text:
         return None
 
@@ -333,20 +344,20 @@ def _extract_series_number(text: str) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 _SEGMENT_SEPARATOR_RE = re.compile(
-    r"\s*[-–—]\s+"   # dash variants with surrounding spaces
-    r"|\s*:\s*"      # colon
-    r"|\s*,\s+"      # comma followed by space (not inside numbers)
+    r"\s*[-–—]\s+"  # dash variants with surrounding spaces
+    r"|\s*:\s*"  # colon
+    r"|\s*,\s+"  # comma followed by space (not inside numbers)
     r"|\s*[\[\]()]\s*"  # brackets and parens
 )
 
 
-def _split_release_segments(title: str) -> List[str]:
+def _split_release_segments(title: str) -> list[str]:
     """Split a release title into structural segments and normalize each."""
     parts = _SEGMENT_SEPARATOR_RE.split(title or "")
     return [norm for p in parts if (norm := _normalize_text(p))]
 
 
-def _matches_any_segment(candidate_norm: str, segments: List[str]) -> bool:
+def _matches_any_segment(candidate_norm: str, segments: list[str]) -> bool:
     """Check if candidate matches any segment as an isolated title.
 
     Matches when the candidate:
@@ -370,17 +381,14 @@ def _matches_any_segment(candidate_norm: str, segments: List[str]) -> bool:
         if not seg_tokens:
             continue
         # Candidate must appear at start of segment as whole words and cover most of it.
-        if (
-            seg.startswith(candidate_norm + " ")
-            and len(candidate_tokens) / len(seg_tokens) >= 0.70
-        ):
+        if seg.startswith(candidate_norm + " ") and len(candidate_tokens) / len(seg_tokens) >= 0.70:
             return True
     return False
 
 
 def _check_author_in_segments(book: BookMetadata, release_title: str) -> int:
     """Fallback: check if any known author name matches a release segment."""
-    candidates: List[str] = []
+    candidates: list[str] = []
     if book.search_author:
         candidates.append(book.search_author)
     candidates.extend(book.authors or [])
@@ -411,7 +419,9 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     is_low_information_candidate = (
         bool(candidate_tokens)
         and len(candidate_tokens) <= 3
-        and all(token.isdigit() or token in _LOW_INFORMATION_TITLE_TOKENS for token in candidate_tokens)
+        and all(
+            token.isdigit() or token in _LOW_INFORMATION_TITLE_TOKENS for token in candidate_tokens
+        )
     )
 
     ratio = _sequence_ratio(candidate_norm, release_norm)
@@ -458,7 +468,7 @@ def _score_single_title_candidate(candidate: str, release_title: str) -> int:
     return score
 
 
-def _get_title_candidates(book: BookMetadata) -> List[str]:
+def _get_title_candidates(book: BookMetadata) -> list[str]:
     candidates = [book.title, book.search_title or ""]
     if book.subtitle:
         candidates.append(f"{book.title} {book.subtitle}")
@@ -471,7 +481,7 @@ def _score_author(book: BookMetadata, release: Release) -> int:
     if not release_author:
         return 0
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     if book.search_author:
         candidates.append(book.search_author)
     candidates.extend(book.authors or [])
@@ -494,7 +504,7 @@ def _score_author(book: BookMetadata, release: Release) -> int:
     return 0
 
 
-def _get_target_series_number(book: BookMetadata) -> Optional[float]:
+def _get_target_series_number(book: BookMetadata) -> float | None:
     if book.series_position is not None:
         return float(book.series_position)
 
@@ -564,7 +574,7 @@ def _score_year(book: BookMetadata, release: Release) -> int:
     return -15
 
 
-def _score_format_priority_tiebreak(release: Release, priority: Dict[str, int]) -> int:
+def _score_format_priority_tiebreak(release: Release, priority: dict[str, int]) -> int:
     if not priority:
         return 0
 
@@ -587,7 +597,9 @@ def _score_freeleech_direct_tiebreak(release: Release, enabled: bool) -> int:
         return 0
 
     is_direct_download = (release.source or "").strip().lower() == "direct_download"
-    is_freeleech = bool(release.extra.get("freeleech")) if isinstance(release.extra, dict) else False
+    is_freeleech = (
+        bool(release.extra.get("freeleech")) if isinstance(release.extra, dict) else False
+    )
     if is_direct_download or is_freeleech:
         return 10
     return 0
@@ -597,8 +609,8 @@ def _normalize_priority_token(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().lower())
 
 
-def _build_release_priority_map(raw_priority: object) -> Dict[str, int]:
-    priority: Dict[str, int] = {}
+def _build_release_priority_map(raw_priority: object) -> dict[str, int]:
+    priority: dict[str, int] = {}
     if not isinstance(raw_priority, list):
         return priority
 
@@ -622,7 +634,7 @@ def _build_release_priority_map(raw_priority: object) -> Dict[str, int]:
     return priority
 
 
-def _score_indexer_priority_tiebreak(release: Release, priority: Dict[str, int]) -> int:
+def _score_indexer_priority_tiebreak(release: Release, priority: dict[str, int]) -> int:
     if not priority:
         return 0
 
@@ -630,10 +642,10 @@ def _score_indexer_priority_tiebreak(release: Release, priority: Dict[str, int])
         _normalize_priority_token(f"indexer:{release.indexer or ''}"),
         _normalize_priority_token(f"source:{release.source or ''}"),
         _normalize_priority_token(release.indexer or ""),  # backward compatibility
-        _normalize_priority_token(release.source or ""),   # backward compatibility
+        _normalize_priority_token(release.source or ""),  # backward compatibility
     ]
 
-    best_rank: Optional[int] = None
+    best_rank: int | None = None
     for candidate in candidates:
         if not candidate:
             continue
@@ -660,7 +672,10 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
     global _scoring_config_cache
     now = time.monotonic()
     with _scoring_config_lock:
-        if _scoring_config_cache is not None and now - _scoring_config_cache[1] < _SCORING_CONFIG_TTL:
+        if (
+            _scoring_config_cache is not None
+            and now - _scoring_config_cache[1] < _SCORING_CONFIG_TTL
+        ):
             return _scoring_config_cache[0]
 
     raw_forbidden = app_config.get("RELEASE_MATCH_FORBIDDEN_TERMS", list(_FORBIDDEN_WORDS))
@@ -683,18 +698,24 @@ def _get_release_scoring_config() -> ReleaseScoringConfig:
 
     try:
         min_title_score = int(app_config.get("RELEASE_MATCH_MIN_TITLE_SCORE", 24))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         min_title_score = 24
     try:
         min_author_score = int(app_config.get("RELEASE_MATCH_MIN_AUTHOR_SCORE", 8))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         min_author_score = 8
     prefer_freeleech_or_direct = bool(app_config.get("RELEASE_PREFER_FREELEECH_OR_DIRECT", False))
 
-    ebook_release_priority = _build_release_priority_map(app_config.get("EBOOK_RELEASE_PRIORITY", []))
-    audiobook_release_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_RELEASE_PRIORITY", []))
+    ebook_release_priority = _build_release_priority_map(
+        app_config.get("EBOOK_RELEASE_PRIORITY", [])
+    )
+    audiobook_release_priority = _build_release_priority_map(
+        app_config.get("AUDIOBOOK_RELEASE_PRIORITY", [])
+    )
     ebook_format_priority = _build_release_priority_map(app_config.get("EBOOK_FORMAT_PRIORITY", []))
-    audiobook_format_priority = _build_release_priority_map(app_config.get("AUDIOBOOK_FORMAT_PRIORITY", []))
+    audiobook_format_priority = _build_release_priority_map(
+        app_config.get("AUDIOBOOK_FORMAT_PRIORITY", [])
+    )
 
     # Backward compatibility with initial setting key from early rollout.
     if not audiobook_release_priority:
@@ -722,19 +743,19 @@ def score_release_match(
     release: Release,
 ) -> ReleaseMatchScore:
     # 1. Read preferences from settings
-    cfg                     = _get_release_scoring_config()
-    forbidden_words         = cfg.forbidden_words
-    min_title_score         = cfg.min_title_score
-    min_author_score        = cfg.min_author_score
+    cfg = _get_release_scoring_config()
+    forbidden_words = cfg.forbidden_words
+    min_title_score = cfg.min_title_score
+    min_author_score = cfg.min_author_score
     prefer_freeleech_direct = cfg.prefer_freeleech_or_direct
-    content_type            = (release.content_type or "ebook").strip().lower()
-    release_priority_map    = (
-        cfg.audiobook_release_priority if content_type == "audiobook"
+    content_type = (release.content_type or "ebook").strip().lower()
+    release_priority_map = (
+        cfg.audiobook_release_priority
+        if content_type == "audiobook"
         else cfg.ebook_release_priority
     )
-    format_priority_map     = (
-        cfg.audiobook_format_priority if content_type == "audiobook"
-        else cfg.ebook_format_priority
+    format_priority_map = (
+        cfg.audiobook_format_priority if content_type == "audiobook" else cfg.ebook_format_priority
     )
 
     # 2. Hard rejects
@@ -751,13 +772,21 @@ def score_release_match(
 
     title_candidates = _get_title_candidates(book)
     if not title_candidates:
-        return ReleaseScore(raw=0, hard_reject=True, reject_reason="no_title_candidates")
+        return ReleaseMatchScore(
+            score=0,
+            breakdown={"title": 0, "author": 0},
+            confidence="none",
+            hard_reject=True,
+            reject_reason="no_title_candidates",
+        )
     title_score = max(_score_single_title_candidate(c, release.title) for c in title_candidates)
     author_score = _score_author(book, release)
     has_release_author = bool(_extract_release_author(release))
     release_distinct = set(_distinctive_tokens(release.title))
     has_distinctive_title_overlap = bool(release_distinct) and any(
-        set(_distinctive_tokens(c)) & release_distinct for c in title_candidates if _distinctive_tokens(c)
+        set(_distinctive_tokens(c)) & release_distinct
+        for c in title_candidates
+        if _distinctive_tokens(c)
     )
 
     # Guardrail: if title match is only coming from low-information tokens
@@ -797,7 +826,11 @@ def score_release_match(
     ):
         return ReleaseMatchScore(
             score=max(0, title_score + author_score - 20),
-            breakdown={"title": title_score, "author": author_score, "author_mismatch_penalty": -20},
+            breakdown={
+                "title": title_score,
+                "author": author_score,
+                "author_mismatch_penalty": -20,
+            },
             confidence="none",
             hard_reject=True,
             reject_reason="low_author_match",
@@ -876,9 +909,7 @@ def score_release_match(
         else 0
     )
     format_priority_score = (
-        _score_format_priority_tiebreak(release, format_priority_map)
-        if has_strong_metadata
-        else 0
+        _score_format_priority_tiebreak(release, format_priority_map) if has_strong_metadata else 0
     )
 
     total = max(
@@ -918,8 +949,10 @@ def score_release_match(
     )
 
 
-def rank_releases_for_book(book: BookMetadata, releases: List[Release]) -> List[Tuple[Release, ReleaseMatchScore]]:
-    scored: List[Tuple[Release, ReleaseMatchScore]] = []
+def rank_releases_for_book(
+    book: BookMetadata, releases: list[Release]
+) -> list[tuple[Release, ReleaseMatchScore]]:
+    scored: list[tuple[Release, ReleaseMatchScore]] = []
     for release in releases:
         match = score_release_match(book, release)
         if not isinstance(release.extra, dict):
@@ -940,7 +973,7 @@ def rank_releases_for_book(book: BookMetadata, releases: List[Release]) -> List[
 # =============================================================================
 
 
-def parse_release_date(value: Any) -> Optional[date]:
+def parse_release_date(value: Any) -> date | None:
     """Parse release date values from API/search payloads."""
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
@@ -961,7 +994,7 @@ def parse_release_date(value: Any) -> Optional[date]:
         return None
 
 
-def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
+def is_book_released(release_date: Any) -> tuple[bool, date | None]:
     """Check if a book has been released based on its release date.
 
     Returns:
@@ -972,7 +1005,7 @@ def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
     if parsed is None:
         return True, None  # No date = assume released
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     return parsed <= today, parsed
 
 
@@ -982,7 +1015,7 @@ def is_book_released(release_date: Any) -> Tuple[bool, Optional[date]]:
 
 
 def pre_process_releases(
-    releases: List[Dict[str, Any]],
+    releases: list[dict[str, Any]],
     *,
     user_db: Any = None,  # MonitoredDB instance; kept as user_db for call-site compatibility
     user_id: int,
@@ -990,8 +1023,8 @@ def pre_process_releases(
     provider: str,
     provider_book_id: str,
     content_type: str = "ebook",
-    min_match_score: Optional[float] = None,
-) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    min_match_score: float | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     """Pre-process releases for a monitored book before queuing.
 
     Filters releases by:
@@ -1019,11 +1052,13 @@ def pre_process_releases(
 
     if min_match_score is None:
         try:
-            min_match_score = float(app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=user_id))
-        except (ValueError, TypeError):
+            min_match_score = float(
+                app_config.get("AUTO_DOWNLOAD_MIN_MATCH_SCORE", 75, user_id=user_id)
+            )
+        except ValueError, TypeError:
             min_match_score = 75.0
 
-    valid_releases: List[Dict[str, Any]] = []
+    valid_releases: list[dict[str, Any]] = []
     unreleased_count = 0
     below_cutoff_count = 0
     cross_type_count = 0
@@ -1038,7 +1073,7 @@ def pre_process_releases(
                 provider_book_id=provider_book_id,
                 content_type=content_type,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to get failed source IDs: %s", e)
 
     from shelfmark.core.monitored_utils import release_matches_content_type
@@ -1052,7 +1087,10 @@ def pre_process_releases(
             cross_type_count += 1
             logger.debug(
                 "Skipping cross-type release: %s (format=%s, content_type=%s, requested=%s)",
-                release.get("title"), release.get("format"), release.get("content_type"), content_type,
+                release.get("title"),
+                release.get("format"),
+                release.get("content_type"),
+                content_type,
             )
             continue
 
@@ -1071,27 +1109,33 @@ def pre_process_releases(
         match_score = release.get("match_score") or extra.get("match_score")
         try:
             score = float(match_score) if match_score is not None else 0.0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             score = 0.0
 
         if score < min_match_score:
             below_cutoff_count += 1
-            logger.debug("Skipping below cutoff: %s (score %.2f < %.2f)", release.get("title"), score, min_match_score)
+            logger.debug(
+                "Skipping below cutoff: %s (score %.2f < %.2f)",
+                release.get("title"),
+                score,
+                min_match_score,
+            )
             continue
 
         src = str(release.get("source", "")).strip()
         src_id = str(release.get("source_id", "")).strip()
-        release["_previously_failed"] = bool(src and src_id and (src, src_id) in failed_source_pairs)
+        release["_previously_failed"] = bool(
+            src and src_id and (src, src_id) in failed_source_pairs
+        )
         release["_match_score"] = score
         valid_releases.append(release)
 
     if not valid_releases:
         if unreleased_count > 0 and below_cutoff_count == 0 and cross_type_count == 0:
             return [], "Book is unreleased"
-        elif below_cutoff_count > 0:
+        if below_cutoff_count > 0:
             return [], f"No releases meet minimum match score ({min_match_score:.0f})"
-        else:
-            return [], "No valid releases found"
+        return [], "No valid releases found"
 
     valid_releases.sort(
         key=lambda r: (not r.get("_previously_failed", False), r.get("_match_score", 0)),
@@ -1100,7 +1144,11 @@ def pre_process_releases(
 
     logger.info(
         "Pre-processed %d releases: %d valid, %d unreleased, %d below cutoff, %d cross-type, %d previously failed",
-        len(releases), len(valid_releases), unreleased_count, below_cutoff_count, cross_type_count,
+        len(releases),
+        len(valid_releases),
+        unreleased_count,
+        below_cutoff_count,
+        cross_type_count,
         sum(1 for r in valid_releases if r.get("_previously_failed")),
     )
 

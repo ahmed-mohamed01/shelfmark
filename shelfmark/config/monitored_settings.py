@@ -1,24 +1,27 @@
 """Settings tabs for the Monitoring feature — registered from monitored branch."""
+
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from shelfmark.core.settings_registry import (
-    register_settings,
+    CheckboxField,
+    CustomComponentField,
+    HeadingField,
+    NumberField,
+    OrderableListField,
+    SelectField,
+    SettingsField,
+    TagListField,
+    TextField,
     register_group,
     register_on_save,
-    NumberField,
-    CheckboxField,
-    SelectField,
-    TextField,
-    TagListField,
-    OrderableListField,
-    HeadingField,
-    CustomComponentField,
+    register_settings,
 )
 
 log = logging.getLogger(__name__)
@@ -33,6 +36,7 @@ register_group("monitoring", "Monitoring", icon="book", order=13)
 # ---------------------------------------------------------------------------
 # Option helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_release_priority_source_options(content_type: str) -> list[dict[str, str]]:
     """Return release source options for the given content type."""
@@ -79,7 +83,7 @@ def _get_release_priority_prowlarr_indexer_options() -> list[dict[str, str]]:
 
         client = ProwlarrClient(url, api_key, timeout=5)
         indexers = client.get_enabled_indexers_detailed()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
     options: list[dict[str, str]] = []
@@ -97,7 +101,7 @@ def _get_release_priority_prowlarr_indexer_options() -> list[dict[str, str]]:
 
         protocol = str(idx.get("protocol") or "").strip().lower()
         has_books = bool(idx.get("has_books", False))
-        detail_bits = [bit for bit in [protocol if protocol else None, "books" if has_books else None] if bit]
+        detail_bits = [bit for bit in [protocol or None, "books" if has_books else None] if bit]
         detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
 
         options.append(
@@ -153,24 +157,25 @@ def _get_ebook_format_priority_options() -> list[dict[str, str]]:
 def _get_audiobook_format_priority_options() -> list[dict[str, str]]:
     """Return configurable audiobook format priority options for release scoring."""
     ordered_formats = ["m4b", "mp3", "m4a", "flac", "opus"]
-    options: list[dict[str, str]] = []
-    for fmt in ordered_formats:
-        options.append(
-            {
-                "id": fmt,
-                "label": fmt.upper(),
-                "description": "Preferred audiobook format when ranking close matches.",
-            }
-        )
-    return options
+    return [
+        {
+            "id": fmt,
+            "label": fmt.upper(),
+            "description": "Preferred audiobook format when ranking close matches.",
+        }
+        for fmt in ordered_formats
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Settings tab registration
 # ---------------------------------------------------------------------------
 
-@register_settings("release_scoring", "Release Scoring", icon="wrench", order=14, group="monitoring")
-def release_scoring_settings():
+
+@register_settings(
+    "release_scoring", "Release Scoring", icon="wrench", order=14, group="monitoring"
+)
+def release_scoring_settings() -> list[SettingsField]:
     """Release matching and scoring behavior."""
     return [
         HeadingField(
@@ -246,7 +251,7 @@ def release_scoring_settings():
     ]
 
 
-def validate_monitored_refresh_times(values: Dict[str, Any]) -> Dict[str, Any] | None:
+def validate_monitored_refresh_times(values: dict[str, Any]) -> dict[str, Any] | None:
     """Validate and normalise MONITORED_REFRESH_TIMES in *values*.
 
     Returns an error dict if the value is invalid, or ``None`` when valid
@@ -285,8 +290,9 @@ def validate_monitored_refresh_times(values: Dict[str, Any]) -> Dict[str, Any] |
 # Monitoring → General tab
 # ---------------------------------------------------------------------------
 
+
 @register_settings("monitoring_general", "General", icon="settings", order=13, group="monitoring")
-def monitoring_general_settings():
+def monitoring_general_settings() -> list[SettingsField]:
     """General monitoring preferences."""
     return [
         HeadingField(
@@ -371,8 +377,9 @@ def monitoring_general_settings():
 # Monitoring → Schedules tab
 # ---------------------------------------------------------------------------
 
+
 @register_settings("monitoring_schedules", "Schedules", icon="cog", order=15, group="monitoring")
-def monitoring_schedules_settings():
+def monitoring_schedules_settings() -> list[SettingsField]:
     """Monitored author refresh scheduling."""
     return [
         HeadingField(
@@ -419,7 +426,7 @@ def monitoring_schedules_settings():
     ]
 
 
-def _on_save_schedules(values: Dict[str, Any]) -> Dict[str, Any]:
+def _on_save_schedules(values: dict[str, Any]) -> dict[str, Any]:
     """Validate monitored refresh times on save."""
     error = validate_monitored_refresh_times(values)
     if error is not None:
@@ -434,22 +441,31 @@ register_on_save("monitoring_schedules", _on_save_schedules)
 # One-time config migration: move monitoring fields from Advanced → new tabs
 # ---------------------------------------------------------------------------
 
+
 def _migrate_monitoring_settings() -> None:
     """Move monitoring settings from old config files to new tab files."""
     try:
         from shelfmark.core.config import CONFIG_DIR
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
 
     plugins_dir = Path(CONFIG_DIR) / "plugins"
     if not plugins_dir.is_dir():
         return
 
-    # Migrations: (source_file, keys_to_extract, destination_file)
+    # Migrations: (source_file, keys_to_extract, destination_file)  # noqa: ERA001
     migrations: list[tuple[str, set[str], str]] = [
         ("advanced.json", {"DEFAULT_TO_MONITORED_VIEW"}, "monitoring_general.json"),
-        ("advanced.json", {"MONITORED_SCHEDULED_REFRESH_ENABLED", "MONITORED_REFRESH_TIMES"}, "monitoring_schedules.json"),
-        ("release_scoring.json", {"SHOW_RELEASE_MATCH_SCORE", "RELEASE_PRIMARY_DEFAULT_ACTION"}, "monitoring_general.json"),
+        (
+            "advanced.json",
+            {"MONITORED_SCHEDULED_REFRESH_ENABLED", "MONITORED_REFRESH_TIMES"},
+            "monitoring_schedules.json",
+        ),
+        (
+            "release_scoring.json",
+            {"SHOW_RELEASE_MATCH_SCORE", "RELEASE_PRIMARY_DEFAULT_ACTION"},
+            "monitoring_general.json",
+        ),
     ]
 
     source_cache: dict[str, dict[str, Any]] = {}
@@ -464,7 +480,7 @@ def _migrate_monitoring_settings() -> None:
         if src_name not in source_cache:
             try:
                 source_cache[src_name] = json.loads(src_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
 
         src_data = source_cache[src_name]
@@ -480,10 +496,8 @@ def _migrate_monitoring_settings() -> None:
         target = plugins_dir / dest_name
         existing: dict[str, Any] = {}
         if target.is_file():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(target.read_text(encoding="utf-8"))
-            except Exception:
-                pass
         existing.update(vals)
         target.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         log.info("Migrated monitoring settings to %s: %s", dest_name, list(vals.keys()))

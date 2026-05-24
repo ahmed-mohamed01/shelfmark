@@ -31,7 +31,7 @@ from shelfmark.core.monitored_operations import (
 from shelfmark.core.monitored_release_scoring import parse_release_date
 from shelfmark.core.monitored_types import (
     AvailabilitySyncResult,
-    MonitoredEntityNotFound,
+    MonitoredEntityNotFoundError,
     MonitoredPathError,
 )
 from shelfmark.core.monitored_utils import (
@@ -631,7 +631,7 @@ def register_monitored_routes(
                                     + result.skipped_history_final_path_exists,
                                     result.failed,
                                 )
-                        except MonitoredEntityNotFound:
+                        except MonitoredEntityNotFoundError:
                             logger.debug(
                                 "Scheduled auto-search skipped slot=%s entity=%s(%s) — entity not found",
                                 s,
@@ -2133,7 +2133,7 @@ def register_monitored_routes(
                 provider_book_id=provider_book_id,
                 content_type=content_type,
             )
-        except MonitoredEntityNotFound:
+        except MonitoredEntityNotFoundError:
             return jsonify({"error": "Not found"}), 404
 
         return jsonify(
@@ -2262,7 +2262,7 @@ def register_monitored_routes(
         # whole call — they're surfaced inside their result dicts.
         fs_err = sync_result.fs_error
         if fs_err is not None:
-            if isinstance(fs_err, MonitoredEntityNotFound):
+            if isinstance(fs_err, MonitoredEntityNotFoundError):
                 return jsonify({"error": "Not found"}), 404
             if isinstance(fs_err, MonitoredPathError):
                 msg = str(fs_err)
@@ -2611,7 +2611,7 @@ def register_monitored_routes(
                 content_type=content_type,
                 min_match_score=threshold / 100.0,
             )
-        except MonitoredEntityNotFound:
+        except MonitoredEntityNotFoundError:
             return jsonify({"error": "Not found"}), 404
 
         return jsonify(

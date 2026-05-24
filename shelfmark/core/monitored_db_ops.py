@@ -10,13 +10,13 @@ Key public functions:
   diff_sync_books        — soft-flag books no longer present at the provider
   fetch_book_releases    — search all configured sources for releases of a single book
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_types import DiffResult
 from shelfmark.core.monitored_utils import (
     extract_book_popularity,
@@ -24,6 +24,9 @@ from shelfmark.core.monitored_utils import (
     source_supports_content_type,
 )
 from shelfmark.metadata_providers import normalize_language_code
+
+if TYPE_CHECKING:
+    from shelfmark.core.monitored_db import MonitoredDB
 
 logger = setup_logger(__name__)
 
@@ -33,15 +36,17 @@ logger = setup_logger(__name__)
 # =============================================================================
 
 
-def get_monitored_provider(provider_name: str):
+def get_monitored_provider(provider_name: str) -> Any:
     """Return a provider instance, using MonitoredHardcoverProvider for 'hardcover'."""
     from shelfmark.metadata_providers import get_provider_kwargs
 
     if str(provider_name or "").strip().lower() == "hardcover":
         from shelfmark.core.monitored_hardcover_ext import MonitoredHardcoverProvider
+
         return MonitoredHardcoverProvider(**get_provider_kwargs("hardcover"))
 
     from shelfmark.metadata_providers import get_provider
+
     return get_provider(provider_name, **get_provider_kwargs(provider_name))
 
 
@@ -87,7 +92,7 @@ def _parse_book_fields(book: dict, *, lang_codes: list[str]) -> dict:
     release_date = phys.get("release_date") or book.get("release_date") or None
     try:
         publish_year = int(release_date[:4]) if release_date else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         publish_year = None
 
     # Preferred-language ISBNs and ASINs (aliased edition subfields)
@@ -147,7 +152,7 @@ def fetch_entity_metadata(
     entity: dict[str, Any],
     user_id: int | None,
     provider: Any = None,
-    preferred_languages: "set[str] | None" = None,
+    preferred_languages: set[str] | None = None,
 ) -> set[str]:
     """Fetch metadata for a monitored entity and upsert to DB.
 
@@ -195,7 +200,9 @@ def fetch_entity_metadata(
 
         while offset < max_books:
             page_books = provider.get_author_books_paginated(
-                entity_provider_id, offset=offset, limit=limit,
+                entity_provider_id,
+                offset=offset,
+                limit=limit,
                 lang_codes=lang_codes if hasattr(provider, "get_book_rich") else None,
             )
             if not page_books:
@@ -219,24 +226,29 @@ def fetch_entity_metadata(
         if dup_count:
             logger.debug(
                 "entity_id=%s: merged %d duplicate book entries",
-                entity_id, dup_count,
+                entity_id,
+                dup_count,
             )
 
         canonical_books, filtered_books = filter_split_books(deduped_books)
         if filtered_books:
             logger.debug(
                 "entity_id=%s: filtered %d split books out of %d total",
-                entity_id, len(filtered_books), len(deduped_books),
+                entity_id,
+                len(filtered_books),
+                len(deduped_books),
             )
 
         # Noise filter: title patterns, language heuristic, contributor count
         canonical_books, noise_books, auto_hide_books = filter_noise_books(
-            canonical_books, lang_codes=lang_codes,
+            canonical_books,
+            lang_codes=lang_codes,
         )
         if noise_books:
             logger.debug(
                 "entity_id=%s: noise-filtered %d books",
-                entity_id, len(noise_books),
+                entity_id,
+                len(noise_books),
             )
 
         discovered_ids: set[str] = set()
@@ -253,7 +265,11 @@ def fetch_entity_metadata(
             fields = _parse_book_fields(book, lang_codes=lang_codes)
 
             # Skip books in non-preferred languages
-            if preferred_languages and fields.get("language") and fields["language"] not in preferred_languages:
+            if (
+                preferred_languages
+                and fields.get("language")
+                and fields["language"] not in preferred_languages
+            ):
                 continue
 
             discovered_ids.add(f"{provider_name}:{book_id}")
@@ -270,8 +286,10 @@ def fetch_entity_metadata(
                     hidden=True if book.get("id") in auto_hide_ids else None,
                     **fields,
                 )
-            except Exception as exc:
-                logger.warning("Failed to upsert book %s for entity %s: %s", book_id, entity_id, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to upsert book %s for entity %s: %s", book_id, entity_id, exc
+                )
 
         return discovered_ids
 
@@ -308,7 +326,9 @@ def fetch_entity_metadata(
                 book = provider.get_book_rich(entity_provider_id, lang_codes=lang_codes)
                 if book is not None:
                     fields = _parse_book_fields(book, lang_codes=lang_codes)
-                    seeded_title = str(fields.get("title") or seeded_title or "").strip() or seeded_title
+                    seeded_title = (
+                        str(fields.get("title") or seeded_title or "").strip() or seeded_title
+                    )
                     seeded_description = fields.get("description")
                     seeded_isbn13 = fields.get("isbn_13")
                     seeded_isbn10 = fields.get("isbn_10")
@@ -331,7 +351,9 @@ def fetch_entity_metadata(
                 bm = provider.get_book(entity_provider_id)
                 if bm is not None:
                     payload = asdict(bm)
-                    seeded_title = str(payload.get("title") or seeded_title or "").strip() or seeded_title
+                    seeded_title = (
+                        str(payload.get("title") or seeded_title or "").strip() or seeded_title
+                    )
                     authors_list = payload.get("authors")
                     if isinstance(authors_list, list):
                         seeded_authors = (
@@ -347,13 +369,15 @@ def fetch_entity_metadata(
                     seeded_series_position = payload.get("series_position")
                     seeded_series_count = payload.get("series_count")
                     seeded_language = normalize_language_code(payload.get("language"))
-                    seeded_rating, seeded_ratings_count, seeded_readers_count = extract_book_popularity(
-                        payload.get("display_fields")
+                    seeded_rating, seeded_ratings_count, seeded_readers_count = (
+                        extract_book_popularity(payload.get("display_fields"))
                     )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Book monitor metadata seed failed provider=%s provider_id=%s: %s",
-            provider_name, entity_provider_id, exc,
+            provider_name,
+            entity_provider_id,
+            exc,
         )
 
     try:
@@ -394,10 +418,13 @@ def fetch_entity_metadata(
             monitor_ebook=monitor_ebook,
             monitor_audiobook=monitor_audiobook,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Book monitor seed upsert failed entity_id=%s provider=%s provider_id=%s: %s",
-            entity_id, provider_name, entity_provider_id, exc,
+            entity_id,
+            provider_name,
+            entity_provider_id,
+            exc,
         )
 
     return {f"{provider_name}:{entity_provider_id}"}
@@ -414,7 +441,7 @@ def diff_sync_books(
     entity_id: int,
     user_id: int | None,
     current_provider_ids: set[str],
-) -> "DiffResult":
+) -> DiffResult:
     """Diff existing books against the latest provider fetch.
 
     Books missing from *current_provider_ids* are soft-flagged as
@@ -458,10 +485,12 @@ def diff_sync_books(
                 keys=keys_to_remove,
                 state="removed_from_provider",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to flag %d books as removed entity_id=%s: %s",
-                len(keys_to_remove), entity_id, exc,
+                len(keys_to_remove),
+                entity_id,
+                exc,
             )
             result.removed = 0
             result.removed_titles.clear()
@@ -504,9 +533,11 @@ def fetch_book_releases(
             continue
         try:
             source = get_source(source_name)
-            releases = source.search(book, search_plan, expand_search=False, content_type=content_type)
+            releases = source.search(
+                book, search_plan, expand_search=False, content_type=content_type
+            )
             all_releases.extend(releases)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Release search failed for source %s: %s", source_name, exc)
             continue
 
@@ -518,7 +549,8 @@ def fetch_book_releases(
     if dropped:
         logger.debug(
             "fetch_book_releases: dropped %d cross-type releases for content_type=%s",
-            dropped, content_type,
+            dropped,
+            content_type,
         )
 
     if not matched_releases:

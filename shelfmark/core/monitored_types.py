@@ -3,11 +3,11 @@
 Import this module for all result types and exceptions used across
 monitored_db_ops, monitored_operations, and monitored_routes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-
 
 # =============================================================================
 # Exceptions
@@ -18,7 +18,7 @@ class MonitoredError(Exception):
     """Base exception for all monitored feature errors."""
 
 
-class MonitoredEntityNotFound(MonitoredError):
+class MonitoredEntityNotFoundError(MonitoredError):
     """Raised when a monitored entity cannot be located."""
 
 
@@ -90,6 +90,7 @@ def is_transient_provider_error(exc: BaseException) -> bool:
 @dataclass
 class DiffResult:
     """Result of diff_sync_books() — tracks provider-side changes."""
+
     added: int = 0
     removed: int = 0
     removed_titles: list[str] = field(default_factory=list)
@@ -98,6 +99,7 @@ class DiffResult:
 @dataclass
 class RefreshResult:
     """Result of an author metadata sync."""
+
     books_upserted: int = 0
     books_added: int = 0
     books_removed: int = 0
@@ -107,6 +109,7 @@ class RefreshResult:
 @dataclass
 class BatchSyncResult:
     """Result of _run_batch_sync()."""
+
     total: int = 0
     successful: int = 0
     failed: int = 0
@@ -118,6 +121,7 @@ class BatchSyncResult:
 @dataclass
 class ScanResult:
     """Result of update_file_availability()."""
+
     entity_id: int = 0
     matched: list[dict[str, Any]] = field(default_factory=list)
     unmatched: list[dict[str, Any]] = field(default_factory=list)
@@ -138,6 +142,7 @@ class AvailabilitySyncResult:
     ABS / Booklore results fall back to a ``*_skipped: True`` dict on failure
     so JSON payloads have a stable shape.
     """
+
     fs_scan: ScanResult | None = None
     fs_error: Exception | None = None
     abs: dict[str, Any] = field(default_factory=lambda: {"abs_skipped": True, "reason": "not_run"})
@@ -147,6 +152,7 @@ class AvailabilitySyncResult:
 @dataclass
 class SearchSummary:
     """Result of search_missing_books()."""
+
     entity_id: int = 0
     content_type: str = "ebook"
     total_candidates: int = 0
@@ -162,6 +168,7 @@ class SearchSummary:
 @dataclass
 class AvailabilityData:
     """Result of compute_book_availability()."""
+
     books: list[dict[str, Any]] = field(default_factory=list)
     files: list[dict[str, Any]] = field(default_factory=list)
     availability_by_book: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)

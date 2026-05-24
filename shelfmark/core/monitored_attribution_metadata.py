@@ -23,6 +23,7 @@ logger = setup_logger(__name__)
 # Optional dep — only used for audio formats. Graceful degradation when missing.
 try:
     from mutagen import File as MutagenFile  # type: ignore[import-not-found]
+
     _MUTAGEN_AVAILABLE = True
 except ImportError:
     MutagenFile = None  # type: ignore[assignment, misc]
@@ -31,7 +32,7 @@ except ImportError:
 
 # Defused XML for safe parsing of untrusted EPUB content.
 try:
-    from defusedxml import ElementTree as ET  # type: ignore[import-not-found]
+    from defusedxml import ElementTree as ET  # type: ignore[import-not-found]  # noqa: N817
 except ImportError:
     import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 
@@ -60,7 +61,7 @@ def _parse_series_position(value: Any) -> float | None:
         return None
     try:
         return float(str(value).strip().split()[0])
-    except (ValueError, IndexError):
+    except ValueError, IndexError:
         m = re.search(r"\d+(?:\.\d+)?", str(value))
         if m:
             try:
@@ -101,7 +102,7 @@ def _read_epub_metadata(path: str) -> EmbeddedMetadata | None:
                 return None
 
             return _parse_opf(opf_xml)
-    except (zipfile.BadZipFile, OSError, ET.ParseError):
+    except zipfile.BadZipFile, OSError, ET.ParseError:
         return None
     except Exception as exc:  # noqa: BLE001 — read-only diagnostic catch
         logger.debug("EPUB metadata read failed for %s: %s", path, exc)
@@ -128,7 +129,9 @@ def _parse_opf(opf_xml: bytes) -> EmbeddedMetadata:
         elif tag == "date" and text and meta.year is None:
             meta.year = _parse_year(text)
         elif tag == "identifier" and text:
-            scheme = (el.get("scheme") or el.get("{http://www.idpf.org/2007/opf}scheme") or "").lower()
+            scheme = (
+                el.get("scheme") or el.get("{http://www.idpf.org/2007/opf}scheme") or ""
+            ).lower()
             cleaned = re.sub(r"[^0-9Xx]", "", text).upper()
             if scheme == "isbn" or ("isbn" in text.lower()):
                 if len(cleaned) == 13 and meta.isbn_13 is None:
@@ -212,7 +215,7 @@ def _read_audio_metadata(path: str) -> EmbeddedMetadata | None:
     def _get(key: str) -> str | None:
         try:
             v = tags.get(key)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         if v is None:
             return None
@@ -225,10 +228,9 @@ def _read_audio_metadata(path: str) -> EmbeddedMetadata | None:
     title = _get("\xa9nam")
     artist = _get("\xa9ART")
     album = _get("\xa9alb")
-    cprt = _get("cprt")
     year_raw = _get("\xa9day")
 
-    # ID3 (MP3)
+    # ID3 (MP3)  # noqa: ERA001
     if not title:
         title = _get("TIT2")
     if not artist:
@@ -251,7 +253,7 @@ def _read_audio_metadata(path: str) -> EmbeddedMetadata | None:
     # MP4 freeform atoms come in as "----:com.apple.iTunes:KEY"
     try:
         all_keys = list(tags.keys()) if tags else []
-    except Exception:
+    except Exception:  # noqa: BLE001
         all_keys = []
 
     for k in all_keys:
@@ -260,7 +262,7 @@ def _read_audio_metadata(path: str) -> EmbeddedMetadata | None:
             val = _get(k)
             if val and not meta.series_name:
                 meta.series_name = val
-        elif "series-part" in kl or "series_part" in kl or kl.endswith(":part") or kl.endswith("position"):
+        elif "series-part" in kl or "series_part" in kl or kl.endswith((":part", "position")):
             val = _get(k)
             if val and meta.series_position is None:
                 meta.series_position = _parse_series_position(val)

@@ -30,7 +30,9 @@ def _set_session(client, *, user_id: str, db_user_id: int, is_admin: bool = Fals
         sess["is_admin"] = is_admin
 
 
-def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(main_module, client, tmp_path: Path):
+def test_scan_files_prefers_subtitle_variant_on_equal_base_title_match(
+    main_module, client, tmp_path: Path
+):
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
@@ -129,7 +131,9 @@ def test_scan_files_skips_unreadable_paths_instead_of_failing(main_module, clien
         publish_year=2024,
     )
 
-    with patch("shelfmark.core.monitored_files.os.walk", side_effect=PermissionError("permission denied")):
+    with patch(
+        "shelfmark.core.monitored_files.os.walk", side_effect=PermissionError("permission denied")
+    ):
         response = client.post(f"/api/monitored/{entity['id']}/scan-files")
 
     assert response.status_code == 200

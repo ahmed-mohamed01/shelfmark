@@ -7,15 +7,16 @@ and the scheduler import only from this module.
 Import graph: monitored_operations → monitored_db_ops, monitored_files,
               monitored_downloads, monitored_utils, monitored_types
 """
+
 from __future__ import annotations
 
+import contextlib
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.monitored_db_ops import (
     diff_sync_books,
     fetch_book_releases,
@@ -25,7 +26,7 @@ from shelfmark.core.monitored_types import (
     AvailabilityData,
     AvailabilitySyncResult,
     BatchSyncResult,
-    MonitoredEntityNotFound,
+    MonitoredEntityNotFoundError,
     MonitoredPathError,
     MonitoredProviderError,
     RefreshResult,
@@ -33,6 +34,9 @@ from shelfmark.core.monitored_types import (
     SearchSummary,
     is_transient_provider_error,
 )
+
+if TYPE_CHECKING:
+    from shelfmark.core.monitored_db import MonitoredDB
 
 logger = setup_logger(__name__)
 
@@ -72,43 +76,59 @@ def sync_availability_sources(
     # Filesystem scan — best-effort, skipped if library paths not configured.
     try:
         from shelfmark.core.monitored_files import resolve_allowed_roots
+
         roots = resolve_allowed_roots(user_db, db_user_id=int(user_id or 0)) if user_db else []
         if roots:
             result.fs_scan = update_file_availability(
-                db, entity_id=entity_id, user_id=user_id, allowed_roots=roots,
+                db,
+                entity_id=entity_id,
+                user_id=user_id,
+                allowed_roots=roots,
             )
         else:
             logger.warning("File scan skipped for entity %s: no allowed roots resolved", entity_id)
-    except (MonitoredEntityNotFound, MonitoredPathError) as exc:
+    except (MonitoredEntityNotFoundError, MonitoredPathError) as exc:
         # Route handlers translate these into specific HTTP responses.
         result.fs_error = exc
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         result.fs_error = exc
         logger.warning("File scan failed for entity %s: %s", entity_id, exc)
 
     # ABS sync — best-effort, skipped if ABS not configured.
     try:
-        from shelfmark.core.monitored_audiobookshelf_integration import sync_abs_availability_for_entity
-        result.abs = sync_abs_availability_for_entity(
-            monitored_db=db,
-            entity_id=entity_id,
-            entity_name=entity_name,
-            user_id=user_id,
-        ) or result.abs
-    except Exception as exc:
+        from shelfmark.core.monitored_audiobookshelf_integration import (
+            sync_abs_availability_for_entity,
+        )
+
+        result.abs = (
+            sync_abs_availability_for_entity(
+                monitored_db=db,
+                entity_id=entity_id,
+                entity_name=entity_name,
+                user_id=user_id,
+            )
+            or result.abs
+        )
+    except Exception as exc:  # noqa: BLE001
         logger.warning("ABS availability sync failed for entity %s: %s", entity_id, exc)
         result.abs = {"abs_skipped": True, "reason": "error"}
 
     # Booklore sync — best-effort, skipped if Booklore not configured.
     try:
-        from shelfmark.core.monitored_booklore_integration import sync_booklore_availability_for_entity
-        result.bl = sync_booklore_availability_for_entity(
-            monitored_db=db,
-            entity_id=entity_id,
-            entity_name=entity_name,
-            user_id=user_id,
-        ) or result.bl
-    except Exception as exc:
+        from shelfmark.core.monitored_booklore_integration import (
+            sync_booklore_availability_for_entity,
+        )
+
+        result.bl = (
+            sync_booklore_availability_for_entity(
+                monitored_db=db,
+                entity_id=entity_id,
+                entity_name=entity_name,
+                user_id=user_id,
+            )
+            or result.bl
+        )
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Booklore availability sync failed for entity %s: %s", entity_id, exc)
         result.bl = {"bl_skipped": True, "reason": "error"}
 
@@ -155,22 +175,27 @@ def _sync_author_core(
         from shelfmark.core.monitored_release_enricher import enrich_release_dates
 
         enriched_count = enrich_release_dates(
-            db, entity_id=entity_id, user_id=user_id, books=books,
+            db,
+            entity_id=entity_id,
+            user_id=user_id,
+            books=books,
         )
         if enriched_count:
             books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Release date enrichment failed for entity %d: %s", entity_id, exc)
 
     existing_files = db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
 
     if books and existing_files:
         from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
+
         existing_files = expand_monitored_file_rows_for_equivalent_books(
             books=books, file_rows=existing_files
         )
 
     from shelfmark.core.monitored_files import apply_monitor_modes_for_books
+
     apply_monitor_modes_for_books(
         db, db_user_id=user_id, entity=entity, books=books, file_rows=existing_files
     )
@@ -189,7 +214,7 @@ def _sync_author_core(
 # =============================================================================
 
 
-def _resolve_preferred_languages(user_db: Any, user_id: int | None) -> "set[str] | None":
+def _resolve_preferred_languages(user_db: Any, user_id: int | None) -> set[str] | None:
     """Resolve preferred book languages from user settings or global config."""
     from shelfmark.core.config import config as _app_config
     from shelfmark.core.monitored_utils import normalize_preferred_languages
@@ -200,7 +225,7 @@ def _resolve_preferred_languages(user_db: Any, user_id: int | None) -> "set[str]
             langs = normalize_preferred_languages(settings.get("BOOK_LANGUAGE"))
             if langs:
                 return langs
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return normalize_preferred_languages(_app_config.get("BOOK_LANGUAGE", []))
 
@@ -218,7 +243,7 @@ def _broadcast(ws_manager: Any, user_id: int | None, event: str, data: dict) -> 
         if user_id is not None:
             socketio.emit(event, data, to=f"user_{user_id}")
         socketio.emit(event, data, to="admins")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -238,33 +263,57 @@ def _run_author_sync(
             return
 
         entity_name = str(entity.get("name") or "Author")
-        _broadcast(ws_manager, user_id, "monitored_sync_started",
-                   {"entity_id": entity_id, "name": entity_name})
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_started",
+            {"entity_id": entity_id, "name": entity_name},
+        )
 
         preferred_languages = _resolve_preferred_languages(user_db, user_id)
 
         # Fetch, diff-sync, apply monitor modes — shared with the scheduler path.
-        _broadcast(ws_manager, user_id, "monitored_sync_progress",
-                   {"entity_id": entity_id, "phase": "fetching_books"})
-        sync_result = _sync_author_core(db, entity=entity, user_id=user_id, preferred_languages=preferred_languages)
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_progress",
+            {"entity_id": entity_id, "phase": "fetching_books"},
+        )
+        sync_result = _sync_author_core(
+            db, entity=entity, user_id=user_id, preferred_languages=preferred_languages
+        )
 
         # File availability across all sources (filesystem + ABS + Booklore).
-        _broadcast(ws_manager, user_id, "monitored_sync_progress",
-                   {"entity_id": entity_id, "phase": "scanning_files"})
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_progress",
+            {"entity_id": entity_id, "phase": "scanning_files"},
+        )
         sync_availability_sources(
-            db, entity_id=entity_id, entity_name=entity_name,
-            user_id=user_id, user_db=user_db,
+            db,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            user_id=user_id,
+            user_db=user_db,
         )
 
         # Cover prefetch — broadcast phase, then fetch covers into cache
-        _broadcast(ws_manager, user_id, "monitored_sync_progress",
-                   {"entity_id": entity_id, "phase": "fetching_covers"})
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_progress",
+            {"entity_id": entity_id, "phase": "fetching_covers"},
+        )
         try:
             from shelfmark.config.env import is_covers_cache_enabled
+
             if is_covers_cache_enabled():
                 import base64
                 from urllib.parse import parse_qs, urlparse
+
                 from shelfmark.core.image_cache import get_image_cache
+
                 img_cache = get_image_cache()
 
                 # Prefetch book covers
@@ -291,16 +340,18 @@ def _run_author_sync(
                             original_url = base64.urlsafe_b64decode(encoded.encode()).decode()
                             if img_cache.get(photo_cache_id) is None:
                                 img_cache.fetch_and_cache(photo_cache_id, original_url)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
         books_count = len(db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or [])
         db.update_entity_sync_status(entity_id, "idle")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=None)
         complete_data: dict[str, Any] = {
-            "entity_id": entity_id, "books_count": books_count, "name": entity_name,
+            "entity_id": entity_id,
+            "books_count": books_count,
+            "name": entity_name,
         }
         if sync_result.books_removed > 0:
             complete_data["books_removed"] = sync_result.books_removed
@@ -308,6 +359,7 @@ def _run_author_sync(
         _broadcast(ws_manager, user_id, "monitored_sync_complete", complete_data)
         try:
             from shelfmark.core.monitored_history import record_author_synced
+
             record_author_synced(
                 entity_id=entity_id,
                 author_name=entity_name,
@@ -317,30 +369,52 @@ def _run_author_sync(
                 user_id=user_id,
                 triggered_by="manual",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Failed to record author_synced event for %s: %s", entity_id, exc)
 
     except MonitoredProviderError as exc:
         error_msg = f"[{exc.error_type}] {exc}"
         db.update_entity_sync_status(entity_id, "error")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
-        _broadcast(ws_manager, user_id, "monitored_sync_error",
-                   {"entity_id": entity_id, "error": error_msg, "error_type": exc.error_type})
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_error",
+            {"entity_id": entity_id, "error": error_msg, "error_type": exc.error_type},
+        )
         try:
             from shelfmark.core.monitored_history import record_author_sync_failed
-            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id, triggered_by="manual")
-        except Exception as log_exc:
+
+            record_author_sync_failed(
+                entity_id=entity_id,
+                author_name=entity_name,
+                error_message=error_msg,
+                user_id=user_id,
+                triggered_by="manual",
+            )
+        except Exception as log_exc:  # noqa: BLE001
             logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         error_msg = f"[unknown] {exc}"
         db.update_entity_sync_status(entity_id, "error")
         db.update_monitored_entity_check(entity_id=entity_id, last_error=error_msg)
-        _broadcast(ws_manager, user_id, "monitored_sync_error",
-                   {"entity_id": entity_id, "error": error_msg, "error_type": "unknown"})
+        _broadcast(
+            ws_manager,
+            user_id,
+            "monitored_sync_error",
+            {"entity_id": entity_id, "error": error_msg, "error_type": "unknown"},
+        )
         try:
             from shelfmark.core.monitored_history import record_author_sync_failed
-            record_author_sync_failed(entity_id=entity_id, author_name=entity_name, error_message=error_msg, user_id=user_id, triggered_by="manual")
-        except Exception as log_exc:
+
+            record_author_sync_failed(
+                entity_id=entity_id,
+                author_name=entity_name,
+                error_message=error_msg,
+                user_id=user_id,
+                triggered_by="manual",
+            )
+        except Exception as log_exc:  # noqa: BLE001
             logger.debug("Failed to record author_sync_failed event for %s: %s", entity_id, log_exc)
 
 
@@ -356,6 +430,7 @@ def start_author_background_sync(
     Callers are responsible for checking/setting sync_status before calling.
     """
     import threading
+
     t = threading.Thread(
         target=_run_author_sync,
         args=(entity_id, user_id, db, ws_manager, user_db),
@@ -396,18 +471,27 @@ def _record_sync_failure(
     error_msg = f"[{getattr(exc, 'error_type', 'unknown')}] {exc}"
     db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
     result.failed += 1
-    result.info.append({
-        "entity_id": eid, "entity_name": ename,
-        "message": error_msg, "is_error": True,
-    })
+    result.info.append(
+        {
+            "entity_id": eid,
+            "entity_name": ename,
+            "message": error_msg,
+            "is_error": True,
+        }
+    )
     logger.warning("Batch sync failed entity_id=%s: %s", eid, error_msg)
     try:
         from shelfmark.core.monitored_history import record_author_sync_failed
+
         record_author_sync_failed(
-            entity_id=eid, author_name=ename, error_message=error_msg,
-            batch_id=batch_id, user_id=user_id, triggered_by=triggered_by,
+            entity_id=eid,
+            author_name=ename,
+            error_message=error_msg,
+            batch_id=batch_id,
+            user_id=user_id,
+            triggered_by=triggered_by,
         )
-    except Exception as log_exc:
+    except Exception as log_exc:  # noqa: BLE001
         logger.debug("Failed to record author_sync_failed event for %s: %s", eid, log_exc)
 
 
@@ -424,13 +508,17 @@ def _record_sync_success(
     """Record a successful entity sync into *result*."""
     result.successful += 1
     if sync_res.books_removed > 0:
-        result.info.append({
-            "entity_id": eid, "entity_name": ename,
-            "message": f"{sync_res.books_removed} book(s) removed from provider",
-            "removed_titles": sync_res.removed_titles,
-        })
+        result.info.append(
+            {
+                "entity_id": eid,
+                "entity_name": ename,
+                "message": f"{sync_res.books_removed} book(s) removed from provider",
+                "removed_titles": sync_res.removed_titles,
+            }
+        )
     try:
         from shelfmark.core.monitored_history import record_author_synced
+
         record_author_synced(
             entity_id=eid,
             author_name=ename,
@@ -441,7 +529,7 @@ def _record_sync_success(
             user_id=user_id,
             triggered_by=triggered_by,
         )
-    except Exception as log_exc:
+    except Exception as log_exc:  # noqa: BLE001
         logger.debug("Failed to record author_synced event for %s: %s", eid, log_exc)
 
 
@@ -461,8 +549,9 @@ def run_batch_sync(
     total = len(entities)
     result = BatchSyncResult(total=total)
 
-    _broadcast(ws_manager, None, "monitored_batch_sync_started",
-               {"batch_id": batch_id, "total": total})
+    _broadcast(
+        ws_manager, None, "monitored_batch_sync_started", {"batch_id": batch_id, "total": total}
+    )
 
     retry_queue: list[tuple[int, int, dict]] = []  # (index, user_id, entity)
 
@@ -470,31 +559,71 @@ def run_batch_sync(
         eid = int(entity.get("id") or 0)
         ename = str(entity.get("name") or "Author")
 
-        _broadcast(ws_manager, uid, "monitored_batch_sync_progress", {
-            "batch_id": batch_id, "index": idx, "total": total,
-            "entity_id": eid, "entity_name": ename,
-            "entity_cover": _entity_cover(entity),
-        })
+        _broadcast(
+            ws_manager,
+            uid,
+            "monitored_batch_sync_progress",
+            {
+                "batch_id": batch_id,
+                "index": idx,
+                "total": total,
+                "entity_id": eid,
+                "entity_name": ename,
+                "entity_cover": _entity_cover(entity),
+            },
+        )
 
         preferred_languages = _resolve_preferred_languages(user_db, uid)
         try:
             sync_res = _sync_author_core(
-                db, entity=entity, user_id=uid,
+                db,
+                entity=entity,
+                user_id=uid,
                 preferred_languages=preferred_languages,
             )
             sync_availability_sources(
-                db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
+                db,
+                entity_id=eid,
+                entity_name=ename,
+                user_id=uid,
+                user_db=user_db,
             )
-            _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
+            _record_sync_success(
+                result,
+                sync_res,
+                eid=eid,
+                ename=ename,
+                user_id=uid,
+                batch_id=batch_id,
+                triggered_by=triggered_by,
+            )
         except MonitoredProviderError as exc:
             if is_transient_provider_error(exc):
                 error_msg = f"[{exc.error_type}] {exc}"
                 db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
                 retry_queue.append((idx, uid, entity))
             else:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
-        except Exception as exc:
-            _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
+                _record_sync_failure(
+                    db,
+                    result,
+                    eid=eid,
+                    ename=ename,
+                    exc=exc,
+                    user_id=uid,
+                    batch_id=batch_id,
+                    triggered_by=triggered_by,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _record_sync_failure(
+                db,
+                result,
+                eid=eid,
+                ename=ename,
+                exc=exc,
+                user_id=uid,
+                batch_id=batch_id,
+                triggered_by=triggered_by,
+            )
 
     # Retry transient failures once
     if retry_queue:
@@ -502,34 +631,70 @@ def run_batch_sync(
         for idx, uid, entity in retry_queue:
             eid = int(entity.get("id") or 0)
             ename = str(entity.get("name") or "Author")
-            _broadcast(ws_manager, uid, "monitored_batch_sync_progress", {
-                "batch_id": batch_id, "index": idx, "total": total,
-                "entity_id": eid, "entity_name": f"{ename} (retry)",
-                "entity_cover": _entity_cover(entity),
-            })
+            _broadcast(
+                ws_manager,
+                uid,
+                "monitored_batch_sync_progress",
+                {
+                    "batch_id": batch_id,
+                    "index": idx,
+                    "total": total,
+                    "entity_id": eid,
+                    "entity_name": f"{ename} (retry)",
+                    "entity_cover": _entity_cover(entity),
+                },
+            )
             preferred_languages = _resolve_preferred_languages(user_db, uid)
             try:
                 sync_res = _sync_author_core(
-                    db, entity=entity, user_id=uid,
+                    db,
+                    entity=entity,
+                    user_id=uid,
                     preferred_languages=preferred_languages,
                 )
                 sync_availability_sources(
-                    db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db,
+                    db,
+                    entity_id=eid,
+                    entity_name=ename,
+                    user_id=uid,
+                    user_db=user_db,
                 )
-                _record_sync_success(result, sync_res, eid=eid, ename=ename, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
+                _record_sync_success(
+                    result,
+                    sync_res,
+                    eid=eid,
+                    ename=ename,
+                    user_id=uid,
+                    batch_id=batch_id,
+                    triggered_by=triggered_by,
+                )
                 result.retry_succeeded += 1
-            except Exception as exc:
-                _record_sync_failure(db, result, eid=eid, ename=ename, exc=exc, user_id=uid, batch_id=batch_id, triggered_by=triggered_by)
+            except Exception as exc:  # noqa: BLE001
+                _record_sync_failure(
+                    db,
+                    result,
+                    eid=eid,
+                    ename=ename,
+                    exc=exc,
+                    user_id=uid,
+                    batch_id=batch_id,
+                    triggered_by=triggered_by,
+                )
 
-    _broadcast(ws_manager, None, "monitored_batch_sync_complete", {
-        "batch_id": batch_id,
-        "total": total,
-        "successful": result.successful,
-        "failed": result.failed,
-        "info": result.info,
-        "retried": result.retried,
-        "retry_succeeded": result.retry_succeeded,
-    })
+    _broadcast(
+        ws_manager,
+        None,
+        "monitored_batch_sync_complete",
+        {
+            "batch_id": batch_id,
+            "total": total,
+            "successful": result.successful,
+            "failed": result.failed,
+            "info": result.info,
+            "retried": result.retried,
+            "retry_succeeded": result.retry_succeeded,
+        },
+    )
 
     return result
 
@@ -587,13 +752,16 @@ def _resolve_search_skip_reason(
     2) Canonical monitored availability says requested content already exists.
     """
 
-    history_rows = db.list_monitored_book_download_history(
-        user_ids=[user_id],
-        entity_id=entity_id,
-        provider=provider,
-        provider_book_id=provider_book_id,
-        limit=20,
-    ) or []
+    history_rows = (
+        db.list_monitored_book_download_history(
+            user_ids=[user_id],
+            entity_id=entity_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            limit=20,
+        )
+        or []
+    )
     for history_row in history_rows:
         final_path = str(history_row.get("final_path") or "").strip()
         if not final_path:
@@ -601,7 +769,7 @@ def _resolve_search_skip_reason(
         try:
             if Path(final_path).exists():
                 return "history_final_path_exists", final_path
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
 
     has_file_key = "has_ebook_available" if content_type == "ebook" else "has_audiobook_available"
@@ -626,7 +794,7 @@ def update_file_availability(
     """Validate configured paths, scan files, apply monitor modes, update timestamps.
 
     Raises:
-        MonitoredEntityNotFound: If the entity does not exist.
+        MonitoredEntityNotFoundError: If the entity does not exist.
         MonitoredPathError: If neither ebook nor audiobook dir is configured.
     """
     from shelfmark.core.monitored_files import (
@@ -638,7 +806,7 @@ def update_file_availability(
 
     entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None:
-        raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
+        raise MonitoredEntityNotFoundError(f"Entity {entity_id} not found")
 
     settings = entity.get("settings") or {}
     author_name = str(entity.get("name") or "").strip()
@@ -646,7 +814,9 @@ def update_file_availability(
     ebook_dir_raw = settings.get("ebook_author_dir")
     ebook_dir = str(ebook_dir_raw).strip().rstrip("/") if isinstance(ebook_dir_raw, str) else ""
     audiobook_dir_raw = settings.get("audiobook_author_dir")
-    audiobook_dir = str(audiobook_dir_raw).strip().rstrip("/") if isinstance(audiobook_dir_raw, str) else ""
+    audiobook_dir = (
+        str(audiobook_dir_raw).strip().rstrip("/") if isinstance(audiobook_dir_raw, str) else ""
+    )
 
     # Auto-derive scan paths from default library destinations when not explicitly set.
     # Downloads without explicit author_dir use the template "{Author}/{Series}/{Title}"
@@ -654,27 +824,37 @@ def update_file_availability(
     if (not ebook_dir or not ebook_dir.startswith("/")) and author_name:
         try:
             from shelfmark.core.utils import get_destination
+
             default_dest = str(get_destination(is_audiobook=False, user_id=user_id)).rstrip("/")
             if default_dest and default_dest.startswith("/"):
                 candidate = f"{default_dest}/{author_name}"
-                logger.debug("Auto-derive ebook scan path: dest=%s candidate=%s exists=%s",
-                             default_dest, candidate, Path(candidate).is_dir())
+                logger.debug(
+                    "Auto-derive ebook scan path: dest=%s candidate=%s exists=%s",
+                    default_dest,
+                    candidate,
+                    Path(candidate).is_dir(),
+                )
                 if Path(candidate).is_dir():
                     ebook_dir = candidate
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Auto-derive ebook scan path failed: %s", exc)
 
     if (not audiobook_dir or not audiobook_dir.startswith("/")) and author_name:
         try:
             from shelfmark.core.utils import get_destination
+
             default_dest = str(get_destination(is_audiobook=True, user_id=user_id)).rstrip("/")
             if default_dest and default_dest.startswith("/"):
                 candidate = f"{default_dest}/{author_name}"
-                logger.debug("Auto-derive audiobook scan path: dest=%s candidate=%s exists=%s",
-                             default_dest, candidate, Path(candidate).is_dir())
+                logger.debug(
+                    "Auto-derive audiobook scan path: dest=%s candidate=%s exists=%s",
+                    default_dest,
+                    candidate,
+                    Path(candidate).is_dir(),
+                )
                 if Path(candidate).is_dir():
                     audiobook_dir = candidate
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Auto-derive audiobook scan path failed: %s", exc)
 
     if (not ebook_dir or not ebook_dir.startswith("/")) and (
@@ -689,8 +869,8 @@ def update_file_availability(
     if ebook_dir:
         try:
             p = Path(ebook_dir).resolve()
-        except Exception:
-            raise MonitoredPathError("Invalid ebook_author_dir")
+        except (OSError, ValueError) as exc:
+            raise MonitoredPathError("Invalid ebook_author_dir") from exc
         if not path_within_allowed_roots(path=p, roots=allowed_roots):
             raise MonitoredPathError("ebook_author_dir is not within allowed roots")
         if not p.exists() or not p.is_dir():
@@ -701,8 +881,8 @@ def update_file_availability(
     if audiobook_dir:
         try:
             p = Path(audiobook_dir).resolve()
-        except Exception:
-            raise MonitoredPathError("Invalid audiobook_author_dir")
+        except (OSError, ValueError) as exc:
+            raise MonitoredPathError("Invalid audiobook_author_dir") from exc
         if not path_within_allowed_roots(path=p, roots=allowed_roots):
             raise MonitoredPathError("audiobook_author_dir is not within allowed roots")
         if not p.exists() or not p.is_dir():
@@ -713,7 +893,7 @@ def update_file_availability(
     if ebook_path is None and audiobook_path is None:
         try:
             clear_entity_matched_files(monitored_db=db, user_id=user_id, entity_id=entity_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Failed clearing matched files entity_id=%s: %s", entity_id, exc)
         raise MonitoredPathError("directories_not_found")
 
@@ -735,7 +915,7 @@ def update_file_availability(
     )
 
     # Update scan timestamps
-    scan_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    scan_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     merged_settings = dict(settings)
     if ebook_path is not None:
         merged_settings["last_ebook_scan_at"] = scan_at
@@ -784,7 +964,7 @@ def record_scan_error(
         settings["last_ebook_scan_error"] = str(error)
     if audiobook_dir:
         settings["last_audiobook_scan_error"] = str(error)
-    try:
+    with contextlib.suppress(Exception):
         db.create_monitored_entity(
             user_id=user_id,
             kind=str(entity.get("kind") or "author"),
@@ -794,8 +974,6 @@ def record_scan_error(
             enabled=bool(int(entity.get("enabled") or 0)),
             settings=settings,
         )
-    except Exception:
-        pass
 
 
 # =============================================================================
@@ -830,10 +1008,12 @@ def resolve_book_auto_search_precheck(
 
     entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None:
-        raise MonitoredEntityNotFound(f"Entity {entity_id} not found")
+        raise MonitoredEntityNotFoundError(f"Entity {entity_id} not found")
 
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
-    availability_payload = availability.availability_by_book.get((normalized_provider, normalized_provider_book_id), {})
+    availability_payload = availability.availability_by_book.get(
+        (normalized_provider, normalized_provider_book_id), {}
+    )
     reason, detail = _resolve_search_skip_reason(
         db,
         entity_id=entity_id,
@@ -870,7 +1050,12 @@ def resolve_monitored_output_overrides(
     dest_override = author_dir.strip().rstrip("/") if has_author_dir else None
 
     from shelfmark.core.config import config as app_config
-    template_key = "MONITORED_AUDIOBOOK_TEMPLATE" if content_type == "audiobook" else "MONITORED_EBOOK_TEMPLATE"
+
+    template_key = (
+        "MONITORED_AUDIOBOOK_TEMPLATE"
+        if content_type == "audiobook"
+        else "MONITORED_EBOOK_TEMPLATE"
+    )
     template = str(app_config.get(template_key, "", user_id=user_id) or "").strip()
 
     if not template:
@@ -892,7 +1077,8 @@ def filter_search_candidates(availability_books: list[dict], content_type: str) 
     """
     monitor_col = "monitor_ebook" if content_type == "ebook" else "monitor_audiobook"
     return [
-        row for row in availability_books
+        row
+        for row in availability_books
         if bool(int(row.get(monitor_col) or 0))
         and not bool(int(row.get("hidden") or 0))
         and str(row.get("state") or "") != "removed_from_provider"
@@ -919,16 +1105,19 @@ def search_missing_books(
     4. Returns a SearchSummary with counts.
 
     Raises:
-        MonitoredEntityNotFound: If the entity does not exist or is not kind='author'.
+        MonitoredEntityNotFoundError: If the entity does not exist or is not kind='author'.
     """
-    from shelfmark.core.monitored_downloads import process_monitored_book, write_monitored_book_attempt
+    from shelfmark.core.monitored_downloads import (
+        process_monitored_book,
+        write_monitored_book_attempt,
+    )
     from shelfmark.core.monitored_history import record_search_started
     from shelfmark.core.monitored_release_scoring import is_book_released
     from shelfmark.metadata_providers import BookMetadata
 
     entity = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id)
     if entity is None or entity.get("kind") != "author":
-        raise MonitoredEntityNotFound(f"Author entity {entity_id} not found")
+        raise MonitoredEntityNotFoundError(f"Author entity {entity_id} not found")
 
     dest_override, org_override, tmpl_override = resolve_monitored_output_overrides(
         entity.get("settings") if isinstance(entity, dict) else None,
@@ -948,14 +1137,16 @@ def search_missing_books(
     if not candidates:
         return summary
 
-    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     run_metadata: dict[str, Any] | None = {"run_id": run_id} if run_id else None
 
     for row in candidates:
         provider = str(row.get("provider") or "").strip()
         provider_book_id = str(row.get("provider_book_id") or "").strip()
         book_title = str(row.get("title") or "").strip() or None
-        availability_payload = availability.availability_by_book.get((provider, provider_book_id), {})
+        availability_payload = availability.availability_by_book.get(
+            (provider, provider_book_id), {}
+        )
 
         # Resolve release status before emitting any History events. Otherwise an
         # unreleased book gets a phantom "SEARCHING" row in the History tab even
@@ -966,7 +1157,7 @@ def search_missing_books(
             if len(release_date_raw) == 4 and release_date_raw.isdigit():
                 try:
                     parsed_release_date = date(int(release_date_raw), 1, 1)
-                    is_released = parsed_release_date <= datetime.now(timezone.utc).date()
+                    is_released = parsed_release_date <= datetime.now(UTC).date()
                 except ValueError:
                     is_released = False
             else:
@@ -1020,13 +1211,17 @@ def search_missing_books(
                 metadata=run_metadata,
                 triggered_by=triggered_by,
             )
-        except Exception as exc:
-            logger.debug("Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Failed to record search_started for %s/%s: %s", provider, provider_book_id, exc
+            )
 
         try:
             # Build BookMetadata from DB row — data is already stored from sync
             authors_raw = row.get("authors") or ""
-            authors_list = [a.strip() for a in authors_raw.split(",") if a.strip()] if authors_raw else []
+            authors_list = (
+                [a.strip() for a in authors_raw.split(",") if a.strip()] if authors_raw else []
+            )
             book = BookMetadata(
                 provider=provider,
                 provider_id=provider_book_id,
@@ -1057,9 +1252,13 @@ def search_missing_books(
             if not release_dicts:
                 summary.no_match += 1
                 write_monitored_book_attempt(
-                    db, user_id=user_id, entity_id=entity_id,
-                    provider=provider, provider_book_id=provider_book_id,
-                    content_type=content_type, attempted_at=now_iso,
+                    db,
+                    user_id=user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
                     status="no_match",
                     book_title=book_title,
                     session_id=session_id,
@@ -1087,10 +1286,15 @@ def search_missing_books(
             if success:
                 summary.queued += 1
                 write_monitored_book_attempt(
-                    db, user_id=user_id, entity_id=entity_id,
-                    provider=provider, provider_book_id=provider_book_id,
-                    content_type=content_type, attempted_at=now_iso,
-                    status="queued", error_message=message,
+                    db,
+                    user_id=user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status="queued",
+                    error_message=message,
                     book_title=book_title,
                     session_id=session_id,
                     triggered_by=triggered_by,
@@ -1102,10 +1306,15 @@ def search_missing_books(
             elif "match score" in message.lower() or "no valid" in message.lower():
                 summary.below_cutoff += 1
                 write_monitored_book_attempt(
-                    db, user_id=user_id, entity_id=entity_id,
-                    provider=provider, provider_book_id=provider_book_id,
-                    content_type=content_type, attempted_at=now_iso,
-                    status="below_cutoff", error_message=message,
+                    db,
+                    user_id=user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status="below_cutoff",
+                    error_message=message,
                     book_title=book_title,
                     session_id=session_id,
                     triggered_by=triggered_by,
@@ -1113,22 +1322,32 @@ def search_missing_books(
             else:
                 summary.failed += 1
                 write_monitored_book_attempt(
-                    db, user_id=user_id, entity_id=entity_id,
-                    provider=provider, provider_book_id=provider_book_id,
-                    content_type=content_type, attempted_at=now_iso,
-                    status="failed", error_message=message,
+                    db,
+                    user_id=user_id,
+                    entity_id=entity_id,
+                    provider=provider,
+                    provider_book_id=provider_book_id,
+                    content_type=content_type,
+                    attempted_at=now_iso,
+                    status="failed",
+                    error_message=message,
                     book_title=book_title,
                     session_id=session_id,
                     triggered_by=triggered_by,
                 )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             summary.failed += 1
             write_monitored_book_attempt(
-                db, user_id=user_id, entity_id=entity_id,
-                provider=provider, provider_book_id=provider_book_id,
-                content_type=content_type, attempted_at=now_iso,
-                status="error", error_message=str(exc),
+                db,
+                user_id=user_id,
+                entity_id=entity_id,
+                provider=provider,
+                provider_book_id=provider_book_id,
+                content_type=content_type,
+                attempted_at=now_iso,
+                status="error",
+                error_message=str(exc),
                 book_title=book_title,
                 session_id=session_id,
                 triggered_by=triggered_by,

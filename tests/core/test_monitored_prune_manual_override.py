@@ -6,6 +6,7 @@ it just upserted, then call prune_monitored_book_files. Rows the user had
 manually attached (Fix Match) but whose path wasn't in kept_paths got
 deleted, silently un-doing the user's choice.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,21 +30,39 @@ def seeded(db_path: str) -> dict:
     user = UserDB(db_path).create_user(username="testuser")
     db = MonitoredDB(db_path)
     entity = db.create_monitored_entity(
-        user_id=user["id"], kind="author", provider="hardcover",
-        provider_id="author-1", name="Test Author",
+        user_id=user["id"],
+        kind="author",
+        provider="hardcover",
+        provider_id="author-1",
+        name="Test Author",
     )
     return {"user_id": user["id"], "entity_id": entity["id"], "db": db}
 
 
-def _upsert(db: MonitoredDB, *, user_id: int, entity_id: int, path: str,
-            source: str, pbid: str, manual: bool = False) -> None:
+def _upsert(
+    db: MonitoredDB,
+    *,
+    user_id: int,
+    entity_id: int,
+    path: str,
+    source: str,
+    pbid: str,
+    manual: bool = False,
+) -> None:
     db.upsert_monitored_book_file(
-        user_ids=[user_id], entity_id=entity_id,
-        provider="hardcover", provider_book_id=pbid,
-        path=path, ext="m4b", file_type="audiobook",
-        size_bytes=None, mtime=None, confidence=1.0 if manual else 0.5,
+        user_ids=[user_id],
+        entity_id=entity_id,
+        provider="hardcover",
+        provider_book_id=pbid,
+        path=path,
+        ext="m4b",
+        file_type="audiobook",
+        size_bytes=None,
+        mtime=None,
+        confidence=1.0 if manual else 0.5,
         match_reason="manual_override" if manual else "abs_match",
-        source=source, manual_override=manual,
+        source=source,
+        manual_override=manual,
     )
 
 
@@ -51,20 +70,35 @@ class TestPruneManualOverride:
     def test_manual_row_survives_empty_keep_paths(self, seeded: dict) -> None:
         """Empty kept_paths (e.g., integration disabled) must not delete manual rows."""
         db = seeded["db"]
-        _upsert(db, user_id=seeded["user_id"], entity_id=seeded["entity_id"],
-                path="/abs/manual.m4b", source="audiobookshelf", pbid="100",
-                manual=True)
-        _upsert(db, user_id=seeded["user_id"], entity_id=seeded["entity_id"],
-                path="/abs/auto.m4b", source="audiobookshelf", pbid="200",
-                manual=False)
+        _upsert(
+            db,
+            user_id=seeded["user_id"],
+            entity_id=seeded["entity_id"],
+            path="/abs/manual.m4b",
+            source="audiobookshelf",
+            pbid="100",
+            manual=True,
+        )
+        _upsert(
+            db,
+            user_id=seeded["user_id"],
+            entity_id=seeded["entity_id"],
+            path="/abs/auto.m4b",
+            source="audiobookshelf",
+            pbid="200",
+            manual=False,
+        )
 
         deleted = db.prune_monitored_book_files(
-            entity_id=seeded["entity_id"], keep_paths=[], source="audiobookshelf",
+            entity_id=seeded["entity_id"],
+            keep_paths=[],
+            source="audiobookshelf",
         )
         assert deleted == 1  # only the auto row
 
         rows = db.list_monitored_book_files(
-            user_ids=[seeded["user_id"]], entity_id=seeded["entity_id"],
+            user_ids=[seeded["user_id"]],
+            entity_id=seeded["entity_id"],
         )
         assert rows is not None
         paths = {r["path"] for r in rows}
@@ -75,22 +109,36 @@ class TestPruneManualOverride:
         """When kept_paths has values but the manual row's path isn't among them,
         the manual row must still survive."""
         db = seeded["db"]
-        _upsert(db, user_id=seeded["user_id"], entity_id=seeded["entity_id"],
-                path="/abs/manual.m4b", source="audiobookshelf", pbid="100",
-                manual=True)
-        _upsert(db, user_id=seeded["user_id"], entity_id=seeded["entity_id"],
-                path="/abs/auto-stale.m4b", source="audiobookshelf", pbid="200",
-                manual=False)
+        _upsert(
+            db,
+            user_id=seeded["user_id"],
+            entity_id=seeded["entity_id"],
+            path="/abs/manual.m4b",
+            source="audiobookshelf",
+            pbid="100",
+            manual=True,
+        )
+        _upsert(
+            db,
+            user_id=seeded["user_id"],
+            entity_id=seeded["entity_id"],
+            path="/abs/auto-stale.m4b",
+            source="audiobookshelf",
+            pbid="200",
+            manual=False,
+        )
 
         # Sync says it kept a totally different path — would normally wipe both
         # of the above, but the manual one survives.
         deleted = db.prune_monitored_book_files(
-            entity_id=seeded["entity_id"], keep_paths=["/abs/something-else.m4b"],
+            entity_id=seeded["entity_id"],
+            keep_paths=["/abs/something-else.m4b"],
             source="audiobookshelf",
         )
         assert deleted == 1
         rows = db.list_monitored_book_files(
-            user_ids=[seeded["user_id"]], entity_id=seeded["entity_id"],
+            user_ids=[seeded["user_id"]],
+            entity_id=seeded["entity_id"],
         )
         assert rows is not None
         paths = {r["path"] for r in rows}
@@ -103,13 +151,22 @@ class TestPruneManualOverride:
         out filesystem rows whose path doesn't exist on disk.
         """
         import sqlite3
+
         db = seeded["db"]
-        _upsert(db, user_id=seeded["user_id"], entity_id=seeded["entity_id"],
-                path="/library/manual.epub", source="filesystem", pbid="100",
-                manual=True)
+        _upsert(
+            db,
+            user_id=seeded["user_id"],
+            entity_id=seeded["entity_id"],
+            path="/library/manual.epub",
+            source="filesystem",
+            pbid="100",
+            manual=True,
+        )
 
         db.prune_monitored_book_files(
-            entity_id=seeded["entity_id"], keep_paths=[], source="audiobookshelf",
+            entity_id=seeded["entity_id"],
+            keep_paths=[],
+            source="audiobookshelf",
         )
         # Raw DB check — bypass list_monitored_book_files' stale-file filtering.
         conn = sqlite3.connect(db_path)

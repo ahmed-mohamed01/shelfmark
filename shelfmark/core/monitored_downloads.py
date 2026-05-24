@@ -7,16 +7,18 @@ the core orchestrator module. This module handles:
 - Scheduled auto-search triggers (called after batch sync in monitored_routes.py)
 """
 
+import contextlib
 import json
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, QueueStatus
 from shelfmark.core.monitored_release_scoring import pre_process_releases
-from shelfmark.core.monitored_utils import normalize_content_type as _normalize_content_type, parse_float_safe as _parse_float_safe
+from shelfmark.core.monitored_utils import normalize_content_type as _normalize_content_type
+from shelfmark.core.monitored_utils import parse_float_safe as _parse_float_safe
 from shelfmark.core.queue import book_queue
 from shelfmark.release_sources import get_source_display_name
 
@@ -29,45 +31,56 @@ _user_db: Any = None
 _hooks_registered: bool = False
 
 # Pending releases for retry logic: key = "entity_id:provider:provider_book_id:content_type"
-_pending_releases: Dict[str, "PendingDownload"] = {}
+_pending_releases: dict[str, PendingDownload] = {}
 _pending_lock = threading.Lock()
 
 # Deferred history inserts: task_id → insert kwargs (waiting for final_path)
-_deferred_history: Dict[str, Dict[str, Any]] = {}
+_deferred_history: dict[str, dict[str, Any]] = {}
 _deferred_lock = threading.Lock()
 
 # Deferred file_imported events: task_id → kwargs (paired with _deferred_history)
-_deferred_file_imported: Dict[str, Dict[str, Any]] = {}
+_deferred_file_imported: dict[str, dict[str, Any]] = {}
 
 
 @dataclass
 class PendingDownload:
     """Tracks pending releases for a monitored book download with retry support."""
-    releases: List[Dict[str, Any]]
+
+    releases: list[dict[str, Any]]
     user_id: int
     entity_id: int
     provider: str
     provider_book_id: str
     content_type: str
-    destination_override: Optional[str] = None
-    file_organization_override: Optional[str] = None
-    template_override: Optional[str] = None
-    series_name: Optional[str] = None
-    series_position: Optional[float] = None
-    current_source_id: Optional[str] = None
+    destination_override: str | None = None
+    file_organization_override: str | None = None
+    template_override: str | None = None
+    series_name: str | None = None
+    series_position: float | None = None
+    current_source_id: str | None = None
     attempts: int = 0
     post_process_retries: int = 0  # retries of the *same* release for post-proc failures
-    session_id: Optional[str] = None  # links events for this download attempt
-    task_id: Optional[str] = None  # current orchestrator task_id; updated each queue
-    triggered_by: Optional[str] = None  # "scheduled" or "manual" — origin of the search/queue that created this pending
+    session_id: str | None = None  # links events for this download attempt
+    task_id: str | None = None  # current orchestrator task_id; updated each queue
+    triggered_by: str | None = (
+        None  # "scheduled" or "manual" — origin of the search/queue that created this pending
+    )
+
 
 # Post-processing error types that should trigger a retry of the same release
 # rather than skipping to the next one. These are transient filesystem/network errors.
-_POST_PROCESS_ERROR_TYPES = frozenset({
-    "PermissionError", "OSError", "IOError", "FileNotFoundError",
-    "IsADirectoryError", "NotADirectoryError", "TimeoutError",
-    "UnknownFailure",
-})
+_POST_PROCESS_ERROR_TYPES = frozenset(
+    {
+        "PermissionError",
+        "OSError",
+        "IOError",
+        "FileNotFoundError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "TimeoutError",
+        "UnknownFailure",
+    }
+)
 _MAX_POST_PROCESS_RETRIES = 2
 
 
@@ -101,7 +114,7 @@ def _persist_pending(key: str, pending: PendingDownload) -> None:
             task_id=pending.task_id,
             triggered_by=pending.triggered_by,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to persist pending releases for %s: %s", key, exc)
 
 
@@ -111,7 +124,7 @@ def _delete_pending_from_db(key: str) -> None:
         return
     try:
         _user_db.delete_pending_releases(key)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to delete pending releases for %s: %s", key, exc)
 
 
@@ -129,7 +142,7 @@ def load_pending_releases_from_db() -> None:
                     continue
                 try:
                     releases = json.loads(row.get("release_data", "[]"))
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     releases = []
                 if not releases:
                     # Empty releases list — clean up stale DB row
@@ -157,7 +170,7 @@ def load_pending_releases_from_db() -> None:
                 restored += 1
         if restored:
             logger.info("Restored %d pending release group(s) from database", restored)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to load pending releases from DB: %s", exc)
 
 
@@ -177,7 +190,7 @@ def _infer_monitored_match_content_type(*, row: dict[str, Any], user_id: int | N
         from shelfmark.core.monitored_files import resolve_monitored_format_preferences
 
         ebook_formats, audiobook_formats = resolve_monitored_format_preferences(user_id=user_id)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
     for token in token_candidates:
@@ -212,13 +225,13 @@ def register_hooks() -> None:
     # latest version exactly once — no chain duplication.
     upstream_hook_cell: list = [None]
 
-    def _meta_hook(book_id, status, task):
+    def _meta_hook(book_id: str, status: QueueStatus, task: DownloadTask) -> None:
         _on_download_terminal(book_id, status, task)
         upstream = upstream_hook_cell[0]
         if upstream is not None:
             upstream(book_id, status, task)
 
-    def _capturing_set_hook(hook):
+    def _capturing_set_hook(hook: Any) -> None:
         # Replace (not chain) the upstream hook — prevents double-calling on reload
         upstream_hook_cell[0] = hook
 
@@ -242,8 +255,9 @@ def register_hooks() -> None:
     # never get download_complete / file_imported monitored events.
     try:
         from shelfmark.core.download_recovery import register_recovery_complete_hook
+
         register_recovery_complete_hook(_on_recovery_complete)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to register monitored recovery hook: %s", exc)
 
     logger.info("Monitored download hooks registered")
@@ -259,25 +273,27 @@ def _on_download_terminal(book_id: str, status: QueueStatus, task: DownloadTask)
         elif status == QueueStatus.ERROR:
             try:
                 _record_attempt_failure(task)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to record monitored attempt failure for %s: %s", book_id, e)
             _record_download_event(task, "failed")
             _try_next_release(task)
         # CANCELLED status: clear pending, no retry
         elif status == QueueStatus.CANCELLED:
             _clear_pending(task)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to record monitored download history for %s: %s", book_id, e)
 
     try:
         _notify_download_terminal(status, task)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to send monitored download notification for %s: %s", book_id, e)
 
 
 def _is_monitored_download(task: DownloadTask) -> bool:
     """Check if a download task originated from a monitored entity."""
-    history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    history_context = (
+        task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    )
     return isinstance(history_context, dict) and history_context.get("entity_id") is not None
 
 
@@ -310,10 +326,13 @@ def record_manual_download_queued_if_applicable(task_id: str, task: DownloadTask
                 return
 
     ctx_trigger = hc.get("triggered_by")
-    triggered_by = ctx_trigger.strip() if isinstance(ctx_trigger, str) and ctx_trigger.strip() else "manual"
+    triggered_by = (
+        ctx_trigger.strip() if isinstance(ctx_trigger, str) and ctx_trigger.strip() else "manual"
+    )
 
     try:
         from shelfmark.core.monitored_history import record_download_queued
+
         record_download_queued(
             entity_id=int(hc["entity_id"]),
             book_provider=str(hc.get("provider") or ""),
@@ -332,7 +351,7 @@ def record_manual_download_queued_if_applicable(task_id: str, task: DownloadTask
             user_id=task.user_id,
             triggered_by=triggered_by,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to record manual download_queued for %s: %s", task_id, exc)
 
 
@@ -346,14 +365,15 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
             record_download_failed,
             record_file_imported,
         )
+
         hc = task.output_args.get("history_context", {})
 
         # Look up session_id from pending state (still present at terminal hook time —
         # _clear_pending/_try_next_release run after this recorder). Fall back to
         # history_context for the manual bulk-download path, which has no
         # PendingDownload but threads session_id through the queue payload.
-        session_id: Optional[str] = None
-        triggered_by: Optional[str] = None
+        session_id: str | None = None
+        triggered_by: str | None = None
         key = _get_pending_key_from_task(task)
         if key:
             with _pending_lock:
@@ -375,20 +395,20 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
         if triggered_by is None:
             triggered_by = "manual"
 
-        common = dict(
-            entity_id=int(hc["entity_id"]),
-            book_provider=str(hc.get("provider") or ""),
-            book_provider_id=str(hc.get("provider_book_id") or ""),
-            book_title=str(task.title or ""),
-            author_name=str(task.author or ""),
-            content_type=task.content_type,
-            source=str(task.source or ""),
-            source_display_name=get_source_display_name(task.source),
-            task_id=task.task_id,
-            session_id=session_id,
-            user_id=task.user_id,
-            triggered_by=triggered_by,
-        )
+        common = {
+            "entity_id": int(hc["entity_id"]),
+            "book_provider": str(hc.get("provider") or ""),
+            "book_provider_id": str(hc.get("provider_book_id") or ""),
+            "book_title": str(task.title or ""),
+            "author_name": str(task.author or ""),
+            "content_type": task.content_type,
+            "source": str(task.source or ""),
+            "source_display_name": get_source_display_name(task.source),
+            "task_id": task.task_id,
+            "session_id": session_id,
+            "user_id": task.user_id,
+            "triggered_by": triggered_by,
+        }
         if outcome == "complete":
             record_download_complete(
                 **common,
@@ -403,7 +423,8 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
             # If download_path isn't populated yet (terminal hook fired before
             # update_download_path), defer until _flush_deferred_history.
             file_imported_kwargs = {
-                k: v for k, v in common.items()
+                k: v
+                for k, v in common.items()
                 if k not in {"source", "source_display_name", "task_id"}
             }
             if task.download_path:
@@ -418,7 +439,7 @@ def _record_download_event(task: DownloadTask, outcome: str) -> None:
                 release_title=str(hc.get("release_title") or ""),
                 match_score=_parse_float_safe(hc.get("match_score")),
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to record download event for %s: %s", task.task_id, exc)
 
 
@@ -435,8 +456,8 @@ def _on_recovery_complete(task_id: str, final_path: str) -> None:
         return
 
     # Find the pending entry whose task_id matches the recovered task.
-    matched_key: Optional[str] = None
-    matched_pending: Optional[PendingDownload] = None
+    matched_key: str | None = None
+    matched_pending: PendingDownload | None = None
     with _pending_lock:
         for k, p in _pending_releases.items():
             if p.task_id and p.task_id == task_id:
@@ -453,15 +474,16 @@ def _on_recovery_complete(task_id: str, final_path: str) -> None:
             record_download_complete,
             record_file_imported,
         )
-        common = dict(
-            entity_id=matched_pending.entity_id,
-            book_provider=matched_pending.provider,
-            book_provider_id=matched_pending.provider_book_id,
-            content_type=matched_pending.content_type,
-            session_id=matched_pending.session_id,
-            user_id=matched_pending.user_id,
-            triggered_by=matched_pending.triggered_by,
-        )
+
+        common = {
+            "entity_id": matched_pending.entity_id,
+            "book_provider": matched_pending.provider,
+            "book_provider_id": matched_pending.provider_book_id,
+            "content_type": matched_pending.content_type,
+            "session_id": matched_pending.session_id,
+            "user_id": matched_pending.user_id,
+            "triggered_by": matched_pending.triggered_by,
+        }
         # Two distinct events: download_complete = client finished downloading,
         # file_imported = Shelfmark moved the file to the library. Recovery sees
         # them at the same instant since the import is synchronous, but consumers
@@ -477,9 +499,10 @@ def _on_recovery_complete(task_id: str, final_path: str) -> None:
         )
         logger.info(
             "Monitored recovery hook: emitted download_complete + file_imported for task %s (session %s)",
-            task_id, matched_pending.session_id,
+            task_id,
+            matched_pending.session_id,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to emit monitored events on recovery for %s: %s", task_id, exc)
 
     # Clear the pending entry — the download is done; no fallback retries needed.
@@ -499,7 +522,9 @@ def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
         return
 
     from shelfmark.core.notifications import (
-        NotificationContext, NotificationEvent, notify_admin, notify_user,
+        NotificationContext,
+        NotificationEvent,
+        notify_user,
     )
 
     if status == QueueStatus.COMPLETE:
@@ -525,17 +550,22 @@ def _notify_download_terminal(status: QueueStatus, task: DownloadTask) -> None:
         source=getattr(task, "source", None),
         error_message=(
             str(getattr(task, "status_message", "") or "")
-            if event == NotificationEvent.DOWNLOAD_FAILED else None
+            if event == NotificationEvent.DOWNLOAD_FAILED
+            else None
         ),
     )
     try:
         notify_user(int(user_id), event, context)
-    except Exception:
-        logger.warning("Failed to send user notification for monitored download: %s (user_id=%s)", task.task_id, user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to send user notification for monitored download: %s (user_id=%s)",
+            task.task_id,
+            user_id,
+        )
 
 
 def _upsert_file_match_from_history(
-    kwargs: Dict[str, Any],
+    kwargs: dict[str, Any],
     final_path: str,
     content_type: str | None = None,
 ) -> None:
@@ -544,6 +574,7 @@ def _upsert_file_match_from_history(
         return
     try:
         from pathlib import Path as _Path
+
         dl_path = _Path(final_path)
         entity_id = kwargs.get("entity_id")
         provider = kwargs.get("provider") or ""
@@ -567,7 +598,7 @@ def _upsert_file_match_from_history(
             match_reason="download",
             source="download",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to upsert file match after download: %s", exc)
 
 
@@ -581,7 +612,9 @@ def _record_download_history(task: DownloadTask) -> None:
     if _user_db is None:
         return
 
-    history_context = task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    history_context = (
+        task.output_args.get("history_context") if isinstance(task.output_args, dict) else None
+    )
     if not isinstance(history_context, dict):
         return
 
@@ -618,19 +651,19 @@ def _record_download_history(task: DownloadTask) -> None:
     match_score = _parse_float_safe(history_context.get("match_score"))
     downloaded_filename = str(history_context.get("downloaded_filename") or "").strip() or None
 
-    kwargs: Dict[str, Any] = dict(
-        user_ids=[int(user_id)],
-        entity_id=int(entity_id),
-        provider=provider,
-        provider_book_id=provider_book_id,
-        downloaded_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        source=str(task.source or ""),
-        source_display_name=get_source_display_name(task.source),
-        title_after_rename=str(task.title or "").strip() or None,
-        match_score=match_score,
-        downloaded_filename=downloaded_filename,
-        overwritten_path=overwrite_path,
-    )
+    kwargs: dict[str, Any] = {
+        "user_ids": [int(user_id)],
+        "entity_id": int(entity_id),
+        "provider": provider,
+        "provider_book_id": provider_book_id,
+        "downloaded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "source": str(task.source or ""),
+        "source_display_name": get_source_display_name(task.source),
+        "title_after_rename": str(task.title or "").strip() or None,
+        "match_score": match_score,
+        "downloaded_filename": downloaded_filename,
+        "overwritten_path": overwrite_path,
+    }
 
     if task.download_path:
         final_path = str(task.download_path).strip()
@@ -639,7 +672,9 @@ def _record_download_history(task: DownloadTask) -> None:
         _upsert_file_match_from_history(kwargs, final_path, content_type=task.content_type)
         logger.debug(
             "Recorded monitored download history: entity_id=%s provider=%s book_id=%s",
-            entity_id, provider, provider_book_id,
+            entity_id,
+            provider,
+            provider_book_id,
         )
     else:
         # Store content_type so the deferred flush path can use it
@@ -649,7 +684,8 @@ def _record_download_history(task: DownloadTask) -> None:
             _deferred_history[task.task_id] = kwargs
         logger.debug(
             "Deferred monitored download history: task_id=%s entity_id=%s",
-            task.task_id, entity_id,
+            task.task_id,
+            entity_id,
         )
 
 
@@ -667,7 +703,8 @@ def _flush_deferred_history(task_id: str, final_path: str) -> None:
         _upsert_file_match_from_history(kwargs, clean_path, content_type=content_type)
         logger.debug(
             "Flushed deferred monitored download history: task_id=%s path=%s",
-            task_id, final_path,
+            task_id,
+            final_path,
         )
     if file_imported_kwargs is not None:
         # Always emit the event even if final_path is empty — the recorder handles
@@ -675,12 +712,13 @@ def _flush_deferred_history(task_id: str, final_path: str) -> None:
         # leak the deferred entry (already popped above) and lose the timeline row.
         try:
             from shelfmark.core.monitored_history import record_file_imported
+
             record_file_imported(final_path=clean_path or None, **file_imported_kwargs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Failed to flush deferred file_imported event for %s: %s", task_id, exc)
 
 
-def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] = None) -> None:
+def _record_attempt_failure(task: DownloadTask, *, error_message: str | None = None) -> None:
     """Record failed download attempt to monitored_book_attempt_history."""
     if _user_db is None or not isinstance(task.output_args, dict):
         return
@@ -707,7 +745,7 @@ def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] 
         provider=provider,
         provider_book_id=provider_book_id,
         content_type=content_type,
-        attempted_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        attempted_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         status="download_failed",
         source=str(task.source or "") or None,
         source_id=str(task.task_id or "") or None,
@@ -718,7 +756,9 @@ def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] 
 
     logger.debug(
         "Recorded monitored attempt failure: entity_id=%s provider=%s book_id=%s",
-        entity_id, provider, provider_book_id
+        entity_id,
+        provider,
+        provider_book_id,
     )
 
 
@@ -728,34 +768,34 @@ def _record_attempt_failure(task: DownloadTask, *, error_message: Optional[str] 
 
 
 def process_monitored_book(
-    releases: List[Dict[str, Any]],
+    releases: list[dict[str, Any]],
     *,
     user_id: int,
     entity_id: int,
     provider: str,
     provider_book_id: str,
     content_type: str = "ebook",
-    min_match_score: Optional[float] = None,
-    destination_override: Optional[str] = None,
-    file_organization_override: Optional[str] = None,
-    template_override: Optional[str] = None,
-    series_name: Optional[str] = None,
-    series_position: Optional[float] = None,
-    session_id: Optional[str] = None,
-    triggered_by: Optional[str] = None,
-) -> Tuple[bool, str]:
+    min_match_score: float | None = None,
+    destination_override: str | None = None,
+    file_organization_override: str | None = None,
+    template_override: str | None = None,
+    series_name: str | None = None,
+    series_position: float | None = None,
+    session_id: str | None = None,
+    triggered_by: str | None = None,
+) -> tuple[bool, str]:
     """Process releases for a monitored book: pre-process, queue best, auto-retry on failure.
-    
+
     This is the main entry point for monitored book downloads. It:
     1. Pre-processes releases (filters by date, score, failed history)
     2. Queues the best release
     3. Stores remaining releases for automatic retry on failure
-    
+
     When the download completes:
     - Success: clears pending, records history
     - Failure: records attempt, auto-queues next release
     - Cancelled: clears pending
-    
+
     Args:
         releases: Raw releases from search
         user_id: Current user ID
@@ -767,7 +807,7 @@ def process_monitored_book(
         destination_override: Override destination path
         file_organization_override: Override file organization
         template_override: Override naming template
-    
+
     Returns:
         Tuple of (queued, message). queued=True means first release was queued.
         Returns (False, "Already in queue") if book is already being processed.
@@ -821,7 +861,7 @@ def process_monitored_book(
     return _queue_next_from_pending(key)
 
 
-def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
+def _queue_next_from_pending(key: str) -> tuple[bool, str]:
     """Queue the next release from pending list. Returns (success, message).
 
     Iterates through remaining releases until one is successfully queued
@@ -886,6 +926,7 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
             score = release.get("_match_score", 0)
             try:
                 from shelfmark.core.monitored_history import record_download_queued
+
                 record_download_queued(
                     entity_id=entity_id,
                     book_provider=provider,
@@ -895,7 +936,9 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
                     task_id=str(release.get("source_id", "")),
                     source=str(release.get("source", "")),
                     source_display_name=get_source_display_name(release.get("source")),
-                    release_title=str(release.get("raw_title") or release.get("display_title") or ""),
+                    release_title=str(
+                        release.get("raw_title") or release.get("display_title") or ""
+                    ),
                     match_score=score if isinstance(score, (int, float)) else None,
                     format=str(release.get("format", "")),
                     size=str(release.get("size", "")),
@@ -903,22 +946,24 @@ def _queue_next_from_pending(key: str) -> Tuple[bool, str]:
                     user_id=user_id,
                     triggered_by=triggered_by,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Failed to record download_queued event: %s", exc)
             return True, f"Queued: {title} (score: {score:.0f}%, {remaining} fallbacks)"
 
         # Immediate queue failure — loop to try next release
-        logger.warning("Queue failed for %s: %s, trying next", release.get("source_id", ""), error_msg)
+        logger.warning(
+            "Queue failed for %s: %s, trying next", release.get("source_id", ""), error_msg
+        )
 
 
-def _get_pending_key_from_task(task: DownloadTask) -> Optional[str]:
+def _get_pending_key_from_task(task: DownloadTask) -> str | None:
     """Extract pending key from task's history context."""
     if not isinstance(task.output_args, dict):
         return None
     history_context = task.output_args.get("history_context")
     if not isinstance(history_context, dict):
         return None
-    
+
     entity_id = history_context.get("entity_id")
     provider = str(history_context.get("provider") or "").strip()
     provider_book_id = str(history_context.get("provider_book_id") or "").strip()
@@ -926,7 +971,7 @@ def _get_pending_key_from_task(task: DownloadTask) -> Optional[str]:
 
     if entity_id is None or not provider or not provider_book_id:
         return None
-    
+
     return _pending_key(int(entity_id), provider, provider_book_id, content_type)
 
 
@@ -969,9 +1014,12 @@ def _try_next_release(task: DownloadTask) -> None:
         if should_retry:
             logger.info(
                 "Post-processing failed for %s (retry %d/%d), re-queuing same release",
-                key, retry_num, _MAX_POST_PROCESS_RETRIES,
+                key,
+                retry_num,
+                _MAX_POST_PROCESS_RETRIES,
             )
             from shelfmark.download.orchestrator import retry_download
+
             success, error = retry_download(task.task_id)
             if success:
                 return
@@ -979,7 +1027,7 @@ def _try_next_release(task: DownloadTask) -> None:
             # Fall through to next release
 
     remaining = 0
-    exhausted: Optional[PendingDownload] = None
+    exhausted: PendingDownload | None = None
     with _pending_lock:
         pending = _pending_releases.get(key)
         if not pending or not pending.releases:
@@ -994,7 +1042,7 @@ def _try_next_release(task: DownloadTask) -> None:
     if exhausted is not None:
         logger.info("No more fallback releases for %s after %d attempts", key, exhausted.attempts)
         if _user_db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _user_db.set_monitored_book_search_status(
                     user_ids=[exhausted.user_id] if exhausted.user_id else [],
                     entity_id=exhausted.entity_id,
@@ -1002,10 +1050,8 @@ def _try_next_release(task: DownloadTask) -> None:
                     provider_book_id=exhausted.provider_book_id,
                     content_type=exhausted.content_type,
                     status="download_failed",
-                    searched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    searched_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
-            except Exception:
-                pass
         return
 
     if remaining == 0:
@@ -1068,7 +1114,7 @@ def write_monitored_book_attempt(
     Returns:
         The ISO timestamp used for this attempt.
     """
-    attempted_at_iso = attempted_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    attempted_at_iso = attempted_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
     safe_user_ids = [user_id] if user_id is not None else []
     user_db.set_monitored_book_search_status(
         user_ids=safe_user_ids,
@@ -1097,6 +1143,7 @@ def write_monitored_book_attempt(
     # Record to unified events table
     try:
         from shelfmark.core.monitored_history import record_search_result
+
         record_search_result(
             entity_id=entity_id,
             book_provider=provider,
@@ -1112,7 +1159,7 @@ def write_monitored_book_attempt(
             metadata=metadata,
             triggered_by=triggered_by,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to record search_result event: %s", exc)
 
     return attempted_at_iso

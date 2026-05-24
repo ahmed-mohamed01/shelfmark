@@ -30,7 +30,9 @@ def _set_session(client, *, user_id: str, db_user_id: int, is_admin: bool = Fals
         sess["is_admin"] = is_admin
 
 
-def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_module, client, tmp_path: Path):
+def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(
+    main_module, client, tmp_path: Path
+):
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
@@ -98,7 +100,9 @@ def test_books_endpoint_includes_no_release_date_and_applies_monitor_modes(main_
     assert nodate_row.get("no_release_date") is True
 
 
-def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(main_module, client, tmp_path: Path):
+def test_monitored_search_endpoint_returns_summary_for_empty_candidate_set(
+    main_module, client, tmp_path: Path
+):
     user = main_module.user_db.create_user(username=f"reader-{uuid.uuid4().hex[:8]}", role="user")
     _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
 
@@ -211,7 +215,10 @@ def test_monitored_search_skips_unreleased_books_before_source_search(main_modul
         monitor_ebook=True,
     )
 
-    with patch("shelfmark.metadata_providers.get_provider", side_effect=AssertionError("provider lookup should be skipped for unreleased books")):
+    with patch(
+        "shelfmark.metadata_providers.get_provider",
+        side_effect=AssertionError("provider lookup should be skipped for unreleased books"),
+    ):
         response = client.post(
             f"/api/monitored/{entity['id']}/search",
             json={"content_type": "ebook"},
@@ -279,7 +286,12 @@ def test_monitored_search_treats_missing_release_date_as_unreleased(main_module,
         monitor_ebook=True,
     )
 
-    with patch("shelfmark.metadata_providers.get_provider", side_effect=AssertionError("provider lookup should be skipped when release_date is missing")):
+    with patch(
+        "shelfmark.metadata_providers.get_provider",
+        side_effect=AssertionError(
+            "provider lookup should be skipped when release_date is missing"
+        ),
+    ):
         response = client.post(
             f"/api/monitored/{entity['id']}/search",
             json={"content_type": "ebook"},
@@ -336,7 +348,12 @@ def test_monitored_search_skips_when_history_final_path_exists(main_module, clie
         overwritten_path=None,
     )
 
-    with patch("shelfmark.metadata_providers.get_provider", side_effect=AssertionError("provider lookup should be skipped when history final_path exists")):
+    with patch(
+        "shelfmark.metadata_providers.get_provider",
+        side_effect=AssertionError(
+            "provider lookup should be skipped when history final_path exists"
+        ),
+    ):
         response = client.post(
             f"/api/monitored/{entity['id']}/search",
             json={"content_type": "ebook"},

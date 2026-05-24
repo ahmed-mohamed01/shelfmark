@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-
 # Extract series position from "Book N", "#N", "Part N", "Volume N".
 # Used by integration adapters when parsing source-side series fields.
 SERIES_POS_RE = re.compile(

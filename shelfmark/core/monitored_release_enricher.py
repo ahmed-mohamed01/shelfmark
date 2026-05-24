@@ -7,14 +7,17 @@ API key (~100 req/day) but supports an optional key for higher quota.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.monitored_db import MonitoredDB
+
+if TYPE_CHECKING:
+    from shelfmark.core.monitored_db import MonitoredDB
 
 logger = setup_logger(__name__)
 
@@ -25,6 +28,7 @@ _TITLE_MATCH_THRESHOLD = 0.70
 # ---------------------------------------------------------------------------
 # Google Books search (shared with monitored_routes)
 # ---------------------------------------------------------------------------
+
 
 def search_google_books(title: str, author: str, *, api_key: str = "") -> list[dict[str, Any]]:
     """Search Google Books API.  Returns normalised result dicts."""
@@ -38,6 +42,7 @@ def search_google_books(title: str, author: str, *, api_key: str = "") -> list[d
 
     try:
         import requests as http_requests
+
         from shelfmark.download.network import get_ssl_verify
 
         params: dict[str, str] = {
@@ -57,7 +62,7 @@ def search_google_books(title: str, author: str, *, api_key: str = "") -> list[d
         resp.raise_for_status()
         data = resp.json()
         items = data.get("items") or []
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Google Books search failed: %s", exc)
         return []
 
@@ -74,27 +79,28 @@ def search_google_books(title: str, author: str, *, api_key: str = "") -> list[d
             release_date = None
         pub_year = None
         if raw_date and len(raw_date) >= 4:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 pub_year = int(raw_date[:4])
-            except (ValueError, TypeError):
-                pass
         cover = (info.get("imageLinks") or {}).get("thumbnail")
-        results.append({
-            "asin": "",
-            "title": info.get("title") or "",
-            "authors": info.get("authors") or [],
-            "release_date": release_date,
-            "publish_year": pub_year,
-            "cover_url": cover,
-            "series_name": None,
-            "source": "google",
-        })
+        results.append(
+            {
+                "asin": "",
+                "title": info.get("title") or "",
+                "authors": info.get("authors") or [],
+                "release_date": release_date,
+                "publish_year": pub_year,
+                "cover_url": cover,
+                "series_name": None,
+                "source": "google",
+            }
+        )
     return results
 
 
 # ---------------------------------------------------------------------------
 # Matching helpers
 # ---------------------------------------------------------------------------
+
 
 def _normalise(text: str) -> str:
     """Lowercase, strip subtitles and non-alphanum."""
@@ -143,6 +149,7 @@ def _best_match(
 # Main enrichment entry point
 # ---------------------------------------------------------------------------
 
+
 def enrich_release_dates(
     db: MonitoredDB,
     *,
@@ -158,7 +165,7 @@ def enrich_release_dates(
     """
     api_key = str(app_config.get("GOOGLEBOOKS_API_KEY", "") or "")
     recheck_days = int(app_config.get("RELEASE_ENRICHMENT_RECHECK_DAYS", _RECHECK_DAYS_DEFAULT))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     candidates: list[dict[str, Any]] = []
 
     for book in books:
@@ -169,10 +176,10 @@ def enrich_release_dates(
         checked_at = book.get("release_date_checked_at")
         if checked_at:
             try:
-                last = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+                last = datetime.fromisoformat(str(checked_at))
                 if (now - last).days < recheck_days:
                     continue
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         title = (book.get("title") or "").strip()
@@ -211,7 +218,8 @@ def enrich_release_dates(
                 enriched += 1
                 logger.info(
                     "Enriched release date for '%s': %s (via Google Books)",
-                    title, match["release_date"],
+                    title,
+                    match["release_date"],
                 )
         else:
             # No match — mark as checked so we don't retry until recheck interval

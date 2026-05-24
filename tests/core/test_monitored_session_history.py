@@ -11,6 +11,7 @@ Covers:
 - _on_recovery_complete bridges the recovery silent-import path to monitored events.
 - upsert_pending_releases COALESCEs session_id but overwrites task_id on conflict.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -18,11 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from shelfmark.core.models import DownloadTask
 from shelfmark.core import monitored_downloads, monitored_history
+from shelfmark.core.models import DownloadTask
 from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -93,7 +93,8 @@ class TestSchema:
     def test_session_id_partial_index_created(self, db_path: str) -> None:
         conn = sqlite3.connect(db_path)
         idx = [
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='monitored_events'"
             )
         ]
@@ -139,9 +140,7 @@ class TestSchema:
         assert "session_id" in pending_cols
         assert "task_id" in pending_cols
         # Legacy data preserved (session_id NULL for old rows)
-        row = conn.execute(
-            "SELECT message, session_id FROM monitored_events WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT message, session_id FROM monitored_events WHERE id=1").fetchone()
         assert row[0] == "legacy row"
         assert row[1] is None
 
@@ -227,7 +226,9 @@ def fake_recorder_db(monkeypatch):
 
 
 class TestRecorders:
-    def test_record_search_started_writes_correct_event(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_search_started_writes_correct_event(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_search_started(
             entity_id=10,
             book_provider="hardcover",
@@ -244,44 +245,73 @@ class TestRecorders:
         assert ev["session_id"] == "S1"
         assert "Mistborn" in ev["message"]
 
-    def test_record_download_queued_forwards_session_id(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_download_queued_forwards_session_id(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_download_queued(
-            entity_id=10, book_provider="hardcover", book_provider_id="b1",
-            session_id="S1", user_id=1,
+            entity_id=10,
+            book_provider="hardcover",
+            book_provider_id="b1",
+            session_id="S1",
+            user_id=1,
         )
         assert fake_recorder_db.events[0]["session_id"] == "S1"
         assert fake_recorder_db.events[0]["event_type"] == "download_queued"
 
-    def test_record_download_complete_forwards_session_id(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_download_complete_forwards_session_id(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_download_complete(
-            entity_id=10, book_provider="hardcover", book_provider_id="b1",
-            download_path="/lib/book.epub", session_id="S1", user_id=1,
+            entity_id=10,
+            book_provider="hardcover",
+            book_provider_id="b1",
+            download_path="/lib/book.epub",
+            session_id="S1",
+            user_id=1,
         )
         assert fake_recorder_db.events[0]["session_id"] == "S1"
         assert fake_recorder_db.events[0]["event_type"] == "download_complete"
         assert fake_recorder_db.events[0]["status"] == "success"
 
-    def test_record_download_failed_forwards_session_id(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_download_failed_forwards_session_id(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_download_failed(
-            entity_id=10, book_provider="hardcover", book_provider_id="b1",
-            error_message="boom", session_id="S1", user_id=1,
+            entity_id=10,
+            book_provider="hardcover",
+            book_provider_id="b1",
+            error_message="boom",
+            session_id="S1",
+            user_id=1,
         )
         assert fake_recorder_db.events[0]["session_id"] == "S1"
         assert fake_recorder_db.events[0]["event_type"] == "download_failed"
         assert fake_recorder_db.events[0]["status"] == "error"
 
-    def test_record_search_result_forwards_session_id(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_search_result_forwards_session_id(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_search_result(
-            entity_id=10, book_provider="hardcover", book_provider_id="b1",
-            search_status="queued", session_id="S1", user_id=1,
+            entity_id=10,
+            book_provider="hardcover",
+            book_provider_id="b1",
+            search_status="queued",
+            session_id="S1",
+            user_id=1,
         )
         assert fake_recorder_db.events[0]["session_id"] == "S1"
         assert fake_recorder_db.events[0]["event_type"] == "search_queued"
 
-    def test_record_file_imported_forwards_session_id(self, fake_recorder_db: _FakeRecorderDB) -> None:
+    def test_record_file_imported_forwards_session_id(
+        self, fake_recorder_db: _FakeRecorderDB
+    ) -> None:
         monitored_history.record_file_imported(
-            entity_id=10, book_provider="hardcover", book_provider_id="b1",
-            final_path="/lib/book.epub", session_id="S1", user_id=1,
+            entity_id=10,
+            book_provider="hardcover",
+            book_provider_id="b1",
+            final_path="/lib/book.epub",
+            session_id="S1",
+            user_id=1,
         )
         assert fake_recorder_db.events[0]["session_id"] == "S1"
         assert fake_recorder_db.events[0]["event_type"] == "file_imported"
@@ -333,16 +363,20 @@ class TestQueueNextSetsTaskId:
         class _StubDB:
             def upsert_pending_releases(self, **kwargs):
                 captured_persists.append(kwargs)
+
             def delete_pending_releases(self, key):
                 pass
+
         monkeypatch.setattr(monitored_downloads, "_user_db", _StubDB())
 
         # Stub orchestrator.queue_release: succeed for source_id="T-NEW"
         import shelfmark.download.orchestrator as orch
+
         monkeypatch.setattr(orch, "queue_release", lambda release, user_id: (True, "ok"))
 
         # Stub record_download_queued so we don't need monitored_history's _db wired up
         import shelfmark.core.monitored_history as mh
+
         monkeypatch.setattr(mh, "record_download_queued", lambda **_: None)
 
         key = "1:hardcover:b1:ebook"
@@ -404,6 +438,7 @@ class TestRecordDownloadEventResolvesSession:
             captured.append(("failed", kwargs))
 
         import shelfmark.core.monitored_history as mh
+
         monkeypatch.setattr(mh, "record_download_complete", fake_complete)
         monkeypatch.setattr(mh, "record_file_imported", fake_imported)
         monkeypatch.setattr(mh, "record_download_failed", fake_failed)
@@ -434,6 +469,7 @@ class TestRecordDownloadEventResolvesSession:
     def test_failed_event_carries_session_id_from_pending(self, monkeypatch) -> None:
         captured: list[dict] = []
         import shelfmark.core.monitored_history as mh
+
         monkeypatch.setattr(mh, "record_download_complete", lambda **_: None)
         monkeypatch.setattr(mh, "record_file_imported", lambda **_: None)
         monkeypatch.setattr(mh, "record_download_failed", lambda **kw: captured.append(kw))
@@ -473,15 +509,15 @@ class TestDeferredFileImportedFlush:
         monkeypatch,
     ) -> None:
         monkeypatch.setattr(monitored_history, "_db", monitored_db)
-        monitored_downloads._deferred_file_imported["task-X"] = dict(
-            entity_id=seeded_user_and_entity["entity_id"],
-            book_provider="hardcover",
-            book_provider_id="b1",
-            book_title="Title",
-            content_type="ebook",
-            session_id="S1",
-            user_id=seeded_user_and_entity["user_id"],
-        )
+        monitored_downloads._deferred_file_imported["task-X"] = {
+            "entity_id": seeded_user_and_entity["entity_id"],
+            "book_provider": "hardcover",
+            "book_provider_id": "b1",
+            "book_title": "Title",
+            "content_type": "ebook",
+            "session_id": "S1",
+            "user_id": seeded_user_and_entity["user_id"],
+        }
 
         monitored_downloads._flush_deferred_history("task-X", "/lib/book.epub")
 
@@ -499,15 +535,15 @@ class TestDeferredFileImportedFlush:
     ) -> None:
         """Even if final_path is empty, the popped deferred entry must still fire."""
         monkeypatch.setattr(monitored_history, "_db", monitored_db)
-        monitored_downloads._deferred_file_imported["task-X"] = dict(
-            entity_id=seeded_user_and_entity["entity_id"],
-            book_provider="hardcover",
-            book_provider_id="b1",
-            book_title="Title",
-            content_type="ebook",
-            session_id="S1",
-            user_id=seeded_user_and_entity["user_id"],
-        )
+        monitored_downloads._deferred_file_imported["task-X"] = {
+            "entity_id": seeded_user_and_entity["entity_id"],
+            "book_provider": "hardcover",
+            "book_provider_id": "b1",
+            "book_title": "Title",
+            "content_type": "ebook",
+            "session_id": "S1",
+            "user_id": seeded_user_and_entity["user_id"],
+        }
 
         monitored_downloads._flush_deferred_history("task-X", "")
 
@@ -576,6 +612,7 @@ class TestRecoveryHook:
         imported = next(r for r in rows if r["event_type"] == "file_imported")
         assert imported["metadata_json"] is not None
         import json as _json
+
         assert _json.loads(imported["metadata_json"])["final_path"] == "/lib/book.epub"
 
     def test_clears_pending_after_emitting(
