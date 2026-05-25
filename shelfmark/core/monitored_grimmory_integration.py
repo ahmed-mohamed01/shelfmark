@@ -1,8 +1,8 @@
-"""Booklore integration for monitored book availability.
+"""Grimmory integration for monitored book availability.
 
-Fetches ebooks from a Booklore library, matches them to monitored books using a
+Fetches ebooks from a Grimmory library, matches them to monitored books using a
 3-phase algorithm (ISBN → series+position+title → fuzzy title), and records
-matches in monitored_book_files with source='booklore'.
+matches in monitored_book_files with source='grimmory'.
 
 Called automatically at the end of the existing filesystem scan route — no
 separate frontend button or API route is needed.
@@ -39,17 +39,17 @@ logger = setup_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def get_booklore_config() -> dict[str, str] | None:
-    """Return Booklore connection config or None if not configured/enabled."""
-    if not app_config.get("BOOKLORE_ENABLED", True):
+def get_grimmory_config() -> dict[str, str] | None:
+    """Return Grimmory connection config or None if not configured/enabled."""
+    if not app_config.get("GRIMMORY_ENABLED", True):
         return None
-    url = (app_config.get("BOOKLORE_URL") or "").strip().rstrip("/")
-    username = (app_config.get("BOOKLORE_USERNAME") or "").strip()
-    password = (app_config.get("BOOKLORE_PASSWORD") or "").strip()
+    url = (app_config.get("GRIMMORY_URL") or "").strip().rstrip("/")
+    username = (app_config.get("GRIMMORY_USERNAME") or "").strip()
+    password = (app_config.get("GRIMMORY_PASSWORD") or "").strip()
     if not (url and username and password):
         return None
     if not url.lower().startswith(("http://", "https://")):
-        logger.warning("Booklore: BOOKLORE_URL must start with http:// or https://; ignoring.")
+        logger.warning("Grimmory: GRIMMORY_URL must start with http:// or https://; ignoring.")
         return None
     return {"url": url, "username": username, "password": password}
 
@@ -65,7 +65,7 @@ def _parse_json(raw: bytes, endpoint: str) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as err:
         preview = raw[:200].decode("utf-8", errors="replace")
-        raise ValueError(f"Booklore returned non-JSON from {endpoint!r}: {preview!r}") from err
+        raise ValueError(f"Grimmory returned non-JSON from {endpoint!r}: {preview!r}") from err
 
 
 def _build_ssl_ctx(url: str) -> ssl.SSLContext:
@@ -81,7 +81,7 @@ def _build_ssl_ctx(url: str) -> ssl.SSLContext:
     return ctx
 
 
-def _booklore_post(base_url: str, path: str, body: dict[str, Any], timeout: int = 10) -> Any:
+def _grimmory_post(base_url: str, path: str, body: dict[str, Any], timeout: int = 10) -> Any:
     data = json.dumps(body).encode()
     req = Request(
         f"{base_url}{path}",
@@ -93,7 +93,7 @@ def _booklore_post(base_url: str, path: str, body: dict[str, Any], timeout: int 
         return _parse_json(resp.read(), path)
 
 
-def _booklore_get(
+def _grimmory_get(
     base_url: str,
     token: str,
     path: str,
@@ -115,12 +115,12 @@ def _booklore_get(
 # ---------------------------------------------------------------------------
 
 
-def _booklore_login(url: str, username: str, password: str) -> str:
-    """Authenticate with Booklore and return the JWT access token."""
-    data = _booklore_post(url, "/api/v1/auth/login", {"username": username, "password": password})
+def _grimmory_login(url: str, username: str, password: str) -> str:
+    """Authenticate with Grimmory and return the JWT access token."""
+    data = _grimmory_post(url, "/api/v1/auth/login", {"username": username, "password": password})
     token = data.get("accessToken") or data.get("token") or ""
     if not token:
-        raise ValueError(f"Booklore login returned no access token (keys: {list(data)})")
+        raise ValueError(f"Grimmory login returned no access token (keys: {list(data)})")
     return str(token)
 
 
@@ -132,7 +132,7 @@ def _booklore_login(url: str, username: str, password: str) -> str:
 _MAX_BOOK_PAGES = 200  # safety cap: 200 × 50 = 10 000 books per author
 
 
-def _find_booklore_author_books(
+def _find_grimmory_author_books(
     url: str,
     token: str,
     author_name: str,
@@ -150,7 +150,7 @@ def _find_booklore_author_books(
     """
     # Step 1: search authors
     try:
-        data = _booklore_get(
+        data = _grimmory_get(
             url,
             token,
             "/api/v1/app/authors",
@@ -158,12 +158,12 @@ def _find_booklore_author_books(
             timeout=15,
         )
         authors: list[dict[str, Any]] = data.get("content") or []
-    except Exception as exc:  # noqa: BLE001 — Booklore is external; any fetch failure (HTTP, SSL, JSON, auth) should degrade gracefully rather than crash the scan.
-        logger.warning("Booklore: failed to fetch authors for %r: %s", author_name, exc)
+    except Exception as exc:  # noqa: BLE001 — Grimmory is external; any fetch failure (HTTP, SSL, JSON, auth) should degrade gracefully rather than crash the scan.
+        logger.warning("Grimmory: failed to fetch authors for %r: %s", author_name, exc)
         return [], True  # fetch failure → nothing to match, treat as complete
 
     if not authors:
-        logger.warning("Booklore: no authors found matching %r", author_name)
+        logger.warning("Grimmory: no authors found matching %r", author_name)
         return [], True  # no authors → nothing to match, treat as complete
 
     # Step 2: fuzzy-match author names. Split on commas/semicolons so co-author
@@ -186,7 +186,7 @@ def _find_booklore_author_books(
 
     if best_author is None or best_ratio < 0.70:
         logger.warning(
-            "Booklore: no author match for %r (best ratio=%.2f, %d authors checked)",
+            "Grimmory: no author match for %r (best ratio=%.2f, %d authors checked)",
             author_name,
             best_ratio,
             len(authors),
@@ -195,7 +195,7 @@ def _find_booklore_author_books(
 
     matched_name = str(best_author.get("name") or "")
     logger.info(
-        "Booklore: matched author %r → %r (ratio=%.2f)",
+        "Grimmory: matched author %r → %r (ratio=%.2f)",
         author_name,
         matched_name,
         best_ratio,
@@ -207,7 +207,7 @@ def _find_booklore_author_books(
     page = 0
     while True:
         try:
-            resp = _booklore_get(
+            resp = _grimmory_get(
                 url,
                 token,
                 "/api/v1/app/books",
@@ -216,7 +216,7 @@ def _find_booklore_author_books(
             )
         except Exception as exc:  # noqa: BLE001 — external API; bail out of pagination on any failure rather than crash the scan.
             logger.warning(
-                "Booklore: failed to fetch books for author %r page %d: %s — skipping prune",
+                "Grimmory: failed to fetch books for author %r page %d: %s — skipping prune",
                 matched_name,
                 page,
                 exc,
@@ -229,7 +229,7 @@ def _find_booklore_author_books(
             break
         if page >= _MAX_BOOK_PAGES:
             logger.warning(
-                "Booklore: page cap (%d) reached for author %r — skipping prune",
+                "Grimmory: page cap (%d) reached for author %r — skipping prune",
                 _MAX_BOOK_PAGES,
                 matched_name,
             )
@@ -237,7 +237,7 @@ def _find_booklore_author_books(
         page += 1
 
     logger.info(
-        "Booklore: fetched %d books for author %r (complete=%s)",
+        "Grimmory: fetched %d books for author %r (complete=%s)",
         len(all_books),
         matched_name,
         pagination_complete,
@@ -247,18 +247,18 @@ def _find_booklore_author_books(
     ebook_items = [b for b in all_books if (b.get("primaryFileType") or "").upper() != "AUDIOBOOK"]
     filtered = len(all_books) - len(ebook_items)
     if filtered:
-        logger.debug("Booklore: filtered out %d audiobook items for %r", filtered, matched_name)
+        logger.debug("Grimmory: filtered out %d audiobook items for %r", filtered, matched_name)
 
     return ebook_items, pagination_complete
 
 
 # ---------------------------------------------------------------------------
-# Adapter: Booklore item → unified SourceMetadata
+# Adapter: Grimmory item → unified SourceMetadata
 # ---------------------------------------------------------------------------
 
 
-def _booklore_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
-    """Translate a Booklore book item into the unified ``SourceMetadata`` shape."""
+def _grimmory_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
+    """Translate a Grimmory book item into the unified ``SourceMetadata`` shape."""
     authors_list = [a for a in (item.get("authors") or []) if a]
     return SourceMetadata(
         title=(item.get("title") or "").strip() or None,
@@ -266,7 +266,7 @@ def _booklore_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
         series_name=(item.get("seriesName") or "").strip() or None,
         series_position=item.get("seriesNumber"),
         isbn_13=(item.get("isbn13") or "").strip() or None,
-        source_label="booklore",
+        source_label="grimmory",
     )
 
 
@@ -275,44 +275,44 @@ def _booklore_item_to_source_metadata(item: dict[str, Any]) -> SourceMetadata:
 # ---------------------------------------------------------------------------
 
 
-def sync_booklore_availability_for_entity(
+def sync_grimmory_availability_for_entity(
     *,
     monitored_db: Any,
     entity_id: int,
     entity_name: str,
     user_id: int | None,
 ) -> dict[str, Any]:
-    """Sync Booklore ebook availability for one monitored entity (author).
+    """Sync Grimmory ebook availability for one monitored entity (author).
 
-    Fetches all Booklore ebooks for the author, matches them to monitored books,
-    upserts matches with source='booklore', and prunes stale Booklore records.
+    Fetches all Grimmory ebooks for the author, matches them to monitored books,
+    upserts matches with source='grimmory', and prunes stale Grimmory records.
 
-    Returns a result dict with bl_matched / bl_total / bl_skipped.
+    Returns a result dict with gm_matched / gm_total / gm_skipped.
     """
-    cfg = get_booklore_config()
+    cfg = get_grimmory_config()
     if not cfg:
-        # Prune stale Booklore records when integration is disabled or not configured
+        # Prune stale Grimmory records when integration is disabled or not configured
         monitored_db.prune_monitored_book_files(
-            entity_id=entity_id, keep_paths=[], source="booklore"
+            entity_id=entity_id, keep_paths=[], source="grimmory"
         )
-        return {"bl_skipped": True, "reason": "not_configured"}
+        return {"gm_skipped": True, "reason": "not_configured"}
 
     url = cfg["url"]
 
     try:
-        token = _booklore_login(url, cfg["username"], cfg["password"])
-    except Exception as exc:  # noqa: BLE001 — any auth or network failure degrades to skipping Booklore for this entity; no need to crash the scan.
-        logger.warning("Booklore: login failed for entity_id=%s: %s", entity_id, exc)
-        return {"bl_skipped": True, "reason": "login_failed"}
+        token = _grimmory_login(url, cfg["username"], cfg["password"])
+    except Exception as exc:  # noqa: BLE001 — any auth or network failure degrades to skipping Grimmory for this entity; no need to crash the scan.
+        logger.warning("Grimmory: login failed for entity_id=%s: %s", entity_id, exc)
+        return {"gm_skipped": True, "reason": "login_failed"}
 
-    bl_items, bl_complete = _find_booklore_author_books(url, token, entity_name)
-    if not bl_items:
-        if bl_complete:
+    gm_items, gm_complete = _find_grimmory_author_books(url, token, entity_name)
+    if not gm_items:
+        if gm_complete:
             # Author genuinely has no ebooks — prune any stale records.
             monitored_db.prune_monitored_book_files(
-                entity_id=entity_id, keep_paths=[], source="booklore"
+                entity_id=entity_id, keep_paths=[], source="grimmory"
             )
-        return {"bl_matched": 0, "bl_total": 0}
+        return {"gm_matched": 0, "gm_total": 0}
 
     books = monitored_db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
 
@@ -323,34 +323,34 @@ def sync_booklore_availability_for_entity(
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
 
-    for item in bl_items:
-        bl_id = item.get("id")
-        bl_title = (item.get("title") or str(bl_id) or "?").strip()
-        if bl_id is None:
-            unmatched_titles.append(bl_title)
+    for item in gm_items:
+        gm_id = item.get("id")
+        gm_title = (item.get("title") or str(gm_id) or "?").strip()
+        if gm_id is None:
+            unmatched_titles.append(gm_title)
             continue
 
-        src_meta = _booklore_item_to_source_metadata(item)
+        src_meta = _grimmory_item_to_source_metadata(item)
 
-        # Fetch the real filesystem path from the Booklore web API BEFORE
+        # Fetch the real filesystem path from the Grimmory web API BEFORE
         # picking the best attribution. The path string carries strong
         # author_folder / series_folder / position signals that
         # evaluate_match can use on top of the curated source_metadata —
-        # without it, ABS/Booklore matches lose the path-side scoring
+        # without it, ABS/Grimmory matches lose the path-side scoring
         # contribution and over-classify as candidates instead of confirmed.
         # The /api/v1/books/ endpoint returns BookFile objects with filePath;
         # /api/v1/app/books/ intentionally omits paths.
-        # Cast bl_id to int to prevent path injection in the URL.
+        # Cast gm_id to int to prevent path injection in the URL.
         try:
-            safe_id = int(bl_id)
+            safe_id = int(gm_id)
         except TypeError, ValueError:
-            logger.warning("Booklore: skipping book with non-integer id=%r", bl_id)
-            unmatched_titles.append(bl_title)
+            logger.warning("Grimmory: skipping book with non-integer id=%r", gm_id)
+            unmatched_titles.append(gm_title)
             continue
-        path = f"booklore://{safe_id}"
+        path = f"grimmory://{safe_id}"
         file_size: int | None = None
         try:
-            detail = _booklore_get(url, token, f"/api/v1/books/{safe_id}", timeout=10)
+            detail = _grimmory_get(url, token, f"/api/v1/books/{safe_id}", timeout=10)
             primary = detail.get("primaryFile") or {}
             real_path = (primary.get("filePath") or "").strip()
             if not real_path:
@@ -367,12 +367,12 @@ def sync_booklore_availability_for_entity(
             if size_kb is not None:
                 file_size = int(float(size_kb)) * 1024
         except Exception as fp_exc:  # noqa: BLE001 — optional enrichment; fall back to the bare book payload if the file-detail endpoint fails.
-            logger.debug("Booklore: could not fetch file path for book %s: %s", bl_id, fp_exc)
+            logger.debug("Grimmory: could not fetch file path for book %s: %s", gm_id, fp_exc)
 
         # Drop rejected (path, book) pairs from consideration up front so the
         # first pick_best call already sees the filtered set — no re-pick needed.
         rejected_for_path: set[tuple[str, str]] = {
-            (prov, pbid) for (src, p, prov, pbid) in rejections if src == "booklore" and p == path
+            (prov, pbid) for (src, p, prov, pbid) in rejections if src == "grimmory" and p == path
         }
         item_books = books
         if rejected_for_path:
@@ -384,14 +384,14 @@ def sync_booklore_availability_for_entity(
             ]
 
         result = pick_best_attribution(
-            path=path if not path.startswith("booklore://") else None,
+            path=path if not path.startswith("grimmory://") else None,
             books=item_books,
             author_name=entity_name,
             embedded=None,
             source_metadata=src_meta,
         )
         if result.book is None:
-            unmatched_titles.append(bl_title)
+            unmatched_titles.append(gm_title)
             continue
 
         file_type_raw = (item.get("primaryFileType") or "ebook").lower()
@@ -422,7 +422,7 @@ def sync_booklore_availability_for_entity(
                 mtime=None,
                 confidence=result.confidence,
                 match_reason=result.match_reason,
-                source="booklore",
+                source="grimmory",
                 evidence_json=evidence_json,
                 status=db_status,
             )
@@ -430,38 +430,38 @@ def sync_booklore_availability_for_entity(
             matched += 1
         except Exception as exc:  # noqa: BLE001 — per-row failure (DB lock, JSON, constraint) is logged and counted as unmatched; one bad row must not abort the whole scan.
             logger.warning(
-                "Booklore: failed to upsert match for %r (entity=%s book=%s): %s",
+                "Grimmory: failed to upsert match for %r (entity=%s book=%s): %s",
                 path,
                 entity_id,
                 result.book.get("provider_book_id"),
                 exc,
             )
-            unmatched_titles.append(bl_title)
+            unmatched_titles.append(gm_title)
 
     # Only prune when pagination was complete — avoids deleting valid records
     # if a timeout or error cut the book list short.
-    if bl_complete:
+    if gm_complete:
         monitored_db.prune_monitored_book_files(
-            entity_id=entity_id, keep_paths=kept_paths, source="booklore"
+            entity_id=entity_id, keep_paths=kept_paths, source="grimmory"
         )
     else:
         logger.warning(
-            "Booklore sync entity_id=%s: skipping prune (pagination incomplete)",
+            "Grimmory sync entity_id=%s: skipping prune (pagination incomplete)",
             entity_id,
         )
 
-    bl_total = len(bl_items)
+    gm_total = len(gm_items)
     logger.info(
-        "Booklore sync entity_id=%s: %d/%d items matched",
+        "Grimmory sync entity_id=%s: %d/%d items matched",
         entity_id,
         matched,
-        bl_total,
+        gm_total,
     )
     if unmatched_titles:
         logger.warning(
-            "Booklore sync entity_id=%s: %d items not matched: %s",
+            "Grimmory sync entity_id=%s: %d items not matched: %s",
             entity_id,
             len(unmatched_titles),
             ", ".join(repr(t) for t in unmatched_titles[:10]),
         )
-    return {"bl_matched": matched, "bl_total": bl_total}
+    return {"gm_matched": matched, "gm_total": gm_total}

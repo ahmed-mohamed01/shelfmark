@@ -357,6 +357,9 @@ def _migrate_monitored_book_files_v5(conn: sqlite3.Connection) -> None:
       * ``audiobookshelf`` / ``booklore`` — were three-phase decision trees
         with the old looser title-confirmation threshold. Now metadata-fed
         into the unified evaluator. Wholesale wipe; sync will re-derive.
+        (``booklore`` is a historical source label; v9 renames it to
+        ``grimmory``. This WHERE clause keeps the legacy literal because it
+        targets pre-rename rows.)
 
     ``download`` rows survive — those were attributed at download time with
     a known target book; the path is canonical by construction.
@@ -509,6 +512,42 @@ def _migrate_monitored_book_files_v8(conn: sqlite3.Connection) -> None:
           AND file_type IS NOT NULL
         """
     )
+    conn.commit()
+
+
+def _migrate_booklore_to_grimmory_v9(conn: sqlite3.Connection) -> None:
+    """Rename historical ``source='booklore'`` rows + ``booklore://`` paths to grimmory.
+
+    The Booklore library-matching integration was renamed to Grimmory (drop-in
+    API replacement). Any rows written by the old integration carry the legacy
+    source label / path scheme; update them in place so the renamed code sees
+    them as its own.
+
+    Gated on ``PRAGMA user_version < 9``.
+    """
+    for table in (
+        "monitored_book_files",
+        "monitored_file_rejections",
+        "monitored_book_download_history",
+        "monitored_book_attempt_history",
+        "monitored_events",
+    ):
+        if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone():
+            continue
+        conn.execute(
+            f"UPDATE {table} SET source = 'grimmory' WHERE source = 'booklore'"  # noqa: S608
+        )
+    for table in ("monitored_book_files", "monitored_file_rejections"):
+        if not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone():
+            continue
+        conn.execute(
+            f"UPDATE {table} SET path = 'grimmory://' || SUBSTR(path, 12) "  # noqa: S608
+            "WHERE path LIKE 'booklore://%'"
+        )
     conn.commit()
 
 
@@ -665,6 +704,10 @@ class MonitoredDB:
                         _migrate_monitored_book_files_v7(conn)
                     _migrate_monitored_book_files_v8(conn)
                     conn.execute("PRAGMA user_version = 8")
+                    conn.commit()
+                if user_version < 9:
+                    _migrate_booklore_to_grimmory_v9(conn)
+                    conn.execute("PRAGMA user_version = 9")
                     conn.commit()
                 _migrate_monitored_events_cascade_to_set_null(conn)
                 _migrate_monitored_events_backfill_user_id(conn)

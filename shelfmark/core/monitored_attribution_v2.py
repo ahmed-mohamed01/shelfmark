@@ -53,7 +53,7 @@ W_EMBEDDED_TITLE_AGREE_MED = 0.6  # 0.70 <= fuzz < 0.85
 W_EMBEDDED_TITLE_AGREE_LOW = 0.3  # 0.55 <= fuzz < 0.70
 W_EMBEDDED_SERIES_AGREE = 1.0
 # Position-only match: metadata's series_position == book's series_position,
-# but series_name doesn't fuzz-match (common across ABS/Booklore/Hardcover).
+# but series_name doesn't fuzz-match (common across ABS/Grimmory/Hardcover).
 # Weaker than series_agree because we have one corroborating signal instead
 # of two, but still useful for tier classification.
 W_EMBEDDED_POSITION_MATCH = 0.6
@@ -195,13 +195,13 @@ class EmbeddedMetadata:
 
 @dataclass
 class SourceMetadata:
-    """Curated book metadata from an external source (ABS / Booklore / …).
+    """Curated book metadata from an external source (ABS / Grimmory / …).
 
     Treated as a high-trust evidence input alongside embedded file metadata.
     Empty fields contribute nothing — same as if the field were absent.
 
     ``source_label`` is propagated into match_reason / log lines so the UI can
-    show "abs_match" / "booklore_match" / etc.
+    show "abs_match" / "grimmory_match" / etc.
 
     ``all_series_pairs`` carries every (series_name, position) the source
     knows about — ABS commonly returns "Stormlight Archive #5, Cosmere #19"
@@ -256,7 +256,7 @@ class AttributionEvidence:
     # removed — the same information is in positives/penalties arrays.)
     embedded_data: dict[str, Any] = field(default_factory=dict)
 
-    # Same shape for external metadata supplied by an integration (ABS/Booklore).
+    # Same shape for external metadata supplied by an integration (ABS/Grimmory).
     source_metadata_used: bool = False
     source_data: dict[str, Any] = field(default_factory=dict)
 
@@ -283,7 +283,7 @@ class AttributionResult:
     confidence: float
     evidence: AttributionEvidence
     match_reason: str  # e.g. "v2_structured", "v2_identifier",
-    # "abs_match", "booklore_match",
+    # "abs_match", "grimmory_match",
     # "abs_match_candidate", "v2_no_candidate"
     tier: str = "rejected"  # "confirmed" | "candidate" | "rejected"
 
@@ -407,7 +407,7 @@ def _flexible_tolerant_pattern(s: str) -> str:
       * "Taylor - Dennis"   (hyphen)
 
     Used for stripping author / series names from titles + filenames where
-    naming conventions vary across catalog sources (ABS, Booklore, local).
+    naming conventions vary across catalog sources (ABS, Grimmory, local).
     """
     tokens = re.split(r"[^A-Za-z0-9]+", s or "")
     tokens = [t for t in tokens if t]
@@ -1206,7 +1206,7 @@ def _canonical_title_forms(
 ) -> list[str]:
     """Return successive canonicalisations of a title for fuzzy comparison.
 
-    External catalogs (ABS / Booklore / publishers) routinely embed extra
+    External catalogs (ABS / Grimmory / publishers) routinely embed extra
     metadata in the title string that doesn't appear in Hardcover's
     canonical title. The strategy: strip every known piece of cruft
     (author / series / position / year / parens / subtitle) one channel at
@@ -1315,7 +1315,7 @@ def _canonical_title_forms(
 
     # Channel 2: strip subtitle after any common subtitle separator —
     # colon, space-dash-space, em-dash, or en-dash. External catalogs
-    # are inconsistent: Booklore typically writes Title-colon-Subtitle,
+    # are inconsistent: Grimmory typically writes Title-colon-Subtitle,
     # ABS writes Title-dash-Subtitle, publishers sometimes use em-dash.
     # Every separator produces a bare before-form so cross-catalog
     # title fuzz can find a match. The _subtitle_split_distinguishes
@@ -1483,7 +1483,7 @@ def _all_book_positions(book: dict[str, Any]) -> list[float]:
 
     Many books belong to several series at different positions:
     "The Alloy of Law" is #1 in *Mistborn: Wax & Wayne*, #4 in *The Mistborn
-    Saga*, and #8 in *The Cosmere*. External catalogs (ABS, Booklore) often
+    Saga*, and #8 in *The Cosmere*. External catalogs (ABS, Grimmory) often
     use a different one than Hardcover's primary, so position-disagreement
     must only fire when the candidate position matches NONE of the book's
     known positions.
@@ -1670,7 +1670,7 @@ def _score_metadata_signals(
             evidence.net_score += W_IDENTIFIER_MATCH
         elif (book_isbns or book_asins) and label == "embedded":
             # File-level identifier disagrees with the book → hard reject.
-            # External catalogs (ABS/Booklore) often carry edition-specific
+            # External catalogs (ABS/Grimmory) often carry edition-specific
             # identifiers that legitimately differ from Hardcover's, so we
             # only treat embedded-tag disagreement as decisive.
             evidence.hard_reject = True
@@ -1969,7 +1969,7 @@ def evaluate_match(
 
     Inputs are independent — any combination of (``path``, ``embedded``,
     ``source_metadata``) may be supplied. Filesystem scans typically pass
-    ``path`` + ``embedded``; ABS/Booklore integrations pass only
+    ``path`` + ``embedded``; ABS/Grimmory integrations pass only
     ``source_metadata`` (no path → path-derived signals skipped). Empty or
     None path is treated as "no path" and contributes no path-based signals.
     """
@@ -2355,7 +2355,7 @@ def evaluate_match(
             path_will_disagree_high=_will_disagree_high,
         )
 
-    # ---- External source metadata (ABS / Booklore adapters) ----
+    # ---- External source metadata (ABS / Grimmory adapters) ----
     if source_metadata is not None and not evidence.hard_reject:
         evidence.source_metadata_used = True
         evidence.source_data = _metadata_to_dict(
@@ -2531,12 +2531,12 @@ def evaluate_match(
         #
         # Without an identifier we need strong title agreement + author +
         # series, with position either actively agreeing or silent. The
-        # third path covers ABS/Booklore integrations where there is no
+        # third path covers ABS/Grimmory integrations where there is no
         # filesystem path (path=None) and all evidence comes from the
         # external API's curated metadata.
         # Metadata-side position evidence: either the strong `*_series_agree`
         # (name AND position both match) OR the weaker `*_position_match`
-        # (position matches but series name diverges — ABS / Booklore vs
+        # (position matches but series name diverges — ABS / Grimmory vs
         # Hardcover naming differences). Either is enough corroboration to
         # confirm a metadata-only attribution.
         meta_position_corroborates = any(
@@ -2560,7 +2560,7 @@ def evaluate_match(
                 and not title_mismatch_meta
             )
             or (
-                # Metadata-only confirmed: ABS / Booklore integrations send
+                # Metadata-only confirmed: ABS / Grimmory integrations send
                 # curated title + series_position + author. Strong title +
                 # author + position corroboration (series_agree or
                 # position_match) is enough — series_name divergence between
@@ -2580,7 +2580,7 @@ def evaluate_match(
             #   - file mistagging on the metadata side
             (title_match_path_strong and author_match)
             # Same but title agreement comes from embedded/source metadata
-            # instead of the path (ABS / Booklore integration paths).
+            # instead of the path (ABS / Grimmory integration paths).
             or (title_match_meta_strong and author_match)
             # Strong context (author + series + position) but title is weak
             # or absent on the path side.
@@ -2616,7 +2616,7 @@ def evaluate_match(
         #                         AND the book carries the matching field
         #                         (e.g. don't count W_EMBEDDED_SERIES_AGREE
         #                         when the book has no series).
-        #   * source fields    -- same shape as embedded, for ABS/Booklore.
+        #   * source fields    -- same shape as embedded, for ABS/Grimmory.
         #   * identifier       -- only when the (book, source) pair has an
         #                         identifier match positive; otherwise the
         #                         book's identifier is opaque to scoring.
@@ -2660,7 +2660,7 @@ def pick_best_attribution(
 
     Returns a result with ``book=None`` when no book passes the accept floor.
 
-    ABS / Booklore integrations call with ``path=None`` and only
+    ABS / Grimmory integrations call with ``path=None`` and only
     ``source_metadata`` — they trust their API's curated metadata and don't
     re-derive signals from a remote path. Filesystem scans pass ``path`` and
     typically ``embedded`` as well.
@@ -2756,7 +2756,7 @@ def pick_best_attribution(
 def _empty_decomposition() -> PathDecomposition:
     """A PathDecomposition that contributes no path-based signals.
 
-    Used when the caller has no meaningful path (ABS/Booklore integrations).
+    Used when the caller has no meaningful path (ABS/Grimmory integrations).
     """
     return PathDecomposition(
         leaf="",

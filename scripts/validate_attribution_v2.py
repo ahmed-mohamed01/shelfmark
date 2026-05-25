@@ -10,7 +10,7 @@ where v2 prefers a different book.
 
 Useful for spot-checking after a code change. Read-only, no DB writes.
 
-All three sources (filesystem, ABS, Booklore) run through the unified
+All three sources (filesystem, ABS, Grimmory) run through the unified
 ``pick_best_attribution`` evaluator; this script re-runs that evaluator on
 existing rows and flags ones it would no longer accept (or would prefer a
 different book for).
@@ -40,7 +40,9 @@ def _load(db_path: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        file_rows = [dict(r) for r in conn.execute("""
+        file_rows = [
+            dict(r)
+            for r in conn.execute("""
             SELECT
               f.id AS file_id, f.entity_id, e.name AS author_name,
               f.path, f.ext, f.file_type, f.source,
@@ -56,15 +58,19 @@ def _load(db_path: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
               ON b.entity_id = f.entity_id
               AND b.provider = f.provider
               AND b.provider_book_id = f.provider_book_id
-        """).fetchall()]
-        books = [dict(r) for r in conn.execute("""
+        """).fetchall()
+        ]
+        books = [
+            dict(r)
+            for r in conn.execute("""
             SELECT b.id AS book_id, b.entity_id, e.name AS author_name,
                    b.title, b.series_position, b.series_name, b.state,
                    b.release_date, b.isbn_13, b.isbn_10, b.asins,
                    b.provider, b.provider_book_id
             FROM monitored_books b
             JOIN monitored_entities e ON e.id = b.entity_id
-        """).fetchall()]
+        """).fetchall()
+        ]
     finally:
         conn.close()
     return file_rows, books
@@ -72,8 +78,9 @@ def _load(db_path: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=str, default=str(DEFAULT_DB),
-                        help=f"Path to users.db (default: {DEFAULT_DB})")
+    parser.add_argument(
+        "--db", type=str, default=str(DEFAULT_DB), help=f"Path to users.db (default: {DEFAULT_DB})"
+    )
     args = parser.parse_args()
 
     db_path = args.db
@@ -129,18 +136,20 @@ def main() -> int:
         else:
             v2_rejects_existing[src] += 1
             if (row.get("recorded_conf") or 0.0) >= 0.85:
-                rejected_high_conf_recorded.append({
-                    "author": row["author_name"],
-                    "book": row["book_title"],
-                    "spos": row["series_position"],
-                    "path": row["path"],
-                    "src": src,
-                    "recorded_conf": row.get("recorded_conf"),
-                    "v2_net_score": ev.net_score,
-                    "v2_confidence": ev.confidence,
-                    "positives": [(p["name"], p["weight"]) for p in ev.positives],
-                    "penalties": [(p["name"], p["weight"]) for p in ev.penalties],
-                })
+                rejected_high_conf_recorded.append(
+                    {
+                        "author": row["author_name"],
+                        "book": row["book_title"],
+                        "spos": row["series_position"],
+                        "path": row["path"],
+                        "src": src,
+                        "recorded_conf": row.get("recorded_conf"),
+                        "v2_net_score": ev.net_score,
+                        "v2_confidence": ev.confidence,
+                        "positives": [(p["name"], p["weight"]) for p in ev.positives],
+                        "penalties": [(p["name"], p["weight"]) for p in ev.penalties],
+                    }
+                )
 
         # 2) Does v2 prefer a different book?
         entity_books = books_by_entity.get(row["entity_id"], [])
@@ -156,17 +165,19 @@ def main() -> int:
             v2_same_choice[src] += 1
         else:
             v2_better_choice[src] += 1
-            different_best_choice.append({
-                "author": row["author_name"],
-                "currently_attached": row["book_title"],
-                "currently_spos": row["series_position"],
-                "currently_conf": row.get("recorded_conf"),
-                "v2_prefers": result.book.get("title"),
-                "v2_prefers_spos": result.book.get("series_position"),
-                "v2_confidence": result.confidence,
-                "path": row["path"],
-                "src": src,
-            })
+            different_best_choice.append(
+                {
+                    "author": row["author_name"],
+                    "currently_attached": row["book_title"],
+                    "currently_spos": row["series_position"],
+                    "currently_conf": row.get("recorded_conf"),
+                    "v2_prefers": result.book.get("title"),
+                    "v2_prefers_spos": result.book.get("series_position"),
+                    "v2_confidence": result.confidence,
+                    "path": row["path"],
+                    "src": src,
+                }
+            )
 
     # ---------------- Report ----------------
     print("=" * 90)
@@ -176,32 +187,48 @@ def main() -> int:
     print(f"\nBy source: {dict(rows_by_source)}\n")
 
     print("Per-source — v2 verdict on the EXISTING attribution:")
-    for src in sorted(set(list(v2_accepts_existing) + list(v2_rejects_existing) + list(no_attached_book))):
+    for src in sorted(
+        set(list(v2_accepts_existing) + list(v2_rejects_existing) + list(no_attached_book))
+    ):
         total = rows_by_source[src]
         acc = v2_accepts_existing[src]
         rej = v2_rejects_existing[src]
         no_attached = no_attached_book[src]
-        print(f"  {src:<14}  total={total:4d}  v2_accept={acc:4d}  v2_reject={rej:4d}  no_book={no_attached}")
+        print(
+            f"  {src:<14}  total={total:4d}  v2_accept={acc:4d}  v2_reject={rej:4d}  no_book={no_attached}"
+        )
 
     print("\nPer-source — v2 best choice vs currently-attached book:")
     for src in sorted(set(list(v2_same_choice) + list(v2_better_choice))):
-        print(f"  {src:<14}  v2_picks_same={v2_same_choice[src]:4d}  v2_picks_different={v2_better_choice[src]:4d}")
+        print(
+            f"  {src:<14}  v2_picks_same={v2_same_choice[src]:4d}  v2_picks_different={v2_better_choice[src]:4d}"
+        )
 
-    print(f"\nRows v2 rejects despite high recorded conf (>=0.85): {len(rejected_high_conf_recorded)}")
+    print(
+        f"\nRows v2 rejects despite high recorded conf (>=0.85): {len(rejected_high_conf_recorded)}"
+    )
     for x in rejected_high_conf_recorded[:30]:
         print(f"\n  [{x['src']}] {x['author']}  ->  '{x['book']}' (#{x['spos']})")
         print(f"    {x['path']}")
-        print(f"    recorded={x['recorded_conf']:.2f}  v2_net={x['v2_net_score']:.2f}  v2_conf={x['v2_confidence']:.2f}")
+        print(
+            f"    recorded={x['recorded_conf']:.2f}  v2_net={x['v2_net_score']:.2f}  v2_conf={x['v2_confidence']:.2f}"
+        )
         print(f"    positives: {x['positives']}")
         print(f"    penalties: {x['penalties']}")
     if len(rejected_high_conf_recorded) > 30:
         print(f"\n  ... and {len(rejected_high_conf_recorded) - 30} more.")
 
-    print(f"\n\nRows where v2 prefers a DIFFERENT book from what's currently attached: {len(different_best_choice)}")
+    print(
+        f"\n\nRows where v2 prefers a DIFFERENT book from what's currently attached: {len(different_best_choice)}"
+    )
     for x in different_best_choice[:30]:
         print(f"\n  [{x['src']}] {x['author']}")
-        print(f"    currently:    '{x['currently_attached']}' (#{x['currently_spos']}) at conf {x['currently_conf']:.2f}")
-        print(f"    v2 prefers:   '{x['v2_prefers']}' (#{x['v2_prefers_spos']}) at conf {x['v2_confidence']:.2f}")
+        print(
+            f"    currently:    '{x['currently_attached']}' (#{x['currently_spos']}) at conf {x['currently_conf']:.2f}"
+        )
+        print(
+            f"    v2 prefers:   '{x['v2_prefers']}' (#{x['v2_prefers_spos']}) at conf {x['v2_confidence']:.2f}"
+        )
         print(f"    file: {x['path']}")
     if len(different_best_choice) > 30:
         print(f"\n  ... and {len(different_best_choice) - 30} more.")

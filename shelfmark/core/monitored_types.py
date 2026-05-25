@@ -139,14 +139,14 @@ class AvailabilitySyncResult:
 
     Errors are captured rather than raised so callers can choose whether to
     surface them (HTTP routes) or just log and continue (background sync).
-    ABS / Booklore results fall back to a ``*_skipped: True`` dict on failure
+    ABS / Grimmory results fall back to a ``*_skipped: True`` dict on failure
     so JSON payloads have a stable shape.
     """
 
     fs_scan: ScanResult | None = None
     fs_error: Exception | None = None
     abs: dict[str, Any] = field(default_factory=lambda: {"abs_skipped": True, "reason": "not_run"})
-    bl: dict[str, Any] = field(default_factory=lambda: {"bl_skipped": True, "reason": "not_run"})
+    gm: dict[str, Any] = field(default_factory=lambda: {"gm_skipped": True, "reason": "not_run"})
 
 
 @dataclass

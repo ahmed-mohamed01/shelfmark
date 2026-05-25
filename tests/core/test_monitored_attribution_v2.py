@@ -673,7 +673,7 @@ class TestTierClassification:
             author="Craig Alanson",
             series_name="Expeditionary Force",
             series_position=10.0,
-            source_label="booklore",
+            source_label="grimmory",
         )
         r = pick_best_attribution(
             path="/Library/fiction/Craig Alanson/Expeditionary Force/Critical Mass (Expeditionary Force Book 10) - Craig Alanson (2020).epub",
@@ -1329,10 +1329,10 @@ class TestTierClassification:
 
     def test_dash_subtitle_separator_treated_same_as_colon(self):
         # Real case: The Primal Hunter 7 by Zogarth. Hardcover book title
-        # is "The Primal Hunter 7"; Booklore metadata writes it as
+        # is "The Primal Hunter 7"; Grimmory metadata writes it as
         # "The Primal Hunter 7: A LitRPG Adventure" (colon) and ABS as
         # "The Primal Hunter 7 - A LitRPG Adventure" (dash). Channel 2
-        # previously only split on ":" so the Booklore variant got a
+        # previously only split on ":" so the Grimmory variant got a
         # bare 'The Primal Hunter 7' canonical form and matched at
         # fuzz=1.0, but the ABS variant did NOT and dropped to fuzz=0.67
         # → source_abs_title_mismatch → tier=candidate.

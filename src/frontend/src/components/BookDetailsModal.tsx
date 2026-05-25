@@ -1382,7 +1382,7 @@ export const BookDetailsModal = ({
                       ) : (
                         matchedFiles.map((f) => {
                           const isAbs = f.source === 'audiobookshelf';
-                          const isBooklore = f.source === 'booklore';
+                          const isGrimmory = f.source === 'grimmory';
                           const formatLabel = f.ext
                             ? f.ext.toUpperCase()
                             : f.file_type
@@ -1398,7 +1398,7 @@ export const BookDetailsModal = ({
                             typeof f.confidence === 'number'
                               ? `${(f.confidence * 100).toFixed(0)}%`
                               : null,
-                            isAbs ? 'from AudioBookShelf' : isBooklore ? 'from Booklore' : null,
+                            isAbs ? 'from AudioBookShelf' : isGrimmory ? 'from Grimmory' : null,
                           ].filter(Boolean);
                           const evidence = f.evidence ?? null;
                           const evidenceExpanded = expandedEvidenceIds.has(f.id);
@@ -1530,7 +1530,7 @@ export const BookDetailsModal = ({
                       <div className="divide-y divide-amber-500/20">
                         {candidateFiles.map((f) => {
                           const isAbs = f.source === 'audiobookshelf';
-                          const isBooklore = f.source === 'booklore';
+                          const isGrimmory = f.source === 'grimmory';
                           const formatLabel = f.ext
                             ? f.ext.toUpperCase()
                             : f.file_type
@@ -1545,7 +1545,7 @@ export const BookDetailsModal = ({
                             typeof f.confidence === 'number'
                               ? `${(f.confidence * 100).toFixed(0)}%`
                               : null,
-                            isAbs ? 'from AudioBookShelf' : isBooklore ? 'from Booklore' : null,
+                            isAbs ? 'from AudioBookShelf' : isGrimmory ? 'from Grimmory' : null,
                           ].filter(Boolean);
                           const evidence = f.evidence ?? null;
                           const evidenceExpanded = expandedEvidenceIds.has(f.id);

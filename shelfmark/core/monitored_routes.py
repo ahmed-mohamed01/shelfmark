@@ -1349,7 +1349,7 @@ def register_monitored_routes(
 
         Includes existing matched rows in ``monitored_book_files`` AND
         unmatched items live-fetched from configured integrations
-        (AudioBookShelf for audiobooks, Booklore for ebooks). Unmatched
+        (AudioBookShelf for audiobooks, Grimmory for ebooks). Unmatched
         items have ``file.id = None`` — the apply step uses (source, path)
         as the identifier for those.
         """
@@ -1420,7 +1420,7 @@ def register_monitored_routes(
                     embedded = read_embedded_metadata(cand_path)
                 except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
                     embedded = None
-            elif cand_source in ("audiobookshelf", "booklore"):
+            elif cand_source in ("audiobookshelf", "grimmory"):
                 stored = cand.get("evidence_json")
                 source_data: dict[str, Any] = {}
                 if isinstance(stored, str) and stored:
@@ -1457,7 +1457,7 @@ def register_monitored_routes(
                     isbn_13=source_data.get("isbn_13"),
                     isbn_10=source_data.get("isbn_10"),
                     asin=source_data.get("asin"),
-                    source_label="abs" if cand_source == "audiobookshelf" else "booklore",
+                    source_label="abs" if cand_source == "audiobookshelf" else "grimmory",
                 )
 
             _score_and_append(
@@ -1473,7 +1473,7 @@ def register_monitored_routes(
             )
 
         # ---- 2. Live-fetched unmatched items from integrations ----
-        # ABS items for audiobooks, Booklore books for ebooks. Each fetch is
+        # ABS items for audiobooks, Grimmory books for ebooks. Each fetch is
         # best-effort; if the integration is misconfigured we just skip it.
         if is_audiobook and author_name:
             try:
@@ -1517,7 +1517,7 @@ def register_monitored_routes(
                     "Failed to live-fetch ABS candidates for entity %s: %s", entity_id, exc
                 )
 
-        # Booklore live-fetch deliberately omitted: Booklore's path-per-book
+        # Grimmory live-fetch deliberately omitted: Grimmory's path-per-book
         # requires an N+1 follow-up API call. Add later if users need it.
 
         ranked.sort(key=lambda r: r["net_score"], reverse=True)
@@ -2258,7 +2258,7 @@ def register_monitored_routes(
         )
 
         # Translate any filesystem-scan exception captured by the helper into
-        # the appropriate HTTP response. ABS/Booklore errors don't fail the
+        # the appropriate HTTP response. ABS/Grimmory errors don't fail the
         # whole call — they're surfaced inside their result dicts.
         fs_err = sync_result.fs_error
         if fs_err is not None:
@@ -2315,7 +2315,7 @@ def register_monitored_routes(
                 "unmatched": scan.unmatched,
                 "missing_books": scan.missing_books,
                 "abs": sync_result.abs,
-                "booklore": sync_result.bl,
+                "grimmory": sync_result.gm,
             }
         )
 

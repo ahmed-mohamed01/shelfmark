@@ -45,7 +45,7 @@ const POSITION_SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_QUALIFIER_LABELS: Record<string, string> = {
   abs: 'from AudioBookShelf',
-  booklore: 'from Booklore',
+  grimmory: 'from Grimmory',
 };
 
 /** Translate algorithm-internal positive/penalty names into UI text. */
@@ -157,7 +157,7 @@ const MetadataDl = ({ title, data }: { title: string; data: EmbeddedData | undef
 const REJECT_REASON_LABELS: Record<string, string> = {
   embedded_identifier_mismatch: 'identifier mismatch',
   source_abs_identifier_mismatch: 'identifier mismatch',
-  source_booklore_identifier_mismatch: 'identifier mismatch',
+  source_grimmory_identifier_mismatch: 'identifier mismatch',
   title_mismatch_both_sides: 'title mismatches on both path and metadata',
   title_borne_position_mismatch: 'filename names a different book number',
 };
@@ -274,7 +274,7 @@ export const EvidencePanel = ({ evidence }: { evidence: AttributionEvidence }) =
         <MetadataDl title="Metadata from file tags" data={evidence.embedded_data} />
       ) : null}
 
-      {/* External source metadata (ABS / Booklore API) */}
+      {/* External source metadata (ABS / Grimmory API) */}
       {evidence.source_metadata_used ? (
         <MetadataDl
           title={(() => {

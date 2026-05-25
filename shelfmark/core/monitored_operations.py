@@ -60,7 +60,7 @@ def sync_availability_sources(
 
       1. Filesystem scan (skipped when no library roots are configured).
       2. AudioBookShelf sync (skipped when integration is disabled / no config).
-      3. Booklore sync (same).
+      3. Grimmory sync (same).
 
     All three populate ``monitored_book_files`` via the unified attribution
     evaluator. Shared by the per-author sync (``_run_author_sync``), the
@@ -113,24 +113,24 @@ def sync_availability_sources(
         logger.warning("ABS availability sync failed for entity %s: %s", entity_id, exc)
         result.abs = {"abs_skipped": True, "reason": "error"}
 
-    # Booklore sync — best-effort, skipped if Booklore not configured.
+    # Grimmory sync — best-effort, skipped if Grimmory not configured.
     try:
-        from shelfmark.core.monitored_booklore_integration import (
-            sync_booklore_availability_for_entity,
+        from shelfmark.core.monitored_grimmory_integration import (
+            sync_grimmory_availability_for_entity,
         )
 
-        result.bl = (
-            sync_booklore_availability_for_entity(
+        result.gm = (
+            sync_grimmory_availability_for_entity(
                 monitored_db=db,
                 entity_id=entity_id,
                 entity_name=entity_name,
                 user_id=user_id,
             )
-            or result.bl
+            or result.gm
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Booklore availability sync failed for entity %s: %s", entity_id, exc)
-        result.bl = {"bl_skipped": True, "reason": "error"}
+        logger.warning("Grimmory availability sync failed for entity %s: %s", entity_id, exc)
+        result.gm = {"gm_skipped": True, "reason": "error"}
 
     return result
 
@@ -283,7 +283,7 @@ def _run_author_sync(
             db, entity=entity, user_id=user_id, preferred_languages=preferred_languages
         )
 
-        # File availability across all sources (filesystem + ABS + Booklore).
+        # File availability across all sources (filesystem + ABS + Grimmory).
         _broadcast(
             ws_manager,
             user_id,

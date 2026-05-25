@@ -1,4 +1,4 @@
-"""Shared helpers for monitored integrations (ABS / Booklore).
+"""Shared helpers for monitored integrations (ABS / Grimmory).
 
 Used by the integration adapters for author-discovery (matching the entity
 to a source-side author) and series-position regex extraction. The actual
