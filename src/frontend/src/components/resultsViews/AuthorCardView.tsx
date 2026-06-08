@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { MetadataAuthor } from '../../services/monitoredApi';
+import { isProxiedCover, THUMB_SIZES, thumbSrcSet, thumbUrl } from '../../utils/monitoredThumbnail';
 
 const SkeletonLoader = () => (
   <div className="w-full h-full bg-gradient-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700 animate-pulse" />
@@ -65,9 +66,13 @@ export const AuthorCardView = ({
               </div>
             )}
             <img
-              src={author.photo_url}
+              src={isProxiedCover(author.photo_url) ? thumbUrl(author.photo_url, 300) : author.photo_url}
+              srcSet={isProxiedCover(author.photo_url) ? thumbSrcSet(author.photo_url) : undefined}
+              sizes={isProxiedCover(author.photo_url) ? THUMB_SIZES : undefined}
               alt={author.name || 'Author photo'}
               className="w-full h-full"
+              loading="lazy"
+              decoding="async"
               style={{
                 opacity: imageLoaded ? 1 : 0,
                 transition: 'opacity 0.3s ease-in-out',

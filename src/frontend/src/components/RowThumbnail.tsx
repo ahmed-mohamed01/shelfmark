@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 
+import { isProxiedCover, THUMB_SIZES, thumbSrcSet, thumbUrl } from '../utils/monitoredThumbnail';
+
 interface RowThumbnailProps {
   url?: string | null;
   alt?: string;
@@ -78,6 +80,15 @@ export const RowThumbnail = ({
     );
   }
 
+  // Derive sized WEBP thumbnail variants for proxied cover/portrait URLs so the
+  // browser fetches ~150px assets for ~150px tiles instead of full-resolution
+  // source images. Non-proxied URLs (covers cache disabled, raw external CDN)
+  // are used as-is. Backed by /api/monitored/thumb + monitored_thumbnails.py.
+  const proxied = isProxiedCover(url);
+  const imgSrc = proxied ? thumbUrl(url, 300) : url;
+  const imgSrcSet = proxied ? thumbSrcSet(url) : undefined;
+  const imgSizes = proxied ? THUMB_SIZES : undefined;
+
   return (
     <div className={`relative ${className} rounded overflow-hidden bg-gray-100 dark:bg-gray-800 border border-white/40 dark:border-gray-700/70`}>
       {/* Shimmer skeleton — animate-pulse class is removed once loaded so Tailwind v4
@@ -88,10 +99,13 @@ export const RowThumbnail = ({
       />
       <img
         ref={imgRef}
-        src={url}
+        src={imgSrc}
+        srcSet={imgSrcSet}
+        sizes={imgSizes}
         alt={alt || (kind === 'author' ? 'Author photo' : 'Book cover')}
         className="w-full h-full object-cover object-top"
-        loading="eager"
+        loading="lazy"
+        decoding="async"
         onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}
         style={{ opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }}

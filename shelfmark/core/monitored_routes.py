@@ -724,6 +724,55 @@ def register_monitored_routes(
 
     _start_monitored_refresh_scheduler()
 
+    @app.route("/api/monitored/thumb/<cache_id>", methods=["GET"])
+    def api_monitored_thumb(cache_id: str) -> Response | tuple[Response, int]:
+        """Serve a width-resized WEBP thumbnail of a cached cover/portrait.
+
+        Branch-only sibling of ``/api/covers`` that adds on-the-fly resizing
+        backed by the same disk cache. Grid tiles request ``?w=<width>&url=…``;
+        the full-size ``/api/covers`` route is left untouched for detail views.
+        """
+        import base64
+        import binascii
+
+        from shelfmark.config.env import is_covers_cache_enabled
+        from shelfmark.core.monitored_thumbnails import (
+            ALLOWED_THUMB_WIDTHS,
+            get_or_create_thumbnail,
+        )
+
+        _db_user_id, _global_user_id, _visible_user_ids, gate = _resolve_visible_user_ids(
+            user_db, resolve_auth_mode=resolve_auth_mode
+        )
+        if gate is not None:
+            return gate
+
+        if not is_covers_cache_enabled():
+            return jsonify({"error": "Cover caching is disabled"}), 404
+
+        width = request.args.get("w", type=int)
+        if width not in ALLOWED_THUMB_WIDTHS:
+            return jsonify({"error": "Unsupported thumbnail width"}), 400
+
+        original_url: str | None = None
+        encoded_url = request.args.get("url")
+        if encoded_url:
+            try:
+                original_url = base64.urlsafe_b64decode(encoded_url).decode()
+            except binascii.Error, UnicodeDecodeError:
+                return jsonify({"error": "Invalid image URL encoding"}), 400
+
+        result = get_or_create_thumbnail(cache_id, url=original_url, width=width)
+        if not result:
+            return jsonify({"error": "Failed to build thumbnail"}), 404
+
+        image_data, content_type = result
+        response = app.response_class(response=image_data, status=200, mimetype=content_type)
+        # Content-addressed (cache_id = provider_bookid) + fixed width → the
+        # bytes for a given URL never change, so mark immutable for a year.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
     @app.route("/api/monitored/<int:entity_id>", methods=["GET"])
     def api_get_monitored(entity_id: int) -> Response | tuple[Response, int]:
         _db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
