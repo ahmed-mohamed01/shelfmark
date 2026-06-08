@@ -29,6 +29,13 @@ def mock_abs(monkeypatch):
     """
 
     def setup(*, authors: list[dict[str, Any]], items_by_author_id: dict[str, list[dict]]):
+        # The integration caches library/author lists across a batch (keyed on
+        # url/token/library_id). Tests reuse the same key, so clear it to keep
+        # each case isolated from the previous one's cached authors.
+        from shelfmark.core import monitored_audiobookshelf_integration as _abs_mod
+
+        _abs_mod._abs_list_cache.clear()
+
         def fake_get(_url: str, _token: str, path: str, timeout: int = 10) -> Any:
             if path.endswith("/authors"):
                 return {"authors": authors}

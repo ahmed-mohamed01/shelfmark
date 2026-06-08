@@ -2359,6 +2359,7 @@ def register_monitored_routes(
                     "audiobook_folders_scanned": scan.scanned_audio_folders,
                     "matched": len(scan.matched),
                     "unmatched": len(scan.unmatched),
+                    "truncated": scan.truncated,
                 },
                 "matched": scan.matched,
                 "unmatched": scan.unmatched,

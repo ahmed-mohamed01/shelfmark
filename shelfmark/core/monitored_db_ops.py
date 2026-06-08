@@ -192,25 +192,45 @@ def fetch_entity_metadata(
         if not provider.is_available():
             raise MonitoredProviderError(f"Metadata provider '{provider_name}' is not available")
 
-        # Collect all pages first so we can filter split editions
+        # Collect all pages first so we can filter split editions.
+        # Fetch page 0 alone — the common case (an author with <=1 page) then
+        # incurs zero extra calls. Only when page 0 is full do more pages exist;
+        # fetch those in small concurrent waves (the provider has no total-count
+        # to size them exactly), stopping at the first short/empty page. This
+        # turns O(pages) serial round-trips into O(pages / WAVE) for large
+        # authors while leaving the typical small author untouched.
         all_books: list[dict] = []
-        offset = 0
         limit = 100
         max_books = 2000
+        _lang = lang_codes if hasattr(provider, "get_book_rich") else None
 
-        while offset < max_books:
-            page_books = provider.get_author_books_paginated(
-                entity_provider_id,
-                offset=offset,
-                limit=limit,
-                lang_codes=lang_codes if hasattr(provider, "get_book_rich") else None,
+        def _fetch_page(page_offset: int) -> list[dict]:
+            return provider.get_author_books_paginated(
+                entity_provider_id, offset=page_offset, limit=limit, lang_codes=_lang
             )
-            if not page_books:
-                break
-            all_books.extend(page_books)
-            offset += limit
-            if len(page_books) < limit:
-                break  # last page
+
+        first = _fetch_page(0)
+        all_books.extend(first)
+        if len(first) >= limit:
+            from shelfmark.core.monitored_concurrency import bounded_map
+
+            wave = 4  # pages fetched concurrently per round
+            offset = limit
+            done = False
+            while offset < max_books and not done:
+                offsets = [
+                    offset + i * limit for i in range(wave) if offset + i * limit < max_books
+                ]
+                pages = bounded_map(_fetch_page, offsets, max_workers=wave)
+                for page_books in pages:
+                    if not page_books:
+                        done = True
+                        break
+                    all_books.extend(page_books)
+                    if len(page_books) < limit:
+                        done = True
+                        break
+                offset += wave * limit
 
         # Post-fetch filter pipeline:
         # 1. Deduplicate (same book appearing with different Hardcover IDs)
@@ -256,7 +276,11 @@ def fetch_entity_metadata(
         auto_hide_ids = {b["id"] for b in auto_hide_books}
 
         # Upsert all books: auto-hidden books (compilations, high contributor count,
-        # low data quality) get hidden=True; rest get hidden=None
+        # low data quality) get hidden=True; rest get hidden=None. Collect into a
+        # single transactional batch instead of one commit per book — for authors
+        # with thousands of books this is the difference between thousands of
+        # fsyncs (which also block the grid's reads) and one.
+        books_to_upsert: list[dict[str, Any]] = []
         for book in (*auto_hide_books, *canonical_books):
             book_id = str(book.get("id", ""))
             if not book_id:
@@ -274,21 +298,31 @@ def fetch_entity_metadata(
 
             discovered_ids.add(f"{provider_name}:{book_id}")
 
+            books_to_upsert.append(
+                {
+                    **fields,
+                    "provider": provider_name,
+                    "provider_book_id": book_id,
+                    "authors": author_name,
+                    "ratings_count": book.get("reviews_count"),
+                    "state": "discovered",
+                    "hidden": True if book.get("id") in auto_hide_ids else None,
+                }
+            )
+
+        if books_to_upsert:
             try:
-                db.upsert_monitored_book(
+                db.upsert_monitored_books_batch(
                     user_ids=[user_id],
                     entity_id=entity_id,
-                    provider=provider_name,
-                    provider_book_id=book_id,
-                    authors=author_name,
-                    ratings_count=book.get("reviews_count"),
-                    state="discovered",
-                    hidden=True if book.get("id") in auto_hide_ids else None,
-                    **fields,
+                    books=books_to_upsert,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Failed to upsert book %s for entity %s: %s", book_id, entity_id, exc
+                    "Failed to batch-upsert %d books for entity %s: %s",
+                    len(books_to_upsert),
+                    entity_id,
+                    exc,
                 )
 
         return discovered_ids
@@ -518,28 +552,39 @@ def fetch_book_releases(
     from shelfmark.release_sources import get_source, list_available_sources
 
     search_plan = build_release_search_plan(book, languages=None, manual_query=None, indexers=None)
-    all_releases: list[Any] = []
-    for source_row in list_available_sources():
-        source_name = str(source_row.get("name") or "").strip()
-        if not source_name or not bool(source_row.get("enabled")):
-            continue
-        # Skip sources that don't support the requested content type. Without this,
-        # ebook-only sources (e.g. Direct Download) return ebook releases for an
-        # audiobook search; the override below then force-tags them as audiobook
-        # and they later fail postprocessing as "Unsupported audiobook file type:
-        # .mobi". `supported_content_types` is populated by
-        # release_sources.list_available_sources() from each source class.
-        if not source_supports_content_type(source_row, content_type):
-            continue
+
+    # Eligible sources for this content type. Skip sources that don't support it:
+    # without this, ebook-only sources (e.g. Direct Download) return ebook
+    # releases for an audiobook search; the override below then force-tags them
+    # as audiobook and they later fail postprocessing. `supported_content_types`
+    # is populated by release_sources.list_available_sources() per source class.
+    eligible_sources = [
+        name
+        for source_row in list_available_sources()
+        if (name := str(source_row.get("name") or "").strip())
+        and bool(source_row.get("enabled"))
+        and source_supports_content_type(source_row, content_type)
+    ]
+
+    def _search_source(source_name: str) -> list[Any]:
         try:
             source = get_source(source_name)
-            releases = source.search(
-                book, search_plan, expand_search=False, content_type=content_type
+            return list(
+                source.search(book, search_plan, expand_search=False, content_type=content_type)
             )
-            all_releases.extend(releases)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — one source failing must not abort the others.
             logger.debug("Release search failed for source %s: %s", source_name, exc)
-            continue
+            return []
+
+    # Sources are independent, stateless HTTP clients, so search them
+    # concurrently rather than one blocking round-trip at a time. Kept per-book
+    # (the caller loops books serially) and bounded to stay polite to indexers.
+    all_releases: list[Any] = []
+    if eligible_sources:
+        from shelfmark.core.monitored_concurrency import bounded_map
+
+        for releases in bounded_map(_search_source, eligible_sources, max_workers=5):
+            all_releases.extend(releases)
 
     # Drop releases whose format/content_type clearly belongs to the other
     # content family — covers Prowlarr auto-expanding into ebook categories

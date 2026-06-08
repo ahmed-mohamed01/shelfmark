@@ -110,6 +110,38 @@ def _grimmory_get(
         return _parse_json(resp.read(), path)
 
 
+def _prefetch_grimmory_book_details(
+    base_url: str,
+    token: str,
+    book_ids: list[int],
+    *,
+    max_workers: int = 6,
+) -> dict[int, Any]:
+    """Fetch ``/api/v1/books/{id}`` for many books concurrently.
+
+    The detail payload carries the real filesystem path (which feeds path-side
+    match scoring, so it cannot be deferred to only matched books). The calls
+    are independent, read-only, and I/O-bound, so a bounded thread pool turns an
+    O(books) sequential wait into O(books / workers). ``max_workers`` is kept
+    modest to stay polite to the Grimmory host. Failed fetches are simply
+    omitted from the result (callers fall back to the bare ``grimmory://`` path).
+    """
+    from shelfmark.core.monitored_concurrency import bounded_map
+
+    def _fetch(safe_id: int) -> tuple[int, Any]:
+        try:
+            return safe_id, _grimmory_get(base_url, token, f"/api/v1/books/{safe_id}", timeout=10)
+        except Exception as exc:  # noqa: BLE001 — optional enrichment; omit on failure.
+            logger.debug("Grimmory: could not fetch file detail for book %s: %s", safe_id, exc)
+            return safe_id, None
+
+    return {
+        safe_id: detail
+        for safe_id, detail in bounded_map(_fetch, book_ids, max_workers=max_workers)
+        if detail is not None
+    }
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -323,6 +355,21 @@ def sync_grimmory_availability_for_entity(
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
 
+    # Concurrently prefetch the per-book file detail (real path + size). This is
+    # the dominant cost of a Grimmory sync — one HTTP round-trip per book — so
+    # fanning it out across a small pool turns O(books) serial latency into
+    # O(books / workers). The path feeds match scoring, so it must be available
+    # before pick_best_attribution (can't be deferred to matched books only).
+    detail_ids: list[int] = []
+    for _item in gm_items:
+        try:
+            detail_ids.append(int(_item.get("id")))
+        except TypeError, ValueError:
+            continue
+    details_by_id = _prefetch_grimmory_book_details(url, token, detail_ids)
+
+    pending_files: list[dict[str, Any]] = []
+
     for item in gm_items:
         gm_id = item.get("id")
         gm_title = (item.get("title") or str(gm_id) or "?").strip()
@@ -349,25 +396,26 @@ def sync_grimmory_availability_for_entity(
             continue
         path = f"grimmory://{safe_id}"
         file_size: int | None = None
-        try:
-            detail = _grimmory_get(url, token, f"/api/v1/books/{safe_id}", timeout=10)
-            primary = detail.get("primaryFile") or {}
-            real_path = (primary.get("filePath") or "").strip()
-            if not real_path:
-                for fobj in (detail.get("alternativeFormats") or []) + (
-                    detail.get("supplementaryFiles") or []
-                ):
-                    fp = (fobj.get("filePath") or "").strip()
-                    if fp:
-                        real_path = fp
-                        break
-            if real_path:
-                path = real_path
-            size_kb = primary.get("fileSizeKb")
-            if size_kb is not None:
-                file_size = int(float(size_kb)) * 1024
-        except Exception as fp_exc:  # noqa: BLE001 — optional enrichment; fall back to the bare book payload if the file-detail endpoint fails.
-            logger.debug("Grimmory: could not fetch file path for book %s: %s", gm_id, fp_exc)
+        detail = details_by_id.get(safe_id)
+        if detail:
+            try:
+                primary = detail.get("primaryFile") or {}
+                real_path = (primary.get("filePath") or "").strip()
+                if not real_path:
+                    for fobj in (detail.get("alternativeFormats") or []) + (
+                        detail.get("supplementaryFiles") or []
+                    ):
+                        fp = (fobj.get("filePath") or "").strip()
+                        if fp:
+                            real_path = fp
+                            break
+                if real_path:
+                    path = real_path
+                size_kb = primary.get("fileSizeKb")
+                if size_kb is not None:
+                    file_size = int(float(size_kb)) * 1024
+            except Exception as fp_exc:  # noqa: BLE001 — optional enrichment; fall back to the bare book payload if the detail shape is unexpected.
+                logger.debug("Grimmory: could not parse file detail for book %s: %s", gm_id, fp_exc)
 
         # Drop rejected (path, book) pairs from consideration up front so the
         # first pick_best call already sees the filtered set — no re-pick needed.
@@ -409,34 +457,40 @@ def sync_grimmory_availability_for_entity(
         # book=None and was handled above.
         tier = getattr(result, "tier", None) or getattr(result.evidence, "tier", "rejected")
         db_status = "matched" if tier == "confirmed" else "candidate"
+        pending_files.append(
+            {
+                "provider": result.book.get("provider"),
+                "provider_book_id": result.book.get("provider_book_id"),
+                "path": path,
+                "ext": file_type_raw,
+                "file_type": "ebook",
+                "size_bytes": file_size,
+                "mtime": None,
+                "confidence": result.confidence,
+                "match_reason": result.match_reason,
+                "source": "grimmory",
+                "evidence_json": evidence_json,
+                "status": db_status,
+            }
+        )
+        kept_paths.append(path)
+
+    # Flush all matched/candidate rows in one transaction (per-row SAVEPOINT
+    # isolates any bad row). Replaces one commit per matched book.
+    if pending_files:
         try:
-            monitored_db.upsert_monitored_book_file(
+            matched = monitored_db.upsert_monitored_book_files_batch(
                 user_ids=[user_id],
                 entity_id=entity_id,
-                provider=result.book.get("provider"),
-                provider_book_id=result.book.get("provider_book_id"),
-                path=path,
-                ext=file_type_raw,
-                file_type="ebook",
-                size_bytes=file_size,
-                mtime=None,
-                confidence=result.confidence,
-                match_reason=result.match_reason,
-                source="grimmory",
-                evidence_json=evidence_json,
-                status=db_status,
+                files=pending_files,
             )
-            kept_paths.append(path)
-            matched += 1
-        except Exception as exc:  # noqa: BLE001 — per-row failure (DB lock, JSON, constraint) is logged and counted as unmatched; one bad row must not abort the whole scan.
+        except Exception as exc:  # noqa: BLE001 — batch failure is logged; sync continues to prune below.
             logger.warning(
-                "Grimmory: failed to upsert match for %r (entity=%s book=%s): %s",
-                path,
+                "Grimmory: failed to batch-upsert %d matches for entity %s: %s",
+                len(pending_files),
                 entity_id,
-                result.book.get("provider_book_id"),
                 exc,
             )
-            unmatched_titles.append(gm_title)
 
     # Only prune when pagination was complete — avoids deleting valid records
     # if a timeout or error cut the book list short.

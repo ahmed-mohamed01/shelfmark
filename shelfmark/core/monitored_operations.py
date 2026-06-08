@@ -316,8 +316,13 @@ def _run_author_sync(
 
                 img_cache = get_image_cache()
 
-                # Prefetch book covers
+                # Prefetch book covers. Each uncached cover is an independent,
+                # blocking HTTP fetch — serially this was N × round-trip added to
+                # the refresh wall-clock. Fan out across a small pool; the image
+                # cache writes to a distinct path per id, so concurrent puts are
+                # safe. Workers kept modest to stay polite to the cover host.
                 all_books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
+                covers_to_fetch: list[tuple[str, str]] = []
                 for book in all_books:
                     cover_url = book.get("cover_url")
                     book_id = book.get("provider_book_id")
@@ -325,7 +330,19 @@ def _run_author_sync(
                     if cover_url and book_id and book_provider:
                         cache_id = f"{book_provider}_{book_id}"
                         if img_cache.get(cache_id) is None:
-                            img_cache.fetch_and_cache(cache_id, cover_url)
+                            covers_to_fetch.append((cache_id, cover_url))
+
+                if covers_to_fetch:
+                    from shelfmark.core.monitored_concurrency import bounded_map
+
+                    def _fetch_cover(job: tuple[str, str]) -> None:
+                        cid, curl = job
+                        try:
+                            img_cache.fetch_and_cache(cid, curl)
+                        except Exception as cover_exc:  # noqa: BLE001 — cover prefetch is best-effort.
+                            logger.debug("Cover prefetch failed for %s: %s", cid, cover_exc)
+
+                    bounded_map(_fetch_cover, covers_to_fetch)
 
                 # Prefetch the author's own photo if stored as a proxy URL
                 entity_row = db.get_monitored_entity(user_ids=[user_id], entity_id=entity_id) or {}
@@ -555,54 +572,85 @@ def run_batch_sync(
 
     retry_queue: list[tuple[int, int, dict]] = []  # (index, user_id, entity)
 
-    for idx, (uid, entity) in enumerate(entities, 1):
+    # Sync authors concurrently with a small pool. Each author is independent:
+    # its DB writes are batched/short and serialize safely on the single SQLite
+    # writer (busy_timeout covers contention), and its network phases (Hardcover
+    # pages, ABS, Grimmory, covers) are already internally concurrent — so
+    # running a few authors at once overlaps one author's network waits with
+    # another's work. The matcher is GIL-bound, so CPU itself doesn't speed up;
+    # the win is I/O overlap. IMPORTANT: only the worker body runs off-thread;
+    # every _broadcast and shared-result mutation happens here on the calling
+    # thread, so we never emit SocketIO from pool threads (unsafe under gevent
+    # async_mode) and need no locks on `result` / `retry_queue`.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _sync_one(uid: int, entity: dict) -> Any:
         eid = int(entity.get("id") or 0)
         ename = str(entity.get("name") or "Author")
-
-        _broadcast(
-            ws_manager,
-            uid,
-            "monitored_batch_sync_progress",
-            {
-                "batch_id": batch_id,
-                "index": idx,
-                "total": total,
-                "entity_id": eid,
-                "entity_name": ename,
-                "entity_cover": _entity_cover(entity),
-            },
-        )
-
         preferred_languages = _resolve_preferred_languages(user_db, uid)
-        try:
-            sync_res = _sync_author_core(
-                db,
-                entity=entity,
-                user_id=uid,
-                preferred_languages=preferred_languages,
+        sync_res = _sync_author_core(
+            db, entity=entity, user_id=uid, preferred_languages=preferred_languages
+        )
+        sync_availability_sources(
+            db, entity_id=eid, entity_name=ename, user_id=uid, user_db=user_db
+        )
+        return sync_res
+
+    workers = max(1, min(3, total))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_map = {
+            pool.submit(_sync_one, uid, entity): (idx, uid, entity)
+            for idx, (uid, entity) in enumerate(entities, 1)
+        }
+        for fut in as_completed(future_map):
+            idx, uid, entity = future_map[fut]
+            eid = int(entity.get("id") or 0)
+            ename = str(entity.get("name") or "Author")
+            completed += 1
+
+            _broadcast(
+                ws_manager,
+                uid,
+                "monitored_batch_sync_progress",
+                {
+                    "batch_id": batch_id,
+                    "index": completed,
+                    "total": total,
+                    "entity_id": eid,
+                    "entity_name": ename,
+                    "entity_cover": _entity_cover(entity),
+                },
             )
-            sync_availability_sources(
-                db,
-                entity_id=eid,
-                entity_name=ename,
-                user_id=uid,
-                user_db=user_db,
-            )
-            _record_sync_success(
-                result,
-                sync_res,
-                eid=eid,
-                ename=ename,
-                user_id=uid,
-                batch_id=batch_id,
-                triggered_by=triggered_by,
-            )
-        except MonitoredProviderError as exc:
-            if is_transient_provider_error(exc):
-                error_msg = f"[{exc.error_type}] {exc}"
-                db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
-                retry_queue.append((idx, uid, entity))
-            else:
+
+            try:
+                sync_res = fut.result()
+                _record_sync_success(
+                    result,
+                    sync_res,
+                    eid=eid,
+                    ename=ename,
+                    user_id=uid,
+                    batch_id=batch_id,
+                    triggered_by=triggered_by,
+                )
+            except MonitoredProviderError as exc:
+                if is_transient_provider_error(exc):
+                    error_msg = f"[{exc.error_type}] {exc}"
+                    db.update_monitored_entity_check(entity_id=eid, last_error=error_msg)
+                    retry_queue.append((idx, uid, entity))
+                else:
+                    _record_sync_failure(
+                        db,
+                        result,
+                        eid=eid,
+                        ename=ename,
+                        exc=exc,
+                        user_id=uid,
+                        batch_id=batch_id,
+                        triggered_by=triggered_by,
+                    )
+            except Exception as exc:  # noqa: BLE001
                 _record_sync_failure(
                     db,
                     result,
@@ -613,17 +661,6 @@ def run_batch_sync(
                     batch_id=batch_id,
                     triggered_by=triggered_by,
                 )
-        except Exception as exc:  # noqa: BLE001
-            _record_sync_failure(
-                db,
-                result,
-                eid=eid,
-                ename=ename,
-                exc=exc,
-                user_id=uid,
-                batch_id=batch_id,
-                triggered_by=triggered_by,
-            )
 
     # Retry transient failures once
     if retry_queue:
@@ -943,6 +980,7 @@ def update_file_availability(
         ebook_dir=str(ebook_path) if ebook_path else None,
         audiobook_dir=str(audiobook_path) if audiobook_path else None,
         warnings=warnings,
+        truncated=bool(scan_data.get("truncated")),
     )
 
 

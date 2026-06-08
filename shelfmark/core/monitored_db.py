@@ -131,6 +131,21 @@ CREATE TABLE IF NOT EXISTS monitored_file_rejections (
 CREATE INDEX IF NOT EXISTS idx_monitored_file_rejections_lookup
 ON monitored_file_rejections (entity_id, source, path);
 
+-- Per-file embedded-metadata cache for the filesystem scanner. Keyed by
+-- (entity_id, path); stores the file's (mtime, size) so a subsequent scan can
+-- skip the expensive read_embedded_metadata() call when the file is unchanged,
+-- reusing the serialized EmbeddedMetadata snapshot instead. metadata_json is
+-- NULL when a prior scan found no embedded metadata (so we don't re-read).
+CREATE TABLE IF NOT EXISTS monitored_scan_cache (
+    entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    mtime TIMESTAMP,
+    size_bytes INTEGER,
+    metadata_json TEXT,
+    scanned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (entity_id, path)
+);
+
 CREATE TABLE IF NOT EXISTS monitored_book_download_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_id INTEGER NOT NULL REFERENCES monitored_entities(id) ON DELETE CASCADE,
@@ -1848,6 +1863,130 @@ class MonitoredDB:
         hidden: bool | None = None,
     ) -> None:
         """Upsert a monitored book snapshot."""
+        book = {
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "title": title,
+            "authors": authors,
+            "publish_year": publish_year,
+            "release_date": release_date,
+            "description": description,
+            "isbn_13": isbn_13,
+            "isbn_10": isbn_10,
+            "isbns": isbns,
+            "asins": asins,
+            "pages": pages,
+            "cached_tags": cached_tags,
+            "cover_url": cover_url,
+            "series_name": series_name,
+            "series_position": series_position,
+            "series_count": series_count,
+            "all_series": all_series,
+            "language": language,
+            "rating": rating,
+            "ratings_count": ratings_count,
+            "readers_count": readers_count,
+            "state": state,
+            "hidden": hidden,
+        }
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    raise ValueError("Monitored entity not found")
+                self._apply_upsert_book(conn, entity_id=entity_id, book=book)
+                conn.commit()
+            finally:
+                conn.close()
+
+    def upsert_monitored_books_batch(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int,
+        books: list[dict[str, Any]],
+    ) -> int:
+        """Upsert many book snapshots in a single transaction.
+
+        Each book is the same kwargs ``upsert_monitored_book`` accepts (minus
+        ``user_ids``/``entity_id``), as a dict. The entity is validated once.
+        Each row is wrapped in a SAVEPOINT so one malformed book is skipped
+        without aborting the batch — preserving the per-book error tolerance
+        the previous per-row call site had. Returns the number written.
+        """
+        if not books:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            # Autocommit mode so explicit BEGIN/SAVEPOINT/COMMIT aren't fought
+            # by sqlite3's implicit transaction handling.
+            conn.isolation_level = None
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    raise ValueError("Monitored entity not found")
+                conn.execute("BEGIN IMMEDIATE")
+                written = 0
+                for i, book in enumerate(books):
+                    sp = f"book_{i}"
+                    conn.execute(f"SAVEPOINT {sp}")
+                    try:
+                        self._apply_upsert_book(conn, entity_id=entity_id, book=book)
+                        conn.execute(f"RELEASE {sp}")
+                        written += 1
+                    except Exception as exc:  # noqa: BLE001 — isolate one bad row
+                        conn.execute(f"ROLLBACK TO {sp}")
+                        conn.execute(f"RELEASE {sp}")
+                        logger.warning(
+                            "Batch book upsert skipped one row for entity %s: %s",
+                            entity_id,
+                            exc,
+                        )
+                conn.execute("COMMIT")
+                return written
+            finally:
+                # Closing with an uncommitted BEGIN IMMEDIATE in flight discards
+                # (rolls back) the transaction, so an error before COMMIT can't
+                # leave a partial batch.
+                conn.close()
+
+    def _apply_upsert_book(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        entity_id: int,
+        book: dict[str, Any],
+    ) -> None:
+        """Apply one book upsert on an open connection (no lock, no commit).
+
+        Shared by ``upsert_monitored_book`` (single) and
+        ``upsert_monitored_books_batch`` (transactional). The caller is
+        responsible for the entity-existence check, transaction, and commit.
+        """
+        title = book.get("title")
+        provider = book.get("provider")
+        provider_book_id = book.get("provider_book_id")
+        authors = book.get("authors")
+        publish_year = book.get("publish_year")
+        release_date = book.get("release_date")
+        description = book.get("description")
+        isbn_13 = book.get("isbn_13")
+        isbn_10 = book.get("isbn_10")
+        isbns = book.get("isbns")
+        asins = book.get("asins")
+        pages = book.get("pages")
+        cached_tags = book.get("cached_tags")
+        cover_url = book.get("cover_url")
+        series_name = book.get("series_name")
+        series_position = book.get("series_position")
+        series_count = book.get("series_count")
+        all_series = book.get("all_series")
+        language = book.get("language")
+        rating = book.get("rating")
+        ratings_count = book.get("ratings_count")
+        readers_count = book.get("readers_count")
+        state = book.get("state") or "discovered"
+        hidden = book.get("hidden")
+
         normalized_title = (title or "").strip()
         if not normalized_title:
             return
@@ -1940,15 +2079,10 @@ class MonitoredDB:
                 except TypeError, ValueError:
                     cached_tags_json = None
 
-        with self._lock:
-            conn = self._connect()
-            try:
-                # Ensure entity exists and is scoped correctly.
-                if not self._entity_exists(conn, entity_id, user_ids):
-                    raise ValueError("Monitored entity not found")
-
-                conn.execute(
-                    """
+        # Ensure entity exists and is scoped correctly — done by the caller
+        # (single upsert and batch both validate before reaching here).
+        conn.execute(
+            """
                     INSERT INTO monitored_books (
                         entity_id,
                         provider,
@@ -2016,41 +2150,41 @@ class MonitoredDB:
                             ELSE excluded.state
                         END
                     """,
-                    (
-                        entity_id,
-                        provider,
-                        provider_book_id,
-                        normalized_title,
-                        authors,
-                        year_value,
-                        release_date_value,
-                        description_value,
-                        isbn_13,
-                        isbn_10,
-                        isbns_json,
-                        asins_json,
-                        pages_value,
-                        cached_tags_json,
-                        cover_url,
-                        series_name,
-                        series_position,
-                        series_count,
-                        all_series_json,
-                        language_value,
-                        rating_value,
-                        ratings_count_value,
-                        readers_count_value,
-                        normalized_state,
-                        1 if hidden else 0,
-                    ),
-                )
-                if hidden:
-                    # Keep monitor flags consistent with hidden=1 (matches the
-                    # explicit hide path in set_monitored_book_monitor_flags).
-                    # Save current flags to saved_monitor_* the first time we
-                    # hide so an unhide can restore them.
-                    conn.execute(
-                        """
+            (
+                entity_id,
+                provider,
+                provider_book_id,
+                normalized_title,
+                authors,
+                year_value,
+                release_date_value,
+                description_value,
+                isbn_13,
+                isbn_10,
+                isbns_json,
+                asins_json,
+                pages_value,
+                cached_tags_json,
+                cover_url,
+                series_name,
+                series_position,
+                series_count,
+                all_series_json,
+                language_value,
+                rating_value,
+                ratings_count_value,
+                readers_count_value,
+                normalized_state,
+                1 if hidden else 0,
+            ),
+        )
+        if hidden:
+            # Keep monitor flags consistent with hidden=1 (matches the
+            # explicit hide path in set_monitored_book_monitor_flags).
+            # Save current flags to saved_monitor_* the first time we
+            # hide so an unhide can restore them.
+            conn.execute(
+                """
                         UPDATE monitored_books
                         SET saved_monitor_ebook = COALESCE(saved_monitor_ebook, monitor_ebook),
                             saved_monitor_audiobook = COALESCE(saved_monitor_audiobook, monitor_audiobook),
@@ -2062,11 +2196,8 @@ class MonitoredDB:
                           AND hidden = 1
                           AND (monitor_ebook = 1 OR monitor_audiobook = 1)
                         """,
-                        (entity_id, provider, provider_book_id),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+                (entity_id, provider, provider_book_id),
+            )
 
     def delete_monitored_book(
         self,
@@ -2194,6 +2325,110 @@ class MonitoredDB:
           endpoint's path.
         """
 
+        file = {
+            "provider": provider,
+            "provider_book_id": provider_book_id,
+            "path": path,
+            "ext": ext,
+            "file_type": file_type,
+            "size_bytes": size_bytes,
+            "mtime": mtime,
+            "confidence": confidence,
+            "match_reason": match_reason,
+            "source": source,
+            "evidence_json": evidence_json,
+            "manual_override": manual_override,
+            "status": status,
+        }
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    raise ValueError("Monitored entity not found")
+                self._apply_upsert_book_file(conn, entity_id=entity_id, file=file)
+                conn.commit()
+            finally:
+                conn.close()
+
+    def upsert_monitored_book_files_batch(
+        self,
+        *,
+        user_ids: list[int],
+        entity_id: int,
+        files: list[dict[str, Any]],
+    ) -> int:
+        """Upsert many matched files in a single transaction.
+
+        Each entry is the same kwargs ``upsert_monitored_book_file`` accepts
+        (minus ``user_ids``/``entity_id``), as a dict. The entity is validated
+        once. Each row runs in its own SAVEPOINT so a bad row is skipped without
+        aborting the batch. Order is preserved, so the "one matched per book"
+        demotion/eviction logic sees rows written earlier in the SAME
+        transaction exactly as it would across sequential commits. Returns the
+        number of rows applied.
+        """
+        if not files:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            # Autocommit so explicit BEGIN/SAVEPOINT/COMMIT aren't fought by
+            # sqlite3's implicit transaction handling.
+            conn.isolation_level = None
+            try:
+                if not self._entity_exists(conn, entity_id, user_ids):
+                    raise ValueError("Monitored entity not found")
+                conn.execute("BEGIN IMMEDIATE")
+                written = 0
+                for i, file in enumerate(files):
+                    sp = f"file_{i}"
+                    conn.execute(f"SAVEPOINT {sp}")
+                    try:
+                        self._apply_upsert_book_file(conn, entity_id=entity_id, file=file)
+                        conn.execute(f"RELEASE {sp}")
+                        written += 1
+                    except Exception as exc:  # noqa: BLE001 — isolate one bad row
+                        conn.execute(f"ROLLBACK TO {sp}")
+                        conn.execute(f"RELEASE {sp}")
+                        logger.warning(
+                            "Batch file upsert skipped one row for entity %s: %s",
+                            entity_id,
+                            exc,
+                        )
+                conn.execute("COMMIT")
+                return written
+            finally:
+                # Closing with an uncommitted BEGIN IMMEDIATE in flight discards
+                # (rolls back) the transaction, so an error before COMMIT can't
+                # leave a partial batch.
+                conn.close()
+
+    def _apply_upsert_book_file(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        entity_id: int,
+        file: dict[str, Any],
+    ) -> None:
+        """Apply one file upsert on an open connection (no lock, no commit).
+
+        Shared by ``upsert_monitored_book_file`` (single) and
+        ``upsert_monitored_book_files_batch`` (transactional). The caller owns
+        the entity-existence check, transaction, and commit.
+        """
+        provider = file.get("provider")
+        provider_book_id = file.get("provider_book_id")
+        path = file.get("path")
+        ext = file.get("ext")
+        file_type = file.get("file_type")
+        size_bytes = file.get("size_bytes")
+        mtime = file.get("mtime")
+        confidence = file.get("confidence")
+        match_reason = file.get("match_reason")
+        source = file.get("source") or "filesystem"
+        evidence_json = file.get("evidence_json")
+        manual_override = bool(file.get("manual_override"))
+        status = file.get("status") or "matched"
+
         normalized_path = (path or "").strip()
         if not normalized_path:
             return
@@ -2202,207 +2437,289 @@ class MonitoredDB:
         if status not in ("matched", "candidate"):
             raise ValueError(f"invalid status: {status!r}")
 
+        # Manual-override guard: scanners and integration sync loops must not
+        # clobber a user-confirmed attribution. Skip when an existing row at
+        # this (entity_id, path, source) is marked manual_override AND the
+        # caller isn't setting it themselves.
+        if not manual_override:
+            existing = conn.execute(
+                """
+                SELECT manual_override FROM monitored_book_files
+                WHERE entity_id = ? AND path = ? AND source = ?
+                """,
+                (entity_id, normalized_path, source),
+            ).fetchone()
+            if existing and (
+                existing["manual_override"] if isinstance(existing, sqlite3.Row) else existing[0]
+            ):
+                return
+
+        # ---- Enforce "one matched per book" while allowing multiple
+        # candidates per book. ----
+        # The full per-book UNIQUE constraint was relaxed in v8 to a partial
+        # UNIQUE INDEX that fires only for status='matched' rows. When upserting
+        # a matched row, evict any other matched row at the same book that has
+        # lower (or equal) confidence and isn't manually-overridden. Candidates
+        # at the same book are left alone — alternates the user can still see.
+        if (
+            status == "matched"
+            and provider
+            and provider_book_id
+            and file_type
+            and not manual_override
+        ):
+            existing_better = conn.execute(
+                """
+                SELECT confidence FROM monitored_book_files
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                  AND file_type = ?
+                  AND source = ?
+                  AND status = 'matched'
+                  AND path != ?
+                  AND (COALESCE(manual_override, 0) = 1
+                       OR COALESCE(confidence, 0) >= COALESCE(?, 0))
+                ORDER BY COALESCE(manual_override, 0) DESC,
+                         COALESCE(confidence, 0) DESC
+                LIMIT 1
+                """,
+                (
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    file_type,
+                    source,
+                    normalized_path,
+                    confidence,
+                ),
+            ).fetchone()
+            if existing_better is not None:
+                # A better matched row already exists for this book. Demote the
+                # incoming row to candidate so it surfaces as an alternate
+                # without displacing the winner.
+                status = "candidate"
+        # A manual_override matched row at a different path for the same
+        # (book, file_type, source) would violate the partial unique index.
+        # Demote the incoming row to candidate rather than overwrite the user's
+        # prior explicit choice. (Cannot reach here when manual_override is True
+        # AND already-matched — the early manual-skip guard returned out.)
+        if (
+            status == "matched"
+            and provider
+            and provider_book_id
+            and file_type
+            and not manual_override
+        ):
+            blocking_manual = conn.execute(
+                """
+                SELECT 1 FROM monitored_book_files
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                  AND file_type = ?
+                  AND source = ?
+                  AND status = 'matched'
+                  AND path != ?
+                  AND COALESCE(manual_override, 0) = 1
+                LIMIT 1
+                """,
+                (
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    file_type,
+                    source,
+                    normalized_path,
+                ),
+            ).fetchone()
+            if blocking_manual is not None:
+                status = "candidate"
+
+        if status == "matched" and provider and provider_book_id and file_type:
+            # New row wins (or is the only matched candidate) — evict other
+            # non-manual matched rows for the same book so the partial unique
+            # index doesn't conflict.
+            conn.execute(
+                """
+                DELETE FROM monitored_book_files
+                WHERE entity_id = ?
+                  AND provider = ?
+                  AND provider_book_id = ?
+                  AND file_type = ?
+                  AND source = ?
+                  AND status = 'matched'
+                  AND path != ?
+                  AND COALESCE(manual_override, 0) = 0
+                """,
+                (
+                    entity_id,
+                    provider,
+                    provider_book_id,
+                    file_type,
+                    source,
+                    normalized_path,
+                ),
+            )
+
+        # Always upsert by path. This handles re-scans of the same file
+        # (updates in place) AND lets multiple candidate rows coexist for the
+        # same book (different paths). Matched uniqueness was enforced above.
+        conn.execute(
+            """
+            INSERT INTO monitored_book_files (
+                entity_id,
+                provider,
+                provider_book_id,
+                path,
+                ext,
+                file_type,
+                source,
+                size_bytes,
+                mtime,
+                confidence,
+                match_reason,
+                evidence_json,
+                manual_override,
+                status,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(entity_id, path, source)
+            DO UPDATE SET
+                provider=excluded.provider,
+                provider_book_id=excluded.provider_book_id,
+                ext=excluded.ext,
+                file_type=excluded.file_type,
+                size_bytes=excluded.size_bytes,
+                mtime=excluded.mtime,
+                confidence=excluded.confidence,
+                match_reason=excluded.match_reason,
+                evidence_json=excluded.evidence_json,
+                manual_override=excluded.manual_override,
+                status=excluded.status,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                entity_id,
+                provider,
+                provider_book_id,
+                normalized_path,
+                ext,
+                file_type,
+                source,
+                size_bytes,
+                mtime,
+                confidence,
+                match_reason,
+                evidence_json,
+                manual_flag,
+                status,
+            ),
+        )
+
+    # =========================================================================
+    # Scanner metadata cache (skip re-reading embedded metadata for unchanged files)
+    # =========================================================================
+
+    def get_scan_metadata_cache(self, *, entity_id: int) -> dict[str, dict[str, Any]]:
+        """Return the scanner's per-file metadata cache for an entity.
+
+        Maps ``path -> {"mtime", "size_bytes", "metadata"}`` where ``metadata``
+        is the deserialized ``EmbeddedMetadata`` dict (or ``None`` when a prior
+        scan found no embedded metadata). Lets the scanner skip the expensive
+        on-disk metadata read for files unchanged since the last scan.
+        """
         with self._lock:
             conn = self._connect()
             try:
-                if not self._entity_exists(conn, entity_id, user_ids):
-                    raise ValueError("Monitored entity not found")
+                rows = conn.execute(
+                    "SELECT path, mtime, size_bytes, metadata_json "
+                    "FROM monitored_scan_cache WHERE entity_id = ?",
+                    (entity_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            meta_json = r["metadata_json"]
+            metadata: Any = None
+            if meta_json:
+                try:
+                    metadata = json.loads(meta_json)
+                except TypeError, ValueError:
+                    metadata = None
+            out[r["path"]] = {
+                "mtime": r["mtime"],
+                "size_bytes": r["size_bytes"],
+                "metadata": metadata,
+            }
+        return out
 
-                # Manual-override guard: scanners and integration sync loops
-                # must not clobber a user-confirmed attribution. Skip when an
-                # existing row at this (entity_id, path, source) is marked
-                # manual_override AND the caller isn't setting it themselves.
-                if not manual_override:
-                    existing = conn.execute(
-                        """
-                        SELECT manual_override FROM monitored_book_files
-                        WHERE entity_id = ? AND path = ? AND source = ?
-                        """,
-                        (entity_id, normalized_path, source),
-                    ).fetchone()
-                    if existing and (
-                        existing["manual_override"]
-                        if isinstance(existing, sqlite3.Row)
-                        else existing[0]
-                    ):
-                        return
+    def upsert_scan_metadata_cache(self, *, entity_id: int, entries: list[dict[str, Any]]) -> int:
+        """Upsert scanner metadata-cache rows in one transaction.
 
-                # ---- Enforce "one matched per book" while allowing multiple
-                # candidates per book. ----
-                # The full per-book UNIQUE constraint was relaxed in v8 to a
-                # partial UNIQUE INDEX that fires only for status='matched'
-                # rows. That means:
-                #   * Multiple candidate rows can coexist for the same
-                #     (entity, book, file_type, source).
-                #   * Only one matched row may exist for the same tuple —
-                #     enforced by the partial index.
-                # When upserting a matched row, evict any other matched row
-                # at the same book that has lower (or equal) confidence and
-                # isn't manually-overridden. The new row then becomes the
-                # canonical matched entry. Candidates at the same book are
-                # left alone — they remain visible as alternates to the user.
-                if (
-                    status == "matched"
-                    and provider
-                    and provider_book_id
-                    and file_type
-                    and not manual_override
-                ):
-                    existing_better = conn.execute(
-                        """
-                        SELECT confidence FROM monitored_book_files
-                        WHERE entity_id = ?
-                          AND provider = ?
-                          AND provider_book_id = ?
-                          AND file_type = ?
-                          AND source = ?
-                          AND status = 'matched'
-                          AND path != ?
-                          AND (COALESCE(manual_override, 0) = 1
-                               OR COALESCE(confidence, 0) >= COALESCE(?, 0))
-                        ORDER BY COALESCE(manual_override, 0) DESC,
-                                 COALESCE(confidence, 0) DESC
-                        LIMIT 1
-                        """,
-                        (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            file_type,
-                            source,
-                            normalized_path,
-                            confidence,
-                        ),
-                    ).fetchone()
-                    if existing_better is not None:
-                        # A better matched row already exists for this book.
-                        # Demote the incoming row to candidate so it surfaces
-                        # in the UI as an alternate without displacing the
-                        # winner.
-                        status = "candidate"
-                # A manual_override matched row at a different path for
-                # the same (book, file_type, source) would violate the
-                # partial unique index. Demote the incoming row to
-                # candidate rather than overwrite the user's prior
-                # explicit choice. (Cannot reach here when manual_override
-                # is True AND already-matched — the early manual-skip
-                # guard above returned out.)
-                if (
-                    status == "matched"
-                    and provider
-                    and provider_book_id
-                    and file_type
-                    and not manual_override
-                ):
-                    blocking_manual = conn.execute(
-                        """
-                        SELECT 1 FROM monitored_book_files
-                        WHERE entity_id = ?
-                          AND provider = ?
-                          AND provider_book_id = ?
-                          AND file_type = ?
-                          AND source = ?
-                          AND status = 'matched'
-                          AND path != ?
-                          AND COALESCE(manual_override, 0) = 1
-                        LIMIT 1
-                        """,
-                        (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            file_type,
-                            source,
-                            normalized_path,
-                        ),
-                    ).fetchone()
-                    if blocking_manual is not None:
-                        status = "candidate"
-
-                if status == "matched" and provider and provider_book_id and file_type:
-                    # New row wins (or is the only matched candidate) — evict
-                    # other non-manual matched rows for the same book so the
-                    # partial unique index doesn't conflict.
-                    conn.execute(
-                        """
-                        DELETE FROM monitored_book_files
-                        WHERE entity_id = ?
-                          AND provider = ?
-                          AND provider_book_id = ?
-                          AND file_type = ?
-                          AND source = ?
-                          AND status = 'matched'
-                          AND path != ?
-                          AND COALESCE(manual_override, 0) = 0
-                        """,
-                        (
-                            entity_id,
-                            provider,
-                            provider_book_id,
-                            file_type,
-                            source,
-                            normalized_path,
-                        ),
-                    )
-
-                # Always upsert by path. This handles re-scans of the same
-                # file (updates in place) AND lets multiple candidate rows
-                # coexist for the same book (different paths). The matched
-                # uniqueness was already enforced above.
-                conn.execute(
+        Each entry: ``{"path", "mtime", "size_bytes", "metadata_json"}``.
+        """
+        if not entries:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(
                     """
-                    INSERT INTO monitored_book_files (
-                        entity_id,
-                        provider,
-                        provider_book_id,
-                        path,
-                        ext,
-                        file_type,
-                        source,
-                        size_bytes,
-                        mtime,
-                        confidence,
-                        match_reason,
-                        evidence_json,
-                        manual_override,
-                        status,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(entity_id, path, source)
-                    DO UPDATE SET
-                        provider=excluded.provider,
-                        provider_book_id=excluded.provider_book_id,
-                        ext=excluded.ext,
-                        file_type=excluded.file_type,
-                        size_bytes=excluded.size_bytes,
+                    INSERT INTO monitored_scan_cache
+                        (entity_id, path, mtime, size_bytes, metadata_json, scanned_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(entity_id, path) DO UPDATE SET
                         mtime=excluded.mtime,
-                        confidence=excluded.confidence,
-                        match_reason=excluded.match_reason,
-                        evidence_json=excluded.evidence_json,
-                        manual_override=excluded.manual_override,
-                        status=excluded.status,
-                        updated_at=CURRENT_TIMESTAMP
+                        size_bytes=excluded.size_bytes,
+                        metadata_json=excluded.metadata_json,
+                        scanned_at=CURRENT_TIMESTAMP
                     """,
-                    (
-                        entity_id,
-                        provider,
-                        provider_book_id,
-                        normalized_path,
-                        ext,
-                        file_type,
-                        source,
-                        size_bytes,
-                        mtime,
-                        confidence,
-                        match_reason,
-                        evidence_json,
-                        manual_flag,
-                        status,
-                    ),
+                    [
+                        (
+                            entity_id,
+                            e.get("path"),
+                            e.get("mtime"),
+                            e.get("size_bytes"),
+                            e.get("metadata_json"),
+                        )
+                        for e in entries
+                    ],
                 )
-
                 conn.commit()
+                return len(entries)
+            finally:
+                conn.close()
+
+    def prune_scan_metadata_cache(self, *, entity_id: int, keep_paths: list[str]) -> int:
+        """Delete cache rows for paths no longer seen, keeping the cache bounded."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                if not keep_paths:
+                    cur = conn.execute(
+                        "DELETE FROM monitored_scan_cache WHERE entity_id = ?", (entity_id,)
+                    )
+                    conn.commit()
+                    return cur.rowcount or 0
+                current = conn.execute(
+                    "SELECT path FROM monitored_scan_cache WHERE entity_id = ?", (entity_id,)
+                ).fetchall()
+                keep = set(keep_paths)
+                stale = [r["path"] for r in current if r["path"] not in keep]
+                deleted = 0
+                for i in range(0, len(stale), 400):
+                    chunk = stale[i : i + 400]
+                    placeholders = ",".join("?" * len(chunk))
+                    cur = conn.execute(
+                        f"DELETE FROM monitored_scan_cache WHERE entity_id = ? AND path IN ({placeholders})",  # noqa: S608 — placeholders are bound `?` params, not user text.
+                        (entity_id, *chunk),
+                    )
+                    deleted += cur.rowcount or 0
+                conn.commit()
+                return deleted
             finally:
                 conn.close()
 

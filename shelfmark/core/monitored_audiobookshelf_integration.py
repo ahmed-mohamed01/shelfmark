@@ -13,12 +13,13 @@ from __future__ import annotations
 import json
 import re
 from difflib import SequenceMatcher
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.request import Request, urlopen
 
 if TYPE_CHECKING:
     import ssl
 
+from shelfmark.core.cache import CacheService
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.monitored_attribution_v2 import (
@@ -36,6 +37,16 @@ from shelfmark.core.monitored_integration_matching import (
 )
 
 logger = setup_logger(__name__)
+
+# A batch refresh syncs every monitored author against the SAME ABS libraries,
+# so the library list and each library's (potentially large) author list are
+# otherwise re-fetched once per author. Cache them briefly so a batch fetches
+# each list once. Uses the shared CacheService (TTL + size-capped eviction, so
+# it can't grow unbounded over uptime). Keyed including the token so a
+# credential change invalidates. Only successful fetches are cached (failures
+# fall through, so a transient ABS error is retried rather than pinned).
+_ABS_LIST_CACHE_TTL = 300
+_abs_list_cache = CacheService(max_size=256)
 
 # ---------------------------------------------------------------------------
 # ABS-specific regex
@@ -104,16 +115,22 @@ def _get_abs_library_ids(url: str, token: str) -> list[str]:
     configured = (app_config.get("AUDIOBOOKSHELF_LIBRARY_ID") or "").strip()
     if configured:
         return [configured]
+    cache_key = f"abs_libs:{url}:{token}"
+    cached = _abs_list_cache.get(cache_key)
+    if cached is not None:
+        return cast("list[str]", cached)
     try:
         data = _abs_get(url, token, "/api/libraries")
-        return [
+        lib_ids = [
             str(lib["id"])
             for lib in (data.get("libraries") or [])
             if lib.get("mediaType") == "book"
         ]
     except Exception as exc:  # noqa: BLE001 — ABS is external; bail to an empty library list on any fetch failure.
         logger.warning("ABS: failed to fetch libraries: %s", exc)
-    return []
+        return []
+    _abs_list_cache.set(cache_key, lib_ids, _ABS_LIST_CACHE_TTL)
+    return lib_ids
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +160,18 @@ def _find_abs_author_items(
        author in ABS, so cross-entity duplicates should be rare — but
        dedupe defensively).
     """
-    try:
-        data = _abs_get(url, token, f"/api/libraries/{library_id}/authors")
-        authors: list[dict[str, Any]] = data.get("authors") or []
-    except Exception as exc:  # noqa: BLE001 — ABS is external; skip this library on fetch failure rather than abort the scan.
-        logger.warning("ABS: failed to fetch authors for library %s: %s", library_id, exc)
-        return []
+    cache_key = f"abs_authors:{url}:{token}:{library_id}"
+    cached_authors = _abs_list_cache.get(cache_key)
+    if cached_authors is not None:
+        authors: list[dict[str, Any]] = cast("list[dict[str, Any]]", cached_authors)
+    else:
+        try:
+            data = _abs_get(url, token, f"/api/libraries/{library_id}/authors")
+            authors = data.get("authors") or []
+        except Exception as exc:  # noqa: BLE001 — ABS is external; skip this library on fetch failure rather than abort the scan.
+            logger.warning("ABS: failed to fetch authors for library %s: %s", library_id, exc)
+            return []
+        _abs_list_cache.set(cache_key, authors, _ABS_LIST_CACHE_TTL)
 
     if not authors:
         return []
@@ -435,6 +458,10 @@ def sync_abs_availability_for_entity(
     matched = 0
     kept_paths: list[str] = []
     unmatched_titles: list[str] = []
+    pending_files: list[dict[str, Any]] = []
+    # (pending_files index, item_id) for matched items whose audio format wasn't
+    # in the minified payload — resolved concurrently after the loop.
+    format_fetch_targets: list[tuple[int, str]] = []
 
     for item in candidate_items:
         meta = (item.get("media") or {}).get("metadata") or {}
@@ -481,22 +508,13 @@ def sync_abs_availability_for_entity(
             unmatched_titles.append(abs_title)
             continue
 
-        # The author-items endpoint returns minified items without audioFiles, so
-        # _get_abs_item_format often returns None.  Fetch the full item to get the
-        # actual audio file extension (e.g. "m4b") when the quick check fails.
+        # The author-items endpoint returns minified items without audioFiles,
+        # so _get_abs_item_format() misses on most. Defer the /api/items/{id}
+        # fetch and resolve all matched items concurrently after the loop (see
+        # below) instead of one blocking round-trip per matched item.
         item_ext = _get_abs_item_format(item)
-        if item_ext is None:
-            item_id = item.get("id")
-            if item_id:
-                try:
-                    full_item = _abs_get(
-                        cfg["url"], cfg["token"], f"/api/items/{item_id}", timeout=10
-                    )
-                    item_ext = _get_abs_item_format(full_item)
-                except Exception as _fmt_exc:  # noqa: BLE001 — format enrichment is best-effort; fall back to the bare item payload.
-                    logger.debug(
-                        "ABS: could not fetch full item %s for format: %s", item_id, _fmt_exc
-                    )
+        if item_ext is None and item.get("id"):
+            format_fetch_targets.append((len(pending_files), str(item.get("id"))))
 
         # Serialise the v2 evidence vector for the API + UI "Why?" panel.
         try:
@@ -512,34 +530,60 @@ def sync_abs_availability_for_entity(
         # book=None and was handled above.
         tier = getattr(result, "tier", None) or getattr(result.evidence, "tier", "rejected")
         db_status = "matched" if tier == "confirmed" else "candidate"
+        pending_files.append(
+            {
+                "provider": result.book.get("provider"),
+                "provider_book_id": result.book.get("provider_book_id"),
+                "path": path,
+                "ext": item_ext,
+                "file_type": "audiobook",
+                "size_bytes": item.get("size"),
+                "mtime": None,
+                "confidence": result.confidence,
+                "match_reason": result.match_reason,
+                "source": "audiobookshelf",
+                "evidence_json": evidence_json,
+                "status": db_status,
+            }
+        )
+        kept_paths.append(path)
+
+    # Resolve missing audio formats for matched items concurrently — one
+    # independent /api/items/{id} round-trip each, previously serial in-loop.
+    if format_fetch_targets:
+        from shelfmark.core.monitored_concurrency import bounded_map
+
+        def _fetch_format(item_id: str) -> tuple[str, str | None]:
+            try:
+                full = _abs_get(cfg["url"], cfg["token"], f"/api/items/{item_id}", timeout=10)
+                return item_id, _get_abs_item_format(full)
+            except Exception as exc:  # noqa: BLE001 — best-effort format enrichment.
+                logger.debug("ABS: could not fetch full item %s for format: %s", item_id, exc)
+                return item_id, None
+
+        ids = [iid for _, iid in format_fetch_targets]
+        fmt_by_id = dict(bounded_map(_fetch_format, ids))
+        for idx, iid in format_fetch_targets:
+            ext = fmt_by_id.get(iid)
+            if ext:
+                pending_files[idx]["ext"] = ext
+
+    # Flush all matched/candidate rows in one transaction (per-row SAVEPOINT
+    # isolates any bad row). Replaces one commit per matched item.
+    if pending_files:
         try:
-            monitored_db.upsert_monitored_book_file(
+            matched = monitored_db.upsert_monitored_book_files_batch(
                 user_ids=[user_id],
                 entity_id=entity_id,
-                provider=result.book.get("provider"),
-                provider_book_id=result.book.get("provider_book_id"),
-                path=path,
-                ext=item_ext,
-                file_type="audiobook",
-                size_bytes=item.get("size"),
-                mtime=None,
-                confidence=result.confidence,
-                match_reason=result.match_reason,
-                source="audiobookshelf",
-                evidence_json=evidence_json,
-                status=db_status,
+                files=pending_files,
             )
-            kept_paths.append(path)
-            matched += 1
-        except Exception as exc:  # noqa: BLE001 — per-row failure (DB lock, JSON, constraint) is logged and counted as unmatched; one bad row must not abort the whole scan.
+        except Exception as exc:  # noqa: BLE001 — batch failure is logged; sync continues to prune below.
             logger.warning(
-                "ABS: failed to upsert match for %r (entity=%s book=%s): %s",
-                path,
+                "ABS: failed to batch-upsert %d matches for entity %s: %s",
+                len(pending_files),
                 entity_id,
-                result.book.get("provider_book_id"),
                 exc,
             )
-            unmatched_titles.append(abs_title)
 
     monitored_db.prune_monitored_book_files(
         entity_id=entity_id, keep_paths=kept_paths, source="audiobookshelf"

@@ -131,6 +131,9 @@ class ScanResult:
     ebook_dir: str | None = None
     audiobook_dir: str | None = None
     warnings: dict[str, str] = field(default_factory=dict)
+    # True when the scan stopped early at MAX_SCAN_FILES — files beyond the cap
+    # were not attributed, so "missing" results may be incomplete.
+    truncated: bool = False
 
 
 @dataclass

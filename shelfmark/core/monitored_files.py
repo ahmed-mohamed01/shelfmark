@@ -7,6 +7,7 @@ import os
 import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -62,8 +63,15 @@ _WORD_NUMBER_MAP = {
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=16384)
 def normalize_match_text(raw: str) -> str:
-    """Normalize text for fuzzy matching (lowercase, strip punctuation, etc.)."""
+    """Normalize text for fuzzy matching (lowercase, strip punctuation, etc.).
+
+    Pure str->str, so memoized: during a scan the same book titles / series /
+    author names are normalized once per file (O(files x books) calls) — caching
+    collapses that to once per distinct string. Returns an immutable str, so the
+    cache can't be poisoned.
+    """
     s = (raw or "").strip().lower()
     if not s:
         return ""
@@ -86,10 +94,58 @@ def _row_provider_key(row: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _resolve_embedded_metadata(
+    *,
+    path_str: str,
+    mtime: str,
+    size_bytes: int | None,
+    metadata_cache: dict[str, Any],
+    scan_cache: dict[str, dict[str, Any]],
+    new_scan_cache: list[dict[str, Any]],
+) -> None:
+    """Populate ``metadata_cache[path_str]`` for the matcher, reusing the
+    persisted per-file cache when the file is unchanged (same mtime + size).
+
+    Parsing embedded metadata (ID3 / OPF / EPUB) is the expensive per-file step;
+    skipping it for unchanged files is the bulk of a warm-refresh speedup. On a
+    miss (or changed file) the metadata is read from disk and recorded in
+    *new_scan_cache* for the post-scan flush. A cached ``None`` means a prior
+    scan found no embedded metadata — we honour that and skip the re-read.
+    """
+    from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
+    from shelfmark.core.monitored_attribution_v2 import EmbeddedMetadata
+
+    cached = scan_cache.get(path_str)
+    if cached and cached.get("mtime") == mtime and cached.get("size_bytes") == size_bytes:
+        meta_dict = cached.get("metadata")
+        if isinstance(meta_dict, dict):
+            try:
+                metadata_cache[path_str] = EmbeddedMetadata(**meta_dict)
+            except TypeError:
+                pass  # schema drift — fall through to a fresh read
+            else:
+                return
+        else:
+            return  # cached "no embedded metadata" — skip the disk read
+
+    if path_str not in metadata_cache:
+        meta = read_embedded_metadata(path_str)
+        if meta is not None:
+            metadata_cache[path_str] = meta
+
+    resolved = metadata_cache.get(path_str)
+    new_scan_cache.append(
+        {
+            "path": path_str,
+            "mtime": mtime,
+            "size_bytes": size_bytes,
+            "metadata_json": json.dumps(asdict(resolved)) if resolved is not None else None,
+        }
+    )
+
+
 def _record_scan_match_v2(
     *,
-    monitored_db: MonitoredDB,
-    user_id: int,
     entity_id: int,
     file_path: Path,
     file_type: str,
@@ -101,12 +157,18 @@ def _record_scan_match_v2(
     best_by_book_and_type: dict[tuple[str, str, str], float],
     matched: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
+    pending_files: list[dict[str, Any]],
     rejections: set[tuple[str, str, str, str]] | None = None,
 ) -> None:
     """Record a single scan result using the v2 attribution matcher.
 
     Uses path decomposition + position extraction + embedded metadata. Persists
     structured evidence_json alongside the existing confidence/match_reason.
+
+    Matched/candidate rows are appended to *pending_files* (one dict per
+    ``upsert_monitored_book_file`` row) rather than written immediately, so the
+    caller can flush them in a single transaction via
+    ``upsert_monitored_book_files_batch``.
     """
     # Local imports keep cyclic-risk low (v2 module imports normalize_match_text
     # from this module).
@@ -188,20 +250,20 @@ def _record_scan_match_v2(
     prev = best_by_book_and_type.get(match_key)
     if prev is None or result.confidence > prev:
         best_by_book_and_type[match_key] = float(result.confidence)
-        monitored_db.upsert_monitored_book_file(
-            user_ids=[user_id],
-            entity_id=entity_id,
-            provider=provider,
-            provider_book_id=provider_book_id,
-            path=path_str,
-            ext=file_type,
-            file_type=file_type,
-            size_bytes=size_bytes,
-            mtime=mtime,
-            confidence=float(result.confidence),
-            match_reason=result.match_reason,
-            evidence_json=evidence_json,
-            status=db_status,
+        pending_files.append(
+            {
+                "provider": provider,
+                "provider_book_id": provider_book_id,
+                "path": path_str,
+                "ext": file_type,
+                "file_type": file_type,
+                "size_bytes": size_bytes,
+                "mtime": mtime,
+                "confidence": float(result.confidence),
+                "match_reason": result.match_reason,
+                "evidence_json": evidence_json,
+                "status": db_status,
+            }
         )
 
     matched.append(
@@ -774,23 +836,39 @@ def scan_monitored_author_files(
 
     scanned_ebook_files = 0
     scanned_audio_folders = 0
+    scan_truncated = False
     matched: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
     best_by_book_and_type: dict[tuple[str, str, str], float] = {}
     seen_paths: set[str] = set()
+    # Accumulate matched/candidate rows and flush in one transaction after both
+    # walks — replaces one commit-per-file (capped at MAX_SCAN_FILES) with a
+    # single transaction, which also stops the write from blocking grid reads.
+    pending_files: list[dict[str, Any]] = []
 
     # User-rejected (path, book) pairs — scanner must not re-attribute these.
     rejections = monitored_db.list_file_rejections_for_entity(entity_id=entity_id)
 
     # Per-scan embedded-metadata cache (eager, per design). Filled lazily as we
     # encounter each file — keeps the call inline rather than re-walking.
-    from shelfmark.core.monitored_attribution_metadata import read_embedded_metadata
-
     metadata_cache: dict[str, Any] = {}
+
+    # Persisted per-file metadata cache: reuse embedded metadata for files that
+    # are unchanged (same mtime + size) since the last scan instead of
+    # re-parsing them. new_scan_cache accumulates fresh/changed entries to flush.
+    scan_cache = monitored_db.get_scan_metadata_cache(entity_id=entity_id)
+    new_scan_cache: list[dict[str, Any]] = []
 
     if ebook_path is not None:
         for p in _iter_files_recursive_safe(ebook_path):
             if scanned_ebook_files >= MAX_SCAN_FILES:
+                scan_truncated = True
+                logger.warning(
+                    "Scan truncated for entity_id=%s: ebook file cap (%d) reached; "
+                    "files beyond the cap were not scanned for attribution.",
+                    entity_id,
+                    MAX_SCAN_FILES,
+                )
                 break
             try:
                 if not p.is_file() or p.is_symlink():
@@ -812,14 +890,16 @@ def scan_monitored_author_files(
             file_type = ext.lstrip(".")
             mtime = iso_mtime(p)
             path_str = str(p)
-            if path_str not in metadata_cache:
-                meta = read_embedded_metadata(path_str)
-                if meta is not None:
-                    metadata_cache[path_str] = meta
+            _resolve_embedded_metadata(
+                path_str=path_str,
+                mtime=mtime,
+                size_bytes=size_bytes,
+                metadata_cache=metadata_cache,
+                scan_cache=scan_cache,
+                new_scan_cache=new_scan_cache,
+            )
 
             _record_scan_match_v2(
-                monitored_db=monitored_db,
-                user_id=user_id,
                 entity_id=entity_id,
                 file_path=p,
                 file_type=file_type,
@@ -831,6 +911,7 @@ def scan_monitored_author_files(
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,
+                pending_files=pending_files,
                 rejections=rejections,
             )
 
@@ -884,14 +965,16 @@ def scan_monitored_author_files(
             # uses the full file path (which is the canonical "leaf" for the
             # audio folder) for path decomposition.
             path_str = str(best_file)
-            if path_str not in metadata_cache:
-                meta = read_embedded_metadata(path_str)
-                if meta is not None:
-                    metadata_cache[path_str] = meta
+            _resolve_embedded_metadata(
+                path_str=path_str,
+                mtime=mtime,
+                size_bytes=size_bytes,
+                metadata_cache=metadata_cache,
+                scan_cache=scan_cache,
+                new_scan_cache=new_scan_cache,
+            )
 
             _record_scan_match_v2(
-                monitored_db=monitored_db,
-                user_id=user_id,
                 entity_id=entity_id,
                 file_path=best_file,
                 file_type=file_type,
@@ -903,8 +986,42 @@ def scan_monitored_author_files(
                 best_by_book_and_type=best_by_book_and_type,
                 matched=matched,
                 unmatched=unmatched,
+                pending_files=pending_files,
                 rejections=rejections,
             )
+
+    # Flush all matched/candidate rows in one transaction. Order is preserved so
+    # the "one matched per book" demotion/eviction logic behaves identically to
+    # the previous per-file commits. Must run before the prune + read-back below.
+    if pending_files:
+        try:
+            monitored_db.upsert_monitored_book_files_batch(
+                user_ids=[user_id],
+                entity_id=entity_id,
+                files=pending_files,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to batch-upsert %d scanned files for entity_id=%s: %s",
+                len(pending_files),
+                entity_id,
+                exc,
+            )
+
+    # Persist the refreshed per-file metadata cache and drop entries for files
+    # that have vanished, keeping the cache bounded. Best-effort: a failure here
+    # only costs a re-read on the next scan, never correctness.
+    if new_scan_cache:
+        try:
+            monitored_db.upsert_scan_metadata_cache(entity_id=entity_id, entries=new_scan_cache)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to update scan metadata cache for entity_id=%s: %s", entity_id, exc
+            )
+    try:
+        monitored_db.prune_scan_metadata_cache(entity_id=entity_id, keep_paths=list(seen_paths))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to prune scan metadata cache for entity_id=%s: %s", entity_id, exc)
 
     scanned_roots = [p for p in [ebook_path, audiobook_path] if p is not None]
     prune_stale_matched_files(
@@ -947,6 +1064,8 @@ def scan_monitored_author_files(
     return {
         "scanned_ebook_files": scanned_ebook_files,
         "scanned_audio_folders": scanned_audio_folders,
+        "truncated": scan_truncated,
+        "scan_file_cap": MAX_SCAN_FILES if scan_truncated else None,
         "matched": matched,
         "unmatched": unmatched,
         "existing_files": expanded_existing_files,
