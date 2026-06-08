@@ -551,6 +551,29 @@ def _migrate_booklore_to_grimmory_v9(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_monitored_book_files_conflict_index_v10(conn: sqlite3.Connection) -> None:
+    """Add a composite index covering the file-upsert conflict-check queries.
+
+    ``_apply_upsert_book_file`` runs SELECTs filtered on
+    (entity_id, provider, provider_book_id, file_type, source, status) to
+    enforce "one matched per book". The pre-existing
+    ``idx_monitored_book_files_entity`` (entity_id, updated_at DESC) doesn't
+    cover those predicates, so each conflict check was a partial scan. With
+    batched writes (one transaction per author) this runs thousands of times,
+    so an index seek matters.
+
+    Deferred to a gated migration (not the create-script) because it references
+    the ``status`` column, which only exists after the v7 migration.
+    """
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_monitored_book_files_conflict
+        ON monitored_book_files (entity_id, provider, provider_book_id, file_type, source, status)
+        """
+    )
+    conn.commit()
+
+
 def _migrate_monitored_events_backfill_thumbnails(conn: sqlite3.Connection) -> None:
     """Backfill ``book_cover_url`` / ``author_photo_url`` from current state.
 
@@ -680,6 +703,12 @@ class MonitoredDB:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # Set WAL explicitly rather than relying on UserDB.initialize() having run
+        # first, and give writers a retry window so the refresh scheduler thread,
+        # a manual sync, and download hooks don't trip SQLITE_BUSY on collision.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def initialize(self) -> None:
@@ -708,6 +737,10 @@ class MonitoredDB:
                 if user_version < 9:
                     _migrate_booklore_to_grimmory_v9(conn)
                     conn.execute("PRAGMA user_version = 9")
+                    conn.commit()
+                if user_version < 10:
+                    _migrate_monitored_book_files_conflict_index_v10(conn)
+                    conn.execute("PRAGMA user_version = 10")
                     conn.commit()
                 _migrate_monitored_events_cascade_to_set_null(conn)
                 _migrate_monitored_events_backfill_user_id(conn)
@@ -1270,35 +1303,31 @@ class MonitoredDB:
         entity_placeholders = ",".join("?" * len(entity_ids))
         conn = self._connect()
         try:
-            # Filter entity_ids to only those owned by the user
-            owned_rows = conn.execute(
-                f"""
-                SELECT id FROM monitored_entities
-                WHERE id IN ({entity_placeholders}) AND {uid_clause}
-                """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
-                [*entity_ids, *uid_params],
-            ).fetchall()
-            owned_ids = [r["id"] for r in owned_rows]
-            if not owned_ids:
-                return {}
-            placeholders = ",".join("?" * len(owned_ids))
+            # Single query: join books → entities so the ownership filter and the
+            # per-entity "most popular cover" window run together (was two round
+            # trips). `user_id` is unambiguous — only monitored_entities has it.
             rows = conn.execute(
                 f"""
                 SELECT entity_id, cover_url, provider, provider_book_id FROM (
-                    SELECT entity_id, cover_url, provider, provider_book_id,
+                    SELECT b.entity_id AS entity_id,
+                           b.cover_url AS cover_url,
+                           b.provider AS provider,
+                           b.provider_book_id AS provider_book_id,
                            ROW_NUMBER() OVER (
-                               PARTITION BY entity_id
-                               ORDER BY COALESCE(readers_count, -1) DESC,
-                                        COALESCE(ratings_count, -1) DESC,
-                                        COALESCE(rating, -1) DESC,
-                                        title ASC
+                               PARTITION BY b.entity_id
+                               ORDER BY COALESCE(b.readers_count, -1) DESC,
+                                        COALESCE(b.ratings_count, -1) DESC,
+                                        COALESCE(b.rating, -1) DESC,
+                                        b.title ASC
                            ) AS rn
-                    FROM monitored_books
-                    WHERE entity_id IN ({placeholders})
-                      AND cover_url IS NOT NULL AND cover_url != ''
+                    FROM monitored_books b
+                    JOIN monitored_entities e ON e.id = b.entity_id
+                    WHERE b.entity_id IN ({entity_placeholders})
+                      AND {uid_clause}
+                      AND b.cover_url IS NOT NULL AND b.cover_url != ''
                 ) WHERE rn = 1
                 """,  # noqa: S608 — dynamic SQL fragment is from internal allowlist (user_id clause / table-name iteration / column allowlist), not user input
-                owned_ids,
+                [*entity_ids, *uid_params],
             ).fetchall()
             return {
                 row["entity_id"]: {
