@@ -114,32 +114,25 @@ def _prefetch_grimmory_book_details(
     base_url: str,
     token: str,
     book_ids: list[int],
-    *,
-    max_workers: int = 6,
 ) -> dict[int, Any]:
-    """Fetch ``/api/v1/books/{id}`` for many books concurrently.
+    """Fetch ``/api/v1/books/{id}`` for each book, sequentially.
 
     The detail payload carries the real filesystem path (which feeds path-side
-    match scoring, so it cannot be deferred to only matched books). The calls
-    are independent, read-only, and I/O-bound, so a bounded thread pool turns an
-    O(books) sequential wait into O(books / workers). ``max_workers`` is kept
-    modest to stay polite to the Grimmory host. Failed fetches are simply
-    omitted from the result (callers fall back to the bare ``grimmory://`` path).
+    match scoring, so it cannot be deferred to only matched books). Prefetching
+    them up front still lets the match loop read from a dict, but the requests
+    are issued ONE AT A TIME on purpose: the Grimmory/Booklore server 500s under
+    concurrent load, so a thread pool here broke the integration. Failed fetches
+    are omitted (callers fall back to the bare ``grimmory://`` path).
     """
-    from shelfmark.core.monitored_concurrency import bounded_map
-
-    def _fetch(safe_id: int) -> tuple[int, Any]:
+    results: dict[int, Any] = {}
+    for safe_id in book_ids:
         try:
-            return safe_id, _grimmory_get(base_url, token, f"/api/v1/books/{safe_id}", timeout=10)
+            results[safe_id] = _grimmory_get(
+                base_url, token, f"/api/v1/books/{safe_id}", timeout=10
+            )
         except Exception as exc:  # noqa: BLE001 — optional enrichment; omit on failure.
             logger.debug("Grimmory: could not fetch file detail for book %s: %s", safe_id, exc)
-            return safe_id, None
-
-    return {
-        safe_id: detail
-        for safe_id, detail in bounded_map(_fetch, book_ids, max_workers=max_workers)
-        if detail is not None
-    }
+    return results
 
 
 # ---------------------------------------------------------------------------
