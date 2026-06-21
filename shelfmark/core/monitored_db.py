@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS monitored_books (
     monitor_audiobook INTEGER NOT NULL DEFAULT 1,
     monitor_locked INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
+    user_unhidden INTEGER NOT NULL DEFAULT 0,
     ebook_last_search_status TEXT,
     audiobook_last_search_status TEXT,
     ebook_last_search_at TIMESTAMP,
@@ -819,6 +820,13 @@ class MonitoredDB:
                 )
                 conn.commit()
                 try:
+                    conn.execute(
+                        "ALTER TABLE monitored_books ADD COLUMN user_unhidden INTEGER NOT NULL DEFAULT 0"
+                    )
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+                try:
                     conn.execute("ALTER TABLE monitored_events ADD COLUMN session_id TEXT")
                     conn.commit()
                 except sqlite3.OperationalError:
@@ -1404,6 +1412,10 @@ class MonitoredDB:
 
                     updates.append("hidden = ?")
                     params.append(1 if hidden else 0)
+                    # Track whether the user explicitly unhid this book so
+                    # auto-hide during refresh doesn't override their choice.
+                    updates.append("user_unhidden = ?")
+                    params.append(0 if hidden else 1)
 
                     if hidden:
                         # Save current flags, then zero them out
@@ -2140,7 +2152,7 @@ class MonitoredDB:
                         ratings_count=excluded.ratings_count,
                         readers_count=excluded.readers_count,
                         hidden=CASE
-                            WHEN excluded.hidden = 1 THEN 1
+                            WHEN excluded.hidden = 1 AND monitored_books.user_unhidden = 0 THEN 1
                             ELSE monitored_books.hidden
                         END,
                         state=CASE
