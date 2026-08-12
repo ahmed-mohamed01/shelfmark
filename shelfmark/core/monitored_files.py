@@ -443,7 +443,7 @@ def pick_best_audio_file(
             sz = 0
         return (pr, -sz)
 
-    return sorted(files, key=_key)[0]
+    return min(files, key=_key)
 
 
 def _parse_extension_tokens(values: Any, *, parse_orderable_items: bool = False) -> list[str]:

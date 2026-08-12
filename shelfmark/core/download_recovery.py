@@ -129,9 +129,8 @@ def retry_interrupted(
         return False, "Download is not in an interrupted state", 409
 
     # Ownership check
-    if not is_admin:
-        if not _check_ownership(row, actor_user_id, actor_username):
-            return False, "Forbidden", 403
+    if not is_admin and not _check_ownership(row, actor_user_id, actor_username):
+        return False, "Forbidden", 403
 
     # Check if the download client still has this item
     download_id = row.get("download_id")
@@ -297,7 +296,7 @@ def _startup_recover_sync() -> None:
         _verify_completed_downloads()
 
     except Exception as exc:
-        logger.error("Startup download recovery failed: %s", exc)
+        logger.exception("Startup download recovery failed: %s", exc)
 
 
 def _verify_completed_downloads() -> None:
@@ -759,7 +758,7 @@ def _recover_completed(
             logger.warning("Recovery: post-processing failed for %s", task_id)
 
     except Exception as exc:
-        logger.error("Recovery: import failed for %s: %s", task_id, exc)
+        logger.exception("Recovery: import failed for %s: %s", task_id, exc)
         _finalize_as_error(row, f"Recovery import failed: {exc}")
 
 

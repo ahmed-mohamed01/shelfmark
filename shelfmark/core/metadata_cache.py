@@ -10,13 +10,16 @@ Directory layout:
         books/<provider>/<id>.json
 """
 
+import contextlib
 import json
 import threading
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shelfmark.core.logger import setup_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = setup_logger(__name__)
 
@@ -74,10 +77,8 @@ class MetadataFileCache:
             entry = json.loads(path.read_text())
             if not self._is_valid(entry):
                 # Expired — remove file
-                try:
+                with contextlib.suppress(OSError):
                     path.unlink()
-                except OSError:
-                    pass
                 return None
 
             # Promote to memory
@@ -171,10 +172,8 @@ class MetadataFileCache:
                     continue
                 for path in provider_dir.glob("*.json"):
                     disk_count += 1
-                    try:
+                    with contextlib.suppress(OSError):
                         disk_size += path.stat().st_size
-                    except OSError:
-                        pass
 
         return {
             "memory_entries": mem_count,
