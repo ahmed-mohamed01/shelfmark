@@ -268,10 +268,10 @@ def queue_release(
 
         # Skip unreleased books
         explicit_release_date = _parse_release_date(
-            release_data.get('release_date')
-            or extra.get('release_date')
-            or extra.get('publication_date')
-            or extra.get('publish_date')
+            release_data.get("release_date")
+            or extra.get("release_date")
+            or extra.get("publication_date")
+            or extra.get("publish_date")
         )
         if explicit_release_date is not None and date.today() < explicit_release_date:
             return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
@@ -311,7 +311,7 @@ def queue_release(
             raw_match_score = extra.get("match_score")
         try:
             release_match_score = float(raw_match_score) if raw_match_score is not None else None
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             release_match_score = None
         destination_override = release_data.get("destination_override")
         file_organization_override = release_data.get("file_organization_override")
@@ -347,10 +347,14 @@ def queue_release(
                     "session_id": str(release_data.get("session_id") or "").strip() or None,
                     "run_id": str(release_data.get("run_id") or "").strip() or None,
                 }
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 history_context = None
 
-        if history_context and history_context.get("provider") and history_context.get("provider_book_id"):
+        if (
+            history_context
+            and history_context.get("provider")
+            and history_context.get("provider_book_id")
+        ):
             output_args = dict(output_args)
             output_args["history_context"] = history_context
 
@@ -373,10 +377,18 @@ def queue_release(
             search_mode=search_mode,
             output_mode=output_mode,
             output_args=output_args,
-            monitored_entity_id=int(monitored_entity_id) if monitored_entity_id is not None else None,
-            destination_override=str(destination_override).strip() if isinstance(destination_override, str) and destination_override.strip() else None,
-            file_organization_override=str(file_organization_override).strip() if isinstance(file_organization_override, str) and file_organization_override.strip() else None,
-            template_override=str(template_override) if isinstance(template_override, str) and template_override.strip() else None,
+            monitored_entity_id=int(monitored_entity_id)
+            if monitored_entity_id is not None
+            else None,
+            destination_override=str(destination_override).strip()
+            if isinstance(destination_override, str) and destination_override.strip()
+            else None,
+            file_organization_override=str(file_organization_override).strip()
+            if isinstance(file_organization_override, str) and file_organization_override.strip()
+            else None,
+            template_override=str(template_override)
+            if isinstance(template_override, str) and template_override.strip()
+            else None,
             priority=priority,
             user_id=user_id,
             username=username,

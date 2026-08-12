@@ -1058,7 +1058,6 @@ def download_settings() -> list[SettingsField]:
                 "value": "folder",
             },
         ),
-
         # Hidden per-user settings used for monitored author folder suggestions.
         # These are persisted in user_settings but are not rendered in the UI.
         TagListField(
@@ -1793,6 +1792,7 @@ def mirror_settings() -> list[SettingsField]:
         ),
     ]
 
+
 @register_settings("advanced", "Advanced", icon="cog", order=15)
 def advanced_settings() -> list[SettingsField]:
     """Advanced settings for power users."""
@@ -2002,5 +2002,5 @@ def advanced_settings() -> list[SettingsField]:
 
 register_on_save("advanced", _on_save_advanced)
 
+import shelfmark.config.integrations_settings as _
 import shelfmark.config.monitored_settings as _  # noqa: F401 - registers release_scoring tab
-import shelfmark.config.integrations_settings as _  # noqa: F401 - registers integrations tab

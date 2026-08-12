@@ -519,7 +519,6 @@ export const downloadRelease = async (
       ? { ...release, on_behalf_of_user_id: onBehalfOfUserId }
       : release;
 
-
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',
     body: JSON.stringify(payload),

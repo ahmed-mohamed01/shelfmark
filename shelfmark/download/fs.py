@@ -229,7 +229,9 @@ def _verify_published_file(
         )
 
 
-def atomic_write(dest_path: Path, data: bytes, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+def atomic_write(
+    dest_path: Path, data: bytes, max_attempts: int = 100, *, overwrite_existing: bool = False
+) -> Path:
     """Write data to a file with atomic collision detection.
 
     If the destination already exists, retries with counter suffix (_1, _2, etc.)
@@ -774,7 +776,9 @@ def atomic_move(
     raise RuntimeError(msg)
 
 
-def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+def atomic_hardlink(
+    source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False
+) -> Path:
     """Create a hardlink with atomic collision detection.
 
     Set overwrite_existing=True to replace the destination in place (creates
@@ -816,7 +820,9 @@ def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100,
                     source_path,
                     dest_path,
                 )
-                return atomic_copy(source_path, dest_path, max_attempts=max_attempts, overwrite_existing=True)
+                return atomic_copy(
+                    source_path, dest_path, max_attempts=max_attempts, overwrite_existing=True
+                )
             raise
         finally:
             run_blocking_io(temp_path.unlink, missing_ok=True)
@@ -849,7 +855,9 @@ def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100,
                     source_path,
                     dest_path,
                 )
-                return atomic_copy(source_path, dest_path, max_attempts=max_attempts, overwrite_existing=False)
+                return atomic_copy(
+                    source_path, dest_path, max_attempts=max_attempts, overwrite_existing=False
+                )
             raise
         else:
             return try_path
@@ -858,7 +866,9 @@ def atomic_hardlink(source_path: Path, dest_path: Path, max_attempts: int = 100,
     raise RuntimeError(msg)
 
 
-def atomic_copy(source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False) -> Path:
+def atomic_copy(
+    source_path: Path, dest_path: Path, max_attempts: int = 100, *, overwrite_existing: bool = False
+) -> Path:
     """Copy a file with atomic collision detection.
 
     Uses a temp file in the destination directory and publishes it via rename,

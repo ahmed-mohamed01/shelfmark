@@ -52,6 +52,7 @@ from shelfmark.core.download_history_service import DownloadHistoryService
 from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import TERMINAL_QUEUE_STATUSES, QueueStatus, SearchFilters
+from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.notifications import (
     NotificationContext,
     NotificationEvent,
@@ -79,7 +80,6 @@ from shelfmark.core.requests_service import (
     reopen_failed_request,
     sync_delivery_states_from_queue_status,
 )
-from shelfmark.core.monitored_db import MonitoredDB
 from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.download import orchestrator as backend
@@ -204,15 +204,23 @@ except (sqlite3.OperationalError, OSError) as e:
 
 # Start download coordinator
 if monitored_db is not None:
-    from shelfmark.core.monitored_downloads import set_monitored_db, register_hooks, load_pending_releases_from_db
+    from shelfmark.core.monitored_downloads import (
+        load_pending_releases_from_db,
+        register_hooks,
+        set_monitored_db,
+    )
+
     set_monitored_db(monitored_db)
     register_hooks()
     from shelfmark.core.monitored_history import set_db as _set_history_db
+
     _set_history_db(monitored_db)
 
 # Register download recovery hooks (persists download IDs to DB)
 if download_history_service is not None:
-    from shelfmark.core.download_recovery import register as _register_recovery, startup_recover
+    from shelfmark.core.download_recovery import register as _register_recovery
+    from shelfmark.core.download_recovery import startup_recover
+
     _register_recovery(download_history_service, ws_manager=ws_manager)
 
 backend.start()
@@ -1113,6 +1121,7 @@ def api_download_release() -> Response | tuple[Response, int]:
             enrich_release_for_monitored,
             resolve_download_db_user_id,
         )
+
         db_user_id = resolve_download_db_user_id(session, get_auth_mode(), user_db)
         release_payload = enrich_release_for_monitored(
             release_payload, monitored_db, db_user_id, user_db=user_db
@@ -1153,15 +1162,17 @@ def api_config() -> Response | tuple[Response, int]:
     """
     try:
         from shelfmark.config.env import _is_config_dir_writable
-        from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
         from shelfmark.core.monitored_routes import get_monitored_config_additions
+        from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
         from shelfmark.metadata_providers import (
             get_provider_default_sort,
             get_provider_search_fields,
             get_provider_sort_options,
         )
 
-        monitored_cfg, db_user_id = get_monitored_config_additions(app_config, session.get("db_user_id"))
+        monitored_cfg, db_user_id = get_monitored_config_additions(
+            app_config, session.get("db_user_id")
+        )
 
         search_mode = app_config.get("SEARCH_MODE", "universal", user_id=db_user_id)
         default_release_source = app_config.get(
@@ -1404,6 +1415,7 @@ def _record_download_queued(task_id: str, task: Any) -> None:
 
     try:
         from shelfmark.core.monitored_downloads import record_manual_download_queued_if_applicable
+
         record_manual_download_queued_if_applicable(task_id, task)
     except Exception as exc:
         logger.warning("Failed to record manual monitored download_queued for %s: %s", task_id, exc)
@@ -2754,6 +2766,7 @@ def api_metadata_book(provider: str, book_id: str) -> Response | tuple[Response,
 
         # Check persistent metadata cache first
         from shelfmark.core.metadata_cache import get_metadata_file_cache
+
         mcache = get_metadata_file_cache()
         cached = mcache.get("books", provider, book_id)
         if cached is not None:
@@ -2887,6 +2900,7 @@ def api_releases() -> Response | tuple[Response, int]:
     try:
         from dataclasses import asdict
 
+        from shelfmark.core.monitored_release_scoring import rank_releases_for_book
         from shelfmark.core.search_plan import build_release_search_plan
         from shelfmark.metadata_providers import (
             BookMetadata,
@@ -2901,7 +2915,6 @@ def api_releases() -> Response | tuple[Response, int]:
             serialize_column_config,
             source_results_are_releases,
         )
-        from shelfmark.core.monitored_release_scoring import rank_releases_for_book
 
         def _search_source_releases(
             source_name: str, search_book: BookMetadata
@@ -3075,6 +3088,7 @@ def api_releases() -> Response | tuple[Response, int]:
         # content family (ebook results in an audiobook search, etc.) so the UI
         # never offers a release that will fail postprocessing.
         from shelfmark.core.monitored_utils import release_matches_content_type
+
         all_releases = [r for r in all_releases if release_matches_content_type(r, content_type)]
 
         # Rank by metadata match quality and annotate releases with score details

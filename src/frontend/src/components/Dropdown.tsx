@@ -78,14 +78,19 @@ export const Dropdown = ({
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [panelDirection, setPanelDirection] = useState<'down' | 'up'>('down');
-  const [portalPosition, setPortalPosition] = useState<{ top: number; left: number; width: number; caretLeft: number } | null>(null);
+  const [portalPosition, setPortalPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    caretLeft: number;
+  } | null>(null);
   // Computed horizontal offset for non-portal panels (relative to containerRef left edge)
   const [nonPortalLeft, setNonPortalLeft] = useState<number | null>(null);
   const [nonPortalCaretLeft, setNonPortalCaretLeft] = useState<number>(16);
 
   const toggleOpen = () => {
     if (disabled) return;
-    setIsOpen(prev => {
+    setIsOpen((prev) => {
       const next = !prev;
       onOpenChange?.(next);
       return next;
@@ -140,9 +145,7 @@ export const Dropdown = ({
     const containerBottom = scrollableAncestor
       ? scrollableAncestor.getBoundingClientRect().bottom
       : window.innerHeight;
-    const containerTop = scrollableAncestor
-      ? scrollableAncestor.getBoundingClientRect().top
-      : 0;
+    const containerTop = scrollableAncestor ? scrollableAncestor.getBoundingClientRect().top : 0;
 
     const spaceBelow = containerBottom - rect.bottom - 8;
     const spaceAbove = rect.top - containerTop - 8;
@@ -174,7 +177,6 @@ export const Dropdown = ({
       setNonPortalLeft(clampedLeft - containerRect.left);
       setNonPortalCaretLeft(computedCaretLeft);
     }
-
   }, [usePortal, align]);
 
   useLayoutEffect(() => {
@@ -260,7 +262,7 @@ export const Dropdown = ({
             type="button"
             onClick={toggleOpen}
             disabled={disabled}
-            className={`w-full px-3 py-2 text-sm border flex items-center justify-between gap-2 text-left focus:outline-hidden focus-visible:outline-hidden focus-visible:ring-0 focus-visible:ring-offset-0 ${triggerChrome !== 'minimal' ? 'dropdown-trigger' : ''} ${buttonClassName}`}
+            className={`flex w-full items-center justify-between gap-2 border px-3 py-2 text-left text-sm focus:outline-hidden focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-hidden ${triggerChrome !== 'minimal' ? 'dropdown-trigger' : ''} ${buttonClassName}`}
             style={{
               color: 'var(--text)',
               borderColor: triggerChrome === 'minimal' ? 'transparent' : 'var(--border-muted)',
@@ -296,9 +298,13 @@ export const Dropdown = ({
             ref={panelRef}
             className={`absolute ${
               panelDirection === 'down'
-                ? renderTrigger ? 'mt-2' : ''
-                : renderTrigger ? 'bottom-full mb-2' : 'bottom-full'
-            } border z-20 ${panelDirection === 'down' ? 'shadow-lg' : ''} ${panelClassName || widthClassName}`}
+                ? renderTrigger
+                  ? 'mt-2'
+                  : ''
+                : renderTrigger
+                  ? 'bottom-full mb-2'
+                  : 'bottom-full'
+            } z-20 border ${panelDirection === 'down' ? 'shadow-lg' : ''} ${panelClassName || widthClassName}`}
             style={{
               background: 'var(--bg)',
               borderColor: 'var(--border-muted)',
@@ -321,30 +327,35 @@ export const Dropdown = ({
           </div>
         )}
       </div>
-      {isOpen && usePortal && createPortal(
-        <div
-          ref={panelRef}
-          className={`fixed inline-block border shadow-xl ${panelClassName || `z-[9999] ${widthClassName}`}`}
-          style={{
-            background: 'var(--bg)',
-            borderColor: 'var(--border-muted)',
-            borderRadius: '0.5rem',
-            top: portalPosition?.top ?? 0,
-            left: portalPosition?.left ?? 0,
-            width: 'fit-content',
-            maxWidth: 'min(90vw, 28rem)',
-          }}
-        >
-          {portalPosition && renderCaret(
-            (portalPosition.top > (triggerRef.current?.getBoundingClientRect().bottom ?? 0)) ? 'down' : 'up',
-            portalPosition.caretLeft,
-          )}
-          <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
-            {children({ close })}
-          </div>
-        </div>,
-        document.body
-      )}
+      {isOpen &&
+        usePortal &&
+        createPortal(
+          <div
+            ref={panelRef}
+            className={`fixed inline-block border shadow-xl ${panelClassName || `z-[9999] ${widthClassName}`}`}
+            style={{
+              background: 'var(--bg)',
+              borderColor: 'var(--border-muted)',
+              borderRadius: '0.5rem',
+              top: portalPosition?.top ?? 0,
+              left: portalPosition?.left ?? 0,
+              width: 'fit-content',
+              maxWidth: 'min(90vw, 28rem)',
+            }}
+          >
+            {portalPosition &&
+              renderCaret(
+                portalPosition.top > (triggerRef.current?.getBoundingClientRect().bottom ?? 0)
+                  ? 'down'
+                  : 'up',
+                portalPosition.caretLeft,
+              )}
+            <div className={noScrollLimit ? '' : 'max-h-64 overflow-auto'}>
+              {children({ close })}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

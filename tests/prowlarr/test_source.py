@@ -705,7 +705,9 @@ class TestProwlarrReleaseMetadataMapping:
             },
         }
 
-        release = _prowlarr_result_to_release(result, search_content_type="ebook", enable_format_detection=True)
+        release = _prowlarr_result_to_release(
+            result, search_content_type="ebook", enable_format_detection=True
+        )
 
         assert release.extra.get("author") == "Khenal"
         assert release.extra.get("book_title") == "Dungeon Life 2"
@@ -714,6 +716,7 @@ class TestProwlarrReleaseMetadataMapping:
             "seriesnumber": "2",
             "booknumber": "2",
         }
+
 
 class TestFetchIndexerSeedSettingsFallback:
     """Regression tests for #795: transient Prowlarr API failures must not
