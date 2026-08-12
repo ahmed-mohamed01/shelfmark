@@ -82,6 +82,7 @@ export const CompactView = ({
   };
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- mouse handlers drive a decorative hover shadow only; no interactive behavior requiring keyboard support
     <article
       className="book-card flex! flex-row! w-full h-[180px]! transition-shadow duration-300 animate-pop-up will-change-transform relative"
       style={{

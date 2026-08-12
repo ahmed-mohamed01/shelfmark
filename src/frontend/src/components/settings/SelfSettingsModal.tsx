@@ -21,7 +21,6 @@ import {
   normalizeUserOverrideSections,
   UserOverridesSections,
 } from './users';
-import type { PerUserSettings } from './users/types';
 import { UserAccountCardContent, UserEditActions, UserIdentityHeader } from './users/UserCard';
 import { useUserOverridesState } from './users/useUserOverridesState';
 
@@ -153,7 +152,7 @@ const SelfSettingsModalSession = ({
         normalizeUserOverrideSections(context.visibleUserSettingsSections, 'self'),
       );
       applyUserOverridesContext({
-        settings: (context.user.settings || {}) as PerUserSettings,
+        settings: context.user.settings || {},
         userOverridableKeys: context.userOverridableKeys || [],
       });
       setEditPassword('');

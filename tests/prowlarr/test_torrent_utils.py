@@ -361,26 +361,76 @@ class TestExtractInfoHash:
 class TestExtractTorrentInfo:
     """Tests for extracting torrent info from user-supplied URLs."""
 
-    def test_does_not_fetch_untrusted_http_torrent_url(self, monkeypatch):
-        """Arbitrary HTTP torrent URLs are passed through without backend prefetch."""
-        expected_hash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
+    def test_fetches_untrusted_torrent_url_to_recover_missing_hash(self, monkeypatch):
+        """Regression for #1012.
+
+        A download URL on a non-Prowlarr origin (e.g. a direct tracker link, or
+        Prowlarr reached through a separate proxy) must still be prefetched so
+        the info_hash can be recovered when the feed did not provide one.
+        Otherwise qBittorrent fails with "Could not determine torrent hash from
+        URL".
+        """
+        info_dict = {
+            b"name": b"book.txt",
+            b"length": 100,
+            b"piece length": 16384,
+            b"pieces": b"\x00" * 20,
+        }
+        torrent_data = bencode_encode({b"info": info_dict})
+        expected_hash = hashlib.sha1(bencode_encode(info_dict)).hexdigest().lower()
+
+        config_values = {"PROWLARR_URL": "https://prowlarr.example"}
         monkeypatch.setattr(
             "shelfmark.download.clients.torrent_utils.config.get",
-            lambda key, default="": "",
+            lambda key, default="": config_values.get(key, default),
         )
-        mock_get = MagicMock()
+        response = MagicMock(status_code=200, content=torrent_data)
+        response.raise_for_status = MagicMock()
+        mock_get = MagicMock(return_value=response)
         monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
 
+        # No expected_hash supplied: the hash can only come from the prefetch.
         result = extract_torrent_info(
-            "https://attacker.example/book.torrent",
+            "https://tracker.example/download/book.torrent",
             fetch_torrent=True,
-            expected_hash=expected_hash,
         )
 
         assert result.info_hash == expected_hash
-        assert result.torrent_data is None
+        assert result.torrent_data == torrent_data
         assert result.is_magnet is False
-        mock_get.assert_not_called()
+        mock_get.assert_called_once()
+
+    def test_does_not_send_api_key_to_untrusted_torrent_url(self, monkeypatch):
+        """The Prowlarr API key is never sent to a download URL on an untrusted origin."""
+        info_dict = {
+            b"name": b"book.txt",
+            b"length": 100,
+            b"piece length": 16384,
+            b"pieces": b"\x00" * 20,
+        }
+        torrent_data = bencode_encode({b"info": info_dict})
+
+        config_values = {
+            "PROWLARR_URL": "https://prowlarr.example",
+            "PROWLARR_API_KEY": "secret",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.torrent_utils.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        response = MagicMock(status_code=200, content=torrent_data)
+        response.raise_for_status = MagicMock()
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        extract_torrent_info(
+            "https://attacker.example/book.torrent",
+            fetch_torrent=True,
+        )
+
+        mock_get.assert_called_once()
+        sent_headers = mock_get.call_args.kwargs.get("headers", {})
+        assert "X-Api-Key" not in sent_headers
 
     def test_fetches_configured_prowlarr_torrent_url(self, monkeypatch):
         """Configured Prowlarr download URLs can still be prefetched and parsed."""
@@ -449,15 +499,84 @@ class TestExtractTorrentInfo:
         assert result.torrent_data == torrent_data
         mock_get.assert_called_once()
 
-    def test_does_not_follow_trusted_torrent_url_redirect_to_untrusted_host(self, monkeypatch):
-        """Trusted HTTP prefetch does not continue through arbitrary redirects."""
+    def test_follows_trusted_redirect_to_untrusted_host_without_api_key(self, monkeypatch):
+        """Regression for #1012 on v1.3.2.
+
+        Prowlarr's download endpoint commonly redirects to the indexer's own
+        download link on another origin. The prefetch must follow that redirect
+        (it is often the only way to learn the info_hash) but must not forward
+        the Prowlarr API key to the untrusted origin.
+        """
+        info_dict = {
+            b"name": b"book.txt",
+            b"length": 100,
+            b"piece length": 16384,
+            b"pieces": b"\x00" * 20,
+        }
+        torrent_data = bencode_encode({b"info": info_dict})
+        expected_hash = hashlib.sha1(bencode_encode(info_dict)).hexdigest().lower()
+
+        config_values = {
+            "PROWLARR_URL": "https://prowlarr.example",
+            "PROWLARR_API_KEY": "secret",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.torrent_utils.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        redirect = MagicMock(status_code=302)
+        redirect.headers = {"Location": "https://tracker.example/download/book.torrent"}
+        final = MagicMock(status_code=200, content=torrent_data)
+        final.raise_for_status = MagicMock()
+        mock_get = MagicMock(side_effect=[redirect, final])
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        # No expected_hash supplied: the hash can only come from the prefetch.
+        result = extract_torrent_info(
+            "https://prowlarr.example/1/download?apikey=secret&indexer=7",
+            fetch_torrent=True,
+        )
+
+        assert result.info_hash == expected_hash
+        assert result.torrent_data == torrent_data
+        assert result.is_magnet is False
+        assert mock_get.call_count == 2
+        trusted_headers = mock_get.call_args_list[0].kwargs["headers"]
+        untrusted_headers = mock_get.call_args_list[1].kwargs["headers"]
+        assert trusted_headers.get("X-Api-Key") == "secret"
+        assert "X-Api-Key" not in untrusted_headers
+
+    def test_redirect_to_magnet_link_returns_magnet_info(self, monkeypatch):
+        """A download URL redirecting to a magnet link yields the magnet's hash."""
+        magnet = "magnet:?xt=urn:btih:3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0&dn=test"
+        monkeypatch.setattr(
+            "shelfmark.download.clients.torrent_utils.config.get",
+            lambda key, default="": "https://prowlarr.example" if key == "PROWLARR_URL" else "",
+        )
+        response = MagicMock(status_code=302)
+        response.headers = {"Location": magnet}
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        result = extract_torrent_info(
+            "https://prowlarr.example/1/download?apikey=secret&indexer=7",
+            fetch_torrent=True,
+        )
+
+        assert result.is_magnet is True
+        assert result.magnet_url == magnet
+        assert result.info_hash == "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
+        mock_get.assert_called_once()
+
+    def test_gives_up_after_too_many_redirects(self, monkeypatch):
+        """A redirect loop falls back to the expected hash instead of spinning."""
         expected_hash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
         monkeypatch.setattr(
             "shelfmark.download.clients.torrent_utils.config.get",
             lambda key, default="": "https://prowlarr.example" if key == "PROWLARR_URL" else "",
         )
         response = MagicMock(status_code=302)
-        response.headers = {"Location": "https://attacker.example/book.torrent"}
+        response.headers = {"Location": "https://tracker.example/loop"}
         mock_get = MagicMock(return_value=response)
         monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
 
@@ -470,7 +589,8 @@ class TestExtractTorrentInfo:
         assert result.info_hash == expected_hash
         assert result.torrent_data is None
         assert result.is_magnet is False
-        mock_get.assert_called_once()
+        # Initial request plus the maximum of five followed redirects.
+        assert mock_get.call_count == 6
 
 
 class TestExtractHashFromMagnet:
@@ -548,3 +668,133 @@ class TestExtractHashFromMagnet:
         magnet = f"magnet:?xt=urn:btmh:{b32}&dn=test"
         result = extract_hash_from_magnet(magnet)
         assert result == digest.hex()
+
+
+class TestTorrentFetchCache:
+    """Tests for reusing a fetched .torrent across find_existing/add_download (#1111)."""
+
+    @staticmethod
+    def _valid_torrent():
+        info_dict = {
+            b"name": b"book.txt",
+            b"length": 100,
+            b"piece length": 16384,
+            b"pieces": b"\x00" * 20,
+        }
+        torrent_data = bencode_encode({b"info": info_dict})
+        info_hash = hashlib.sha1(bencode_encode(info_dict)).hexdigest().lower()
+        return torrent_data, info_hash
+
+    def test_repeated_url_reuses_fetched_torrent_data(self, monkeypatch):
+        """The same download URL is fetched once per add attempt, not once per caller.
+
+        find_existing() and add_download() both resolve the request URL; private
+        tracker links behind Prowlarr's proxy can be rate-limited or single-use,
+        so the second fetch must be served from the cache.
+        """
+        torrent_data, info_hash = self._valid_torrent()
+        response = MagicMock(status_code=200, content=torrent_data)
+        response.raise_for_status = MagicMock()
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        url = "https://prowlarr.example/26/download?apikey=secret&link=token"
+        first = extract_torrent_info(url, fetch_torrent=True)
+        second = extract_torrent_info(url, fetch_torrent=True)
+
+        mock_get.assert_called_once()
+        assert first.info_hash == info_hash
+        assert second.info_hash == info_hash
+        assert second.torrent_data == torrent_data
+
+    def test_failed_fetch_is_not_cached_and_records_reason(self, monkeypatch):
+        """Fetch failures are retried on the next call and expose the reason."""
+        import requests as requests_module
+
+        mock_get = MagicMock(
+            side_effect=requests_module.exceptions.HTTPError(
+                "500 Server Error: Internal Server Error for url: https://prowlarr.example/26/download"
+            )
+        )
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        url = "https://prowlarr.example/26/download?apikey=secret&link=token"
+        first = extract_torrent_info(url, fetch_torrent=True)
+        second = extract_torrent_info(url, fetch_torrent=True)
+
+        assert mock_get.call_count == 2
+        assert first.fetch_error is not None
+        assert "500 Server Error" in first.fetch_error
+        assert first.info_hash is None
+        assert second.fetch_error is not None
+
+    def test_fetch_failure_still_falls_back_to_expected_hash(self, monkeypatch):
+        """A known infohash keeps working when the prefetch fails."""
+        import requests as requests_module
+
+        mock_get = MagicMock(side_effect=requests_module.exceptions.ConnectionError("boom"))
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        known_hash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
+        result = extract_torrent_info(
+            "https://tracker.example/download/book.torrent",
+            fetch_torrent=True,
+            expected_hash=known_hash,
+        )
+
+        assert result.info_hash == known_hash
+        assert result.fetch_error is not None
+        assert "boom" in result.fetch_error
+
+    def test_expected_hash_applies_to_cached_hashless_result(self, monkeypatch):
+        """A cached fetch without a hash still honors a caller's expected_hash."""
+        response = MagicMock(status_code=200, content=b"<html>not a torrent</html>")
+        response.raise_for_status = MagicMock()
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        url = "https://tracker.example/download/book.torrent"
+        known_hash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
+        first = extract_torrent_info(url, fetch_torrent=True)
+        second = extract_torrent_info(url, fetch_torrent=True, expected_hash=known_hash)
+
+        mock_get.assert_called_once()
+        assert first.info_hash is None
+        assert second.info_hash == known_hash
+
+    def test_cache_expires_after_ttl(self, monkeypatch):
+        """Stale cache entries are refetched instead of reused."""
+        torrent_data, _ = self._valid_torrent()
+        response = MagicMock(status_code=200, content=torrent_data)
+        response.raise_for_status = MagicMock()
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(
+            "shelfmark.download.clients.torrent_utils.time.monotonic",
+            lambda: clock["now"],
+        )
+
+        url = "https://tracker.example/download/book.torrent"
+        extract_torrent_info(url, fetch_torrent=True)
+        clock["now"] += 121.0
+        extract_torrent_info(url, fetch_torrent=True)
+
+        assert mock_get.call_count == 2
+
+    def test_magnet_redirect_result_is_reused(self, monkeypatch):
+        """A URL that redirects to a magnet link is also only resolved once."""
+        magnet = "magnet:?xt=urn:btih:3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0&dn=test"
+        response = MagicMock(status_code=302, headers={"Location": magnet})
+        mock_get = MagicMock(return_value=response)
+        monkeypatch.setattr("shelfmark.download.clients.torrent_utils.requests.get", mock_get)
+
+        url = "https://tracker.example/download/book.torrent"
+        first = extract_torrent_info(url, fetch_torrent=True)
+        second = extract_torrent_info(url, fetch_torrent=True)
+
+        mock_get.assert_called_once()
+        assert first.is_magnet is True
+        assert second.magnet_url == magnet
+        assert second.info_hash == "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"

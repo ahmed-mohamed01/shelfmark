@@ -50,6 +50,9 @@ _LOADING_BODY_LENGTH_MAX = 50
 _PAGE_BODY_PREVIEW_CHARS = 500
 _BROWSER_START_TIMEOUT_SECONDS = 45.0
 _BYPASS_SUBPROCESS_TIMEOUT_SECONDS = 420.0
+# Same budget as the Docker helper process, applied to the in-process CDP path so both
+# branches of get() are bounded the same way.
+_IN_PROCESS_BYPASS_TIMEOUT_SECONDS = _BYPASS_SUBPROCESS_TIMEOUT_SECONDS
 _BYPASS_CHILD_ENV = "SHELFMARK_INTERNAL_BYPASSER_CHILD"
 
 # Challenge detection indicators
@@ -217,7 +220,13 @@ class _CdpWorker:
             msg = "CDP worker loop not available"
             raise RuntimeError(msg)
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            # Otherwise the coroutine keeps running in the worker loop after we stop
+            # waiting, holding the browser and racing the next bypass.
+            future.cancel()
+            raise
 
 
 _CDP_WORKER = _CdpWorker()
@@ -896,7 +905,11 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
 
     if os.environ.get(_BYPASS_CHILD_ENV) == "1":
         return asyncio.run(_run_bypass())
-    return _CDP_WORKER.run(_run_bypass())
+    # Bound the wait: this path runs in-process (non-Docker installs), holds the module-wide
+    # LOCKED for its whole duration, and neither page.get() nor page.wait() has a timeout of
+    # its own. Without a deadline here a single wedged CDP session blocks every subsequent
+    # bypass in the process forever.
+    return _CDP_WORKER.run(_run_bypass(), timeout=_IN_PROCESS_BYPASS_TIMEOUT_SECONDS)
 
 
 def _store_child_bypass_state(payload: dict[str, Any]) -> None:
@@ -939,7 +952,17 @@ def _get_via_subprocess(url: str, retry: int, cancel_flag: Event | None = None) 
     result_path = (
         Path(tempfile.gettempdir()) / f"shelfmark-bypass-{os.getpid()}-{time.time_ns()}.json"
     )
-    payload = {"url": url, "retry": retry, "result_path": str(result_path)}
+    # DNS provider state lives only in the parent's memory (no disk persistence), so the
+    # freshly spawned helper would otherwise pre-resolve AA hostnames against the system
+    # resolver - which may be blocked or hijacked by the user's ISP. Pass the parent's
+    # active DNS config so the helper mirrors it (e.g. DoH) when building Chrome's host
+    # resolver rules.
+    payload = {
+        "url": url,
+        "retry": retry,
+        "result_path": str(result_path),
+        "dns_config": network.get_dns_config(),
+    }
     env_vars = os.environ.copy()
     env_vars[_BYPASS_CHILD_ENV] = "1"
     env_vars = _prepare_child_browser_env(env_vars)
@@ -1246,6 +1269,16 @@ def _try_with_cached_cookies(url: str, hostname: str) -> str | None:
     return None
 
 
+def max_duration_seconds() -> float:
+    """Upper bound on how long get_bypassed_page() can take for one URL.
+
+    Both branches of get() are capped at _BYPASS_SUBPROCESS_TIMEOUT_SECONDS, and
+    get_bypassed_page() may call it twice (once, then again after a mirror/DNS rotation).
+    Callers use this to declare a stall-detection grace; see shelfmark.download.activity.
+    """
+    return 2 * _BYPASS_SUBPROCESS_TIMEOUT_SECONDS
+
+
 def get_bypassed_page(
     url: str, selector: network.AAMirrorSelector | None = None, cancel_flag: Event | None = None
 ) -> str | None:
@@ -1278,6 +1311,30 @@ def get_bypassed_page(
     return response_html
 
 
+def _apply_parent_dns_config(dns_config: dict[str, Any]) -> None:
+    """Mirror the parent process's active DNS provider in this helper subprocess.
+
+    DNS state is in-memory only, so a fresh helper defaults to system DNS and would
+    pre-resolve AA hostnames (for Chrome's --host-resolver-rules) against a resolver
+    that may be blocked/hijacked. Re-applying the parent's provider keeps the helper on
+    the same DoH/custom resolver the parent already validated.
+    """
+    provider = str(dns_config.get("provider") or "").strip().lower()
+    # "auto" means the parent has not rotated off system DNS yet, so the helper's own
+    # default initialization already matches it - nothing to override.
+    if not provider or provider == "auto":
+        return
+    manual_servers = dns_config.get("servers") if provider == "manual" else None
+    try:
+        network.set_dns_provider(
+            provider,
+            manual_servers,
+            use_doh=bool(dns_config.get("doh_enabled")),
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Could not apply parent DNS config (%s): %s", provider, exc)
+
+
 def _run_child_process() -> int:
     """CLI entrypoint used by the Docker helper subprocess."""
     request = json.loads(sys.stdin.read() or "{}")
@@ -1286,6 +1343,10 @@ def _run_child_process() -> int:
     retry = _coerce_positive_int(
         request.get("retry"), _coerce_positive_int(app_config.MAX_RETRY, 10)
     )
+
+    dns_config = request.get("dns_config")
+    if isinstance(dns_config, dict):
+        _apply_parent_dns_config(dns_config)
 
     try:
         html = get(url, retry=retry)

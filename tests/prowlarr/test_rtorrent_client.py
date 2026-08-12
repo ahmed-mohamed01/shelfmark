@@ -27,6 +27,17 @@ def create_mock_xmlrpc_module():
     return mock_module
 
 
+def test_set_category_updates_custom1_label():
+    from shelfmark.download.clients.rtorrent import RTorrentClient
+
+    client = RTorrentClient.__new__(RTorrentClient)
+    client._rpc = MagicMock()
+
+    # rTorrent lookups are case sensitive and info hashes reach us lowercase.
+    assert client.set_category("abc123", "imported") is True
+    client._rpc.d.custom1.set.assert_called_once_with("ABC123", "imported")
+
+
 class TestRTorrentClientIsConfigured:
     """Tests for RTorrentClient.is_configured()."""
 
@@ -348,6 +359,210 @@ class TestRTorrentClientAddDownload:
 
                 assert "RPC Error" in str(excinfo.value)
 
+    def test_add_download_discovers_hash_when_extraction_fails(self, monkeypatch):
+        """Regression for #1012: a URL add without a hash adopts the new download's hash.
+
+        rTorrent fetches .torrent URLs itself, so the add succeeds even when the
+        prefetch could not determine the info_hash; the client must recover the
+        hash from the download that appears instead of raising.
+        """
+        config_values = {
+            "RTORRENT_URL": "http://localhost:8080/RPC2",
+            "RTORRENT_USERNAME": "",
+            "RTORRENT_PASSWORD": "",
+            "RTORRENT_DOWNLOAD_DIR": "/downloads",
+            "RTORRENT_LABEL": "cwabd",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.rtorrent.config.get",
+            make_config_getter(config_values),
+        )
+
+        existing_hash = "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2"
+        discovered_hash = "3B245504CF5F11BBDBE1201CEA6A6BF45AEE1BC0"
+
+        mock_rpc = MagicMock()
+        # First multicall2 is the pre-add snapshot; the second is the discovery
+        # poll after load.start, where the new download has appeared.
+        mock_rpc.d.multicall2.side_effect = [
+            [[existing_hash]],
+            [
+                [existing_hash, "Existing Torrent", "cwabd"],
+                [discovered_hash, "Test Torrent", "cwabd"],
+            ],
+        ]
+        mock_xmlrpc = create_mock_xmlrpc_module()
+        mock_xmlrpc.ServerProxy.return_value = mock_rpc
+
+        mock_torrent_info = MagicMock()
+        mock_torrent_info.torrent_data = None
+        mock_torrent_info.magnet_url = None
+        mock_torrent_info.info_hash = None
+        mock_torrent_info.is_magnet = False
+
+        with patch.dict("sys.modules", {"xmlrpc.client": mock_xmlrpc}):
+            with patch(
+                "shelfmark.download.clients.torrent_utils.extract_torrent_info",
+                return_value=mock_torrent_info,
+            ):
+                if "shelfmark.download.clients.rtorrent" in sys.modules:
+                    del sys.modules["shelfmark.download.clients.rtorrent"]
+
+                from shelfmark.download.clients.rtorrent import (
+                    RTorrentClient,
+                )
+
+                client = RTorrentClient()
+                result_hash = client.add_download(
+                    "http://tracker.example/download/book.torrent", "Test Torrent"
+                )
+
+                assert result_hash == discovered_hash.lower()
+                mock_rpc.load.start.assert_called_once()
+
+    def test_add_download_raises_when_hash_never_discovered(self, monkeypatch):
+        """Keep failing loudly when no hash is known and no new download appears."""
+        config_values = {
+            "RTORRENT_URL": "http://localhost:8080/RPC2",
+            "RTORRENT_USERNAME": "",
+            "RTORRENT_PASSWORD": "",
+            "RTORRENT_DOWNLOAD_DIR": "/downloads",
+            "RTORRENT_LABEL": "cwabd",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.rtorrent.config.get",
+            make_config_getter(config_values),
+        )
+
+        existing_hash = "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2"
+        mock_rpc = MagicMock()
+        mock_rpc.d.multicall2.return_value = [[existing_hash, "Existing Torrent", "cwabd"]]
+        mock_xmlrpc = create_mock_xmlrpc_module()
+        mock_xmlrpc.ServerProxy.return_value = mock_rpc
+
+        mock_torrent_info = MagicMock()
+        mock_torrent_info.torrent_data = None
+        mock_torrent_info.magnet_url = None
+        mock_torrent_info.info_hash = None
+        mock_torrent_info.is_magnet = False
+
+        with patch.dict("sys.modules", {"xmlrpc.client": mock_xmlrpc}):
+            with patch(
+                "shelfmark.download.clients.torrent_utils.extract_torrent_info",
+                return_value=mock_torrent_info,
+            ):
+                if "shelfmark.download.clients.rtorrent" in sys.modules:
+                    del sys.modules["shelfmark.download.clients.rtorrent"]
+
+                from shelfmark.download.clients import rtorrent as rtorrent_module
+
+                monkeypatch.setattr(rtorrent_module.time, "sleep", lambda _seconds: None)
+
+                client = rtorrent_module.RTorrentClient()
+                with pytest.raises(RuntimeError, match="Could not determine torrent hash"):
+                    client.add_download(
+                        "http://tracker.example/download/book.torrent", "Test Torrent"
+                    )
+
+
+class TestRTorrentClientAudiobookLabel:
+    """Regression tests for issue #1025 — rTorrent audiobook label selection."""
+
+    def _make_client(self, monkeypatch, config_values):
+        monkeypatch.setattr(
+            "shelfmark.download.clients.rtorrent.config.get",
+            make_config_getter(config_values),
+        )
+        mock_rpc = MagicMock()
+        mock_xmlrpc = create_mock_xmlrpc_module()
+        mock_xmlrpc.ServerProxy.return_value = mock_rpc
+
+        mock_torrent_info = MagicMock()
+        mock_torrent_info.torrent_data = None
+        mock_torrent_info.magnet_url = "magnet:?xt=urn:btih:abc123"
+        mock_torrent_info.info_hash = "abc123"
+        mock_torrent_info.is_magnet = True
+
+        return mock_rpc, mock_xmlrpc, mock_torrent_info
+
+    def test_uses_audiobook_label_when_content_type_is_audiobook(self, monkeypatch):
+        config_values = {
+            "RTORRENT_URL": "http://localhost:8080/RPC2",
+            "RTORRENT_LABEL": "books",
+            "RTORRENT_AUDIOBOOK_LABEL": "audiobooks",
+            "RTORRENT_DOWNLOAD_DIR": "/downloads",
+        }
+        mock_rpc, mock_xmlrpc, mock_torrent_info = self._make_client(monkeypatch, config_values)
+
+        with patch.dict("sys.modules", {"xmlrpc.client": mock_xmlrpc}):
+            with patch(
+                "shelfmark.download.clients.torrent_utils.extract_torrent_info",
+                return_value=mock_torrent_info,
+            ):
+                if "shelfmark.download.clients.rtorrent" in sys.modules:
+                    del sys.modules["shelfmark.download.clients.rtorrent"]
+                from shelfmark.download.clients.rtorrent import RTorrentClient
+
+                client = RTorrentClient()
+                client.add_download(
+                    "magnet:?xt=urn:btih:abc123", "Test Audiobook", content_type="audiobook"
+                )
+
+        args = mock_rpc.load.start.call_args[0]
+        assert "d.custom1.set=audiobooks" in args[2]
+        assert "d.custom1.set=books" not in args[2]
+
+    def test_falls_back_to_book_label_when_audiobook_label_not_set(self, monkeypatch):
+        config_values = {
+            "RTORRENT_URL": "http://localhost:8080/RPC2",
+            "RTORRENT_LABEL": "books",
+            "RTORRENT_AUDIOBOOK_LABEL": "",
+            "RTORRENT_DOWNLOAD_DIR": "/downloads",
+        }
+        mock_rpc, mock_xmlrpc, mock_torrent_info = self._make_client(monkeypatch, config_values)
+
+        with patch.dict("sys.modules", {"xmlrpc.client": mock_xmlrpc}):
+            with patch(
+                "shelfmark.download.clients.torrent_utils.extract_torrent_info",
+                return_value=mock_torrent_info,
+            ):
+                if "shelfmark.download.clients.rtorrent" in sys.modules:
+                    del sys.modules["shelfmark.download.clients.rtorrent"]
+                from shelfmark.download.clients.rtorrent import RTorrentClient
+
+                client = RTorrentClient()
+                client.add_download(
+                    "magnet:?xt=urn:btih:abc123", "Test Audiobook", content_type="audiobook"
+                )
+
+        args = mock_rpc.load.start.call_args[0]
+        assert "d.custom1.set=books" in args[2]
+
+    def test_uses_book_label_for_non_audiobook_content(self, monkeypatch):
+        config_values = {
+            "RTORRENT_URL": "http://localhost:8080/RPC2",
+            "RTORRENT_LABEL": "books",
+            "RTORRENT_AUDIOBOOK_LABEL": "audiobooks",
+            "RTORRENT_DOWNLOAD_DIR": "/downloads",
+        }
+        mock_rpc, mock_xmlrpc, mock_torrent_info = self._make_client(monkeypatch, config_values)
+
+        with patch.dict("sys.modules", {"xmlrpc.client": mock_xmlrpc}):
+            with patch(
+                "shelfmark.download.clients.torrent_utils.extract_torrent_info",
+                return_value=mock_torrent_info,
+            ):
+                if "shelfmark.download.clients.rtorrent" in sys.modules:
+                    del sys.modules["shelfmark.download.clients.rtorrent"]
+                from shelfmark.download.clients.rtorrent import RTorrentClient
+
+                client = RTorrentClient()
+                client.add_download("magnet:?xt=urn:btih:abc123", "Test Book")
+
+        args = mock_rpc.load.start.call_args[0]
+        assert "d.custom1.set=books" in args[2]
+        assert "d.custom1.set=audiobooks" not in args[2]
+
 
 class TestRTorrentClientGetStatus:
     """Tests for RTorrentClient.get_status()."""
@@ -565,8 +780,9 @@ class TestRTorrentClientRemove:
             result = client.remove("abc123def456", delete_files=False)
 
             assert result is True
-            mock_rpc.d.stop.assert_called_once_with("abc123def456")
-            mock_rpc.d.erase.assert_called_once_with("abc123def456")
+            # rTorrent lookups are case sensitive and info hashes reach us lowercase.
+            mock_rpc.d.stop.assert_called_once_with("ABC123DEF456")
+            mock_rpc.d.erase.assert_called_once_with("ABC123DEF456")
 
     def test_remove_with_files(self, monkeypatch):
         """Test torrent removal with file deletion."""
@@ -599,8 +815,8 @@ class TestRTorrentClientRemove:
             result = client.remove("abc123def456", delete_files=True)
 
             assert result is True
-            mock_rpc.d.delete_tied.assert_called_once_with("abc123def456")
-            mock_rpc.d.erase.assert_called_once_with("abc123def456")
+            mock_rpc.d.delete_tied.assert_called_once_with("ABC123DEF456")
+            mock_rpc.d.erase.assert_called_once_with("ABC123DEF456")
 
     def test_remove_failure(self, monkeypatch):
         """Test failed torrent removal."""

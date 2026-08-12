@@ -1,6 +1,5 @@
 """Core settings registration and derived configuration values."""
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from shelfmark.config.download_settings_handlers import (
     check_books_destination,
 )
 from shelfmark.config.email_settings import check_email_connection
+from shelfmark.core.languages import supported_book_languages
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.settings_registry import (
     ActionButton,
@@ -36,12 +36,49 @@ from shelfmark.core.settings_registry import (
     register_settings,
 )
 
+_DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_DEFAULT = 60
+_DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_MAX = 3600
+
 
 def _on_save_advanced(values: dict[str, Any]) -> dict[str, Any]:
     """Validate advanced settings before persisting."""
     from shelfmark.core.logger import setup_logger
 
     logger = setup_logger(__name__)
+
+    timeout_key = "DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT"
+    if timeout_key in values:
+        raw_timeout = values.get(timeout_key)
+        if isinstance(raw_timeout, bool):
+            return {
+                "error": True,
+                "message": "Completed Path Wait must be a number of seconds",
+                "values": values,
+            }
+        if raw_timeout is None:
+            return {
+                "error": True,
+                "message": "Completed Path Wait must be a number of seconds",
+                "values": values,
+            }
+        try:
+            timeout_seconds = int(raw_timeout)
+        except TypeError, ValueError:
+            return {
+                "error": True,
+                "message": "Completed Path Wait must be a number of seconds",
+                "values": values,
+            }
+        if timeout_seconds < 0 or timeout_seconds > _DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_MAX:
+            return {
+                "error": True,
+                "message": (
+                    "Completed Path Wait must be between 0 and "
+                    f"{_DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_MAX} seconds"
+                ),
+                "values": values,
+            }
+        values[timeout_key] = timeout_seconds
 
     mappings = values.get("PROWLARR_REMOTE_PATH_MAPPINGS")
     if mappings is None:
@@ -106,11 +143,8 @@ for key in ["CONFIG_DIR", "LOG_DIR", "TMP_DIR", "INGEST_DIR", "DEBUG", "DOCKERMO
     if hasattr(env, key):
         logger.debug("  %s: %s", key, getattr(env, key))
 
-# Load supported book languages from data file
-# Path is relative to the package root, not this file
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-with (_DATA_DIR / "book-languages.json").open() as file:
-    _SUPPORTED_BOOK_LANGUAGE = json.load(file)
+# Selectable book languages, without the resolution aliases clients do not need.
+_SUPPORTED_BOOK_LANGUAGE = supported_book_languages()
 
 # Directory settings
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -450,6 +484,14 @@ def search_mode_settings() -> list[SettingsField]:
             label="Show Combined Download Selector",
             description="Show the option to search for and download both a book and audiobook together.",
             default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
+        CheckboxField(
+            key="FORCE_COMBINED_SEARCH",
+            label="Always Use Combined Search",
+            description="Force combined search whenever it's available. Locks the combined toggle on.",
+            default=False,
             show_when={"field": "SEARCH_MODE", "value": "universal"},
             user_overridable=True,
         ),
@@ -974,7 +1016,7 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_RENAME",
             label="Naming Template",
             description=(
-                "Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} "
+                "Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} "
                 "(source filename without extension). Universal adds: {Series}, "
                 "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
@@ -993,7 +1035,7 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_ORGANIZE",
             label="Path Template",
             description=(
-                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, "
+                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, "
                 "{OriginalName} (source filename without extension). Universal adds: {Series}, "
                 "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
@@ -1277,7 +1319,7 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
             description=(
-                "Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} "
+                "Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} "
                 "(source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, "
                 "{PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
@@ -1294,7 +1336,7 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_AUDIOBOOK_ORGANIZE",
             label="Path Template",
             description=(
-                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, "
+                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, "
                 "{OriginalName} (source filename without extension), {Series}, {SeriesPosition}, "
                 "{Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
@@ -1488,6 +1530,17 @@ def download_source_settings() -> list[SettingsField]:
             description=(
                 "Show Direct Download in release-source lists and allow Direct mode "
                 "searches. Add your own mirror URLs in the Mirrors tab before using it."
+            ),
+            default=False,
+        ),
+        CheckboxField(
+            key="DIRECT_DOWNLOAD_LANGUAGE_FROM_PATH",
+            label="Detect Language From Distant Path",
+            description=(
+                "When language metadata is missing or unknown, parse the distant path "
+                "(file path shown in search results) for language tags like [BD FR] or [En]. "
+                "Also enables local language filtering so lgli files without AA language "
+                "metadata are not excluded before the distant path can be checked."
             ),
             default=False,
         ),
@@ -1758,6 +1811,23 @@ def advanced_settings() -> list[SettingsField]:
             default=False,
             requires_restart=True,
         ),
+        SelectField(
+            key="LOG_LEVEL",
+            label="Log Level",
+            description=(
+                "Lowest severity written to the console and log file. "
+                "Ignored while Debug Mode is on, which forces Debug."
+            ),
+            options=[
+                {"value": "DEBUG", "label": "Debug", "description": "Everything, very noisy."},
+                {"value": "INFO", "label": "Info", "description": "Normal activity (default)."},
+                {"value": "WARNING", "label": "Warning", "description": "Warnings and problems."},
+                {"value": "ERROR", "label": "Error", "description": "Failures only."},
+                {"value": "CRITICAL", "label": "Critical", "description": "Fatal errors only."},
+            ],
+            default="INFO",
+            requires_restart=True,
+        ),
         NumberField(
             key="MAIN_LOOP_SLEEP_TIME",
             label="Queue Check Interval (seconds)",
@@ -1810,6 +1880,18 @@ def advanced_settings() -> list[SettingsField]:
             key="remote_path_mappings_heading",
             title="Remote Path Mappings",
             description="Map download client paths to paths inside Shelfmark. Needed when volume mounts differ between containers.",
+        ),
+        NumberField(
+            key="DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT",
+            label="Completed Path Wait (seconds)",
+            description=(
+                "How long to wait after a torrent or usenet client reports completion "
+                "for the completed file path to become visible to Shelfmark. Increase "
+                "this for seedbox or remote-sync workflows."
+            ),
+            default=_DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_DEFAULT,
+            min_value=0,
+            max_value=_DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT_MAX,
         ),
         TableField(
             key="PROWLARR_REMOTE_PATH_MAPPINGS",
@@ -1922,4 +2004,3 @@ register_on_save("advanced", _on_save_advanced)
 
 import shelfmark.config.monitored_settings as _  # noqa: F401 - registers release_scoring tab
 import shelfmark.config.integrations_settings as _  # noqa: F401 - registers integrations tab
-import shelfmark.config.vpn_settings as _  # noqa: F401 - registers vpn tab

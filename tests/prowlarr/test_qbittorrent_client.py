@@ -5,6 +5,7 @@ These tests mock the qbittorrentapi library to test the client logic
 without requiring a running qBittorrent instance.
 """
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +26,8 @@ class MockTorrent:
         dlspeed=1024000,
         eta=3600,
         content_path="/downloads/test.txt",
+        infohash_v1=None,
+        infohash_v2=None,
     ):
         self.hash = hash_val
         self.name = name
@@ -33,10 +36,12 @@ class MockTorrent:
         self.dlspeed = dlspeed
         self.eta = eta
         self.content_path = content_path
+        self.infohash_v1 = infohash_v1
+        self.infohash_v2 = infohash_v2
 
     def to_dict(self):
         """Convert to dict for JSON response mocking."""
-        return {
+        result = {
             "hash": self.hash,
             "name": self.name,
             "progress": self.progress,
@@ -45,6 +50,11 @@ class MockTorrent:
             "eta": self.eta,
             "content_path": self.content_path,
         }
+        if self.infohash_v1 is not None:
+            result["infohash_v1"] = self.infohash_v1
+        if self.infohash_v2 is not None:
+            result["infohash_v2"] = self.infohash_v2
+        return result
 
 
 def create_mock_session_response(torrents, status_code=200):
@@ -56,6 +66,20 @@ def create_mock_session_response(torrents, status_code=200):
     ]
     mock_response.raise_for_status = MagicMock()
     return mock_response
+
+
+def test_set_category_creates_and_assigns_category():
+    from shelfmark.download.clients.qbittorrent import QBittorrentClient
+
+    client = QBittorrentClient.__new__(QBittorrentClient)
+    client._client = MagicMock()
+
+    assert client.set_category("abc123", "imported") is True
+    client._client.torrents_create_category.assert_called_once_with(name="imported")
+    client._client.torrents_set_category.assert_called_once_with(
+        torrent_hashes="abc123",
+        category="imported",
+    )
 
 
 class TestQBittorrentClientIsConfigured:
@@ -177,6 +201,76 @@ class TestQBittorrentClientTestConnection:
 
             assert success is False
             assert "401" in message or "failed" in message.lower()
+
+
+class TestQBittorrentClientApiKeyAuth:
+    """Tests for API key authentication (qBittorrent 5.2.0+)."""
+
+    API_KEY = "qbt_0123456789abcdefghijklmnopqr"
+
+    @contextmanager
+    def _build_client(self, monkeypatch, api_key, mock_client_instance=None):
+        """Construct the client against a stubbed qbittorrentapi, yielding it and the stub."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_API_KEY": api_key,
+            "QBITTORRENT_CATEGORY": "test",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+
+        mock_client_class = MagicMock(return_value=mock_client_instance or MagicMock())
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+            yield qb_module.QBittorrentClient(), mock_client_class
+
+    @pytest.mark.parametrize(
+        ("api_key", "expected_kwarg"),
+        [(API_KEY, API_KEY), ("", None)],
+    )
+    def test_api_key_forwarded_to_qbittorrentapi(self, monkeypatch, api_key, expected_kwarg):
+        """A configured key is handed to qbittorrent-api; without one it falls back to password."""
+        with self._build_client(monkeypatch, api_key) as (_client, mock_client_class):
+            assert mock_client_class.call_args.kwargs["api_key"] == expected_kwarg
+
+    @pytest.mark.parametrize(("api_key", "logs_in"), [(API_KEY, False), ("", True)])
+    def test_direct_requests_log_in_only_for_cookie_auth(self, monkeypatch, api_key, logs_in):
+        """Bearer auth is stateless, so only cookie auth needs a login before direct calls."""
+        mock_client_instance = MagicMock()
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [MockTorrent(progress=0.5, state="downloading")], status_code=200
+        )
+
+        with self._build_client(monkeypatch, api_key, mock_client_instance) as (client, _):
+            status = client.get_status("abc123")
+
+            assert status.progress == 50.0
+            assert mock_client_instance.auth_log_in.called is logs_in
+
+    @pytest.mark.parametrize(("api_key", "expected_requests"), [(API_KEY, 1), ("", 2)])
+    def test_403_retried_only_when_a_login_can_refresh_it(
+        self, monkeypatch, api_key, expected_requests
+    ):
+        """A bearer token cannot be refreshed, so re-issuing a 403 would just waste a request."""
+        mock_client_instance = MagicMock()
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [], status_code=403
+        )
+
+        with self._build_client(monkeypatch, api_key, mock_client_instance) as (client, _):
+            status = client.get_status("abc123")
+
+            assert status.state_value == "error"
+            assert mock_client_instance._session.get.call_count == expected_requests
 
 
 class TestQBittorrentClientGetStatus:
@@ -572,12 +666,9 @@ class TestQBittorrentClientGetStatus:
         )
 
         mock_client_instance = MagicMock()
-        # hashes query empty -> category list empty -> full list empty
-        mock_client_instance._session.get.side_effect = [
-            create_mock_session_response([], status_code=200),
-            create_mock_session_response([], status_code=200),
-            create_mock_session_response([], status_code=200),
-        ]
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [], status_code=200
+        )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
         with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
@@ -589,6 +680,39 @@ class TestQBittorrentClientGetStatus:
 
             client = qb_module.QBittorrentClient()
             status = client.get_status("nonexistent")
+
+            assert status.state_value == "error"
+            assert status.message is not None
+            assert "not found" in status.message.lower()
+
+    def test_get_status_rejects_unrelated_exact_result(self, monkeypatch):
+        """Reject an unrelated record when the client ignores the hash filter."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "test",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+
+        mock_client_instance = MagicMock()
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [MockTorrent(hash_val="different")]
+        )
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            client = qb_module.QBittorrentClient()
+            status = client.get_status("requested")
 
             assert status.state_value == "error"
             assert status.message is not None
@@ -716,9 +840,8 @@ class TestQBittorrentClientAddDownload:
         mock_client_instance = MagicMock()
         mock_client_instance.torrents_add.return_value = "Ok."
         mock_client_instance.torrents_info.return_value = [mock_torrent]
-        # Used by the properties check
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -735,6 +858,107 @@ class TestQBittorrentClientAddDownload:
 
             assert result == "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
             assert mock_client_instance._session.get.call_count >= 1
+
+    @pytest.mark.parametrize("metadata_state", ["metaDL", "forcedMetaDL"])
+    def test_add_waits_for_metadata_and_returns_current_hash(self, monkeypatch, metadata_state):
+        """Return qBittorrent's current hash after hybrid metadata resolves."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.time.sleep", lambda _seconds: None
+        )
+
+        v1_hash = "edf46c7f938a3c678081734d7bff8b9c652ba5e5"
+        v2_hash = "0bed5f40753b342cb143e83c2b21924cc8474731"
+        full_v2_hash = "0bed5f40753b342cb143e83c2b21924cc847473134e44d1bd300bdc58c13010f"
+        metadata_torrent = MockTorrent(
+            hash_val=v1_hash,
+            state=metadata_state,
+            infohash_v1=v1_hash,
+        )
+        resolved_torrent = MockTorrent(
+            hash_val=v2_hash,
+            state="downloading",
+            infohash_v1=v1_hash,
+            infohash_v2=full_v2_hash,
+        )
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+        mock_client_instance._session.get.side_effect = [
+            create_mock_session_response([metadata_torrent]),
+            create_mock_session_response([]),
+            create_mock_session_response([resolved_torrent]),
+        ]
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            client = qb_module.QBittorrentClient()
+            magnet = f"magnet:?xt=urn:btih:{v1_hash}&dn=test"
+            result = client.add_download(magnet, "Test Download", category="audiobooks")
+
+            assert result == v2_hash
+            assert [
+                call.kwargs["params"] for call in mock_client_instance._session.get.call_args_list
+            ] == [
+                {"hashes": v1_hash},
+                {"hashes": v1_hash},
+                {"category": "audiobooks"},
+            ]
+
+    def test_add_fails_when_metadata_never_resolves(self, monkeypatch):
+        """Fail rather than return a transitional hash after the metadata timeout."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.time.sleep", lambda _seconds: None
+        )
+
+        v1_hash = "edf46c7f938a3c678081734d7bff8b9c652ba5e5"
+        metadata_torrent = MockTorrent(
+            hash_val=v1_hash,
+            state="metaDL",
+            infohash_v1=v1_hash,
+        )
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [metadata_torrent]
+        )
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            client = qb_module.QBittorrentClient()
+            magnet = f"magnet:?xt=urn:btih:{v1_hash}&dn=test"
+            with pytest.raises(RuntimeError, match="metadata resolution was not confirmed"):
+                client.add_download(magnet, "Test Download")
 
     def test_add_download_uses_expected_hash_without_fetch(self, monkeypatch):
         """Skip proxy fetch when expected hash is provided for URL torrents."""
@@ -755,7 +979,7 @@ class TestQBittorrentClientAddDownload:
         mock_client_instance.torrents_add.return_value = "Ok."
         mock_client_instance.torrents_info.return_value = [mock_torrent]
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -790,6 +1014,173 @@ class TestQBittorrentClientAddDownload:
                     expected_hash=expected_hash,
                 )
 
+    def test_add_download_discovers_hash_when_extraction_fails(self, monkeypatch):
+        """Regression for #1012: a URL add without a hash adopts the new torrent's hash.
+
+        qBittorrent fetches .torrent URLs itself, so the add succeeds even when
+        the prefetch could not determine the info_hash; the client must recover
+        the hash from the torrent that appears instead of raising.
+        """
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+
+        discovered_hash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
+        existing = MockTorrent(
+            hash_val="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", name="Existing Torrent"
+        )
+        added = MockTorrent(hash_val=discovered_hash, name="Test Download")
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+
+        torrents_before_add = create_mock_session_response([existing])
+        torrents_after_add = create_mock_session_response([existing, added])
+
+        def session_get(request_url, params=None, timeout=None):
+            if params == {"hashes": discovered_hash}:
+                return create_mock_session_response([added])
+            if mock_client_instance.torrents_add.called:
+                return torrents_after_add
+            return torrents_before_add
+
+        mock_client_instance._session.get.side_effect = session_get
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            with patch(
+                "shelfmark.download.clients.qbittorrent.extract_torrent_info",
+                autospec=True,
+            ) as mock_extract:
+                mock_extract.return_value = TorrentInfo(
+                    info_hash=None,
+                    torrent_data=None,
+                    is_magnet=False,
+                    magnet_url=None,
+                )
+
+                client = qb_module.QBittorrentClient()
+                result = client.add_download(
+                    "http://tracker.example/download/book.torrent", "Test Download"
+                )
+
+            assert result == discovered_hash
+            add_kwargs = mock_client_instance.torrents_add.call_args.kwargs
+            assert add_kwargs["urls"] == "http://tracker.example/download/book.torrent"
+
+    def test_add_download_raises_when_hash_never_discovered(self, monkeypatch):
+        """Keep failing loudly when no hash is known and no new torrent appears."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.time.sleep", lambda _seconds: None
+        )
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+        mock_client_instance._session.get.return_value = create_mock_session_response([])
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            with patch(
+                "shelfmark.download.clients.qbittorrent.extract_torrent_info",
+                autospec=True,
+            ) as mock_extract:
+                mock_extract.return_value = TorrentInfo(
+                    info_hash=None,
+                    torrent_data=None,
+                    is_magnet=False,
+                    magnet_url=None,
+                )
+
+                client = qb_module.QBittorrentClient()
+                with pytest.raises(RuntimeError, match="Could not determine torrent hash"):
+                    client.add_download(
+                        "http://tracker.example/download/book.torrent", "Test Download"
+                    )
+
+    def test_add_download_error_includes_fetch_failure_reason(self, monkeypatch):
+        """Surface why the .torrent prefetch failed instead of only the hash error.
+
+        Regression for #1111: a Prowlarr proxy fetch that fails (e.g. HTTP 500
+        because the tracker rejected the request) was reported as a bare
+        "Could not determine torrent hash from URL", hiding the actual cause.
+        """
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.time.sleep", lambda _seconds: None
+        )
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+        mock_client_instance._session.get.return_value = create_mock_session_response([])
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            with patch(
+                "shelfmark.download.clients.qbittorrent.extract_torrent_info",
+                autospec=True,
+            ) as mock_extract:
+                mock_extract.return_value = TorrentInfo(
+                    info_hash=None,
+                    torrent_data=None,
+                    is_magnet=False,
+                    magnet_url=None,
+                    fetch_error="500 Server Error: Internal Server Error for url: http://prowlarr:9696/26/download",
+                )
+
+                client = qb_module.QBittorrentClient()
+                with pytest.raises(RuntimeError) as exc_info:
+                    client.add_download(
+                        "http://prowlarr:9696/26/download?apikey=key&link=token",
+                        "Test Download",
+                    )
+
+                assert "Could not determine torrent hash from URL" in str(exc_info.value)
+                assert "500 Server Error" in str(exc_info.value)
+
     def test_add_download_creates_category(self, monkeypatch):
         """Test that add_download creates category if needed."""
         config_values = {
@@ -809,9 +1200,8 @@ class TestQBittorrentClientAddDownload:
         mock_client_instance = MagicMock()
         mock_client_instance.torrents_add.return_value = "Ok."
         mock_client_instance.torrents_info.return_value = [mock_torrent]
-        # Used by the properties check
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -842,10 +1232,11 @@ class TestQBittorrentClientAddDownload:
         )
 
         valid_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        mock_torrent = MockTorrent(hash_val=valid_hash)
         mock_client_instance = MagicMock()
         mock_client_instance.torrents_add.return_value = ""
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -908,10 +1299,11 @@ class TestQBittorrentClientAddDownload:
         )
 
         valid_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        mock_torrent = MockTorrent(hash_val=valid_hash)
         mock_client_instance = MagicMock()
         mock_client_instance.torrents_add.return_value = "Ok."
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -945,10 +1337,11 @@ class TestQBittorrentClientAddDownload:
         )
 
         valid_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        mock_torrent = MockTorrent(hash_val=valid_hash)
         mock_client_instance = MagicMock()
         mock_client_instance.torrents_add.return_value = "Ok."
         mock_client_instance._session.get.return_value = create_mock_session_response(
-            {}, status_code=200
+            [mock_torrent], status_code=200
         )
         mock_client_class = MagicMock(return_value=mock_client_instance)
 
@@ -1283,6 +1676,74 @@ class TestQBittorrentClientFindExisting:
             assert download_id == "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0"
             assert isinstance(status, DownloadStatus)
 
+    def test_find_existing_waits_for_metadata(self, monkeypatch):
+        """Wait for an existing hybrid torrent to expose its current primary hash."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.time.sleep", lambda _seconds: None
+        )
+
+        v1_hash = "edf46c7f938a3c678081734d7bff8b9c652ba5e5"
+        v2_hash = "0bed5f40753b342cb143e83c2b21924cc8474731"
+        full_v2_hash = "0bed5f40753b342cb143e83c2b21924cc847473134e44d1bd300bdc58c13010f"
+        metadata_torrent = MockTorrent(
+            hash_val=v1_hash,
+            state="metaDL",
+            infohash_v1=v1_hash,
+        )
+        unrelated_torrent = MockTorrent(hash_val="a" * 40)
+        resolved_torrent = MockTorrent(
+            hash_val=v2_hash,
+            state="downloading",
+            infohash_v1=v1_hash,
+            infohash_v2=full_v2_hash,
+        )
+        mock_client_instance = MagicMock()
+        mock_client_instance._session.get.side_effect = [
+            create_mock_session_response([metadata_torrent]),
+            create_mock_session_response([]),
+            create_mock_session_response([unrelated_torrent]),
+            create_mock_session_response([unrelated_torrent]),
+            create_mock_session_response([resolved_torrent]),
+            create_mock_session_response([resolved_torrent]),
+        ]
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            client = qb_module.QBittorrentClient()
+            magnet = f"magnet:?xt=urn:btih:{v1_hash}&dn=test"
+            result = client.find_existing(magnet, category="audiobooks")
+
+            assert result is not None
+            download_id, status = result
+            assert download_id == v2_hash
+            assert status.state_value == "downloading"
+            assert [
+                call.kwargs["params"] for call in mock_client_instance._session.get.call_args_list
+            ] == [
+                {"hashes": v1_hash},
+                {"hashes": v1_hash},
+                {"category": "audiobooks"},
+                {"category": "books"},
+                {},
+                {"hashes": v2_hash},
+            ]
+
     def test_find_existing_not_found(self, monkeypatch):
         """Test finding non-existent torrent."""
         config_values = {
@@ -1388,3 +1849,28 @@ class TestHashesMatch:
 
         assert _hashes_match("a" * 40, "b" * 30) is False
         assert _hashes_match("a" * 38, "b" * 32) is False
+
+
+class TestTorrentMatchesId:
+    """Tests for matching qBittorrent's available torrent identities."""
+
+    @pytest.mark.parametrize(
+        ("torrent", "download_id"),
+        [
+            (MockTorrent(hash_val="current"), "current"),
+            (MockTorrent(hash_val="other", infohash_v1="v1"), "v1"),
+            (MockTorrent(hash_val="other", infohash_v2="v2"), "v2"),
+        ],
+    )
+    def test_matches_each_identity(self, torrent, download_id):
+        """Match IDs exposed through hash, infohash_v1, or infohash_v2."""
+        from shelfmark.download.clients.qbittorrent import _torrent_matches_download_id
+
+        assert _torrent_matches_download_id(torrent, download_id) is True
+
+    def test_rejects_unrelated_or_missing_identities(self):
+        """Reject unrelated IDs and records without identity fields."""
+        from shelfmark.download.clients.qbittorrent import _torrent_matches_download_id
+
+        assert _torrent_matches_download_id(MockTorrent(hash_val="different"), "requested") is False
+        assert _torrent_matches_download_id(object(), "requested") is False

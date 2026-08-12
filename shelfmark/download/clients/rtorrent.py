@@ -4,6 +4,7 @@ Uses xmlrpc to communicate with rTorrent's RPC interface.
 """
 
 import ssl
+import time
 import xmlrpc.client as stdlib_xmlrpc_client
 from typing import Any, NoReturn, Protocol, cast
 from urllib.parse import urlparse
@@ -46,7 +47,13 @@ class _RTorrentLoadProtocol(Protocol):
     def start(self, target: str, url: str, commands: str) -> object: ...
 
 
+class _RTorrentCustom1Protocol(Protocol):
+    def set(self, download_id: str, value: str) -> object: ...
+
+
 class _RTorrentDownloadProtocol(Protocol):
+    custom1: _RTorrentCustom1Protocol
+
     def multicall2(self, *args: object) -> list[list[Any]]: ...
 
     def delete_tied(self, download_id: str) -> object: ...
@@ -115,6 +122,7 @@ class RTorrentClient(DownloadClient):
         self._rpc = _create_rtorrent_server_proxy(self._base_url)
         self._download_dir = config_text(config.get("RTORRENT_DOWNLOAD_DIR", ""))
         self._label = config_text(config.get("RTORRENT_LABEL", ""))
+        self._audiobook_label = config_text(config.get("RTORRENT_AUDIOBOOK_LABEL", ""))
 
     @staticmethod
     def is_configured() -> bool:
@@ -159,9 +167,17 @@ class RTorrentClient(DownloadClient):
         try:
             torrent_info = extract_torrent_info(url, expected_hash=expected_hash)
 
+            known_hashes: set[str] | None = None
+            if not (torrent_info.info_hash or expected_hash):
+                known_hashes = self._list_torrent_hashes()
+
             commands = []
 
-            label = category or self._label
+            is_audiobook = kwargs.get("content_type") == "audiobook"
+            default_label = (
+                self._audiobook_label if is_audiobook and self._audiobook_label else self._label
+            )
+            label = category or default_label
             if label:
                 logger.debug("Setting rTorrent label: %s", label)
                 commands.append(f"d.custom1.set={label}")
@@ -191,7 +207,15 @@ class RTorrentClient(DownloadClient):
 
             torrent_hash = torrent_info.info_hash or expected_hash
             if not torrent_hash:
-                _raise_runtime_error("Could not determine torrent hash from URL")
+                # rTorrent fetches .torrent URLs itself, so the add can succeed
+                # even when no hash could be extracted up front. Recover it by
+                # watching for the new download to appear.
+                torrent_hash = self._discover_added_torrent_hash(name, label, known_hashes)
+            if not torrent_hash:
+                message = "Could not determine torrent hash from URL"
+                if torrent_info.fetch_error:
+                    message = f"{message} (torrent file fetch failed: {torrent_info.fetch_error})"
+                _raise_runtime_error(message)
 
             logger.debug("Added torrent to rTorrent: %s", torrent_hash)
 
@@ -314,12 +338,14 @@ class RTorrentClient(DownloadClient):
 
         """
         try:
+            # rtorrent is somehow case sensitive and requires uppercase hashes for look
+            torrent_hash = download_id.upper()
             if delete_files:
-                self._rpc.d.delete_tied(download_id)
-                self._rpc.d.erase(download_id)
+                self._rpc.d.delete_tied(torrent_hash)
+                self._rpc.d.erase(torrent_hash)
             else:
-                self._rpc.d.stop(download_id)
-                self._rpc.d.erase(download_id)
+                self._rpc.d.stop(torrent_hash)
+                self._rpc.d.erase(torrent_hash)
 
             logger.info(
                 "Removed torrent from rTorrent: %s%s",
@@ -329,6 +355,19 @@ class RTorrentClient(DownloadClient):
         except _RTORRENT_CLIENT_ERRORS as e:
             error_type = type(e).__name__
             logger.exception("rTorrent remove failed (%s)", error_type)
+            return False
+        else:
+            return True
+
+    def set_category(self, download_id: str, category: str) -> bool:
+        """Assign a label to a torrent using rTorrent's custom1 field."""
+        try:
+            # rtorrent is somehow case sensitive and requires uppercase hashes for look
+            self._rpc.d.custom1.set(download_id.upper(), category)
+            logger.info("Set rTorrent label for %s to '%s'", download_id, category)
+        except _RTORRENT_CLIENT_ERRORS as e:
+            error_type = type(e).__name__
+            logger.exception("rTorrent set_category failed (%s)", error_type)
             return False
         else:
             return True
@@ -381,6 +420,56 @@ class RTorrentClient(DownloadClient):
             return self._rpc.directory.default()
         except _RTORRENT_CLIENT_ERRORS:
             return "/downloads"
+
+    def _list_torrent_hashes(self) -> set[str] | None:
+        """Snapshot the hashes rTorrent currently reports."""
+        try:
+            all_torrents = self._rpc.d.multicall2("", "", "d.hash=")
+        except _RTORRENT_CLIENT_ERRORS as e:
+            logger.debug("Could not snapshot rTorrent downloads: %s", e)
+            return None
+        return {str(row[0]).lower() for row in all_torrents if row and row[0]}
+
+    def _discover_added_torrent_hash(
+        self,
+        name: str,
+        label: str,
+        known_hashes: set[str] | None,
+    ) -> str | None:
+        """Recover the hash of a torrent that was added without a known info_hash.
+
+        rTorrent fetches .torrent URLs itself, so the add can succeed even when
+        no hash could be extracted up front. A `known_hashes` of None means the
+        pre-add snapshot failed, so only an exact name match can identify the
+        new arrival.
+        """
+        for _ in range(20):
+            try:
+                all_torrents = self._rpc.d.multicall2("", "", "d.hash=", "d.name=", "d.custom1=")
+            except _RTORRENT_CLIENT_ERRORS as e:
+                logger.debug("rTorrent hash discovery: %s", e)
+            else:
+                new_torrents = [
+                    row
+                    for row in all_torrents
+                    if row
+                    and row[0]
+                    and (known_hashes is None or str(row[0]).lower() not in known_hashes)
+                ]
+                # The label set at add time distinguishes concurrent arrivals,
+                # but rTorrent may not have applied it yet, so it only ever
+                # narrows a non-empty candidate list.
+                if label:
+                    labeled = [row for row in new_torrents if len(row) > 2 and row[2] == label]
+                    if labeled:
+                        new_torrents = labeled
+                for row in new_torrents:
+                    if len(row) > 1 and row[1] == name:
+                        return str(row[0]).lower()
+                if known_hashes is not None and len(new_torrents) == 1:
+                    return str(new_torrents[0][0]).lower()
+            time.sleep(0.5)
+        return None
 
     def _get_torrent_path(self, download_id: str) -> str | None:
         """Get the file path of a torrent by hash.

@@ -68,6 +68,50 @@ def create_mock_transmission_rpc_module():
     return mock_module
 
 
+def _transmission_client_with_labels(labels):
+    from shelfmark.download.clients.transmission import TransmissionClient
+
+    client = TransmissionClient.__new__(TransmissionClient)
+    client._client = MagicMock()
+    client._client.get_torrent.return_value = types.SimpleNamespace(labels=labels)
+    return client
+
+
+def test_set_category_appends_to_existing_labels():
+    client = _transmission_client_with_labels(["books", "seeding"])
+
+    assert client.set_category("abc123", "imported") is True
+    client._client.change_torrent.assert_called_once_with(
+        ids="abc123",
+        labels=["books", "seeding", "imported"],
+    )
+
+
+def test_set_category_adds_label_when_torrent_has_none():
+    client = _transmission_client_with_labels([])
+
+    assert client.set_category("abc123", "imported") is True
+    client._client.change_torrent.assert_called_once_with(
+        ids="abc123",
+        labels=["imported"],
+    )
+
+
+def test_set_category_is_a_noop_when_label_already_present():
+    client = _transmission_client_with_labels(["books", "imported"])
+
+    assert client.set_category("abc123", "imported") is True
+    client._client.change_torrent.assert_not_called()
+
+
+def test_set_category_does_not_clobber_labels_when_lookup_fails():
+    client = _transmission_client_with_labels([])
+    client._client.get_torrent.side_effect = ValueError("boom")
+
+    assert client.set_category("abc123", "imported") is False
+    client._client.change_torrent.assert_not_called()
+
+
 class TestTransmissionClientIsConfigured:
     """Tests for TransmissionClient.is_configured()."""
 
@@ -382,6 +426,42 @@ class TestTransmissionClientGetStatus:
             assert status.progress == 100.0
             assert status.complete is True
             assert "/downloads/Test Torrent" in status.file_path
+
+    def test_get_status_stopped_treated_as_complete(self, monkeypatch):
+        """Regression: torrents stopped after seeding ratio/idle limit must show complete."""
+        config_values = {
+            "TRANSMISSION_URL": "http://localhost:9091",
+            "TRANSMISSION_USERNAME": "admin",
+            "TRANSMISSION_PASSWORD": "password",
+            "TRANSMISSION_CATEGORY": "test",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.transmission.config.get",
+            make_config_getter(config_values),
+        )
+
+        mock_torrent = MockTorrent(
+            percent_done=1.0,
+            status="stopped",
+            download_dir="/downloads",
+        )
+        mock_client_instance = MagicMock()
+        mock_client_instance.get_torrent.return_value = mock_torrent
+
+        mock_transmission_rpc = create_mock_transmission_rpc_module()
+        mock_transmission_rpc.Client.return_value = mock_client_instance
+
+        with patch.dict("sys.modules", {"transmission_rpc": mock_transmission_rpc}):
+            if "shelfmark.download.clients.transmission" in sys.modules:
+                del sys.modules["shelfmark.download.clients.transmission"]
+
+            from shelfmark.download.clients.transmission import TransmissionClient
+
+            client = TransmissionClient()
+            status = client.get_status("abc123")
+
+        assert status.complete is True
+        assert status.progress == 100.0
 
     def test_get_status_not_found(self, monkeypatch):
         """Test status for non-existent torrent."""

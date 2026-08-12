@@ -1,4 +1,5 @@
-import { ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 // Find the closest scrollable ancestor element
@@ -72,6 +73,7 @@ export const Dropdown = ({
   onOpenChange,
 }: DropdownProps) => {
   const [isOpen, setIsOpen] = useState(false);
+  const dropdownId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -242,7 +244,10 @@ export const Dropdown = ({
   return (
     <div className={`${widthClassName} relative ${isOpen ? 'z-[2600]' : 'z-0'}`} ref={containerRef}>
       {label && (
-        <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5" onClick={toggleOpen}>
+        <label
+          htmlFor={dropdownId}
+          className="mb-1.5 block cursor-pointer text-xs font-medium text-gray-500 dark:text-gray-400"
+        >
           {label}
         </label>
       )}
@@ -251,6 +256,7 @@ export const Dropdown = ({
           renderTrigger({ isOpen, toggle: toggleOpen })
         ) : (
           <button
+            id={dropdownId}
             type="button"
             onClick={toggleOpen}
             disabled={disabled}

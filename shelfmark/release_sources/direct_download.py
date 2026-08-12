@@ -3,9 +3,12 @@
 import itertools
 import json
 import re
+import threading
 import time
+import unicodedata
 from dataclasses import replace
 from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, NoReturn, TypedDict
 from urllib.parse import quote, urlparse
 
@@ -15,6 +18,7 @@ from bs4.element import NavigableString
 
 from shelfmark.config.env import DEBUG_SKIP_SOURCES, TMP_DIR
 from shelfmark.core.config import config
+from shelfmark.core.languages import language_alias_map
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, SearchFilters, build_filename
 from shelfmark.core.utils import CONTENT_TYPES, get_aa_content_type_dir
@@ -197,11 +201,209 @@ _SOURCE_FAILURE_THRESHOLD = 4
 _MIN_VALID_FILE_SIZE = 10 * 1024
 _AA_COUNTDOWN_MAX_SECONDS = 300
 
+# --- Distant-path language detection ---
+
+_DISTANT_PATH_EXTENSIONS = (
+    "epub",
+    "mobi",
+    "azw3",
+    "fb2",
+    "djvu",
+    "cbz",
+    "cbr",
+    "pdf",
+    "zip",
+    "rar",
+    "m4b",
+    "mp3",
+)
+_DISTANT_PATH_EXTENSION_PATTERN = "|".join(re.escape(e) for e in _DISTANT_PATH_EXTENSIONS)
+_DISTANT_PATH_PATTERN = re.compile(
+    rf"(?:[A-Za-z0-9._-]+/)?[A-Za-z]:(?:\\|/)[^\n\r<>\"]+?\.(?:{_DISTANT_PATH_EXTENSION_PATTERN})\b",
+    re.IGNORECASE,
+)
+_DISTANT_PATH_FALLBACK_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9._-]+/)?[A-Za-z]:(?:\\|/)[^\n\r<>\"]+",
+    re.IGNORECASE,
+)
+_BRACKETED_LANGUAGE_CODE_PATTERN = re.compile(
+    r"\[(?:bd[\s._-]*)?([A-Za-z]{2,3})\]",
+    re.IGNORECASE,
+)
+_KEYED_LANGUAGE_CODE_PATTERN = re.compile(
+    r"\b(?:bd|lang(?:uage)?)\s*[:._-]?\s*([A-Za-z]{2,3})\b",
+    re.IGNORECASE,
+)
+_LANGUAGE_CODE_TOKEN_PATTERN = re.compile(
+    r"(?:^|[\s_./\\\-\[(])([A-Za-z]{2,3})(?=$|[\s_./\\\-)\]])"
+)
+_LANGUAGE_NAME_TOKEN_PATTERN = re.compile(r"[a-z]{4,}(?:-[a-z0-9]+)?")
+_LANGUAGE_ALIAS_TO_CODE: dict[str, str] | None = None
+_LANGUAGE_ALIAS_LOCK = threading.Lock()
+_LANGUAGE_PLACEHOLDERS = frozenset({"", "-", "--", "unknown", "unk", "n/a", "na"})
+# Short codes that appear in common words — require bracket/key context to accept
+_AMBIGUOUS_SHORT_LANGUAGE_CODES = frozenset({"de", "en", "it", "la", "no", "or", "is", "in"})
+
 # Sources that require Cloudflare bypass
 _CF_BYPASS_REQUIRED = frozenset({"aa-slow-nowait", "aa-slow-wait", "zlib", "welib"})
 
 # Sources whose URLs come from AA page (multiple mirrors)
 _AA_PAGE_SOURCES = frozenset({"aa-slow-nowait", "aa-slow-wait"})
+
+
+def _is_language_from_path_enabled() -> bool:
+    return bool(config.get("DIRECT_DOWNLOAD_LANGUAGE_FROM_PATH", False))
+
+
+def _normalize_language_token(value: str) -> str:
+    normalized = value.strip().lower()
+    for dash in ("‑", "–", "—", "−"):
+        normalized = normalized.replace(dash, "-")
+    return normalized
+
+
+def _fold_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in normalized if not unicodedata.combining(c)).lower()
+
+
+def _language_alias_to_code() -> dict[str, str]:
+    """Alias to code map, delegating to the shared language data."""
+    global _LANGUAGE_ALIAS_TO_CODE
+    cached = _LANGUAGE_ALIAS_TO_CODE
+    if cached is not None:
+        return cached
+
+    with _LANGUAGE_ALIAS_LOCK:
+        cached = _LANGUAGE_ALIAS_TO_CODE
+        if cached is not None:
+            return cached
+
+        _LANGUAGE_ALIAS_TO_CODE = language_alias_map()
+        return _LANGUAGE_ALIAS_TO_CODE
+
+
+def _extract_distant_path(row: Tag, *, enabled: bool) -> str | None:
+    """Extract the Windows-style file path from an AA search result row."""
+    if not enabled:
+        return None
+
+    def _normalize_candidate(text: str) -> str:
+        normalized = re.sub(r"\s*([\\/])\s*", r"\1", text)
+        normalized = re.sub(r":\s*([\\/])", r":\1", normalized)
+        return re.sub(
+            r"\s+\.(epub|mobi|azw3|fb2|djvu|cbz|cbr|pdf|zip|rar|m4b|mp3)\b",
+            r".\1",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+
+    candidates = [row.get_text(" ", strip=True)]
+    for cell in row.find_all("td"):
+        cell_text = cell.get_text(" ", strip=True)
+        if cell_text:
+            candidates.append(cell_text)
+
+    best: str | None = None
+    for text in candidates:
+        for match in _DISTANT_PATH_PATTERN.findall(_normalize_candidate(text)):
+            candidate = match.strip().rstrip(".,;")
+            if best is None or len(candidate) > len(best):
+                best = candidate
+
+    if best is not None:
+        return best
+
+    for text in candidates:
+        for match in _DISTANT_PATH_FALLBACK_PATTERN.findall(_normalize_candidate(text)):
+            candidate = match.strip().rstrip(".,;")
+            if best is None or len(candidate) > len(best):
+                best = candidate
+
+    return best
+
+
+def _detect_language_from_distant_path(path: str | None) -> str | None:
+    """Infer a language code from distant-path tags such as [BD FR] or [Fr]."""
+    if not path:
+        return None
+
+    aliases = _language_alias_to_code()
+    if not aliases:
+        return None
+
+    folded_path = _fold_text(path)
+    strong_candidates: list[str] = []
+
+    for code in _BRACKETED_LANGUAGE_CODE_PATTERN.findall(path):
+        normalized = _normalize_language_token(code)
+        if normalized in aliases:
+            strong_candidates.append(aliases[normalized])
+
+    for code in _KEYED_LANGUAGE_CODE_PATTERN.findall(path):
+        normalized = _normalize_language_token(code)
+        if normalized in aliases:
+            strong_candidates.append(aliases[normalized])
+
+    non_ambiguous = [c for c in strong_candidates if c not in _AMBIGUOUS_SHORT_LANGUAGE_CODES]
+    if non_ambiguous:
+        return non_ambiguous[0]
+
+    for token in _LANGUAGE_NAME_TOKEN_PATTERN.findall(folded_path):
+        normalized = _normalize_language_token(token)
+        if normalized in aliases:
+            candidate = aliases[normalized]
+            if candidate not in _AMBIGUOUS_SHORT_LANGUAGE_CODES:
+                return candidate
+
+    if strong_candidates:
+        return strong_candidates[0]
+
+    for code in _LANGUAGE_CODE_TOKEN_PATTERN.findall(path):
+        normalized = _normalize_language_token(code)
+        if normalized in _AMBIGUOUS_SHORT_LANGUAGE_CODES:
+            continue
+        if normalized in aliases:
+            return aliases[normalized]
+
+    return None
+
+
+def _is_missing_or_placeholder_language(language: str | None) -> bool:
+    if language is None:
+        return True
+    return _normalize_language_token(language) in _LANGUAGE_PLACEHOLDERS
+
+
+def _normalize_requested_languages(languages: list[str] | None) -> set[str]:
+    if not languages:
+        return set()
+    aliases = _language_alias_to_code()
+    normalized: set[str] = set()
+    for value in languages:
+        token = _normalize_language_token(str(value))
+        if not token or token == "all":  # noqa: S105 - "all" is a language sentinel
+            continue
+        normalized.add(aliases.get(token, token))
+    return normalized
+
+
+def _book_matches_requested_languages(book_language: str | None, requested: set[str]) -> bool:
+    """Return True when a book's language matches the requested filter.
+
+    Books with unknown/missing language always pass — the server-side &lang= filter
+    already narrowed the result set, so dropping unlabelled rows hides valid results.
+    """
+    if not requested:
+        return True
+    if not book_language:
+        return True
+    aliases = _language_alias_to_code()
+    normalized_book = aliases.get(
+        _normalize_language_token(book_language),
+        _normalize_language_token(book_language),
+    )
+    return normalized_book in requested
 
 
 def _is_configured_zlib_link(url: str) -> bool:
@@ -360,9 +562,17 @@ def search_books(query: str, filters: SearchFilters) -> list[BrowseRecord]:
 
     filters_query = ""
 
-    for value in filters.lang or []:
-        if value and value != "all":
-            filters_query += f"&lang={quote(value)}"
+    path_language_enabled = _is_language_from_path_enabled()
+    requested_langs = _normalize_requested_languages(filters.lang)
+
+    # When path-language inference is on and a language is requested, skip the
+    # server-side &lang= filter: lgli files often have no AA language metadata
+    # and would be excluded before we can infer language from the distant path.
+    # Local filtering below handles the narrowing instead.
+    if not (path_language_enabled and requested_langs):
+        for value in filters.lang or []:
+            if value and value != "all":
+                filters_query += f"&lang={quote(value)}"
 
     if filters.sort and filters.sort != "relevance":
         filters_query += f"&sort={quote(filters.sort)}"
@@ -397,14 +607,13 @@ def search_books(query: str, filters: SearchFilters) -> list[BrowseRecord]:
         msg = "Unable to reach download source. Network restricted or mirrors are blocked."
         raise SearchUnavailableError(msg)
 
-    if "No files found." in html:
-        logger.info("No books found for query: %s", query)
-        return []
-
     soup = BeautifulSoup(_html_response_text(html), "html.parser")
     tbody = soup.find("table")
 
     if tbody is None:
+        if "No files found." in html:
+            logger.info("No books found for query: %s", query)
+            return []
         logger.warning("No results table found for query: %s", query)
         msg = "No books found. Please try another query."
         raise RuntimeError(msg)
@@ -417,6 +626,9 @@ def search_books(query: str, filters: SearchFilters) -> list[BrowseRecord]:
         book = _parse_search_result_row(line_tr)
         if book:
             books.append(book)
+
+    if path_language_enabled and requested_langs:
+        books = [b for b in books if _book_matches_requested_languages(b.language, requested_langs)]
 
     supported_formats = _get_supported_formats()
 
@@ -471,6 +683,9 @@ def _parse_search_result_row(row: Tag) -> BrowseRecord | None:
         if not record_id:
             return None
 
+        path_language_enabled = _is_language_from_path_enabled()
+        distant_path = _extract_distant_path(row, enabled=path_language_enabled)
+
         preview_img = cells[0].find("img")
         if isinstance(preview_img, Tag):
             raw_src = _get_attr(preview_img, "src")
@@ -482,7 +697,17 @@ def _parse_search_result_row(row: Tag) -> BrowseRecord | None:
         else:
             preview = None
 
-        title = _first_stripped_text(cells[1].find("span"))
+        title_span = cells[1].find("span")
+        if isinstance(title_span, Tag):
+            # AA nests related-edition spans inside the main title span — take only direct text.
+            direct = " ".join(
+                str(c).strip()
+                for c in title_span.children
+                if isinstance(c, NavigableString) and str(c).strip()
+            ).strip()
+            title = direct or _first_stripped_text(title_span)
+        else:
+            title = None
         author = _first_stripped_text(cells[2].find("span"))
         publisher = _first_stripped_text(cells[3].find("span"))
         year = _first_stripped_text(cells[4].find("span"))
@@ -491,17 +716,18 @@ def _parse_search_result_row(row: Tag) -> BrowseRecord | None:
         file_format = _first_stripped_text(cells[9].find("span"))
         size = _first_stripped_text(cells[10].find("span"))
 
-        if (
-            title is None
-            or author is None
-            or publisher is None
-            or year is None
-            or language is None
-            or content is None
-            or file_format is None
-            or size is None
-        ):
+        # Only title and format are truly required — lgli rows often have sparse metadata
+        if title is None or file_format is None:
             return None
+
+        # Skip entries where the title is a catalog format descriptor, not a real title
+        # e.g. "Book/Online Audio", "Print book" — lgli metadata pollution
+        if title and "/" in title and len(title) < 40 and not any(c.isdigit() for c in title):
+            return None
+
+        if path_language_enabled and _is_missing_or_placeholder_language(language):
+            detected = _detect_language_from_distant_path(distant_path)
+            language = detected or "unknown"
 
         return BrowseRecord(
             id=record_id,
@@ -515,6 +741,7 @@ def _parse_search_result_row(row: Tag) -> BrowseRecord | None:
             content=content.lower() if content else None,
             format=file_format.lower() if file_format else None,
             size=size,
+            download_path=distant_path,
         )
     except (AttributeError, IndexError, KeyError, TypeError) as e:
         logger.error_trace(f"Error parsing search result row: {e}")
@@ -1314,6 +1541,9 @@ def _get_download_url(
     return downloader.get_absolute_url(link, url)
 
 
+_AA_COUNTDOWN_MAX_RETRIES = 3
+
+
 def _extract_slow_download_url(
     soup: BeautifulSoup,
     link: str,
@@ -1322,6 +1552,7 @@ def _extract_slow_download_url(
     status_callback: Callable[[str, str | None], None] | None,
     selector: network.AAMirrorSelector,
     source_context: str | None = None,
+    _countdown_attempts: int = 0,
 ) -> str:
     """Extract download URL from AA slow download pages."""
     html_str = str(soup)
@@ -1386,6 +1617,14 @@ def _extract_slow_download_url(
 
     countdown_seconds = _extract_countdown_seconds(soup, html_str)
     if countdown_seconds > 0:
+        if _countdown_attempts >= _AA_COUNTDOWN_MAX_RETRIES:
+            logger.warning(
+                "Countdown retry limit (%s) reached for %s, giving up",
+                _AA_COUNTDOWN_MAX_RETRIES,
+                title,
+            )
+            return ""
+
         max_countdown_seconds = 600
         sleep_time = min(countdown_seconds, max_countdown_seconds)
         if countdown_seconds > max_countdown_seconds:
@@ -1394,7 +1633,13 @@ def _extract_slow_download_url(
                 countdown_seconds,
                 max_countdown_seconds,
             )
-        logger.info("AA waitlist: %ss for %s", sleep_time, title)
+        logger.info(
+            "AA waitlist: %ss for %s (attempt %s/%s)",
+            sleep_time,
+            title,
+            _countdown_attempts + 1,
+            _AA_COUNTDOWN_MAX_RETRIES,
+        )
 
         # Live countdown with status updates
         for remaining in range(sleep_time, 0, -1):
@@ -1415,12 +1660,31 @@ def _extract_slow_download_url(
         if status_callback and source_context:
             status_callback("resolving", f"{source_context} - Fetching")
 
-        return _get_download_url(
-            link, title, cancel_flag, status_callback, selector, source_context
+        html = downloader.html_get_page(
+            link, selector=selector, cancel_flag=cancel_flag, status_callback=status_callback
+        )
+        if not html:
+            return ""
+        new_soup = BeautifulSoup(_html_response_text(html), "html.parser")
+        return _extract_slow_download_url(
+            new_soup,
+            link,
+            title,
+            cancel_flag,
+            status_callback,
+            selector,
+            source_context,
+            _countdown_attempts + 1,
         )
 
     link_texts = [a.get_text(strip=True)[:50] for a in soup.find_all("a", href=True)[:10]]
     logger.warning("No download URL found. First 10 links: %s", link_texts)
+    # A bypassed page with no AA download links often means the network served a wrong
+    # page (e.g. an ISP block page) instead of Anna's Archive. Probe for DNS interference
+    # so we can give the user an actionable hint instead of a generic failure.
+    host = urlparse(link).hostname or ""
+    if host:
+        network.note_possible_dns_interference(host)
     return ""
 
 
@@ -1733,7 +1997,6 @@ class DirectDownloadSource(ReleaseSource):
                 except Exception:
                     logger.exception("Search error")
 
-        logger.info("Found %s releases via title+author", len(all_results))
         return [_browse_record_to_release(record) for record in all_results]
 
     def is_available(self) -> bool:
@@ -1856,7 +2119,14 @@ class DirectDownloadHandler(DownloadHandler):
                 return None
 
             if not success_url:
-                status_callback("error", "All download sources failed")
+                if network.dns_interference_detected():
+                    status_callback(
+                        "error",
+                        "All sources failed - your network/ISP appears to be blocking "
+                        "Anna's Archive. Enable DNS-over-HTTPS in settings.",
+                    )
+                else:
+                    status_callback("error", "All download sources failed")
                 return None
 
             # Return temp path - orchestrator handles post-processing (archive extraction, ingest)

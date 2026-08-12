@@ -7,6 +7,7 @@ This document lists all configuration options that can be set via environment va
 ## Table of Contents
 
 - [Bootstrap Configuration](#bootstrap-configuration)
+- [Egress / VPN Routing](#egress--vpn-routing)
 - [General](#general)
 - [Search Mode](#search-mode)
 - [Downloads](#downloads)
@@ -22,6 +23,7 @@ This document lists all configuration options that can be set via environment va
   - [Hardcover](#metadata-providers-hardcover)
   - [Open Library](#metadata-providers-open-library)
   - [Google Books](#metadata-providers-google-books)
+  - [Moly.hu](#metadata-providers-moly.hu)
 - [Direct Download](#direct-download)
   - [Download Sources](#direct-download-download-sources)
   - [Cloudflare Bypass](#direct-download-cloudflare-bypass)
@@ -145,6 +147,98 @@ Show the onboarding wizard on first run. Set to false to skip (useful for epheme
 
 </details>
 
+## Egress / VPN Routing
+
+These startup-only variables are consumed by `entrypoint.sh` / `wireguard.sh` to select and configure the WireGuard transparent-egress kill-switch. `USING_WIREGUARD` and [`USING_TOR`](#using_tor) (documented under Network) are mutually exclusive; both require root startup.
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `USING_WIREGUARD` | Route all traffic through a WireGuard VPN tunnel with a fail-closed iptables kill-switch (non-tunnel egress is dropped). Requires root startup and NET_ADMIN (plus NET_RAW). Mutually exclusive with USING_TOR. | boolean | `false` |
+| `WIREGUARD_CONFIG` | Path to the mounted wg-quick configuration file. | string (path) | `/config/wg0.conf` |
+| `WIREGUARD_INTERFACE` | WireGuard interface name brought up by wg-quick. | string | `wg0` |
+| `LAN_NETWORK` | Comma-separated CIDRs kept off the tunnel so the WebUI and internal download clients (Prowlarr, qBittorrent) stay reachable. | string (comma-separated) | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
+| `WIREGUARD_ENFORCE_DNS` | Pin the container's resolver so DNS cannot silently fall back to an off-tunnel path. The resolver used is WIREGUARD_DNS if set, else the tunnel config's DNS = line. This does NOT force queries through the tunnel: it is designed for a trusted LAN resolver kept reachable off-tunnel via LAN_NETWORK (the query leaves over the LAN; the resolver encrypts upstream while the download still egresses via the tunnel). Special case: when Docker's embedded resolver (nameserver 127.0.0.11) is present, it is PRESERVED so container-name resolution (e.g. prowlarr, qbittorrent) keeps working, and the embedded resolver's upstream must be pinned via the container's compose dns: list. Fails closed (refuses to start) only when no embedded resolver is present AND no resolver is defined, or /etc/resolv.conf is not writable. | boolean | `true` |
+| `WIREGUARD_DNS` | Explicit resolver(s) (comma/space separated) to pin when WIREGUARD_ENFORCE_DNS is true and Docker's embedded resolver is NOT in use. Use when the VPN's pushed DNS filters domains you need; point it at a resolver reachable via the tunnel or an allowed LAN resolver. NOTE: when the embedded resolver (127.0.0.11) is present it is preserved and this value cannot repoint its upstream from inside the container — set the container's compose dns: list to the trusted resolver instead. | string (comma-separated) | `unset (uses config DNS = line)` |
+| `WIREGUARD_DISABLE_IPV6` | Strip IPv6 Address/AllowedIPs/DNS from the tunnel config before wg-quick (many container kernels lack the ip6tables raw table wg-quick needs) and remove IPv6 as a leak surface. | boolean | `true` |
+| `WIREGUARD_ALLOW_IPV6_LEAK` | Escape hatch: continue startup even when an IPv6 kill-switch cannot be installed AND IPv6 cannot be disabled. Only set when the container has no IPv6 connectivity, as IPv6 egress may otherwise bypass the tunnel. | boolean | `false` |
+| `WIREGUARD_ALLOW_WEBUI_OFFTUNNEL` | When false (default) the kill-switch is strictly fail-closed: the only off-tunnel egress permitted is loopback, the tunnel device and the LAN allowlist. Set true only if a NON-LAN client (e.g. a public reverse proxy on a different segment) must reach the WebUI; it permits app-server REPLY packets (--sport FLASK_PORT, conntrack REPLY) to leave off-tunnel. Server replies only, never client-initiated egress, so it cannot leak outbound browsing/downloads or the real IP for outbound requests, but it is still an off-tunnel path while the tunnel is down, hence opt-in. LAN WebUI clients never need it (covered by LAN_NETWORK). | boolean | `false` |
+| `WIREGUARD_STALE_AFTER` | Seconds since the last WireGuard handshake before the healthcheck bounces the tunnel. | number | `180` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `USING_WIREGUARD`
+
+Route all traffic through a WireGuard VPN tunnel with a fail-closed iptables kill-switch (non-tunnel egress is dropped). Requires root startup and NET_ADMIN (plus NET_RAW). Mutually exclusive with USING_TOR.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `WIREGUARD_CONFIG`
+
+Path to the mounted wg-quick configuration file.
+
+- **Type:** string (path)
+- **Default:** `/config/wg0.conf`
+
+#### `WIREGUARD_INTERFACE`
+
+WireGuard interface name brought up by wg-quick.
+
+- **Type:** string
+- **Default:** `wg0`
+
+#### `LAN_NETWORK`
+
+Comma-separated CIDRs kept off the tunnel so the WebUI and internal download clients (Prowlarr, qBittorrent) stay reachable.
+
+- **Type:** string (comma-separated)
+- **Default:** `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`
+
+#### `WIREGUARD_ENFORCE_DNS`
+
+Pin the container's resolver so DNS cannot silently fall back to an off-tunnel path. The resolver used is WIREGUARD_DNS if set, else the tunnel config's DNS = line. This does NOT force queries through the tunnel: it is designed for a trusted LAN resolver kept reachable off-tunnel via LAN_NETWORK (the query leaves over the LAN; the resolver encrypts upstream while the download still egresses via the tunnel). Special case: when Docker's embedded resolver (nameserver 127.0.0.11) is present, it is PRESERVED so container-name resolution (e.g. prowlarr, qbittorrent) keeps working, and the embedded resolver's upstream must be pinned via the container's compose dns: list. Fails closed (refuses to start) only when no embedded resolver is present AND no resolver is defined, or /etc/resolv.conf is not writable.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `WIREGUARD_DNS`
+
+Explicit resolver(s) (comma/space separated) to pin when WIREGUARD_ENFORCE_DNS is true and Docker's embedded resolver is NOT in use. Use when the VPN's pushed DNS filters domains you need; point it at a resolver reachable via the tunnel or an allowed LAN resolver. NOTE: when the embedded resolver (127.0.0.11) is present it is preserved and this value cannot repoint its upstream from inside the container — set the container's compose dns: list to the trusted resolver instead.
+
+- **Type:** string (comma-separated)
+- **Default:** `unset (uses config DNS = line)`
+
+#### `WIREGUARD_DISABLE_IPV6`
+
+Strip IPv6 Address/AllowedIPs/DNS from the tunnel config before wg-quick (many container kernels lack the ip6tables raw table wg-quick needs) and remove IPv6 as a leak surface.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `WIREGUARD_ALLOW_IPV6_LEAK`
+
+Escape hatch: continue startup even when an IPv6 kill-switch cannot be installed AND IPv6 cannot be disabled. Only set when the container has no IPv6 connectivity, as IPv6 egress may otherwise bypass the tunnel.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `WIREGUARD_ALLOW_WEBUI_OFFTUNNEL`
+
+When false (default) the kill-switch is strictly fail-closed: the only off-tunnel egress permitted is loopback, the tunnel device and the LAN allowlist. Set true only if a NON-LAN client (e.g. a public reverse proxy on a different segment) must reach the WebUI; it permits app-server REPLY packets (--sport FLASK_PORT, conntrack REPLY) to leave off-tunnel. Server replies only, never client-initiated egress, so it cannot leak outbound browsing/downloads or the real IP for outbound requests, but it is still an off-tunnel path while the tunnel is down, hence opt-in. LAN WebUI clients never need it (covered by LAN_NETWORK).
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `WIREGUARD_STALE_AFTER`
+
+Seconds since the last WireGuard handshake before the healthcheck bounces the tunnel.
+
+- **Type:** number
+- **Default:** `180`
+
+</details>
+
 ## General
 
 | Variable | Description | Type | Default |
@@ -223,6 +317,7 @@ Default language filter for searches.
 | `AA_DEFAULT_SORT` | Default sort order for search results. | string (choice) | `relevance` |
 | `SHOW_RELEASE_SOURCE_LINKS` | Show clickable release-source links in release and details modals. Metadata provider links stay enabled. | boolean | `true` |
 | `SHOW_COMBINED_SELECTOR` | Show the option to search for and download both a book and audiobook together. | boolean | `true` |
+| `FORCE_COMBINED_SEARCH` | Force combined search whenever it's available. Locks the combined toggle on. | boolean | `false` |
 | `METADATA_PROVIDER` | Choose which metadata provider to use for book searches. | string (choice) | `openlibrary` |
 | `METADATA_PROVIDER_AUDIOBOOK` | Metadata provider for audiobook searches. Uses the book provider if not set. | string (choice) | _empty string_ |
 | `METADATA_PROVIDER_COMBINED` | Metadata provider for combined mode searches. Uses the book provider if not set. | string (choice) | _empty string_ |
@@ -269,6 +364,15 @@ Show the option to search for and download both a book and audiobook together.
 
 - **Type:** boolean
 - **Default:** `true`
+
+#### `FORCE_COMBINED_SEARCH`
+
+**Always Use Combined Search**
+
+Force combined search whenever it's available. Locks the combined toggle on.
+
+- **Type:** boolean
+- **Default:** `false`
 
 #### `METADATA_PROVIDER`
 
@@ -329,8 +433,8 @@ The release source tab to open by default in the release modal for audiobooks. U
 | `BOOKS_OUTPUT_MODE` | Choose where completed book files are sent. | string (choice) | `folder` |
 | `INGEST_DIR` | Directory where downloaded files are saved. Use {User} for per-user folders (e.g. /books/{User}). | string | `/books` |
 | `FILE_ORGANIZATION` | Choose how downloaded book files are named and organized. | string (choice) | `rename` |
-| `TEMPLATE_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
-| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
+| `TEMPLATE_RENAME` | Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
+| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
 | `HARDLINK_TORRENTS` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `false` |
 | `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
 | `BOOKLORE_USERNAME` | Grimmory account username | string | _none_ |
@@ -351,8 +455,8 @@ The release source tab to open by default in the release modal for audiobooks. U
 | `EMAIL_ALLOW_UNVERIFIED_TLS` | Disable TLS certificate verification (not recommended). | boolean | `false` |
 | `DESTINATION_AUDIOBOOK` | Directory where downloaded audiobook files are saved. Leave empty to use the Books destination. | string | _none_ |
 | `FILE_ORGANIZATION_AUDIOBOOK` | Choose how downloaded audiobook files are named and organized. | string (choice) | `rename` |
-| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
-| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title}/{Title}` |
+| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
+| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title}/{Title}` |
 | `HARDLINK_TORRENTS_AUDIOBOOK` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `true` |
 | `AUTO_OPEN_DOWNLOADS_SIDEBAR` | Automatically open the downloads sidebar when a new download is queued. | boolean | `false` |
 | `DOWNLOAD_TO_BROWSER_CONTENT_TYPES` | Automatically download completed files to your browser for the selected content types. | string (comma-separated) | _empty list_ |
@@ -396,7 +500,7 @@ Choose how downloaded book files are named and organized.
 
 **Naming Template**
 
-Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title} ({Year})`
@@ -405,7 +509,7 @@ Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename wi
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
+Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
 
 - **Type:** string
 - **Default:** `{Author}/{Title} ({Year})`
@@ -606,7 +710,7 @@ Choose how downloaded audiobook files are named and organized.
 
 **Naming Template**
 
-Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title}`
@@ -615,7 +719,7 @@ Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename wi
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {Title}, {Year}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
+Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
 
 - **Type:** string
 - **Default:** `{Author}/{Title}/{Title}`
@@ -943,11 +1047,13 @@ Comma-separated hosts to bypass proxy (e.g., localhost,127.0.0.1,10.*,*.local)
 |----------|-------------|------|---------|
 | `URL_BASE` | Optional URL path prefix. Use a path like /shelfmark (no hostname). Leave blank for root. | string | _none_ |
 | `DEBUG` | Enable verbose logging to console and file. Not recommended for normal use. | boolean | `false` |
+| `LOG_LEVEL` | Lowest severity written to the console and log file. Ignored while Debug Mode is on, which forces Debug. | string (choice) | `INFO` |
 | `MAIN_LOOP_SLEEP_TIME` | How often the download queue is checked for new items. | number | `5` |
 | `DOWNLOAD_PROGRESS_UPDATE_INTERVAL` | How often download progress is broadcast to the UI. | number | `1` |
 | `CUSTOM_SCRIPT` | Path to a script to run after each successful download. Must be executable. | string | _none_ |
 | `CUSTOM_SCRIPT_PATH_MODE` | Pass the path to the custom script as an absolute path or relative to the destination folder. | string (choice) | `absolute` |
 | `CUSTOM_SCRIPT_JSON_PAYLOAD` | Send a JSON payload to the script via stdin. Useful for multi-file imports (audiobooks) or richer metadata without relying on path parsing. | boolean | `false` |
+| `DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT` | How long to wait after a torrent or usenet client reports completion for the completed file path to become visible to Shelfmark. Increase this for seedbox or remote-sync workflows. | number | `60` |
 | `COVERS_CACHE_ENABLED` | Cache book covers on the server for faster loading. | boolean | `true` |
 | `COVERS_CACHE_TTL` | How long to keep cached covers. Set to 0 to keep forever (recommended for static artwork). | number | `0` |
 | `COVERS_CACHE_MAX_SIZE_MB` | Maximum disk space for cached covers. Oldest images are removed when limit is reached. | number | `500` |
@@ -977,6 +1083,17 @@ Enable verbose logging to console and file. Not recommended for normal use.
 - **Type:** boolean
 - **Default:** `false`
 - **Requires restart:** Yes
+
+#### `LOG_LEVEL`
+
+**Log Level**
+
+Lowest severity written to the console and log file. Ignored while Debug Mode is on, which forces Debug.
+
+- **Type:** string (choice)
+- **Default:** `INFO`
+- **Requires restart:** Yes
+- **Options:** `DEBUG` (Debug), `INFO` (Info), `WARNING` (Warning), `ERROR` (Error), `CRITICAL` (Critical)
 
 #### `MAIN_LOOP_SLEEP_TIME`
 
@@ -1027,6 +1144,16 @@ Send a JSON payload to the script via stdin. Useful for multi-file imports (audi
 
 - **Type:** boolean
 - **Default:** `false`
+
+#### `DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT`
+
+**Completed Path Wait (seconds)**
+
+How long to wait after a torrent or usenet client reports completion for the completed file path to become visible to Shelfmark. Increase this for seedbox or remote-sync workflows.
+
+- **Type:** number
+- **Default:** `60`
+- **Constraints:** min: 0, max: 3600
 
 #### `COVERS_CACHE_ENABLED`
 
@@ -1097,6 +1224,7 @@ How long to cache individual book details. Default: 600 (10 minutes). Max: 60480
 | `PROWLARR_API_KEY` | Found in Prowlarr: Settings > General > API Key | string (secret) | _none_ |
 | `PROWLARR_INDEXERS` | Select which indexers to search. 📚 = has book categories. Leave empty to search all. | string (comma-separated) | _empty list_ |
 | `PROWLARR_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
+| `PROWLARR_COLLAPSE_DUPLICATES` | Collapse a release that several indexer entries returned down to a single row, keeping the entry with the best Prowlarr priority. Turn this off to see every entry that carried it, which is what makes results from filter-specific entries (freeleech and the like) visible. | boolean | `true` |
 | `PROWLARR_USE_SEED_PREFERENCES` | Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client | boolean | `false` |
 
 <details>
@@ -1148,6 +1276,15 @@ Automatically retry search without category filtering if no results are found
 
 - **Type:** boolean
 - **Default:** `false`
+
+#### `PROWLARR_COLLAPSE_DUPLICATES`
+
+**Show one row per release**
+
+Collapse a release that several indexer entries returned down to a single row, keeping the entry with the best Prowlarr priority. Turn this off to see every entry that carried it, which is what makes results from filter-specific entries (freeleech and the like) visible.
+
+- **Type:** boolean
+- **Default:** `true`
 
 #### `PROWLARR_USE_SEED_PREFERENCES`
 
@@ -1281,9 +1418,11 @@ Delay between requests in seconds to avoid rate limiting (0-10).
 | `IRC_SERVER` | IRC server hostname | string | _none_ |
 | `IRC_PORT` | IRC server port (usually 6697 for TLS, 6667 for plain) | number | `6697` |
 | `IRC_USE_TLS` | Enable TLS/SSL encryption for the IRC connection. Disable for servers that don't support TLS. | boolean | `true` |
-| `IRC_CHANNEL` | Channel name without the # prefix | string | _none_ |
+| `IRC_CHANNEL` | Channel name without the # prefix. Used for all searches unless a separate audiobook channel is configured below. | string | _none_ |
 | `IRC_NICK` | Your IRC nickname (required). Must be unique on the IRC network. | string | _none_ |
-| `IRC_SEARCH_BOT` | The search bot to query for results | string | _none_ |
+| `IRC_SEARCH_BOT` | The search bot to address queries to (required). Searches are sent as "@<bot> <query>". | string | _none_ |
+| `IRC_AUDIOBOOK_CHANNEL` | Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too. | string | _none_ |
+| `IRC_AUDIOBOOK_SEARCH_BOT` | Optional. Search bot for the audiobook channel. Leave blank to reuse the main search bot above. Only used when an audiobook channel is set. | string | _none_ |
 | `IRC_CACHE_TTL` | How long to keep cached search results before they expire. | string (choice) | `2592000` |
 
 <details>
@@ -1321,7 +1460,7 @@ Enable TLS/SSL encryption for the IRC connection. Disable for servers that don't
 
 **Channel**
 
-Channel name without the # prefix
+Channel name without the # prefix. Used for all searches unless a separate audiobook channel is configured below.
 
 - **Type:** string
 - **Default:** _none_
@@ -1341,7 +1480,26 @@ Your IRC nickname (required). Must be unique on the IRC network.
 
 **Search bot**
 
-The search bot to query for results
+The search bot to address queries to (required). Searches are sent as "@<bot> <query>".
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `IRC_AUDIOBOOK_CHANNEL`
+
+**Audiobook channel**
+
+Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too.
+
+- **Type:** string
+- **Default:** _none_
+
+#### `IRC_AUDIOBOOK_SEARCH_BOT`
+
+**Audiobook search bot**
+
+Optional. Search bot for the audiobook channel. Leave blank to reuse the main search bot above. Only used when an audiobook channel is set.
 
 - **Type:** string
 - **Default:** _none_
@@ -1363,9 +1521,12 @@ How long to keep cached search results before they expire.
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `PROWLARR_TORRENT_CLIENT` | Choose which torrent client to use | string (choice) | _empty string_ |
+| `ALLDEBRID_API_KEY` | AllDebrid API Key (apiv4) from your AllDebrid account settings | string (secret) | _none_ |
+| `REALDEBRID_API_KEY` | Real-Debrid API Key (Secret Token) from your Real-Debrid account settings | string (secret) | _none_ |
 | `QBITTORRENT_URL` | Web UI URL of your qBittorrent instance | string | _none_ |
 | `QBITTORRENT_USERNAME` | qBittorrent Web UI username | string | _none_ |
 | `QBITTORRENT_PASSWORD` | qBittorrent Web UI password | string (secret) | _none_ |
+| `QBITTORRENT_API_KEY` | Found in qBittorrent: Options > Web UI > API Key (qBittorrent 5.2.0+). Used instead of the username and password when set. | string (secret) | _none_ |
 | `QBITTORRENT_CATEGORY` | Category to assign to book downloads in qBittorrent | string | `books` |
 | `QBITTORRENT_CATEGORY_AUDIOBOOK` | Category for audiobook downloads. Leave empty to use the book category. | string | _empty string_ |
 | `QBITTORRENT_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses qBittorrent default if not specified) | string | _none_ |
@@ -1385,9 +1546,11 @@ How long to keep cached search results before they expire.
 | `RTORRENT_URL` | XML-RPC URL of your rTorrent instance | string | _none_ |
 | `RTORRENT_USERNAME` | HTTP Basic auth username (if authentication enabled) | string | _none_ |
 | `RTORRENT_PASSWORD` | HTTP Basic auth password | string (secret) | _none_ |
-| `RTORRENT_LABEL` | Label to assign to book downloads in rTorrent | string | `cwabd` |
+| `RTORRENT_LABEL` | Label to assign to ebook downloads in rTorrent | string | `cwabd` |
+| `RTORRENT_AUDIOBOOK_LABEL` | Label to assign to audiobook downloads in rTorrent (falls back to Book Label if not set) | string | _none_ |
 | `RTORRENT_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses rTorrent default if not specified) | string | _none_ |
-| `PROWLARR_TORRENT_ACTION` | Remove deletes the torrent from your client immediately after import (stops seeding, files are kept); Keep leaves it in the client to continue seeding | string (choice) | `keep` |
+| `PROWLARR_TORRENT_ACTION` | Choose whether to keep, remove, or move the torrent to another category or label after import | string (choice) | `keep` |
+| `PROWLARR_TORRENT_POST_IMPORT_CATEGORY` | Category or label to assign after a successful import | string | _empty string_ |
 | `PROWLARR_USENET_CLIENT` | Choose which usenet client to use | string (choice) | _empty string_ |
 | `NZBGET_URL` | URL of your NZBGet instance | string | _none_ |
 | `NZBGET_USERNAME` | NZBGet control username | string | `nzbget` |
@@ -1411,7 +1574,25 @@ Choose which torrent client to use
 
 - **Type:** string (choice)
 - **Default:** _empty string_
-- **Options:** `""` (None), `qbittorrent` (qBittorrent), `transmission` (Transmission), `deluge` (Deluge), `rtorrent` (rTorrent)
+- **Options:** `""` (None), `alldebrid` (AllDebrid), `qbittorrent` (qBittorrent), `realdebrid` (Real-Debrid), `transmission` (Transmission), `deluge` (Deluge), `rtorrent` (rTorrent)
+
+#### `ALLDEBRID_API_KEY`
+
+**API Key**
+
+AllDebrid API Key (apiv4) from your AllDebrid account settings
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `REALDEBRID_API_KEY`
+
+**API Key**
+
+Real-Debrid API Key (Secret Token) from your Real-Debrid account settings
+
+- **Type:** string (secret)
+- **Default:** _none_
 
 #### `QBITTORRENT_URL`
 
@@ -1436,6 +1617,15 @@ qBittorrent Web UI username
 **Password**
 
 qBittorrent Web UI password
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `QBITTORRENT_API_KEY`
+
+**API Key**
+
+Found in qBittorrent: Options > Web UI > API Key (qBittorrent 5.2.0+). Used instead of the username and password when set.
 
 - **Type:** string (secret)
 - **Default:** _none_
@@ -1615,10 +1805,19 @@ HTTP Basic auth password
 
 **Book Label**
 
-Label to assign to book downloads in rTorrent
+Label to assign to ebook downloads in rTorrent
 
 - **Type:** string
 - **Default:** `cwabd`
+
+#### `RTORRENT_AUDIOBOOK_LABEL`
+
+**Audiobook Label**
+
+Label to assign to audiobook downloads in rTorrent (falls back to Book Label if not set)
+
+- **Type:** string
+- **Default:** _none_
 
 #### `RTORRENT_DOWNLOAD_DIR`
 
@@ -1633,11 +1832,20 @@ Server-side directory where torrents are downloaded (optional, uses rTorrent def
 
 **Torrent Completion Action**
 
-Remove deletes the torrent from your client immediately after import (stops seeding, files are kept); Keep leaves it in the client to continue seeding
+Choose whether to keep, remove, or move the torrent to another category or label after import
 
 - **Type:** string (choice)
 - **Default:** `keep`
-- **Options:** `keep` (Keep), `remove` (Remove)
+- **Options:** `keep` (Keep), `remove` (Remove), `change_category` (Change Category)
+
+#### `PROWLARR_TORRENT_POST_IMPORT_CATEGORY`
+
+**Post-Import Category**
+
+Category or label to assign after a successful import
+
+- **Type:** string
+- **Default:** _empty string_
 
 #### `PROWLARR_USENET_CLIENT`
 
@@ -1889,6 +2097,26 @@ Default sort order for Google Books search results.
 
 </details>
 
+### Metadata Providers: Moly.hu
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `MOLY_ENABLED` | Enable Moly.hu as a metadata provider for book searches | boolean | `false` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `MOLY_ENABLED`
+
+**Enable Moly.hu**
+
+Enable Moly.hu as a metadata provider for book searches
+
+- **Type:** boolean
+- **Default:** `false`
+
+</details>
+
 ## Direct Download
 
 ### Direct Download: Download Sources
@@ -1896,6 +2124,7 @@ Default sort order for Google Books search results.
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `DIRECT_DOWNLOAD_ENABLED` | Show Direct Download in release-source lists and allow Direct mode searches. Add your own mirror URLs in the Mirrors tab before using it. | boolean | `false` |
+| `DIRECT_DOWNLOAD_LANGUAGE_FROM_PATH` | When language metadata is missing or unknown, parse the distant path (file path shown in search results) for language tags like [BD FR] or [En]. Also enables local language filtering so lgli files without AA language metadata are not excluded before the distant path can be checked. | boolean | `false` |
 | `AA_DONATOR_KEY` | Enables fast download access on AA. Get this from your donator account page. | string (secret) | _none_ |
 | `FAST_SOURCES_DISPLAY` | Always tried first, no waiting or bypass required. | JSON array | _see UI for defaults_ |
 | `SOURCE_PRIORITY` | Fallback sources, may have waiting. Requires bypasser. Drag to reorder. | JSON array | _see UI for defaults_ |
@@ -1919,6 +2148,15 @@ Default sort order for Google Books search results.
 **Enable Direct Download Source**
 
 Show Direct Download in release-source lists and allow Direct mode searches. Add your own mirror URLs in the Mirrors tab before using it.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `DIRECT_DOWNLOAD_LANGUAGE_FROM_PATH`
+
+**Detect Language From Distant Path**
+
+When language metadata is missing or unknown, parse the distant path (file path shown in search results) for language tags like [BD FR] or [En]. Also enables local language filtering so lgli files without AA language metadata are not excluded before the distant path can be checked.
 
 - **Type:** boolean
 - **Default:** `false`

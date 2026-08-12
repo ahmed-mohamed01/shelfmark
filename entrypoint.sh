@@ -81,6 +81,13 @@ if is_truthy "$ENABLE_LOGGING_VALUE"; then
     fi
 fi
 
+# Egress modes are mutually exclusive. Check this BEFORE starting either one so
+# we never run tor.sh and then abort, leaving a half-configured network stack.
+if [ "$USING_TOR" = "true" ] && [ "$USING_WIREGUARD" = "true" ]; then
+    echo "USING_TOR and USING_WIREGUARD are mutually exclusive; enable only one egress mode." >&2
+    exit 1
+fi
+
 if [ "$USING_TOR" = "true" ]; then
     if [ "$RUN_AS_NON_ROOT" = "true" ]; then
         echo "USING_TOR=true requires the container to start as root." >&2
@@ -90,13 +97,14 @@ if [ "$USING_TOR" = "true" ]; then
     ./tor.sh
 fi
 
-(
-    if [ "$USING_VPN" = "true" ] && [ "$USING_TOR" = "true" ]; then
-        echo "[!] USING_VPN and USING_TOR cannot both be enabled. Skipping VPN setup."
-    elif [ "$USING_VPN" = "true" ]; then
-        ./vpn.sh
+if [ "$USING_WIREGUARD" = "true" ]; then
+    if [ "$RUN_AS_NON_ROOT" = "true" ]; then
+        echo "USING_WIREGUARD=true requires the container to start as root." >&2
+        echo "Non-root mode skips the privileged network setup WireGuard depends on." >&2
+        exit 1
     fi
-)
+    ./wireguard.sh
+fi
 
 if [ "$FILE_LOGGING_ENABLED" = "true" ]; then
     start_file_logging "$LOG_FILE"
@@ -243,13 +251,22 @@ test_write() {
         return 1
     fi
 
-    if ! run_as_target_user sh -c 'echo 0123456789_TEST > "$1"' _ "$test_file"; then
+    # This is a probe: a failure here is expected (e.g. a fresh root-owned bind
+    # mount) and is recovered by the caller via change_ownership + re-probe. Hide
+    # the shell's "Permission denied"/"Read-only file system" stderr so a handled
+    # probe miss doesn't masquerade as a real boot failure in the logs.
+    if ! run_as_target_user sh -c 'echo 0123456789_TEST 2>/dev/null > "$1"' _ "$test_file"; then
         echo "Failed to write test file in $folder as $USERNAME"
         return 1
     fi
 
     FILE_CONTENT=$(cat "$test_file" 2>/dev/null || echo "")
-    rm -f "$test_file"
+    # A folder can be writable but not deletable (e.g. a Synology share without
+    # "Delete subfolders and files"). That is not a boot failure - the app writes
+    # files in place on such shares - so don't let a failed cleanup print an
+    # alarming error or fail the probe.
+    run_as_target_user rm -f "$test_file" 2>/dev/null || \
+        echo "Note: could not remove test file in $folder (folder is writable but not deletable)"
     [ "$FILE_CONTENT" = "0123456789_TEST" ]
     result=$?
     if [ $result -eq 0 ]; then
@@ -456,12 +473,29 @@ else
     if [ $config_ok -ne 0 ]; then
         fail_unwritable_config_dir "$CONFIG_PATH"
     fi
+
+    # The ingest/destination library (default /books) is user data and may be a
+    # bind mount owned by another uid; downloads fail with "Destination not
+    # writable" if the runtime user can't write there. Fix the top-level dir only
+    # (root mode) so we don't recursively chown a potentially huge library.
+    make_writable "${INGEST_DIR:-/books}" root
 fi
 
 # Always run Gunicorn (even when DEBUG=true) to ensure Socket.IO WebSocket
 # upgrades work reliably on customer machines.
 # Map app LOG_LEVEL (often DEBUG/INFO/...) to gunicorn's --log-level (lowercase).
-gunicorn_loglevel=$([ "$DEBUG" = "true" ] && echo debug || echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')
+# Gunicorn rejects anything outside its own list, so normalize and fall back to
+# info rather than letting a typo stop the container from booting.
+if [ "$DEBUG" = "true" ]; then
+    gunicorn_loglevel=debug
+else
+    gunicorn_loglevel=$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')
+    [ "$gunicorn_loglevel" = "warn" ] && gunicorn_loglevel=warning
+    case "$gunicorn_loglevel" in
+        debug|info|warning|error|critical) ;;
+        *) gunicorn_loglevel=info ;;
+    esac
+fi
 command="${GUNICORN_BIN} --log-level ${gunicorn_loglevel} --access-logfile - --error-logfile - --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker --workers 1 -t 300 -b ${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8084} shelfmark.main:app"
 
 # If DEBUG and not using an external bypass

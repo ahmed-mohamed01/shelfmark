@@ -329,6 +329,7 @@ export interface AppConfig {
   default_release_source_audiobook?: string; // Default tab in ReleaseModal for audiobooks
   show_release_source_links: boolean;
   show_combined_selector: boolean;
+  force_combined_search: boolean;
   books_output_mode: BooksOutputMode;
   auto_open_downloads_sidebar: boolean; // Auto-open sidebar when download is queued
   download_to_browser: boolean; // Auto-download completed files to browser
@@ -466,6 +467,7 @@ export interface LeadingCellConfig {
 export interface ExtraSortOption {
   label: string; // Display label in the sort dropdown
   sort_key: string; // Field to sort by on the Release object
+  default_direction?: 'asc' | 'desc'; // Which way "best first" runs (defaults to desc)
 }
 
 export interface SourceActionButton {

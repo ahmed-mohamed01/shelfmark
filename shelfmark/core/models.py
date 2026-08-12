@@ -108,6 +108,9 @@ class DownloadTask:
     retry_expected_hash: str | None = None  # Optional torrent hash used to match client downloads
     retry_ratio_limit: float | None = None  # Optional post-download seeding ratio
     retry_seeding_time_limit_minutes: int | None = None  # Optional post-download seeding time limit
+    retry_source_context: dict[str, Any] = field(
+        default_factory=dict
+    )  # Source-private context for retry/re-resolution
     can_retry_without_staged_source: bool = (
         True  # Whether the source can restart without a preserved staged file
     )
@@ -116,6 +119,7 @@ class DownloadTask:
     series_name: str | None = None
     series_position: float | None = None  # Float for novellas (e.g., 1.5)
     subtitle: str | None = None  # Book subtitle for naming templates
+    language: str | None = None  # Release language code for the {Language} template variable
 
     # Hardlinking support
     original_download_path: str | None = None  # Path in download client (for hardlinking)

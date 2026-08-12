@@ -146,7 +146,7 @@ export const useUsersFetch = ({ onShowToast }: UseUsersFetchParams) => {
     if (fullUser.settings) {
       userSettings = {
         ...fullUser.settings,
-      } as PerUserSettings;
+      };
     }
     const userOverridableSettings = new Set<string>();
 
@@ -162,7 +162,7 @@ export const useUsersFetch = ({ onShowToast }: UseUsersFetchParams) => {
         userSettings = {
           ...userSettings,
           ...deliveryResult.value.userOverrides,
-        } as PerUserSettings;
+        };
       }
       deliveryResult.value.keys.forEach((key) => userOverridableSettings.add(key));
     }
@@ -173,7 +173,7 @@ export const useUsersFetch = ({ onShowToast }: UseUsersFetchParams) => {
         userSettings = {
           ...userSettings,
           ...searchResult.value.userOverrides,
-        } as PerUserSettings;
+        };
       }
       searchResult.value.keys.forEach((key) => userOverridableSettings.add(key));
     }
@@ -184,7 +184,7 @@ export const useUsersFetch = ({ onShowToast }: UseUsersFetchParams) => {
         userSettings = {
           ...userSettings,
           ...notificationResult.value.userOverrides,
-        } as PerUserSettings;
+        };
       }
       notificationResult.value.keys.forEach((key) => userOverridableSettings.add(key));
     }

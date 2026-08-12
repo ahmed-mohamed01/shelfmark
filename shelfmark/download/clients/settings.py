@@ -159,6 +159,7 @@ def _test_qbittorrent_connection(current_values: dict[str, Any] | None = None) -
     raw_url = _resolve_string_setting(current_values, config.get, "QBITTORRENT_URL")
     username = _resolve_string_setting(current_values, config.get, "QBITTORRENT_USERNAME")
     password = _resolve_string_setting(current_values, config.get, "QBITTORRENT_PASSWORD")
+    api_key = _resolve_string_setting(current_values, config.get, "QBITTORRENT_API_KEY")
 
     if not raw_url:
         return {"success": False, "message": "qBittorrent URL is required"}
@@ -174,6 +175,7 @@ def _test_qbittorrent_connection(current_values: dict[str, Any] | None = None) -
             host=url,
             username=username,
             password=password,
+            api_key=api_key or None,
             VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(url),
         )
         client.auth_log_in()
@@ -181,9 +183,18 @@ def _test_qbittorrent_connection(current_values: dict[str, Any] | None = None) -
     except ImportError:
         return {"success": False, "message": "qbittorrent-api package not installed"}
     except _QBITTORRENT_SETTINGS_ERRORS as e:
+        if isinstance(e, _QBittorrentLoginFailed):
+            # LoginFailed carries no message of its own, so name the rejected credential.
+            rejected = "API key" if api_key else "username or password"
+            return {"success": False, "message": f"qBittorrent rejected the {rejected}"}
         return {"success": False, "message": f"Connection failed: {e!s}"}
     else:
-        return {"success": True, "message": f"Connected to qBittorrent (API v{api_version})"}
+        # Both credentials can be set at once, so name the one that actually authenticated.
+        used = " using the API key" if api_key else ""
+        return {
+            "success": True,
+            "message": f"Connected to qBittorrent (API v{api_version}){used}",
+        }
 
 
 def _test_transmission_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -520,6 +531,40 @@ def _test_sabnzbd_connection(current_values: dict[str, Any] | None = None) -> di
         return {"success": True, "message": f"Connected to SABnzbd {version}"}
 
 
+def _test_alldebrid_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Test the AllDebrid API connection using current form values."""
+    from shelfmark.core.config import config
+    from shelfmark.download.clients.alldebrid import AllDebridClient
+
+    current_values = current_values or {}
+    api_key = _resolve_string_setting(current_values, config.get, "ALLDEBRID_API_KEY")
+
+    if not api_key:
+        return {"success": False, "message": "AllDebrid API Key is required"}
+
+    client = AllDebridClient()
+    client._api_key = api_key
+    success, message = client.test_connection()
+    return {"success": success, "message": message}
+
+
+def _test_realdebrid_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Test the Real-Debrid API connection using current form values."""
+    from shelfmark.core.config import config
+    from shelfmark.download.clients.realdebrid import RealDebridClient
+
+    current_values = current_values or {}
+    api_key = _resolve_string_setting(current_values, config.get, "REALDEBRID_API_KEY")
+
+    if not api_key:
+        return {"success": False, "message": "Real-Debrid API Key is required"}
+
+    client = RealDebridClient()
+    client._api_key = api_key
+    success, message = client.test_connection()
+    return {"success": success, "message": message}
+
+
 # ==================== Download Clients Tab ====================
 
 
@@ -544,12 +589,44 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             description="Choose which torrent client to use",
             options=[
                 {"value": "", "label": "None"},
+                {"value": "alldebrid", "label": "AllDebrid"},
                 {"value": "qbittorrent", "label": "qBittorrent"},
+                {"value": "realdebrid", "label": "Real-Debrid"},
                 {"value": "transmission", "label": "Transmission"},
                 {"value": "deluge", "label": "Deluge"},
                 {"value": "rtorrent", "label": "rTorrent"},
             ],
             default="",
+        ),
+        # --- AllDebrid Settings ---
+        PasswordField(
+            key="ALLDEBRID_API_KEY",
+            label="API Key",
+            description="AllDebrid API Key (apiv4) from your AllDebrid account settings",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "alldebrid"},
+        ),
+        ActionButton(
+            key="test_alldebrid",
+            label="Test Connection",
+            description="Verify your AllDebrid configuration",
+            style="primary",
+            callback=_test_alldebrid_connection,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "alldebrid"},
+        ),
+        # --- Real-Debrid Settings ---
+        PasswordField(
+            key="REALDEBRID_API_KEY",
+            label="API Key",
+            description="Real-Debrid API Key (Secret Token) from your Real-Debrid account settings",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "realdebrid"},
+        ),
+        ActionButton(
+            key="test_realdebrid",
+            label="Test Connection",
+            description="Verify your Real-Debrid configuration",
+            style="primary",
+            callback=_test_realdebrid_connection,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "realdebrid"},
         ),
         # --- qBittorrent Settings ---
         TextField(
@@ -570,6 +647,12 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             key="QBITTORRENT_PASSWORD",
             label="Password",
             description="qBittorrent Web UI password",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+        ),
+        PasswordField(
+            key="QBITTORRENT_API_KEY",
+            label="API Key",
+            description="Found in qBittorrent: Options > Web UI > API Key (qBittorrent 5.2.0+). Used instead of the username and password when set.",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
         ),
         ActionButton(
@@ -748,9 +831,16 @@ def prowlarr_clients_settings() -> list[SettingsField]:
         TextField(
             key="RTORRENT_LABEL",
             label="Book Label",
-            description="Label to assign to book downloads in rTorrent",
+            description="Label to assign to ebook downloads in rTorrent",
             placeholder="cwabd",
             default="cwabd",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+        ),
+        TextField(
+            key="RTORRENT_AUDIOBOOK_LABEL",
+            label="Audiobook Label",
+            description="Label to assign to audiobook downloads in rTorrent (falls back to Book Label if not set)",
+            placeholder="audiobooks",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
         ),
         TextField(
@@ -764,13 +854,22 @@ def prowlarr_clients_settings() -> list[SettingsField]:
         SelectField(
             key="PROWLARR_TORRENT_ACTION",
             label="Torrent Completion Action",
-            description="Remove deletes the torrent from your client immediately after import (stops seeding, files are kept); Keep leaves it in the client to continue seeding",
+            description="Choose whether to keep, remove, or move the torrent to another category or label after import",
             options=[
                 {"value": "keep", "label": "Keep"},
                 {"value": "remove", "label": "Remove"},
+                {"value": "change_category", "label": "Change Category"},
             ],
             default="keep",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
+        ),
+        TextField(
+            key="PROWLARR_TORRENT_POST_IMPORT_CATEGORY",
+            label="Post-Import Category",
+            description="Category or label to assign after a successful import",
+            placeholder="imported",
+            default="",
+            show_when={"field": "PROWLARR_TORRENT_ACTION", "value": "change_category"},
         ),
         # --- Usenet Client Selection ---
         HeadingField(

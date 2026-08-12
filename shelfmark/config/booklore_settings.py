@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from shelfmark.core.config import config
@@ -23,7 +24,7 @@ _BOOKLORE_OPTIONS_CACHE: dict[str, Any] = {
 
 
 def _get_booklore_cache_key(base_url: str, username: str, password: str) -> str:
-    return f"{base_url}|{username}|{hash(password)}"
+    return f"{base_url}|{username}|{hashlib.sha256(password.encode()).hexdigest()}"
 
 
 def _get_booklore_select_options(

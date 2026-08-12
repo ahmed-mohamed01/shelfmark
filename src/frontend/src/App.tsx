@@ -699,7 +699,14 @@ function App() {
         getConfig(),
         getMetadataProviders(),
       ]);
-      const activeConfiguredProvider = combinedMode && metadataProviderState.configured_provider_combined
+      const nextCombinedModeAllowed =
+        cfg.search_mode === 'universal' &&
+        (cfg.show_combined_selector ?? true) &&
+        getDefaultMode('ebook') !== 'blocked' &&
+        getDefaultMode('audiobook') !== 'blocked';
+      const nextEffectiveCombinedMode =
+        nextCombinedModeAllowed && (combinedMode || cfg.force_combined_search);
+      const activeConfiguredProvider = nextEffectiveCombinedMode && metadataProviderState.configured_provider_combined
         ? metadataProviderState.configured_provider_combined
         : getConfiguredMetadataProviderForContentType({
             contentType,
@@ -780,7 +787,7 @@ function App() {
     } catch (error) {
       console.error('Failed to load config:', error);
     }
-  }, [clearTracking, combinedMode, contentType, setAdvancedFilters, setBooks]);
+  }, [clearTracking, combinedMode, contentType, getDefaultMode, setAdvancedFilters, setBooks]);
 
   // Fetch config when authenticated
   useEffect(() => {
@@ -799,6 +806,8 @@ function App() {
     const audiobookMode = getDefaultMode('audiobook');
     return ebookMode !== 'blocked' && audiobookMode !== 'blocked';
   }, [effectiveSearchMode, config?.show_combined_selector, getDefaultMode]);
+  const combinedModeLocked = combinedModeAllowed && config?.force_combined_search === true;
+  const effectiveCombinedMode = combinedModeAllowed && (combinedMode || combinedModeLocked);
 
   // Auto-disable combined mode if policy changes make it unavailable
   // Skip while config is still loading to avoid resetting localStorage-restored state
@@ -1225,6 +1234,9 @@ function App() {
         series_name: book.series_name,
         series_position: book.series_position,
         subtitle: book.subtitle,
+        // From the release, never the book: book.language is the provider's
+        // canonical edition, which would mislabel a translated release.
+        language: release.language ?? undefined,
       };
     },
     []
@@ -1573,7 +1585,7 @@ function App() {
     }
     try {
       await cancelDownload(id);
-      await fetchStatus();
+      await Promise.all([fetchStatus(), refreshActivitySnapshot()]);
     } catch (error) {
       console.error('Cancel failed:', error);
       showToast('Failed to cancel/clear download', 'error');
@@ -2513,7 +2525,8 @@ function App() {
           contentType={contentType}
           onContentTypeChange={setContentType}
           allowedContentTypes={allowedContentTypes}
-          combinedMode={combinedMode}
+          combinedMode={effectiveCombinedMode}
+          combinedModeLocked={combinedModeLocked}
           onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           queryTargets={queryTargets}
           activeQueryTarget={activeQueryTarget}
@@ -2593,7 +2606,8 @@ function App() {
           contentType={contentType}
           onContentTypeChange={setContentType}
           allowedContentTypes={allowedContentTypes}
-          combinedMode={combinedMode}
+          combinedMode={effectiveCombinedMode}
+          combinedModeLocked={combinedModeLocked}
           onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           activeQueryField={activeQueryField}
           searchMode={effectiveSearchMode}

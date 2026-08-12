@@ -4,7 +4,7 @@ ARG BUILDPLATFORM
 ARG BUILDARCH
 
 # Frontend build stage.
-FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS frontend-builder
 
 # Helpful debug output to see what platforms BuildKit thinks it's using
 RUN echo "BUILDPLATFORM=$BUILDPLATFORM BUILDARCH=$BUILDARCH TARGETPLATFORM=$TARGETPLATFORM TARGETARCH=$TARGETARCH"
@@ -25,7 +25,7 @@ COPY src/frontend/ ./
 RUN npm run build
 
 # Use python-slim as the base image
-FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd AS base
+FROM python:3.14.7-slim@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910 AS base
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.3@sha256:90bbb3c16635e9627f49eec6539f956d70746c409209041800a0280b93152823 /uv /uvx /bin/
 
@@ -59,6 +59,11 @@ ENV FLASK_PORT=8084
 # Configure locale, timezone, and perform initial cleanup in a single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    # For building C-extensions (cffi, gevent, etc.)
+    gcc \
+    g++ \
+    libffi-dev \
+    python3-dev \
     # For locale
     locales tzdata \
     # For healthcheck
@@ -73,10 +78,11 @@ RUN apt-get update && \
     tor \
     supervisor \
     iptables \
-    # --- WireGuard support (activated via USING_VPN=true) ---
+    # --- WireGuard support (activated via USING_WIREGUARD=true) ---
     wireguard-tools \
     iproute2 \
-    openresolv && \
+    procps \
+    ca-certificates && \
     # Configure iptables alternatives for tor.sh compatibility
     update-alternatives --set iptables /usr/sbin/iptables-legacy && \
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
@@ -135,7 +141,7 @@ RUN mkdir -p \
     ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
     chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
     chmod -R a+rX /app && \
-    chmod +x /app/entrypoint.sh /app/tor.sh /app/vpn.sh /app/genDebug.sh
+    chmod +x /app/entrypoint.sh /app/tor.sh /app/wireguard.sh /app/genDebug.sh
 
 # Expose the application port
 EXPOSE ${FLASK_PORT}
@@ -151,21 +157,39 @@ ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 FROM base AS shelfmark
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# --- Chromium (PINNED to 149.0.7827.196) ---
+# Debian's chromium 150.0.7871.46-1~deb13u1 security update (trixie-security,
+# 2026-07-05) no longer opens the DevTools remote-debugging TCP port at all
+# (no listener, no DevToolsActivePort file, even with a custom --user-data-dir;
+# the RemoteDebuggingAllowed policy does not restore it). The SeleniumBase
+# Pure-CDP driver connects through that port (/json/version), so with 150 every
+# internal bypass dies with "Pure CDP browser startup failed" and all
+# CF-gated downloads fail. Install the last working version from
+# snapshot.debian.org until the bypasser can talk to Chromium >= 150 (e.g.
+# pipe-based DevTools / UC mode) or seleniumbase ships a fix.
+# Chrome 144+ requires --enable-unsafe-swiftshader for WebGL in Docker.
+# This flag is set in internal_bypasser.py _get_browser_args()
+ARG CHROMIUM_VERSION=149.0.7827.196-1~deb13u1
+ARG CHROMIUM_SNAPSHOT=20260704T000000Z
+
+RUN echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${CHROMIUM_SNAPSHOT}/ trixie-security main" \
+        > /etc/apt/sources.list.d/chromium-pin-snapshot.list && \
+    apt-get update -o Acquire::Retries=5 && \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
     # For dumb display
     xvfb \
     # For screen recording
     ffmpeg \
-    # --- Chromium (unpinned - uses latest from Debian repos) ---
-    # Chrome 144+ requires --enable-unsafe-swiftshader for WebGL in Docker.
-    # This flag is set in internal_bypasser.py _get_browser_args()
-    chromium \
-    chromium-common \
+    chromium=${CHROMIUM_VERSION} \
+    chromium-common=${CHROMIUM_VERSION} \
     # For tkinter (pyautogui)
     python3-tk \
     # For RAR extraction
     unrar-free && \
+    # Keep apt from "upgrading" chromium past the pin inside derived images
+    printf 'Package: chromium chromium-common\nPin: version %s\nPin-Priority: 1001\n' "${CHROMIUM_VERSION}" \
+        > /etc/apt/preferences.d/chromium-pin && \
+    rm /etc/apt/sources.list.d/chromium-pin-snapshot.list && \
     # Create symlink so rarfile library can find unrar
     ln -sf /usr/bin/unrar-free /usr/bin/unrar && \
     # Cleanup APT cache
@@ -176,6 +200,21 @@ RUN apt-get update && \
 # Install the browser automation stack used by the full image
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-default-groups --extra browser
+
+# Deterministically resolve the Xlib namespace collision.
+# pyautogui/mouseinfo pull the stale `python3-xlib` (0.15, 2014), while the
+# `--extra browser` set pulls `python-xlib` (0.33). Both packages install into
+# the same top-level `Xlib/` namespace, so whichever lands last wins. When the
+# 2014 build wins, `Xlib.X` is missing `FamilyServerInterpreted`, which the
+# SeleniumBase Pure-CDP driver requires at browser startup -> every bypass fails
+# with "module 'Xlib.X' has no attribute 'FamilyServerInterpreted'" and no
+# Cloudflare/DDoS-Guard protected download can complete. Drop the stale package
+# and force python-xlib 0.33 to own the namespace. pyautogui runs fine against
+# 0.33 (superset API).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --python /app/.venv/bin/python python3-xlib && \
+    uv pip install --python /app/.venv/bin/python --reinstall python-xlib==0.33 && \
+    /app/.venv/bin/python -c "import Xlib.X; assert hasattr(Xlib.X, 'FamilyServerInterpreted'), 'Xlib.X.FamilyServerInterpreted missing after fix'; print('Xlib namespace OK:', Xlib.__version__)"
 
 # uv is only needed while building the image.
 RUN rm -f /usr/bin/uv /usr/bin/uvx

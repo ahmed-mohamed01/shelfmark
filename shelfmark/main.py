@@ -119,7 +119,7 @@ BASE_PATH = normalize_base_path(normalize_optional_text(app_config.get("URL_BASE
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # Disable caching
 app.config["APPLICATION_ROOT"] = BASE_PATH or "/"
-wsgi_app = cast(Any, ProxyFix(app.wsgi_app))
+wsgi_app = cast(Any, ProxyFix(app.wsgi_app, x_host=1, x_port=1))
 if BASE_PATH:
     wsgi_app = cast(Any, PrefixMiddleware(wsgi_app, BASE_PATH, bypass_paths={"/api/health"}))
 app.wsgi_app = wsgi_app
@@ -571,15 +571,6 @@ if user_db is not None:
         )
     except _IMPORT_OPERATIONAL_ERRORS as e:
         logger.warning("Failed to register request routes: %s", e)
-
-# VPN manager init and routes (branch-only addition)
-try:
-    from shelfmark.core.vpn_manager import init_vpn_manager
-    from shelfmark.core.vpn_routes import register_vpn_routes
-    _vpn_manager = init_vpn_manager()
-    register_vpn_routes(app, _vpn_manager, resolve_auth_mode=lambda: get_auth_mode())
-except Exception as e:
-    logger.warning(f"Failed to register VPN routes: {e}")
 
 
 # Enable CORS in development mode for local frontend development
@@ -1221,6 +1212,9 @@ def api_config() -> Response | tuple[Response, int]:
             "show_release_source_links": app_config.get("SHOW_RELEASE_SOURCE_LINKS", True),
             "show_combined_selector": app_config.get(
                 "SHOW_COMBINED_SELECTOR", True, user_id=db_user_id
+            ),
+            "force_combined_search": app_config.get(
+                "FORCE_COMBINED_SEARCH", False, user_id=db_user_id
             ),
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),

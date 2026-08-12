@@ -15,8 +15,10 @@ from shelfmark.download.clients import (
     DownloadState,
     DownloadStatus,
 )
+from shelfmark.release_sources import Release, ReleaseProtocol
+from shelfmark.release_sources.prowlarr.cache import cache_release, remove_release
 from shelfmark.release_sources.prowlarr.handler import ProwlarrHandler
-from shelfmark.release_sources.prowlarr.utils import get_protocol
+from shelfmark.release_sources.prowlarr.utils import build_source_id, get_protocol
 
 
 class ProgressRecorder:
@@ -103,13 +105,19 @@ class TestProwlarrHandlerDownloadErrors:
             assert result is None
             assert recorder.last_status == "error"
             assert recorder.last_message is not None
-            assert "cache" in recorder.last_message.lower()
+            assert "could not be refreshed" in recorder.last_message
 
-    def test_resolve_download_uses_task_retry_fields_when_cache_is_missing(self):
-        """Generic retry fields should let restarts recover without the in-memory cache."""
-        with patch(
-            "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value=None,
+    def test_download_fails_clearly_when_cache_miss_cannot_refresh(self):
+        """Prowlarr retry URLs are not durable; cache misses must refresh by identity."""
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value=None,
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.ProwlarrSource.search",
+                return_value=[],
+            ),
         ):
             handler = ProwlarrHandler()
             task = DownloadTask(
@@ -122,14 +130,245 @@ class TestProwlarrHandlerDownloadErrors:
                 retry_seeding_time_limit_minutes=60,
                 retry_ratio_limit=1.5,
             )
+            recorder = ProgressRecorder()
 
-            request = handler._resolve_download(task, lambda *_: None)
+            request = handler._resolve_download(task, recorder.status_callback)
 
-            assert request is not None
-            assert request.url == "magnet:?xt=urn:btih:abc123"
-            assert request.protocol == "torrent"
-            assert request.seeding_time_limit == 60
-            assert request.ratio_limit == 1.5
+            assert request is None
+            assert recorder.last_status == "error"
+            assert recorder.last_message is not None
+            assert "could not be refreshed" in recorder.last_message
+
+    def test_cache_miss_re_resolves_and_uses_fresh_download_url(self):
+        """Cache miss should re-query Prowlarr and use a fresh exact-match URL."""
+        task_id = "fresh-guid-1"
+        fresh_url = "https://prowlarr.example.com/download/fresh-token"
+
+        def mock_search(*_args, **_kwargs):
+            cache_release(
+                task_id,
+                {
+                    "guid": task_id,
+                    "protocol": "torrent",
+                    "downloadUrl": fresh_url,
+                    "title": "Fresh Release",
+                },
+            )
+            return [
+                Release(
+                    source="prowlarr",
+                    source_id=task_id,
+                    title="Fresh Release",
+                    info_url="https://tracker.example.com/release/1",
+                    protocol=ReleaseProtocol.TORRENT,
+                )
+            ]
+
+        mock_client = MagicMock()
+        mock_client.name = "qbittorrent"
+        mock_client.find_existing.return_value = None
+        mock_client.add_download.return_value = "download_id"
+
+        remove_release(task_id)
+        try:
+            with (
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.ProwlarrSource.search",
+                    side_effect=mock_search,
+                ) as mock_search_method,
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.get_client",
+                    return_value=mock_client,
+                ),
+                patch.object(ProwlarrHandler, "_poll_and_complete", return_value=None),
+            ):
+                handler = ProwlarrHandler()
+                task = DownloadTask(
+                    task_id=task_id,
+                    source="prowlarr",
+                    title="Fresh Book",
+                    retry_source_context={"indexer": "MyIndexer"},
+                )
+                recorder = ProgressRecorder()
+
+                handler.download(
+                    task=task,
+                    cancel_flag=Event(),
+                    progress_callback=recorder.progress_callback,
+                    status_callback=recorder.status_callback,
+                )
+
+                mock_search_method.assert_called_once()
+                assert mock_client.add_download.call_args.kwargs["url"] == fresh_url
+        finally:
+            remove_release(task_id)
+
+    def test_stale_cached_url_add_failure_re_resolves_once_and_succeeds(self):
+        """Expired cached proxy URL should be refreshed once after qBittorrent hash failure."""
+        task_id = "stale-guid-1"
+        stale_url = "https://prowlarr.example.com/download/stale-token"
+        fresh_url = "https://prowlarr.example.com/download/fresh-token"
+
+        def mock_search(*_args, **_kwargs):
+            cache_release(
+                task_id,
+                {
+                    "guid": task_id,
+                    "protocol": "torrent",
+                    "downloadUrl": fresh_url,
+                    "title": "Fresh Release",
+                },
+            )
+            return [
+                Release(
+                    source="prowlarr",
+                    source_id=task_id,
+                    title="Fresh Release",
+                    protocol=ReleaseProtocol.TORRENT,
+                )
+            ]
+
+        mock_client = MagicMock()
+        mock_client.name = "qbittorrent"
+        mock_client.find_existing.return_value = None
+        mock_client.add_download.side_effect = [
+            RuntimeError("Could not determine torrent hash from URL"),
+            "download_id",
+        ]
+
+        cache_release(
+            task_id,
+            {
+                "guid": task_id,
+                "protocol": "torrent",
+                "downloadUrl": stale_url,
+                "title": "Stale Release",
+            },
+        )
+        try:
+            with (
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.ProwlarrSource.search",
+                    side_effect=mock_search,
+                ) as mock_search_method,
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.get_client",
+                    return_value=mock_client,
+                ),
+                patch.object(ProwlarrHandler, "_poll_and_complete", return_value=None),
+            ):
+                handler = ProwlarrHandler()
+                task = DownloadTask(task_id=task_id, source="prowlarr", title="Stale Book")
+                recorder = ProgressRecorder()
+
+                handler.download(
+                    task=task,
+                    cancel_flag=Event(),
+                    progress_callback=recorder.progress_callback,
+                    status_callback=recorder.status_callback,
+                )
+
+                assert mock_client.add_download.call_count == 2
+                assert mock_client.add_download.call_args_list[0].kwargs["url"] == stale_url
+                assert mock_client.add_download.call_args_list[1].kwargs["url"] == fresh_url
+                mock_search_method.assert_called_once()
+        finally:
+            remove_release(task_id)
+
+    def test_refresh_without_exact_match_fails_clearly(self):
+        """Refresh must not pick a different Prowlarr result when identity differs."""
+        task_id = "missing-guid-1"
+        other_id = "other-guid-1"
+
+        def mock_search(*_args, **_kwargs):
+            cache_release(
+                other_id,
+                {
+                    "guid": other_id,
+                    "protocol": "torrent",
+                    "downloadUrl": "https://prowlarr.example.com/download/other",
+                    "title": "Other Release",
+                },
+            )
+            return [
+                Release(
+                    source="prowlarr",
+                    source_id=other_id,
+                    title="Other Release",
+                    protocol=ReleaseProtocol.TORRENT,
+                )
+            ]
+
+        remove_release(task_id)
+        remove_release(other_id)
+        try:
+            with patch(
+                "shelfmark.release_sources.prowlarr.handler.ProwlarrSource.search",
+                side_effect=mock_search,
+            ):
+                handler = ProwlarrHandler()
+                task = DownloadTask(task_id=task_id, source="prowlarr", title="Missing Book")
+                recorder = ProgressRecorder()
+
+                request = handler._resolve_download(task, recorder.status_callback)
+
+                assert request is None
+                assert recorder.last_status == "error"
+                assert recorder.last_message is not None
+                assert "could not be refreshed" in recorder.last_message
+        finally:
+            remove_release(task_id)
+            remove_release(other_id)
+
+    def test_magnet_result_does_not_trigger_prowlarr_url_refresh(self):
+        """Magnet failures should not be treated as expired Prowlarr proxy URLs."""
+        task_id = "magnet-guid-1"
+        magnet = "magnet:?xt=urn:btih:abc123&dn=test"
+        mock_client = MagicMock()
+        mock_client.name = "qbittorrent"
+        mock_client.find_existing.return_value = None
+        mock_client.add_download.side_effect = RuntimeError(
+            "Could not determine torrent hash from URL"
+        )
+
+        cache_release(
+            task_id,
+            {
+                "guid": task_id,
+                "protocol": "torrent",
+                "downloadUrl": "https://prowlarr.example.com/download/stale-token",
+                "magnetUrl": magnet,
+                "title": "Magnet Release",
+            },
+        )
+        try:
+            with (
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.ProwlarrSource.search",
+                    return_value=[],
+                ) as mock_search_method,
+                patch(
+                    "shelfmark.release_sources.prowlarr.handler.get_client",
+                    return_value=mock_client,
+                ),
+            ):
+                handler = ProwlarrHandler()
+                task = DownloadTask(task_id=task_id, source="prowlarr", title="Magnet Book")
+                recorder = ProgressRecorder()
+
+                result = handler.download(
+                    task=task,
+                    cancel_flag=Event(),
+                    progress_callback=recorder.progress_callback,
+                    status_callback=recorder.status_callback,
+                )
+
+                assert result is None
+                assert mock_client.add_download.call_count == 1
+                assert mock_client.add_download.call_args.kwargs["url"] == magnet
+                mock_search_method.assert_not_called()
+        finally:
+            remove_release(task_id)
 
     def test_download_fails_without_download_url(self):
         """Test that download fails when release has no download URL."""
@@ -315,6 +554,124 @@ class TestProwlarrHandlerSeedCriteria:
             assert request is not None
             assert request.seeding_time_limit is None
             assert request.ratio_limit is None
+
+    def test_resolve_download_falls_back_to_prowlarr_when_enrichment_missing(self):
+        """Regression test for #795: when search-time enrichment is missing,
+        share limits are re-resolved from Prowlarr at grab time."""
+        mock_client = MagicMock()
+        mock_client.get_indexer_seed_settings.return_value = {
+            5: {"seeding_time_limit_minutes": 4320, "ratio_limit": 1.0}
+        }
+
+        def config_get(key, default=None):
+            return True if key == "PROWLARR_USE_SEED_PREFERENCES" else default
+
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "title": "Test Release",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                    "indexerId": 5,
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch.object(
+                ProwlarrHandler,
+                "_build_prowlarr_client",
+                return_value=mock_client,
+            ),
+        ):
+            handler = ProwlarrHandler()
+            task = DownloadTask(
+                task_id="seed-time-fallback",
+                source="prowlarr",
+                title="Test Book",
+            )
+
+            request = handler._resolve_download(task, lambda *_: None)
+
+            assert request is not None
+            assert request.seeding_time_limit == 4320
+            assert request.ratio_limit == 1.0
+            mock_client.get_indexer_seed_settings.assert_called_once_with(restrict_to=[5])
+
+    def test_resolve_download_fallback_failure_leaves_limits_unset(self):
+        mock_client = MagicMock()
+        mock_client.get_indexer_seed_settings.side_effect = RuntimeError("prowlarr down")
+
+        def config_get(key, default=None):
+            return True if key == "PROWLARR_USE_SEED_PREFERENCES" else default
+
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "title": "Test Release",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                    "indexerId": 5,
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=config_get,
+            ),
+            patch.object(
+                ProwlarrHandler,
+                "_build_prowlarr_client",
+                return_value=mock_client,
+            ),
+        ):
+            handler = ProwlarrHandler()
+            task = DownloadTask(
+                task_id="seed-time-fallback-failure",
+                source="prowlarr",
+                title="Test Book",
+            )
+
+            request = handler._resolve_download(task, lambda *_: None)
+
+            assert request is not None
+            assert request.seeding_time_limit is None
+            assert request.ratio_limit is None
+
+    def test_resolve_download_skips_fallback_when_enrichment_present(self):
+        with (
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.get_release",
+                return_value={
+                    "protocol": "torrent",
+                    "title": "Test Release",
+                    "magnetUrl": "magnet:?xt=urn:btih:abc123",
+                    "indexerId": 5,
+                    "configuredSeedTimeMinutes": 7200,
+                },
+            ),
+            patch(
+                "shelfmark.release_sources.prowlarr.handler.config.get",
+                side_effect=lambda key, default=None: (
+                    True if key == "PROWLARR_USE_SEED_PREFERENCES" else default
+                ),
+            ),
+            patch.object(ProwlarrHandler, "_build_prowlarr_client") as mock_builder,
+        ):
+            handler = ProwlarrHandler()
+            task = DownloadTask(
+                task_id="seed-time-no-fallback",
+                source="prowlarr",
+                title="Test Book",
+            )
+
+            request = handler._resolve_download(task, lambda *_: None)
+
+            assert request is not None
+            assert request.seeding_time_limit == 7200
+            mock_builder.assert_not_called()
 
     def test_download_passes_seed_limits_to_client(self):
         mock_client = MagicMock()
@@ -1099,6 +1456,61 @@ class TestProwlarrHandlerFileStaging:
 
 
 class TestProwlarrHandlerPostProcessCleanup:
+    def test_torrent_change_category_sets_post_import_category(self):
+        handler = ProwlarrHandler()
+        task = DownloadTask(task_id="torrent-category", source="prowlarr", title="Test")
+
+        mock_client = MagicMock()
+        mock_client.name = "qbittorrent"
+        mock_client.set_category.return_value = True
+        handler._cleanup_refs[task.task_id] = (mock_client, "abc123", "torrent")
+
+        config_values = {
+            "PROWLARR_TORRENT_ACTION": "change_category",
+            "PROWLARR_TORRENT_POST_IMPORT_CATEGORY": "imported",
+        }
+        with patch(
+            "shelfmark.download.clients.base_handler.config.get",
+            side_effect=lambda key, default="": config_values.get(key, default),
+        ):
+            handler.post_process_cleanup(task, success=True)
+
+        mock_client.set_category.assert_called_once_with("abc123", "imported")
+        mock_client.remove.assert_not_called()
+
+    def test_torrent_keep_does_not_change_category(self):
+        handler = ProwlarrHandler()
+        task = DownloadTask(task_id="torrent-no-category", source="prowlarr", title="Test")
+
+        mock_client = MagicMock()
+        handler._cleanup_refs[task.task_id] = (mock_client, "abc123", "torrent")
+
+        with patch("shelfmark.download.clients.base_handler.config.get", return_value="keep"):
+            handler.post_process_cleanup(task, success=True)
+
+        mock_client.set_category.assert_not_called()
+        mock_client.remove.assert_not_called()
+
+    def test_torrent_change_category_ignores_empty_category(self):
+        handler = ProwlarrHandler()
+        task = DownloadTask(task_id="torrent-empty-category", source="prowlarr", title="Test")
+
+        mock_client = MagicMock()
+        handler._cleanup_refs[task.task_id] = (mock_client, "abc123", "torrent")
+
+        config_values = {
+            "PROWLARR_TORRENT_ACTION": "change_category",
+            "PROWLARR_TORRENT_POST_IMPORT_CATEGORY": "",
+        }
+        with patch(
+            "shelfmark.download.clients.base_handler.config.get",
+            side_effect=lambda key, default="": config_values.get(key, default),
+        ):
+            handler.post_process_cleanup(task, success=True)
+
+        mock_client.set_category.assert_not_called()
+        mock_client.remove.assert_not_called()
+
     def test_usenet_move_triggers_client_cleanup(self):
         handler = ProwlarrHandler()
         task = DownloadTask(task_id="cleanup-test", source="prowlarr", title="Test")
@@ -1227,3 +1639,57 @@ class TestProwlarrHandlerPostProcessCleanup:
         assert args[1] == "nzbget"
         assert args[2] == "123"
         assert str(args[3]) == "delete failed"
+
+
+class TestRawReleaseMatchesTask:
+    """Refreshing a stale release has to find it by whichever id form the task holds."""
+
+    RAW = {
+        "guid": "https://tracker.example/torrent/555",
+        "infoUrl": "https://tracker.example/details/555",
+        "indexerId": 25,
+    }
+
+    def test_matches_the_indexer_qualified_source_id(self):
+        assert ProwlarrHandler._raw_release_matches_task(
+            self.RAW, "25:https://tracker.example/torrent/555"
+        )
+
+    def test_still_matches_a_bare_guid_from_a_task_queued_before_the_change(self):
+        assert ProwlarrHandler._raw_release_matches_task(
+            self.RAW, "https://tracker.example/torrent/555"
+        )
+
+    def test_still_matches_a_bare_info_url(self):
+        assert ProwlarrHandler._raw_release_matches_task(
+            self.RAW, "https://tracker.example/details/555"
+        )
+
+    def test_does_not_match_the_same_guid_from_a_different_indexer_entry(self):
+        assert not ProwlarrHandler._raw_release_matches_task(
+            self.RAW, "10:https://tracker.example/torrent/555"
+        )
+
+    def test_does_not_match_an_unrelated_release(self):
+        assert not ProwlarrHandler._raw_release_matches_task(self.RAW, "25:something-else")
+
+
+class TestRawReleaseMatchesTaskEdgeCases:
+    """Matching the wrong release here grabs the wrong torrent."""
+
+    def test_blank_task_id_never_matches(self):
+        raw = {"guid": "g", "infoUrl": "i", "indexerId": 25}
+
+        assert not ProwlarrHandler._raw_release_matches_task(raw, "")
+        assert not ProwlarrHandler._raw_release_matches_task(raw, "   ")
+        assert not ProwlarrHandler._raw_release_matches_task(raw, None)
+
+    def test_a_release_with_no_identifiers_does_not_match_a_blank_task_id(self):
+        assert not ProwlarrHandler._raw_release_matches_task({}, None)
+        assert not ProwlarrHandler._raw_release_matches_task({}, "")
+
+    def test_matches_a_qualified_id_built_from_a_guidless_release(self):
+        raw = {"indexerId": 25, "indexer": "MAM", "title": "Dune"}
+        built = build_source_id(raw)
+
+        assert ProwlarrHandler._raw_release_matches_task(raw, built)

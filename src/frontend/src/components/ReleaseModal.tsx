@@ -634,6 +634,8 @@ function ErrorState({ message }: { message: string }) {
 }
 
 
+const EMPTY_SUPPORTED_AUDIOBOOK_FORMATS: string[] = [];
+
 export const ReleaseModal = ({
   book,
   onClose,
@@ -643,7 +645,7 @@ export const ReleaseModal = ({
   getPolicyModeForSource,
   onPolicyRefresh,
   supportedFormats,
-  supportedAudiobookFormats = [],
+  supportedAudiobookFormats = EMPTY_SUPPORTED_AUDIOBOOK_FORMATS,
   contentType = 'ebook',
   defaultLanguages,
   bookLanguages,
@@ -1211,7 +1213,7 @@ export const ReleaseModal = ({
     const fromExtra = (columnConfig.extra_sort_options || []).map(opt => ({
       label: opt.label,
       sortKey: opt.sort_key,
-      defaultDirection: 'desc' as const,  // Extra sort options are typically numeric (e.g., peers)
+      defaultDirection: opt.default_direction ?? ('desc' as const),
     }));
     return [...fromColumns, ...fromExtra];
   }, [sortableColumns, columnConfig.extra_sort_options]);
@@ -2517,7 +2519,8 @@ export const ReleaseModal = ({
                     value={manualQuery}
                     onChange={(e) => setManualQuery(e.target.value)}
                     placeholder="Type a custom search query (overrides all sources)"
-                    className="w-full px-3 py-2 text-sm rounded-lg border border-(--border-muted) bg-(--bg) text-(--text)"
+                    aria-label="Custom search query"
+                    className="w-full rounded-lg border border-(--border-muted) bg-(--bg) px-3 py-2 text-sm text-(--text)"
                   />
                   <button
                     type="submit"

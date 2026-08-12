@@ -242,7 +242,7 @@ def test_download_task_rejects_unavailable_source_before_handler(monkeypatch):
     orchestrator.get_handler.assert_not_called()
 
 
-def test_queue_release_persists_generic_retry_resolution_fields(monkeypatch):
+def test_queue_release_persists_prowlarr_retry_context_without_download_url(monkeypatch):
     import shelfmark.download.orchestrator as orchestrator
 
     captured: dict[str, object] = {}
@@ -264,6 +264,7 @@ def test_queue_release_persists_generic_retry_resolution_fields(monkeypatch):
             "protocol": "torrent",
             "indexer": "MyIndexer",
             "extra": {
+                "indexer_id": 12,
                 "configured_ratio_limit": 1.25,
                 "configured_seed_time_minutes": 90,
                 "info_hash": "ABC123",
@@ -276,13 +277,22 @@ def test_queue_release_persists_generic_retry_resolution_fields(monkeypatch):
     assert success is True
     assert error is None
     task = captured["task"]
-    assert task.retry_download_url == "magnet:?xt=urn:btih:abc123"
-    assert task.retry_download_protocol == "torrent"
+    assert task.retry_download_url is None
+    assert task.retry_download_protocol is None
+    assert task.retry_source_context == {
+        "source_id": "prowlarr-release-1",
+        "indexer": "MyIndexer",
+        "indexer_id": 12,
+    }
     assert task.retry_release_name == "Queued Prowlarr Release"
     assert task.retry_expected_hash == "ABC123"
     assert task.retry_ratio_limit == 1.25
     assert task.retry_seeding_time_limit_minutes == 90
     assert task.can_retry_without_staged_source is True
+
+    payload = orchestrator.serialize_task_for_retry(task)
+    assert payload["retry_download_url"] is None
+    assert payload["retry_source_context"] == task.retry_source_context
 
 
 def test_queue_release_prefers_configured_seed_time_minutes_for_retry(monkeypatch):
@@ -414,3 +424,58 @@ def test_queue_release_returns_error_for_operational_queue_failure(monkeypatch):
 
     assert success is False
     assert error == "Error queueing release: queue offline"
+
+
+def _queue_and_capture(monkeypatch, release_data):
+    import shelfmark.download.orchestrator as orchestrator
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(orchestrator.config, "get", lambda key, default=None, user_id=None: default)
+    monkeypatch.setattr(
+        orchestrator.book_queue, "add", lambda task: captured.setdefault("task", task) or True
+    )
+    monkeypatch.setattr(orchestrator, "ws_manager", None)
+
+    success, error = orchestrator.queue_release(release_data, user_id=1, username="alice")
+
+    assert success is True, error
+    return captured["task"]
+
+
+def test_queue_release_carries_top_level_language(monkeypatch):
+    task = _queue_and_capture(
+        monkeypatch,
+        {
+            "source": "prowlarr",
+            "source_id": "release-sv",
+            "title": "Project Hail Mary",
+            "language": "sv",
+        },
+    )
+
+    assert task.language == "sv"
+
+
+def test_queue_release_falls_back_to_language_in_extra(monkeypatch):
+    # direct_download sets language inside extra as well as top level.
+    task = _queue_and_capture(
+        monkeypatch,
+        {
+            "source": "direct_download",
+            "source_id": "release-de",
+            "title": "Project Hail Mary",
+            "extra": {"language": "de"},
+        },
+    )
+
+    assert task.language == "de"
+
+
+def test_queue_release_without_language_leaves_it_unset(monkeypatch):
+    task = _queue_and_capture(
+        monkeypatch,
+        {"source": "prowlarr", "source_id": "release-none", "title": "Project Hail Mary"},
+    )
+
+    assert task.language is None
