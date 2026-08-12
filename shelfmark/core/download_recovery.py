@@ -534,8 +534,8 @@ def _list_qbittorrent(client: Any, category: str | None) -> list[tuple[str, Any]
         try:
             status = client.get_status(torrent_hash)
             results.append((torrent_hash, status))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+            logger.debug("qBittorrent status lookup failed for %s: %s", torrent_hash, exc)
 
     return results
 
@@ -556,10 +556,10 @@ def _list_nzbget(client: Any, category: str | None) -> list[tuple[str, Any]]:
                 try:
                     status = client.get_status(nzb_id)
                     results.append((nzb_id, status))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                    logger.debug("NZBGet queue status lookup failed for %s: %s", nzb_id, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("NZBGet queue scan failed: %s", exc)
 
     # History
     try:
@@ -572,10 +572,10 @@ def _list_nzbget(client: Any, category: str | None) -> list[tuple[str, Any]]:
                 try:
                     status = client.get_status(nzb_id)
                     results.append((nzb_id, status))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                    logger.debug("NZBGet history status lookup failed for %s: %s", nzb_id, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("NZBGet history scan failed: %s", exc)
 
     return results
 
@@ -596,10 +596,10 @@ def _list_sabnzbd(client: Any, category: str | None) -> list[tuple[str, Any]]:
                 try:
                     status = client.get_status(nzo_id)
                     results.append((nzo_id, status))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                    logger.debug("SABnzbd queue status lookup failed for %s: %s", nzo_id, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("SABnzbd queue scan failed: %s", exc)
 
     # History
     try:
@@ -612,10 +612,10 @@ def _list_sabnzbd(client: Any, category: str | None) -> list[tuple[str, Any]]:
                 try:
                     status = client.get_status(nzo_id)
                     results.append((nzo_id, status))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                    logger.debug("SABnzbd history status lookup failed for %s: %s", nzo_id, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("SABnzbd history scan failed: %s", exc)
 
     return results
 
@@ -636,10 +636,10 @@ def _list_transmission(client: Any, category: str | None) -> list[tuple[str, Any
             try:
                 status = client.get_status(torrent_hash)
                 results.append((torrent_hash, status))
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                logger.debug("Transmission status lookup failed for %s: %s", torrent_hash, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("Transmission scan failed: %s", exc)
     return results
 
 
@@ -656,10 +656,10 @@ def _list_deluge(client: Any, category: str | None) -> list[tuple[str, Any]]:
             try:
                 status = client.get_status(torrent_hash)
                 results.append((torrent_hash, status))
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                logger.debug("Deluge status lookup failed for %s: %s", torrent_hash, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("Deluge scan failed: %s", exc)
     return results
 
 
@@ -682,10 +682,10 @@ def _list_rtorrent(client: Any, category: str | None) -> list[tuple[str, Any]]:
                 try:
                     status = client.get_status(torrent_hash)
                     results.append((torrent_hash, status))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - per-item, keep scanning
+                    logger.debug("rTorrent status lookup failed for %s: %s", torrent_hash, exc)
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("rTorrent scan failed: %s", exc)
     return results
 
 
@@ -931,5 +931,5 @@ def _broadcast_status() -> None:
         from shelfmark.download.orchestrator import queue_status
 
         _ws_manager.broadcast_status_update(queue_status())
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - client libraries raise their own types
+        logger.debug("WebSocket status broadcast failed: %s", exc)
