@@ -2002,5 +2002,14 @@ def advanced_settings() -> list[SettingsField]:
 
 register_on_save("advanced", _on_save_advanced)
 
-import shelfmark.config.integrations_settings as _
-import shelfmark.config.monitored_settings as _  # noqa: F401 - registers release_scoring tab
+# Branch-only settings tabs. Importing each module runs its register_settings()/
+# register_group() calls, so they must load *after* the registrations above.
+# import_module keeps that intent explicit — a plain import here reads as unused
+# to both ruff and vulture, since the binding is never referenced.
+import importlib  # noqa: E402
+
+for _tab_module in (
+    "shelfmark.config.integrations_settings",
+    "shelfmark.config.monitored_settings",
+):
+    importlib.import_module(_tab_module)
