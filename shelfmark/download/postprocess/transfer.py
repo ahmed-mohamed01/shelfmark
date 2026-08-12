@@ -527,8 +527,8 @@ def transfer_directory_to_library(
             final_path, op = _transfer_single_file(
                 source_file,
                 dest_path,
-                use_hardlink,
-                is_torrent,
+                use_hardlink=use_hardlink,
+                is_torrent=is_torrent,
                 max_attempts=max_attempts,
                 duplicate_file_behavior=duplicate_file_behavior,
             )

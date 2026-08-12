@@ -29,7 +29,9 @@ def test_single_file_rename_can_use_primary_title(tmp_path: Path, monkeypatch):
     source_file.write_text("book")
 
     monkeypatch.setattr(
-        "shelfmark.download.postprocess.transfer.get_template",
+        # Branch-only: transfer.py resolves templates via monitored_overrides,
+        # which wraps policy.get_template — patch there, not on transfer.
+        "shelfmark.download.postprocess.monitored_overrides.get_template",
         lambda *, is_audiobook, organization_mode: "{Author} - {PrimaryTitle}",
     )
 
