@@ -211,7 +211,6 @@ class UserDB:
             finally:
                 conn.close()
 
-
     def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
         """Ensure users.auth_source exists and backfill historical rows."""
         columns = conn.execute("PRAGMA table_info(users)").fetchall()

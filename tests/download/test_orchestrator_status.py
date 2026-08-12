@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock
-from threading import Event
 
 from shelfmark.core.models import DownloadTask, SearchMode
 
@@ -81,7 +80,10 @@ def test_download_task_records_monitored_attempt_when_postprocess_returns_none(m
     assert row["provider"] == "hardcover"
     assert row["provider_book_id"] == "book-42"
     assert row["user_ids"] == [9]
-    assert row["error_message"] == "Path '/plex/downloads/...' is not accessible from Shelfmark's container"
+    assert (
+        row["error_message"]
+        == "Path '/plex/downloads/...' is not accessible from Shelfmark's container"
+    )
 
 
 def test_download_task_records_monitored_attempt_when_handler_returns_none(monkeypatch):
@@ -129,7 +131,10 @@ def test_download_task_records_monitored_attempt_when_handler_returns_none(monke
     assert row["provider"] == "hardcover"
     assert row["provider_book_id"] == "book-42"
     assert row["user_ids"] == [9]
-    assert row["error_message"] == "Path '/plex/downloads/torrents/complete/readarr/...' is not accessible from Shelfmark's container"
+    assert (
+        row["error_message"]
+        == "Path '/plex/downloads/torrents/complete/readarr/...' is not accessible from Shelfmark's container"
+    )
 
 
 def test_update_download_progress_dedupes_identical_progress_for_activity(monkeypatch):

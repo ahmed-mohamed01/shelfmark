@@ -47,12 +47,12 @@ def _build_processing_plan(
     task: DownloadTask,
     status_callback: StatusCallback,
 ) -> _ProcessingPlan | None:
+    from shelfmark.download.postprocess.monitored_overrides import get_file_organization_for_task
     from shelfmark.download.postprocess.pipeline import (
         build_output_plan,
         get_final_destination,
         validate_destination,
     )
-    from shelfmark.download.postprocess.monitored_overrides import get_file_organization_for_task
 
     organization_mode = get_file_organization_for_task(task)
     destination = get_final_destination(task)

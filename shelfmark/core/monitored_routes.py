@@ -300,7 +300,7 @@ def enrich_release_for_monitored(
                         if rd:
                             release_payload["release_date"] = rd
                         break
-    except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
+    except Exception:
         logger.warning(
             "Failed to enrich release for monitored entity %s", monitored_entity_id, exc_info=True
         )
@@ -936,7 +936,7 @@ def register_monitored_routes(
                         row["best_book_cover_url"] = transform_cover_url(
                             info["cover_url"], cache_id
                         )
-            except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
+            except Exception:
                 logger.warning("Failed to compute best book covers for fallback", exc_info=True)
         _t_covers = _time.perf_counter()
 
@@ -3234,7 +3234,7 @@ def register_monitored_routes(
                     _backfill_search_author_photos(
                         provider, authors_missing_photo, transform_cover_url
                     )
-                except Exception:  # noqa: BLE001 — route-boundary defensive catch; logs the error and degrades to a safe response rather than crashing the request
+                except Exception:
                     logger.debug("Failed to backfill search author photos", exc_info=True)
 
             has_more = False

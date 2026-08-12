@@ -11,10 +11,10 @@ Directory layout:
 """
 
 import json
-import time
 import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from shelfmark.core.logger import setup_logger
 
@@ -31,7 +31,7 @@ class MetadataFileCache:
         self.cache_dir = cache_dir
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
-        self._mem: Dict[str, Dict[str, Any]] = {}
+        self._mem: dict[str, dict[str, Any]] = {}
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -50,7 +50,7 @@ class MetadataFileCache:
     def _mem_key(self, kind: str, provider: str, item_id: str) -> str:
         return f"{kind}:{provider}:{item_id}"
 
-    def get(self, kind: str, provider: str, item_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, kind: str, provider: str, item_id: str) -> dict[str, Any] | None:
         """Get cached metadata, checking memory first then disk.
 
         Returns the cached payload dict, or None if missing/expired.
@@ -88,7 +88,7 @@ class MetadataFileCache:
             logger.debug(f"Metadata cache read error for {kind}/{provider}/{item_id}: {e}")
             return None
 
-    def set(self, kind: str, provider: str, item_id: str, data: Dict[str, Any]) -> None:
+    def set(self, kind: str, provider: str, item_id: str, data: dict[str, Any]) -> None:
         """Store metadata to memory and disk."""
         entry = {
             "data": data,
@@ -121,7 +121,7 @@ class MetadataFileCache:
         except OSError:
             pass
 
-    def _is_valid(self, entry: Dict[str, Any]) -> bool:
+    def _is_valid(self, entry: dict[str, Any]) -> bool:
         """Check if a cache entry is still within TTL."""
         cached_at = entry.get("cached_at", 0)
         ttl = entry.get("ttl", self.ttl_seconds)
@@ -153,12 +153,12 @@ class MetadataFileCache:
                         if not self._is_valid(entry):
                             path.unlink()
                             removed += 1
-                    except (json.JSONDecodeError, OSError):
+                    except json.JSONDecodeError, OSError:
                         pass
 
         return removed
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
         mem_count = len(self._mem)
         disk_count = 0
@@ -187,7 +187,7 @@ class MetadataFileCache:
 # Singleton
 # ---------------------------------------------------------------------------
 
-_instance: Optional[MetadataFileCache] = None
+_instance: MetadataFileCache | None = None
 _instance_lock = threading.Lock()
 
 
@@ -208,10 +208,7 @@ def get_metadata_file_cache() -> MetadataFileCache:
                     cache_dir=cache_dir,
                     ttl_seconds=ttl_seconds,
                 )
-                logger.debug(
-                    f"Initialized metadata file cache: {cache_dir} "
-                    f"(TTL {ttl_days} days)"
-                )
+                logger.debug(f"Initialized metadata file cache: {cache_dir} (TTL {ttl_days} days)")
     return _instance
 
 

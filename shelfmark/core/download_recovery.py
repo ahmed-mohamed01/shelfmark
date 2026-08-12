@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import threading
+import time
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
@@ -44,7 +44,7 @@ _RECOVERY_STALL_TIMEOUT = 3600  # 1 hour with no progress change → give up
 # The general recovery path bypasses book_queue's terminal-status hook, so layered
 # concerns (e.g. monitored events, monitored_book_download_history) need this hook
 # to learn about completion. Branch-only — no Rule #1 conflict.
-_recovery_complete_hooks: List[Callable[[str, str], None]] = []
+_recovery_complete_hooks: list[Callable[[str, str], None]] = []
 
 
 def register_recovery_complete_hook(hook: Callable[[str, str], None]) -> None:
@@ -58,7 +58,7 @@ def register_recovery_complete_hook(hook: Callable[[str, str], None]) -> None:
 
 
 def _fire_recovery_complete_hooks(task_id: str, final_path: str) -> None:
-    for hook in list(_recovery_complete_hooks):
+    for hook in _recovery_complete_hooks:
         try:
             hook(task_id, final_path)
         except Exception as exc:
@@ -85,6 +85,7 @@ def register(
 
     # Persist download_id when the handler receives it from the client
     from shelfmark.download.clients.base_handler import ExternalClientHandler
+
     ExternalClientHandler._download_id_hook = _on_download_id_available
 
 
@@ -108,10 +109,10 @@ def startup_recover() -> None:
 def retry_interrupted(
     book_id: str,
     *,
-    actor_user_id: Optional[int] = None,
-    actor_username: Optional[str] = None,
+    actor_user_id: int | None = None,
+    actor_username: str | None = None,
     is_admin: bool = False,
-) -> Tuple[bool, Optional[str], int]:
+) -> tuple[bool, str | None, int]:
     """Retry an interrupted download that is no longer in the in-memory queue.
 
     Returns (success, error_message, http_status_code).
@@ -152,7 +153,7 @@ def retry_interrupted(
 def _try_client_recovery_for_retry(
     row: dict,
     download_id: str,
-) -> Optional[Tuple[bool, Optional[str], int]]:
+) -> tuple[bool, str | None, int] | None:
     """Check if a download client still has this item and handle accordingly.
 
     Returns a (success, error, status_code) tuple if the client had the item,
@@ -243,8 +244,8 @@ def _startup_recover_sync() -> None:
         logger.info("Found %d stale active download(s), recovering...", len(stale_rows))
 
         # Build lookup: download_id → row (only rows that have a persisted download_id)
-        by_download_id: Dict[str, dict] = {}
-        rows_without_id: List[dict] = []
+        by_download_id: dict[str, dict] = {}
+        rows_without_id: list[dict] = []
         for row in stale_rows:
             dl_id = row.get("download_id")
             if dl_id and isinstance(dl_id, str) and dl_id.strip():
@@ -256,6 +257,7 @@ def _startup_recover_sync() -> None:
         recovered_task_ids: set[str] = set()
         if by_download_id:
             from shelfmark.download.clients import list_configured_clients
+
             for protocol in list_configured_clients():
                 try:
                     recovered_ids = _scan_client_for_recovery(protocol, by_download_id)
@@ -283,7 +285,9 @@ def _startup_recover_sync() -> None:
         if total > 0:
             logger.info(
                 "Recovery complete: %d from client(s), %d re-queued fresh (of %d stale)",
-                len(recovered_task_ids), requeued, len(stale_rows),
+                len(recovered_task_ids),
+                requeued,
+                len(stale_rows),
             )
             _broadcast_status()
         else:
@@ -327,7 +331,12 @@ def _verify_completed_downloads() -> None:
         task_id = row.get("task_id", "")
         download_id = row.get("download_id", "")
         title = row.get("title") or "Unknown"
-        logger.warning("File verification: missing file for completed download %s (%s): %s", task_id, title, download_path)
+        logger.warning(
+            "File verification: missing file for completed download %s (%s): %s",
+            task_id,
+            title,
+            download_path,
+        )
 
         # Try to recover from download client
         recovered = False
@@ -341,7 +350,9 @@ def _verify_completed_downloads() -> None:
                 continue
 
             # Skip "not found" errors
-            state_str = str(getattr(status, "state", "")).lower() if hasattr(status, "state") else ""
+            state_str = (
+                str(getattr(status, "state", "")).lower() if hasattr(status, "state") else ""
+            )
             msg_str = str(getattr(status, "message", "") or "").lower()
             if state_str == "error" and "not found" in msg_str:
                 continue
@@ -374,13 +385,14 @@ def _verify_completed_downloads() -> None:
 
 def _scan_client_for_recovery(
     protocol: str,
-    by_download_id: Dict[str, dict],
+    by_download_id: dict[str, dict],
 ) -> set[str]:
     """Scan a single download client and recover matching stale downloads.
 
     Returns the set of task_ids that were handled (recovered, resumed, or finalized).
     """
     from shelfmark.download.clients import get_client
+
     client = get_client(protocol)
     if client is None:
         return set()
@@ -407,7 +419,10 @@ def _scan_client_for_recovery(
                 if status.complete:
                     _recover_completed(client, dl_id, protocol, row)
                     recovered_ids.add(task_id)
-                elif hasattr(status, "state") and str(getattr(status, "state", "")).lower() == "error":
+                elif (
+                    hasattr(status, "state")
+                    and str(getattr(status, "state", "")).lower() == "error"
+                ):
                     _finalize_as_error(row, "Download failed in client")
                     recovered_ids.add(task_id)
                 else:
@@ -423,7 +438,9 @@ def _scan_client_for_recovery(
             except Exception as exc:
                 logger.warning(
                     "Failed to recover download %s (client id %s): %s",
-                    task_id, dl_id, exc,
+                    task_id,
+                    dl_id,
+                    exc,
                 )
 
     return recovered_ids
@@ -434,9 +451,9 @@ def _scan_client_for_recovery(
 # ---------------------------------------------------------------------------
 
 
-def _get_shelfmark_categories(client: Any) -> List[Optional[str]]:
+def _get_shelfmark_categories(client: Any) -> list[str | None]:
     """Return the list of categories Shelfmark uses for the given client."""
-    categories: List[Optional[str]] = [None]  # None = default category
+    categories: list[str | None] = [None]  # None = default category
 
     audiobook_keys = {
         "qbittorrent": "QBITTORRENT_CATEGORY_AUDIOBOOK",
@@ -456,14 +473,14 @@ def _get_shelfmark_categories(client: Any) -> List[Optional[str]]:
 
 def _list_client_downloads(
     client: Any,
-    category: Optional[str],
-) -> List[Tuple[str, Any]]:
+    category: str | None,
+) -> list[tuple[str, Any]]:
     """List all downloads in a client, optionally filtered by category.
 
     Returns [(download_id, DownloadStatus), ...].
     Uses client-specific APIs directly since we can't modify the ABC.
     """
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     client_name = getattr(client, "name", "")
 
     try:
@@ -485,7 +502,7 @@ def _list_client_downloads(
     return results
 
 
-def _list_qbittorrent(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_qbittorrent(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List qBittorrent torrents, optionally filtered by category."""
     # Use the client's internal method to query torrents by category
     params: dict[str, str] = {}
@@ -509,7 +526,7 @@ def _list_qbittorrent(client: Any, category: Optional[str]) -> List[Tuple[str, A
         logger.debug("qBittorrent category scan failed: %s", exc)
         return []
 
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     for t in torrents:
         torrent_hash = getattr(t, "hash", "")
         if not torrent_hash:
@@ -523,9 +540,9 @@ def _list_qbittorrent(client: Any, category: Optional[str]) -> List[Tuple[str, A
     return results
 
 
-def _list_nzbget(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_nzbget(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List NZBGet downloads."""
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     cat_filter = category or config.get("NZBGET_CATEGORY", "Books")
 
     # Active queue
@@ -563,9 +580,9 @@ def _list_nzbget(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
     return results
 
 
-def _list_sabnzbd(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_sabnzbd(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List SABnzbd downloads."""
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     cat_filter = category or config.get("SABNZBD_CATEGORY", "books")
 
     # Queue
@@ -603,9 +620,9 @@ def _list_sabnzbd(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]
     return results
 
 
-def _list_transmission(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_transmission(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List Transmission torrents."""
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     try:
         torrents = client._client.get_torrents()
         for t in torrents:
@@ -626,9 +643,9 @@ def _list_transmission(client: Any, category: Optional[str]) -> List[Tuple[str, 
     return results
 
 
-def _list_deluge(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_deluge(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List Deluge torrents."""
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     try:
         # Deluge uses web UI JSON-RPC
         response = client._call("web.update_ui", [["hash", "label", "state", "progress"], {}])
@@ -646,12 +663,13 @@ def _list_deluge(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
     return results
 
 
-def _list_rtorrent(client: Any, category: Optional[str]) -> List[Tuple[str, Any]]:
+def _list_rtorrent(client: Any, category: str | None) -> list[tuple[str, Any]]:
     """List rTorrent downloads."""
-    results: List[Tuple[str, Any]] = []
+    results: list[tuple[str, Any]] = []
     try:
         torrents = client._client.d.multicall2(
-            "", "main",
+            "",
+            "main",
             "d.hash=",
             "d.custom1=",
         )
@@ -712,7 +730,7 @@ def _recover_completed(
     try:
         from shelfmark.download.postprocess.router import post_process_download
 
-        def noop_status(status: str, message: Optional[str] = None) -> None:
+        def noop_status(status: str, message: str | None = None) -> None:
             pass
 
         result = post_process_download(
@@ -797,7 +815,9 @@ def _poll_client_until_complete(
         elif now - last_progress_change > _RECOVERY_STALL_TIMEOUT:
             logger.warning(
                 "Recovery: download %s stalled (%.1f%% for %ds), giving up",
-                task_id, current_progress, _RECOVERY_STALL_TIMEOUT,
+                task_id,
+                current_progress,
+                _RECOVERY_STALL_TIMEOUT,
             )
             _finalize_as_error(row, f"Download stalled at {current_progress:.1f}%")
             _broadcast_status()
@@ -839,15 +859,16 @@ def _reconstruct_task_from_history(row: dict) -> DownloadTask:
     is_audiobook = check_audiobook(content_type)
 
     # Resolve output_mode from current config (same logic as queue_release)
-    books_output_mode = str(
-        config.get("BOOKS_OUTPUT_MODE", "folder", user_id=user_id) or "folder"
-    ).strip().lower()
+    books_output_mode = (
+        str(config.get("BOOKS_OUTPUT_MODE", "folder", user_id=user_id) or "folder").strip().lower()
+    )
     output_mode = "folder" if is_audiobook else books_output_mode
-    output_args: Dict[str, Any] = {}
+    output_args: dict[str, Any] = {}
 
     if output_mode == "email" and not is_audiobook:
         # Private import — acceptable for branch-only code to avoid upstream changes
-        from shelfmark.download.orchestrator import _resolve_email_destination  # noqa: PLC2701
+        from shelfmark.download.orchestrator import _resolve_email_destination
+
         email_to, _ = _resolve_email_destination(user_id=user_id)
         if email_to:
             output_args = {"to": email_to}
@@ -884,15 +905,15 @@ def _reconstruct_task_from_history(row: dict) -> DownloadTask:
 
 def _check_ownership(
     row: dict,
-    actor_user_id: Optional[int],
-    actor_username: Optional[str],
+    actor_user_id: int | None,
+    actor_username: str | None,
 ) -> bool:
     """Check if the actor owns the download based on DB row fields."""
     row_user_id = row.get("user_id")
     if actor_user_id is not None and row_user_id is not None:
         try:
             return int(row_user_id) == actor_user_id
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     row_username = row.get("username")
@@ -908,6 +929,7 @@ def _broadcast_status() -> None:
         return
     try:
         from shelfmark.download.orchestrator import queue_status
+
         _ws_manager.broadcast_status_update(queue_status())
     except Exception:
         pass
