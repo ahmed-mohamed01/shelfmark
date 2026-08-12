@@ -678,13 +678,7 @@ def register_monitored_routes(
                     # the operator's TZ env var.
                     now = datetime.now().astimezone()
                     slot = now.strftime("%H:%M")
-                    # Read MONITORED_REFRESH_TIMES from disk rather than the
-                    # config cache: bound fields inside CustomComponentField
-                    # are not loaded into Config._cache (upstream bug), so the
-                    # cache always returns the default fallback.
-                    raw_times = load_config_file("monitoring_schedules").get(
-                        "MONITORED_REFRESH_TIMES"
-                    )
+                    raw_times = app_config.get("MONITORED_REFRESH_TIMES", "02:00,14:00")
                     schedule_times = _parse_schedule_times(raw_times)
 
                     if slot in schedule_times:

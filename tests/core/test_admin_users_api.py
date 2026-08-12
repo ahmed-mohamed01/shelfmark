@@ -1181,6 +1181,10 @@ class TestAdminDeliveryPreferences:
         assert data["keys"] == [
             "BOOKS_OUTPUT_MODE",
             "DESTINATION",
+            # Branch-only: the monitored feature adds per-user library roots to
+            # the curated delivery-preference list.
+            "MONITORED_EBOOK_ROOTS",
+            "MONITORED_AUDIOBOOK_ROOTS",
             "BOOKLORE_LIBRARY_ID",
             "BOOKLORE_PATH_ID",
             "EMAIL_RECIPIENT",
