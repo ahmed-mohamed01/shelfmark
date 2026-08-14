@@ -613,10 +613,9 @@ def atomic_move(
                     return dest_path
                 except Exception as fallback_error:
                     logger.exception(
-                        "NFS fallback also failed (%s -> %s): %s",
+                        "NFS fallback also failed (%s -> %s)",
                         source_path,
                         dest_path,
-                        fallback_error,
                     )
                     raise e from fallback_error
             raise
@@ -914,10 +913,9 @@ def atomic_copy(
                         _perform_nfs_fallback(source_path, temp_path, is_move=False)
                     except Exception as fallback_error:
                         logger.exception(
-                            "NFS fallback also failed (%s -> %s): %s",
+                            "NFS fallback also failed (%s -> %s)",
                             source_path,
                             temp_path,
-                            fallback_error,
                         )
                         raise e from fallback_error
                 else:

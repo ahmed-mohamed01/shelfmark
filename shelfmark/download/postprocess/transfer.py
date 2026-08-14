@@ -532,7 +532,7 @@ def transfer_directory_to_library(
                 max_attempts=max_attempts,
                 duplicate_file_behavior=duplicate_file_behavior,
             )
-            logger.debug(f"Library {op}: {source_file.name} -> {final_path}")
+            logger.debug("Library %s: %s -> %s", op, source_file.name, final_path)
             transferred_paths.append(final_path)
             op_counts[op] = op_counts.get(op, 0) + 1
     else:

@@ -30,7 +30,7 @@ DEFAULT_TTL = 7 * 24 * 60 * 60
 class MetadataFileCache:
     """Thread-safe file-based JSON cache with TTL."""
 
-    def __init__(self, cache_dir: Path, ttl_seconds: int = DEFAULT_TTL):
+    def __init__(self, cache_dir: Path, ttl_seconds: int = DEFAULT_TTL) -> None:
         self.cache_dir = cache_dir
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
@@ -43,7 +43,7 @@ class MetadataFileCache:
             for sub in ("authors", "books"):
                 (self.cache_dir / sub).mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            logger.warning(f"Could not create metadata cache dirs: {e}")
+            logger.warning("Could not create metadata cache dirs: %s", e)
 
     def _path(self, kind: str, provider: str, item_id: str) -> Path:
         """Return file path for a cache entry."""
@@ -86,7 +86,7 @@ class MetadataFileCache:
                 self._mem[key] = entry
             return entry.get("data")
         except (json.JSONDecodeError, OSError) as e:
-            logger.debug(f"Metadata cache read error for {kind}/{provider}/{item_id}: {e}")
+            logger.debug("Metadata cache read error for %s/%s/%s: %s", kind, provider, item_id, e)
             return None
 
     def set(self, kind: str, provider: str, item_id: str, data: dict[str, Any]) -> None:
@@ -107,7 +107,9 @@ class MetadataFileCache:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(entry, indent=2))
         except OSError as e:
-            logger.warning(f"Metadata cache write error for {kind}/{provider}/{item_id}: {e}")
+            logger.warning(
+                "Metadata cache write error for %s/%s/%s: %s", kind, provider, item_id, e
+            )
 
     def invalidate(self, kind: str, provider: str, item_id: str) -> None:
         """Remove a cache entry from memory and disk."""
@@ -207,7 +209,9 @@ def get_metadata_file_cache() -> MetadataFileCache:
                     cache_dir=cache_dir,
                     ttl_seconds=ttl_seconds,
                 )
-                logger.debug(f"Initialized metadata file cache: {cache_dir} (TTL {ttl_days} days)")
+                logger.debug(
+                    "Initialized metadata file cache: %s (TTL %s days)", cache_dir, ttl_days
+                )
     return _instance
 
 

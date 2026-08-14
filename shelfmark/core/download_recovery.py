@@ -13,7 +13,6 @@ upstream merge conflicts.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -295,8 +294,8 @@ def _startup_recover_sync() -> None:
         # Phase 3: verify recently completed downloads still have files on disk
         _verify_completed_downloads()
 
-    except Exception as exc:
-        logger.exception("Startup download recovery failed: %s", exc)
+    except Exception:
+        logger.exception("Startup download recovery failed")
 
 
 def _verify_completed_downloads() -> None:
@@ -324,7 +323,7 @@ def _verify_completed_downloads() -> None:
     repaired = 0
     for row in rows:
         download_path = row.get("download_path")
-        if not download_path or os.path.exists(download_path):
+        if not download_path or Path(download_path).exists():
             continue  # File is present — all good
 
         task_id = row.get("task_id", "")
@@ -758,7 +757,7 @@ def _recover_completed(
             logger.warning("Recovery: post-processing failed for %s", task_id)
 
     except Exception as exc:
-        logger.exception("Recovery: import failed for %s: %s", task_id, exc)
+        logger.exception("Recovery: import failed for %s", task_id)
         _finalize_as_error(row, f"Recovery import failed: {exc}")
 
 

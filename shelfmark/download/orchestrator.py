@@ -273,7 +273,11 @@ def queue_release(
             or extra.get("publication_date")
             or extra.get("publish_date")
         )
-        if explicit_release_date is not None and date.today() < explicit_release_date:
+        # Local date, not UTC: "is this book out yet" is a wall-clock question for
+        # the operator, and astimezone() respects the container's TZ. Matches the
+        # scheduled-refresh loop in monitored_routes.
+        today = datetime.now().astimezone().date()
+        if explicit_release_date is not None and today < explicit_release_date:
             return False, f"Book is unreleased until {explicit_release_date.isoformat()}"
 
         # Get author, year, preview, and content_type from top-level (preferred) or extra (fallback)

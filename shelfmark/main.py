@@ -574,7 +574,9 @@ if user_db is not None:
             app,
             user_db,
             monitored_db,
-            resolve_auth_mode=lambda: get_auth_mode(),
+            # Late binding is deliberate: resolve_auth_mode() is called per request,
+            # and tests patch main.get_auth_mode after this registration runs.
+            resolve_auth_mode=lambda: get_auth_mode(),  # noqa: PLW0108
             ws_manager=ws_manager,
         )
     except _IMPORT_OPERATIONAL_ERRORS as e:
