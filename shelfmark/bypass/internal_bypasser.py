@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import random
-import shutil
 import signal
 import socket
 import stat
@@ -28,6 +27,14 @@ from seleniumbase import cdp_driver
 from seleniumbase.undetected.cdp_driver.connection import ProtocolException
 
 from shelfmark.bypass import BypassCancelledError
+from shelfmark.bypass.cookie_store import (
+    clear_cf_cookies,
+    export_store,
+    get_cf_cookies_for_domain,
+    get_cf_user_agent_for_domain,
+    import_store,
+    store_extracted_cookies,
+)
 from shelfmark.bypass.fingerprint import get_screen_size
 from shelfmark.config import env
 from shelfmark.config.env import LOG_DIR
@@ -54,6 +61,7 @@ _BYPASS_SUBPROCESS_TIMEOUT_SECONDS = 420.0
 # branches of get() are bounded the same way.
 _IN_PROCESS_BYPASS_TIMEOUT_SECONDS = _BYPASS_SUBPROCESS_TIMEOUT_SECONDS
 _BYPASS_CHILD_ENV = "SHELFMARK_INTERNAL_BYPASSER_CHILD"
+_PARENT_WATCHDOG_INTERVAL_SECONDS = 5.0
 
 # Challenge detection indicators
 CLOUDFLARE_INDICATORS = [
@@ -90,8 +98,8 @@ DISPLAY: _DisplayState = {
     "ffmpeg_output": None,
 }
 LOCKED = threading.Lock()
-_PGREP_PATH = shutil.which("pgrep")
-_PKILL_PATH = shutil.which("pkill")
+_PROC_ROOT = Path("/proc")
+_BROWSER_PROCESS_PATTERNS = ("chrome", "chromium", "Xvfb", "ffmpeg")
 _RNG = random.SystemRandom()
 
 _CDP_OPERATION_ERRORS = (
@@ -231,96 +239,6 @@ class _CdpWorker:
 
 _CDP_WORKER = _CdpWorker()
 
-# Cookie storage - shared with requests library for Cloudflare bypass
-# Nested mapping of domain to cookie name to cookie metadata.
-_cf_cookies: dict[str, dict] = {}
-_cf_cookies_lock = threading.Lock()
-
-# User-Agent storage - Cloudflare ties cf_clearance to the UA that solved the challenge
-_cf_user_agents: dict[str, str] = {}
-
-# Protection cookie names we care about (Cloudflare and DDoS-Guard)
-CF_COOKIE_NAMES = {"cf_clearance", "__cf_bm", "cf_chl_2", "cf_chl_prog"}
-DDG_COOKIE_NAMES = {
-    "__ddg1_",
-    "__ddg2_",
-    "__ddg5_",
-    "__ddg8_",
-    "__ddg9_",
-    "__ddg10_",
-    "__ddgid_",
-    "__ddgmark_",
-    "ddg_last_challenge",
-}
-
-
-def _get_base_domain(domain: str) -> str:
-    """Extract base domain from hostname (e.g., 'www.example.com' -> 'example.com')."""
-    return ".".join(domain.split(".")[-2:]) if "." in domain else domain
-
-
-def _get_full_cookie_domains() -> set[str]:
-    """Return mirror domains that need full-session cookie extraction."""
-    from shelfmark.core.mirrors import get_zlib_cookie_domains
-
-    return {_get_base_domain(domain) for domain in get_zlib_cookie_domains()}
-
-
-def _should_extract_cookie(name: str, *, extract_all: bool) -> bool:
-    """Determine if a cookie should be extracted based on its name."""
-    if extract_all:
-        return True
-    is_cf = name in CF_COOKIE_NAMES or name.startswith("cf_")
-    is_ddg = name in DDG_COOKIE_NAMES or name.startswith("__ddg")
-    return is_cf or is_ddg
-
-
-def _store_extracted_cookies(
-    *,
-    url: str,
-    cookies: list[Any],
-    user_agent: str | None = None,
-) -> None:
-    """Store filtered bypass cookies (and optional UA) for a URL domain."""
-    parsed = urlparse(url)
-    domain = parsed.hostname or ""
-    if not domain:
-        return
-
-    base_domain = _get_base_domain(domain)
-    extract_all = base_domain in _get_full_cookie_domains()
-
-    cookies_found: dict[str, dict[str, Any]] = {}
-    for cookie in cookies:
-        name = getattr(cookie, "name", "") or ""
-        if not _should_extract_cookie(name, extract_all=extract_all):
-            continue
-        expires = getattr(cookie, "expires", None)
-        if expires is not None and expires <= 0:
-            expires = None
-        cookies_found[name] = {
-            "value": getattr(cookie, "value", ""),
-            "domain": getattr(cookie, "domain", None) or domain,
-            "path": getattr(cookie, "path", None) or "/",
-            "expiry": expires,
-            "secure": bool(getattr(cookie, "secure", True)),
-            "httpOnly": True,
-        }
-
-    if not cookies_found:
-        return
-
-    with _cf_cookies_lock:
-        _cf_cookies[base_domain] = cookies_found
-        if user_agent:
-            _cf_user_agents[base_domain] = user_agent
-            logger.debug("Stored UA for %s: %s...", base_domain, str(user_agent)[:60])
-        else:
-            logger.debug("No UA captured for %s", base_domain)
-
-    cookie_type = "all" if extract_all else "protection"
-    logger.debug("Extracted %s %s cookies for %s", len(cookies_found), cookie_type, base_domain)
-
 
 async def _extract_cookies_from_cdp(driver: Any, page: Any, url: str) -> None:
     """Extract cookies from a CDP browser after successful bypass."""
@@ -336,117 +254,116 @@ async def _extract_cookies_from_cdp(driver: Any, page: Any, url: str) -> None:
         except _CDP_OPERATION_ERRORS:
             user_agent = None
 
-        _store_extracted_cookies(url=url, cookies=all_cookies, user_agent=user_agent)
+        store_extracted_cookies(url=url, cookies=all_cookies, user_agent=user_agent)
 
     except _CDP_OPERATION_ERRORS as e:
         logger.debug("Failed to extract cookies: %s", e)
 
 
-def get_cf_cookies_for_domain(domain: str) -> dict[str, str]:
-    """Get stored cookies for a domain. Returns empty dict if none available."""
-    if not domain:
-        return {}
-
-    base_domain = _get_base_domain(domain)
-
-    with _cf_cookies_lock:
-        cookies = _cf_cookies.get(base_domain, {})
-        if not cookies:
-            return {}
-
-        cf_clearance = cookies.get("cf_clearance", {})
-        if cf_clearance:
-            expiry = cf_clearance.get("expiry")
-            if expiry is None:
-                expiry = cf_clearance.get("expires")
-            if expiry and expiry > 0 and time.time() > expiry:
-                logger.debug("CF cookies expired for %s", base_domain)
-                _cf_cookies.pop(base_domain, None)
-                return {}
-
-        return {name: c["value"] for name, c in cookies.items()}
+def _read_process_cmdline(proc_dir: Path) -> str:
+    """Return a process's full command line, or "" when it cannot be read."""
+    try:
+        raw = (proc_dir / "cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
 
 
-def has_valid_cf_cookies(domain: str) -> bool:
-    """Check if we have valid Cloudflare cookies for a domain."""
-    return bool(get_cf_cookies_for_domain(domain))
-
-
-def get_cf_user_agent_for_domain(domain: str) -> str | None:
-    """Get the User-Agent that was used during bypass for a domain."""
-    if not domain:
+def _read_process_pgid(proc_dir: Path) -> int | None:
+    """Return a process's group id from /proc/<pid>/stat, or None when unreadable."""
+    try:
+        stat_line = (proc_dir / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return None
-    with _cf_cookies_lock:
-        return _cf_user_agents.get(_get_base_domain(domain))
+    # Field 2 (comm) is parenthesised and may itself contain spaces and parens, so the
+    # fields are only unambiguous after the last ')': state, ppid, pgrp, ...
+    fields = stat_line.rpartition(")")[2].split()
+    pgrp_index = 2
+    if len(fields) <= pgrp_index:
+        return None
+    try:
+        return int(fields[pgrp_index])
+    except ValueError:
+        return None
 
 
-def clear_cf_cookies(domain: str | None = None) -> None:
-    """Clear stored Cloudflare cookies and User-Agent. If domain is None, clear all."""
-    with _cf_cookies_lock:
-        if domain:
-            base_domain = _get_base_domain(domain)
-            _cf_cookies.pop(base_domain, None)
-            _cf_user_agents.pop(base_domain, None)
-        else:
-            _cf_cookies.clear()
-            _cf_user_agents.clear()
+def _find_browser_processes() -> list[tuple[int, int, str]]:
+    """Return (pid, pgid, cmdline) for every browser-ish process visible in /proc."""
+    found: list[tuple[int, int, str]] = []
+    try:
+        entries = list(_PROC_ROOT.iterdir())
+    except OSError as e:
+        logger.debug("Could not list %s: %s", _PROC_ROOT, e)
+        return found
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        cmdline = _read_process_cmdline(entry)
+        if not cmdline or not any(name in cmdline for name in _BROWSER_PROCESS_PATTERNS):
+            continue
+        pgid = _read_process_pgid(entry)
+        if pgid is None:
+            continue
+        found.append((int(entry.name), pgid, cmdline))
+    return found
+
+
+def _kill_process(pid: int, cmdline: str) -> bool:
+    """SIGKILL one process, reporting whether it was actually signalled."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return False
+    except OSError as e:
+        logger.warning("Failed to kill pid %s: %s", pid, e)
+        return False
+    logger.debug("Killed leftover process %s: %s", pid, cmdline[:120])
+    return True
 
 
 def _cleanup_orphan_processes() -> int:
-    """Kill orphan Chrome/Xvfb/ffmpeg processes. Only runs in Docker mode."""
+    """Kill leftover Chrome/Xvfb/ffmpeg processes. Only runs in Docker mode.
+
+    Scoped to this bypass session's process group plus groups whose leader has died.
+    A container-wide sweep (the old `pkill -9 -f chrome`) also matched the browsers a
+    concurrently running bypass was still driving, so with MAX_CONCURRENT_DOWNLOADS > 1
+    every worker that started a solve killed the others' browsers (#1231).
+    """
     if not env.DOCKERMODE:
         return 0
 
     _stop_ffmpeg_recording()
 
-    processes_to_kill = ["chrome", "chromium", "Xvfb", "ffmpeg"]
-    total_killed = 0
-
-    logger.debug("Checking for orphan processes...")
+    logger.debug("Checking for leftover browser processes...")
     logger.log_resource_usage()
 
-    if _PGREP_PATH is None or _PKILL_PATH is None:
-        logger.warning("Skipping orphan-process cleanup because pgrep/pkill are unavailable")
+    if not _PROC_ROOT.is_dir():
+        logger.warning("Skipping browser-process cleanup because %s is unavailable", _PROC_ROOT)
         return 0
 
-    for proc_name in processes_to_kill:
-        try:
-            result = subprocess.run(
-                [_PGREP_PATH, "-f", proc_name],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0 or not result.stdout.strip():
-                continue
+    own_pid = os.getpid()
+    own_pgid = os.getpgrp()
+    total_killed = 0
 
-            pids = result.stdout.strip().split("\n")
-            count = len(pids)
-            logger.info("Found %s orphan %s process(es), killing...", count, proc_name)
-
-            kill_result = subprocess.run(
-                [_PKILL_PATH, "-9", "-f", proc_name],
-                capture_output=True,
-                check=False,
-                timeout=5,
-            )
-            if kill_result.returncode == 0:
-                total_killed += count
-            else:
-                logger.warning("pkill for %s returned %s", proc_name, kill_result.returncode)
-
-        except subprocess.TimeoutExpired:
-            logger.warning("Timeout while checking for %s processes", proc_name)
-        except _SUBPROCESS_OPERATION_ERRORS as e:
-            logger.debug("Error checking for %s processes: %s", proc_name, e)
+    for pid, pgid, cmdline in _find_browser_processes():
+        if pid == own_pid:
+            continue
+        # Another live process group means another bypass session: its browsers are in
+        # use, not orphans. Only our own group and groups whose leader is gone (a helper
+        # that died or was killed, leaving its browser behind) are ours to clean up.
+        if pgid != own_pgid and (_PROC_ROOT / str(pgid)).exists():
+            logger.debug("Leaving pid %s to its live bypass session (pgid %s)", pid, pgid)
+            continue
+        if _kill_process(pid, cmdline):
+            total_killed += 1
 
     if total_killed > 0:
         time.sleep(1)
-        logger.info("Cleaned up %s orphan process(es)", total_killed)
+        logger.info("Cleaned up %s leftover browser process(es)", total_killed)
         logger.log_resource_usage()
     else:
-        logger.debug("No orphan processes found")
+        logger.debug("No leftover browser processes found")
 
     return total_killed
 
@@ -913,17 +830,7 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
 
 
 def _store_child_bypass_state(payload: dict[str, Any]) -> None:
-    cookies = payload.get("cookies")
-    if isinstance(cookies, dict):
-        with _cf_cookies_lock:
-            _cf_cookies.update(cookies)
-
-    user_agents = payload.get("user_agents")
-    if isinstance(user_agents, dict):
-        with _cf_cookies_lock:
-            _cf_user_agents.update(
-                {str(domain): str(agent) for domain, agent in user_agents.items()}
-            )
+    import_store(payload.get("cookies"), payload.get("user_agents"))
 
 
 def _prepare_child_browser_env(env_vars: dict[str, str]) -> dict[str, str]:
@@ -944,6 +851,21 @@ def _prepare_child_browser_env(env_vars: dict[str, str]) -> dict[str, str]:
     env_vars["XDG_CACHE_HOME"] = str(cache_dir)
     env_vars["XDG_RUNTIME_DIR"] = str(runtime_dir)
     return env_vars
+
+
+def _terminate_helper_session(proc: subprocess.Popen[str]) -> None:
+    """Kill the bypass helper and every process it spawned.
+
+    start_new_session makes the helper a session leader, so its pid doubles as the
+    process-group id of the browser tree underneath it and one killpg reaches all of it.
+    """
+    if hasattr(os, "killpg"):
+        with suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    with suppress(OSError):
+        proc.kill()
+    with suppress(OSError, subprocess.SubprocessError):
+        proc.wait(timeout=5)
 
 
 def _get_via_subprocess(url: str, retry: int, cancel_flag: Event | None = None) -> str:
@@ -972,14 +894,25 @@ def _get_via_subprocess(url: str, retry: int, cancel_flag: Event | None = None) 
         stdin=subprocess.PIPE,
         text=True,
         env=env_vars,
+        # Give the helper its own session: Chrome, Xvfb and ffmpeg inherit its process
+        # group, which is what lets the cleanup sweep tell this bypass's browsers apart
+        # from a concurrent worker's (#1231) and lets us kill the whole tree below.
+        start_new_session=True,
     )
+    timed_out = False
     try:
         proc.communicate(json.dumps(payload), timeout=_BYPASS_SUBPROCESS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+        timed_out = True
+    finally:
+        # Always tear the session down, not just on timeout: killing the helper alone
+        # leaves its Chrome and Xvfb running, and those leftovers are what made the next
+        # worker's browser fail to start in the first place.
+        _terminate_helper_session(proc)
+
+    if timed_out:
         msg = "Internal bypasser helper process timed out"
-        raise TimeoutError(msg) from None
+        raise TimeoutError(msg)
 
     try:
         result = json.loads(result_path.read_text())
@@ -1263,9 +1196,23 @@ def _try_with_cached_cookies(url: str, hostname: str) -> str | None:
         if response.status_code == HTTPStatus.OK:
             logger.debug("Cached cookies worked, skipped Chrome bypass")
             return response.text
+        logger.debug(
+            "Cached cookies rejected (%s) for %s; discarding them",
+            response.status_code,
+            url,
+        )
     except _REQUEST_OPERATION_ERRORS as exc:
+        # A redirect loop lands here too: DDoS-Guard answers a dead clearance cookie
+        # with an endless ?check=1 bounce rather than a status we can read.
         logger.debug("Cached cookie retry failed for %s: %s", url, exc)
 
+    # Reached only when the cached cookies did not produce a page, so they are no
+    # longer clearance. Dropping them now means the imminent Chrome solve starts from
+    # a clean slate and later requests cannot re-present the same rejected cookie.
+    # Guarded because clear_cf_cookies("") means "every host", which would wipe
+    # clearance for sites that are working fine.
+    if hostname:
+        clear_cf_cookies(hostname)
     return None
 
 
@@ -1335,6 +1282,38 @@ def _apply_parent_dns_config(dns_config: dict[str, Any]) -> None:
         logger.warning("Could not apply parent DNS config (%s): %s", provider, exc)
 
 
+def _terminate_own_session() -> None:
+    """SIGKILL this process and every process it spawned, browser included."""
+    if hasattr(os, "killpg") and os.getpgrp() == os.getpid():
+        with suppress(OSError):
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+    # A thread cannot end the process any other way; sys.exit would only end itself.
+    os._exit(1)
+
+
+def _watch_parent_process(original_ppid: int, interval: float) -> None:
+    """Take the browser down with us once the app process that spawned us is gone.
+
+    Cleanup only reclaims process groups whose leader has died, so a helper that outlives
+    its parent (worker restart, OOM kill) would sit there holding a browser that no later
+    bypass is allowed to touch.
+    """
+    while os.getppid() == original_ppid:
+        time.sleep(interval)
+    logger.warning("Bypass helper lost its parent process; taking the browser down")
+    _terminate_own_session()
+
+
+def _start_parent_watchdog() -> None:
+    """Watch the spawning process in the background for the life of this helper."""
+    threading.Thread(
+        target=_watch_parent_process,
+        args=(os.getppid(), _PARENT_WATCHDOG_INTERVAL_SECONDS),
+        daemon=True,
+        name="BypassParentWatchdog",
+    ).start()
+
+
 def _run_child_process() -> int:
     """CLI entrypoint used by the Docker helper subprocess."""
     request = json.loads(sys.stdin.read() or "{}")
@@ -1350,11 +1329,12 @@ def _run_child_process() -> int:
 
     try:
         html = get(url, retry=retry)
+        cookies, user_agents = export_store()
         payload = {
             "ok": True,
             "html": html,
-            "cookies": _cf_cookies,
-            "user_agents": _cf_user_agents,
+            "cookies": cookies,
+            "user_agents": user_agents,
         }
         result_path.write_text(json.dumps(payload), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001 - helper boundary must serialize failures.
@@ -1370,4 +1350,7 @@ def _run_child_process() -> int:
 
 
 if __name__ == "__main__":
+    # Started here rather than in _run_child_process() so it only ever watches a real
+    # spawned helper, never a test or an embedded call.
+    _start_parent_watchdog()
     raise SystemExit(_run_child_process())

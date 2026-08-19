@@ -247,7 +247,7 @@ Seconds since the last WireGuard handshake before the healthcheck bounces the tu
 | `CALIBRE_WEB_URL` | Adds a navigation button to your book library (Calibre-Web Automated, Grimmory, etc). | string | _none_ |
 | `AUDIOBOOK_LIBRARY_URL` | Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text. | string | _none_ |
 | `SUPPORTED_FORMATS` | Book formats to include in search results. ZIP/RAR archives are extracted automatically and book files are used if found. | string (comma-separated) | `epub,mobi,azw3,fb2,djvu,cbz,cbr` |
-| `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3` |
+| `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3,m4a,flac,ogg,wma,aac,wav,opus,zip,rar` |
 | `BOOK_LANGUAGE` | Default language filter for searches. | string (comma-separated) | `en` |
 
 <details>
@@ -296,7 +296,7 @@ Book formats to include in search results. ZIP/RAR archives are extracted automa
 Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found.
 
 - **Type:** string (comma-separated)
-- **Default:** `m4b,mp3`
+- **Default:** `m4b,mp3,m4a,flac,ogg,wma,aac,wav,opus,zip,rar`
 
 #### `BOOK_LANGUAGE`
 
@@ -1304,6 +1304,8 @@ Apply per-indexer seed time and ratio preferences from Prowlarr when sending tor
 | `NEWZNAB_ENABLED` | Enable searching for books via a Newznab-compatible indexer | boolean | `false` |
 | `NEWZNAB_URL` | Base URL of your Newznab indexer or aggregator | string | _none_ |
 | `NEWZNAB_API_KEY` | Your Newznab API key (leave blank if not required) | string (secret) | _none_ |
+| `NEWZNAB_EBOOK_CATEGORIES` | Newznab category IDs searched for ebooks. Most indexers use the standard 7000, but some use custom IDs. Leave empty to use 7000. | string (comma-separated) | `7000` |
+| `NEWZNAB_AUDIOBOOK_CATEGORIES` | Newznab category IDs searched for audiobooks. Most indexers use the standard 3030, but some use custom IDs. Leave empty to use 3030. | string (comma-separated) | `3030` |
 | `NEWZNAB_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
 
 <details>
@@ -1336,6 +1338,24 @@ Your Newznab API key (leave blank if not required)
 
 - **Type:** string (secret)
 - **Default:** _none_
+
+#### `NEWZNAB_EBOOK_CATEGORIES`
+
+**Ebook Categories**
+
+Newznab category IDs searched for ebooks. Most indexers use the standard 7000, but some use custom IDs. Leave empty to use 7000.
+
+- **Type:** string (comma-separated)
+- **Default:** `7000`
+
+#### `NEWZNAB_AUDIOBOOK_CATEGORIES`
+
+**Audiobook Categories**
+
+Newznab category IDs searched for audiobooks. Most indexers use the standard 3030, but some use custom IDs. Leave empty to use 3030.
+
+- **Type:** string (comma-separated)
+- **Default:** `3030`
 
 #### `NEWZNAB_AUTO_EXPAND`
 
@@ -1421,7 +1441,7 @@ Delay between requests in seconds to avoid rate limiting (0-10).
 | `IRC_CHANNEL` | Channel name without the # prefix. Used for all searches unless a separate audiobook channel is configured below. | string | _none_ |
 | `IRC_NICK` | Your IRC nickname (required). Must be unique on the IRC network. | string | _none_ |
 | `IRC_SEARCH_BOT` | The search bot to address queries to (required). Searches are sent as "@<bot> <query>". | string | _none_ |
-| `IRC_AUDIOBOOK_CHANNEL` | Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too. | string | _none_ |
+| `IRC_AUDIOBOOK_CHANNEL` | Optional. Channel name (without the # prefix) for networks that index audiobooks separately, such as Undernet's bookz. Leave blank (the usual setting) to search the main channel above for audiobooks too. | string | _none_ |
 | `IRC_AUDIOBOOK_SEARCH_BOT` | Optional. Search bot for the audiobook channel. Leave blank to reuse the main search bot above. Only used when an audiobook channel is set. | string | _none_ |
 | `IRC_CACHE_TTL` | How long to keep cached search results before they expire. | string (choice) | `2592000` |
 
@@ -1490,7 +1510,7 @@ The search bot to address queries to (required). Searches are sent as "@<bot> <q
 
 **Audiobook channel**
 
-Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too.
+Optional. Channel name (without the # prefix) for networks that index audiobooks separately, such as Undernet's bookz. Leave blank (the usual setting) to search the main channel above for audiobooks too.
 
 - **Type:** string
 - **Default:** _none_

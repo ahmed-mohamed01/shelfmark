@@ -3,7 +3,7 @@
 <img src="src/frontend/public/logo.png" alt="Shelfmark" width="200">
 
 > [!NOTE]
-> This project is in a stable state as of May 2026 but is not under active maintenance. 
+> Shelfmark is feature stable and maintained on a best-effort basis. Bug fixes, security updates, and small quality-of-life improvements are still shipped, and pull requests are reviewed — including new features. There is no roadmap for new features for now.
 
 Shelfmark is a self-hosted web interface for searching and requesting books and audiobooks across multiple sources. Bring your own sources, metadata providers, and download clients to build a single hub for your digital library. Supports multiple users with a built-in request system, so you can share your instance with others and let them browse and request books on their own.
 
@@ -123,7 +123,7 @@ See the full [Environment Variables Reference](docs/environment-variables.md) fo
 Some of the additional options available in Settings:
 - **Prowlarr** - Configure indexers and download clients to download books and audiobooks
 - **Additional audiobook sources** - Configure additional sources for audiobook discovery
-- **IRC** - Add details for IRC book sources and download directly from the UI
+- **IRC** - Add details for IRC book sources and download directly from the UI. Most networks serve audiobooks from the same channel as ebooks (on `irc.irchighway.net` that's `#ebooks`, while `#bookz` is effectively inactive), so leave the separate audiobook channel blank unless your network actually indexes one. IRC audiobooks usually arrive as ZIP/RAR archives — keep those enabled under Supported Audiobook Formats or the releases are filtered out of results
 - **Library Link** - Add a link to your Calibre-Web or Grimmory instance in the UI header
 - **File processing** - Customiseable download paths, file renaming and directory creation with template-based renaming
 - **Network Settings** - Custom proxy support (SOCKS5 + HTTP/S) and configurable DNS
@@ -238,9 +238,11 @@ These are non-goals, not missing features.
 
 ## Contributing
 
-Shelfmark's core feature set is complete. Development focuses on stability, bug fixes, quality-of-life improvements, and refining the search experience. Contributions in these areas are welcome, please file issues or submit pull requests on GitHub.
+Shelfmark's core feature set is complete.
 
-Feature requests that fall outside the project scope (library integration, automation, collection management) will be closed. If you're unsure whether something fits, open a discussion first.
+Pull requests are welcome and all of them get reviewed, new features included. If you want a feature, the fastest path is to send a PR for it rather than to file a request.
+
+Feature requests that fall outside the project scope (library integration, automation, collection management) will be closed, and PRs implementing them won't be merged. If you're unsure whether something fits, open a discussion first.
 
 ## Health Monitoring
 
