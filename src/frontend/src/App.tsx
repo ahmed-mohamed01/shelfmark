@@ -226,6 +226,7 @@ type PendingOnBehalfDownload =
       releaseContentType: ContentType;
       actingAsUser: ActingAsUserSelection;
       monitoredEntityId?: number;
+      saveLocation?: string | null;
     }
   | {
       type: 'combined';
@@ -1426,11 +1427,15 @@ function App() {
       monitoredEntityId?: number,
       sessionId?: string | null,
       runId?: string | null,
+      saveLocation?: string | null,
     ): Promise<void> => {
       const requestStartedAtSeconds = Date.now() / 1000;
       try {
         trackRelease(book.id, release.source_id);
-        const basePayload = buildReleaseDownloadPayload(book, release, releaseContentType);
+        const built = buildReleaseDownloadPayload(book, release, releaseContentType);
+        // Standalone downloads may carry a user-chosen save location. The server
+        // re-validates it against the allowed roots before it reaches the queue.
+        const basePayload = saveLocation ? { ...built, destination_override: saveLocation } : built;
         const payload =
           monitoredEntityId !== undefined
             ? {
@@ -1634,6 +1639,9 @@ function App() {
           pendingOnBehalfDownload.releaseContentType,
           onBehalfOfUserId,
           pendingOnBehalfDownload.monitoredEntityId,
+          undefined,
+          undefined,
+          pendingOnBehalfDownload.saveLocation,
         );
       }
       setPendingOnBehalfDownload(null);
@@ -1751,6 +1759,7 @@ function App() {
       monitoredEntityIdOverride?: number | null,
       sessionId?: string | null,
       runId?: string | null,
+      saveLocation?: string | null,
     ) => {
       policyTrace('release.action:start', {
         bookId: book.id,
@@ -1769,6 +1778,7 @@ function App() {
           releaseContentType,
           actingAsUser,
           monitoredEntityId,
+          saveLocation,
         });
         return;
       }
@@ -1780,6 +1790,7 @@ function App() {
         monitoredEntityId,
         sessionId,
         runId,
+        saveLocation,
       );
     },
     [actingAsUser, releaseMonitoredEntityId, executeReleaseDownload],
@@ -3082,7 +3093,22 @@ function App() {
           <ReleaseModal
             book={activeReleaseBook}
             onClose={handleReleaseModalClose}
-            onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
+            onDownload={(book, release, ct, saveLocation) =>
+              isBrowseFulfilMode
+                ? handleBrowseFulfilDownload(book, release, ct)
+                : handleReleaseDownload(
+                    book,
+                    release,
+                    ct,
+                    undefined,
+                    undefined,
+                    undefined,
+                    saveLocation,
+                  )
+            }
+            // Monitored downloads route to the author's configured folder, so the
+            // picker is only offered for standalone ones.
+            allowSaveLocation={!isBrowseFulfilMode && releaseMonitoredEntityId == null}
             onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
             onRequestBook={
               isBrowseFulfilMode || !requestRoleIsAdmin ? undefined : handleReleaseBookRequest

@@ -57,6 +57,7 @@ import { Dropdown } from './Dropdown';
 import { DropdownList } from './DropdownList';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { ReleaseCell } from './ReleaseCell';
+import { SaveLocationPicker } from './SaveLocationPicker';
 
 function getReleaseRejectReason(release: Release): string | null {
   const raw = release.extra?.match_reject_reason;
@@ -132,7 +133,14 @@ const DEFAULT_COLUMN_CONFIG: ReleaseColumnConfig = {
 interface ReleaseModalProps {
   book: Book | null;
   onClose: () => void;
-  onDownload: (book: Book, release: Release, contentType: ContentType) => Promise<void>;
+  onDownload: (
+    book: Book,
+    release: Release,
+    contentType: ContentType,
+    saveLocation?: string | null,
+  ) => Promise<void>;
+  /** Show the save-location picker (standalone downloads only; monitored ones resolve their own). */
+  allowSaveLocation?: boolean;
   onRequestRelease?: (book: Book, release: Release, contentType: ContentType) => Promise<void>;
   onRequestBook?: (book: Book, contentType: ContentType) => Promise<void>;
   getPolicyModeForSource?: (source: string, contentType: ContentType) => RequestPolicyMode;
@@ -679,6 +687,7 @@ export const ReleaseModal = ({
   book,
   onClose,
   onDownload,
+  allowSaveLocation = false,
   onRequestRelease,
   onRequestBook,
   getPolicyModeForSource,
@@ -712,6 +721,13 @@ export const ReleaseModal = ({
   const [isClosing, setIsClosing] = useState(false);
   const [isRequestingBook, setIsRequestingBook] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
+  // Save location for standalone downloads; null means "use the configured default".
+  const [saveLocation, setSaveLocation] = useState<string | null>(null);
+  // Ebooks and audiobooks have separate roots, so a folder chosen for one must
+  // not carry over when the user flips the mode.
+  useEffect(() => {
+    setSaveLocation(null);
+  }, [contentType]);
   const isCombinedMode = combinedMode != null;
   const combinedPhase = combinedMode?.phase ?? null;
   const combinedStepLabel = combinedMode?.stepLabel ?? '';
@@ -1544,7 +1560,7 @@ export const ReleaseModal = ({
 
       const mode = getReleaseActionMode(release);
       if (mode === 'download') {
-        await onDownload(book, release, contentType);
+        await onDownload(book, release, contentType, allowSaveLocation ? saveLocation : null);
         handleClose();
         return;
       }
@@ -1564,6 +1580,8 @@ export const ReleaseModal = ({
       onRequestRelease,
       contentType,
       handleClose,
+      allowSaveLocation,
+      saveLocation,
     ],
   );
 
@@ -2470,6 +2488,17 @@ export const ReleaseModal = ({
                     )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {allowSaveLocation && !isCombinedMode && !isRequestMode && (
+              <div className="border-b border-(--border-muted) px-5 py-3">
+                <SaveLocationPicker
+                  contentType={contentType === 'audiobook' ? 'audiobook' : 'ebook'}
+                  value={saveLocation}
+                  onChange={setSaveLocation}
+                  browseOverlayZIndex={1300}
+                />
               </div>
             )}
 

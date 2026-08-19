@@ -15,6 +15,7 @@ from shelfmark.core.monitored_db_ops import fetch_entity_metadata
 from shelfmark.core.monitored_downloads import write_monitored_book_attempt
 from shelfmark.core.monitored_files import (
     apply_monitor_modes_for_books,
+    path_within_allowed_roots,
     resolve_allowed_roots,
 )
 from shelfmark.core.monitored_operations import (
@@ -217,6 +218,47 @@ def resolve_download_db_user_id(
         return None
 
 
+def resolve_requested_destination(
+    raw_destination: Any,
+    *,
+    user_db: UserDB | None,
+    db_user_id: int | None,
+) -> str | None:
+    """Validate a client-supplied save location for a standalone download.
+
+    ``queue_release()`` applies ``destination_override`` verbatim, so an
+    unchecked value from the browser would let any logged-in user write
+    downloads anywhere the container can reach. Accept the path only when it
+    resolves inside one of this user's allowed roots — the same set the folder
+    browser and the library scanner already enforce.
+    """
+    if not isinstance(raw_destination, str):
+        return None
+    candidate = raw_destination.strip().rstrip("/")
+    if not candidate or not candidate.startswith("/"):
+        return None
+    if user_db is None or db_user_id is None:
+        return None
+
+    try:
+        resolved = Path(candidate).resolve()
+    except OSError:
+        return None
+
+    try:
+        roots = resolve_allowed_roots(user_db, db_user_id=int(db_user_id))
+    except (OSError, AttributeError, TypeError, ValueError):
+        # A root-resolution failure must deny, never allow.
+        logger.warning("Could not resolve allowed roots for save location check", exc_info=True)
+        return None
+
+    if not path_within_allowed_roots(path=resolved, roots=roots):
+        logger.warning("Rejected save location outside allowed roots: %s", candidate)
+        return None
+
+    return str(resolved)
+
+
 def enrich_release_for_monitored(
     release_payload: dict[str, Any],
     monitored_db: MonitoredDB | None,
@@ -228,7 +270,35 @@ def enrich_release_for_monitored(
     Normalises the monitored_entity_id field and, when the download targets an
     ebook or audiobook from a monitored author, sets destination / template
     overrides so the file lands in the correct author directory.
+
+    Also the chokepoint for client-supplied save locations on standalone
+    downloads: every download route runs through here, so validating (and
+    otherwise stripping) the output overrides at the top guarantees an
+    unvetted path can never reach the orchestrator.
     """
+    # Layout overrides are server-decided; the standalone picker only chooses a
+    # destination, so the global File Organization setting still applies. Drop
+    # any client-sent layout fields before the monitored block below sets its own.
+    if (
+        release_payload.get("file_organization_override") is not None
+        or release_payload.get("template_override") is not None
+    ):
+        release_payload = dict(release_payload)
+        release_payload.pop("file_organization_override", None)
+        release_payload.pop("template_override", None)
+
+    if release_payload.get("destination_override") is not None:
+        release_payload = dict(release_payload)
+        validated = resolve_requested_destination(
+            release_payload.get("destination_override"),
+            user_db=user_db,
+            db_user_id=db_user_id,
+        )
+        if validated:
+            release_payload["destination_override"] = validated
+        else:
+            release_payload.pop("destination_override", None)
+
     monitored_entity_id = release_payload.get("monitored_entity_id")
     if monitored_entity_id is not None:
         try:
@@ -2845,6 +2915,72 @@ def register_monitored_routes(
             return jsonify({"error": "Failed to record run"}), 500
 
         return jsonify({"ok": True, "run_id": run_id})
+
+    # ------------------------------------------------------------------
+    # Save locations for standalone (non-monitored) downloads
+    # ------------------------------------------------------------------
+
+    @app.route("/api/download-destinations", methods=["GET"])
+    def api_download_destinations() -> Response | tuple[Response, int]:
+        """List the save locations offered for a standalone download.
+
+        Query parameters:
+          - content_type: "ebook" or "audiobook"; scopes the list so an ebook
+            is not offered audiobook-only folders.
+
+        The first entry is the configured default for that content type, which
+        is what the download uses when the picker is left alone.
+        """
+        from shelfmark.core.utils import get_destination
+
+        if user_db is None:
+            return jsonify({"error": "Save locations unavailable"}), 503
+
+        raw_user_id = session.get("db_user_id")
+        try:
+            db_user_id = int(raw_user_id)
+        except TypeError, ValueError:
+            return jsonify({"error": "Invalid user context"}), 400
+
+        content_type = (request.args.get("content_type") or "").strip().lower()
+        if content_type not in ("ebook", "audiobook"):
+            return jsonify({"error": "content_type must be ebook or audiobook"}), 400
+
+        # The session stores the username under "user_id" (see api_download_release);
+        # get_destination() needs it to expand a {username} placeholder in DESTINATION.
+        username = session.get("user_id")
+        try:
+            default_path = get_destination(
+                is_audiobook=content_type == "audiobook",
+                user_id=db_user_id,
+                username=str(username) if username else None,
+            ).resolve()
+        except OSError:
+            logger.warning("Could not resolve default destination", exc_info=True)
+            return jsonify({"error": "Could not resolve default save location"}), 500
+
+        destinations: list[dict[str, Any]] = [
+            {"path": str(default_path), "label": "Default", "is_default": True}
+        ]
+        seen = {str(default_path)}
+
+        try:
+            roots = resolve_allowed_roots(user_db, db_user_id=db_user_id, content_type=content_type)
+        except (OSError, AttributeError, TypeError, ValueError):
+            # Route-boundary defensive catch; an empty list still leaves the default usable.
+            logger.warning("Could not resolve save locations", exc_info=True)
+            roots = []
+
+        for root in roots:
+            path_str = str(root)
+            if path_str in seen:
+                continue
+            seen.add(path_str)
+            destinations.append(
+                {"path": path_str, "label": root.name or path_str, "is_default": False}
+            )
+
+        return jsonify({"destinations": destinations})
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)

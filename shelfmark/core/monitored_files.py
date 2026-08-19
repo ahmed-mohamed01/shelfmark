@@ -1187,11 +1187,19 @@ def apply_monitor_modes_for_books(
 # ---------------------------------------------------------------------------
 
 
-def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
+def resolve_allowed_roots(
+    user_db: UserDB, *, db_user_id: int, content_type: str | None = None
+) -> list[Path]:
     """Build the list of filesystem paths that are safe to scan for this user.
 
     Combines configured ebook/audiobook destinations with any user-specific
     monitored root directories.
+
+    When *content_type* is "ebook" or "audiobook", only the roots belonging to
+    that type are returned — used to populate the standalone-download save
+    picker so an ebook is never offered an audiobook-only folder. Any other
+    value (including None) returns every root, which is what the filesystem
+    browser and the library scanner want.
     """
     try:
         from shelfmark.core.config import config as app_config
@@ -1206,17 +1214,25 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
             return None
         return v
 
+    normalized_type = str(content_type or "").strip().lower()
+    want_ebook = normalized_type != "audiobook"
+    want_audiobook = normalized_type != "ebook"
+
     allowed: list[Path] = []
     if app_config is not None:
         try:
             dest = _normalize_root(app_config.get("DESTINATION", "/books", user_id=db_user_id))
-            if dest:
-                allowed.append(Path(dest).resolve())
             dest_audio = _normalize_root(
                 app_config.get("DESTINATION_AUDIOBOOK", "", user_id=db_user_id)
             )
-            if dest_audio:
-                allowed.append(Path(dest_audio).resolve())
+            if want_ebook and dest:
+                allowed.append(Path(dest).resolve())
+            if want_audiobook:
+                # Audiobooks fall back to the main destination when no dedicated
+                # one is set, matching get_destination() in core/utils.py.
+                effective_audio = dest_audio or dest
+                if effective_audio:
+                    allowed.append(Path(effective_audio).resolve())
         except (KeyError, OSError, AttributeError) as exc:
             logger.debug("Monitored root resolution skipped: %s", exc)
 
@@ -1225,7 +1241,13 @@ def resolve_allowed_roots(user_db: UserDB, *, db_user_id: int) -> list[Path]:
     except Exception:  # noqa: BLE001 — user_db may raise broadly; fall back to empty settings rather than crash root resolution.
         user_settings = {}
 
-    for key in ("MONITORED_EBOOK_ROOTS", "MONITORED_AUDIOBOOK_ROOTS"):
+    root_keys: list[str] = []
+    if want_ebook:
+        root_keys.append("MONITORED_EBOOK_ROOTS")
+    if want_audiobook:
+        root_keys.append("MONITORED_AUDIOBOOK_ROOTS")
+
+    for key in root_keys:
         roots_value = user_settings.get(key)
         if isinstance(roots_value, list):
             for item in roots_value:

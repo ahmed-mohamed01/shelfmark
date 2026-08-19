@@ -809,6 +809,30 @@ export const fsListDirectories = async (path?: string | null): Promise<FsListRes
   return fetchJSON<FsListResponse>(url);
 };
 
+export interface DownloadDestination {
+  path: string;
+  label: string;
+  isDefault: boolean;
+}
+
+/**
+ * Save locations offered for a standalone (non-monitored) download.
+ * The first entry is the configured default for that content type.
+ */
+export const listDownloadDestinations = async (
+  contentType: 'ebook' | 'audiobook',
+): Promise<DownloadDestination[]> => {
+  const params = new URLSearchParams({ content_type: contentType });
+  const resp = await fetchJSON<{
+    destinations: { path: string; label: string; is_default: boolean }[];
+  }>(`${API_BASE}/download-destinations?${params.toString()}`);
+  return (resp.destinations || []).map((d) => ({
+    path: d.path,
+    label: d.label,
+    isDefault: Boolean(d.is_default),
+  }));
+};
+
 export const fsMkdir = async (parent: string, name: string): Promise<{ path: string }> => {
   return fetchJSON<{ path: string }>(`${API_BASE}/fs/mkdir`, {
     method: 'POST',
