@@ -2495,6 +2495,7 @@ export const ReleaseModal = ({
               <div className="border-b border-(--border-muted) px-5 py-3">
                 <SaveLocationPicker
                   contentType={contentType === 'audiobook' ? 'audiobook' : 'ebook'}
+                  authorName={book.author}
                   value={saveLocation}
                   onChange={setSaveLocation}
                   browseOverlayZIndex={1300}

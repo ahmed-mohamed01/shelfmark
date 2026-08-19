@@ -247,7 +247,7 @@ def resolve_requested_destination(
 
     try:
         roots = resolve_allowed_roots(user_db, db_user_id=int(db_user_id))
-    except (OSError, AttributeError, TypeError, ValueError):
+    except OSError, AttributeError, TypeError, ValueError:
         # A root-resolution failure must deny, never allow.
         logger.warning("Could not resolve allowed roots for save location check", exc_info=True)
         return None
@@ -257,6 +257,28 @@ def resolve_requested_destination(
         return None
 
     return str(resolved)
+
+
+def template_creates_author_folder(*, is_audiobook: bool) -> bool:
+    """True when the active naming template puts {Author} in a directory segment.
+
+    The standalone save picker shows the resolved destination *including* the
+    author folder, so it must only promise that folder when the configured
+    template will actually produce one. Everything downstream is unchanged —
+    the picker still sends the parent, and the template does the nesting.
+    """
+    from shelfmark.download.postprocess.policy import get_file_organization, get_template
+
+    mode = get_file_organization(is_audiobook=is_audiobook)
+    if mode == "none":
+        return False
+
+    template = get_template(is_audiobook=is_audiobook, organization_mode=mode)
+    if "/" not in template:
+        return False
+
+    directory_part = template.rsplit("/", 1)[0]
+    return "{author}" in directory_part.lower()
 
 
 def enrich_release_for_monitored(
@@ -2966,7 +2988,7 @@ def register_monitored_routes(
 
         try:
             roots = resolve_allowed_roots(user_db, db_user_id=db_user_id, content_type=content_type)
-        except (OSError, AttributeError, TypeError, ValueError):
+        except OSError, AttributeError, TypeError, ValueError:
             # Route-boundary defensive catch; an empty list still leaves the default usable.
             logger.warning("Could not resolve save locations", exc_info=True)
             roots = []
@@ -2980,7 +3002,14 @@ def register_monitored_routes(
                 {"path": path_str, "label": root.name or path_str, "is_default": False}
             )
 
-        return jsonify({"destinations": destinations})
+        return jsonify(
+            {
+                "destinations": destinations,
+                "creates_author_folder": template_creates_author_folder(
+                    is_audiobook=content_type == "audiobook"
+                ),
+            }
+        )
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)

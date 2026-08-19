@@ -819,18 +819,28 @@ export interface DownloadDestination {
  * Save locations offered for a standalone (non-monitored) download.
  * The first entry is the configured default for that content type.
  */
+export interface DownloadDestinationsResult {
+  destinations: DownloadDestination[];
+  /** Whether the configured naming template nests files in an author folder. */
+  createsAuthorFolder: boolean;
+}
+
 export const listDownloadDestinations = async (
   contentType: 'ebook' | 'audiobook',
-): Promise<DownloadDestination[]> => {
+): Promise<DownloadDestinationsResult> => {
   const params = new URLSearchParams({ content_type: contentType });
   const resp = await fetchJSON<{
     destinations: { path: string; label: string; is_default: boolean }[];
+    creates_author_folder?: boolean;
   }>(`${API_BASE}/download-destinations?${params.toString()}`);
-  return (resp.destinations || []).map((d) => ({
-    path: d.path,
-    label: d.label,
-    isDefault: Boolean(d.is_default),
-  }));
+  return {
+    destinations: (resp.destinations || []).map((d) => ({
+      path: d.path,
+      label: d.label,
+      isDefault: Boolean(d.is_default),
+    })),
+    createsAuthorFolder: Boolean(resp.creates_author_folder),
+  };
 };
 
 export const fsMkdir = async (parent: string, name: string): Promise<{ path: string }> => {
