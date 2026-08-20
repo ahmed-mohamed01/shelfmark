@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shelfmark.core.monitored_routes import (
+    author_folder_exists,
     enrich_release_for_monitored,
     resolve_requested_destination,
     template_creates_author_folder,
@@ -83,6 +84,33 @@ class TestResolveRequestedDestination:
             resolve_requested_destination(str(allowed_root), user_db=mock_user_db, db_user_id=None)
             is None
         )
+
+
+class TestAuthorFolderExists:
+    """Existence checks behind the picker's "✓ already filed here" marker."""
+
+    def test_true_for_existing_folder(self, tmp_path: Path):
+        (tmp_path / "Brandon Sanderson").mkdir()
+        assert author_folder_exists(tmp_path, "Brandon Sanderson") is True
+
+    def test_false_when_absent(self, tmp_path: Path):
+        assert author_folder_exists(tmp_path, "Brandon Sanderson") is False
+
+    def test_false_for_file_with_author_name(self, tmp_path: Path):
+        (tmp_path / "Brandon Sanderson").write_text("not a folder")
+        assert author_folder_exists(tmp_path, "Brandon Sanderson") is False
+
+    def test_matches_sanitized_folder_name(self, tmp_path: Path):
+        # Post-processing sanitizes "AC/DC" to "AC_DC" before creating the folder.
+        (tmp_path / "AC_DC").mkdir()
+        assert author_folder_exists(tmp_path, "AC/DC") is True
+
+    def test_raw_name_with_separator_cannot_escape_parent(self, tmp_path: Path):
+        (tmp_path / "outside").mkdir()
+        assert author_folder_exists(tmp_path / "outside", "../outside") is False
+
+    def test_false_for_empty_author(self, tmp_path: Path):
+        assert author_folder_exists(tmp_path, "   ") is False
 
 
 class TestTemplateCreatesAuthorFolder:

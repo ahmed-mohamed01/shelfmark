@@ -813,6 +813,8 @@ export interface DownloadDestination {
   path: string;
   label: string;
   isDefault: boolean;
+  /** Whether this root already contains the requested author's folder. Absent when unknown. */
+  authorFolderExists?: boolean;
 }
 
 /**
@@ -827,10 +829,19 @@ export interface DownloadDestinationsResult {
 
 export const listDownloadDestinations = async (
   contentType: 'ebook' | 'audiobook',
+  authorName?: string,
 ): Promise<DownloadDestinationsResult> => {
   const params = new URLSearchParams({ content_type: contentType });
+  if (authorName?.trim()) {
+    params.set('author', authorName.trim());
+  }
   const resp = await fetchJSON<{
-    destinations: { path: string; label: string; is_default: boolean }[];
+    destinations: {
+      path: string;
+      label: string;
+      is_default: boolean;
+      author_folder_exists?: boolean;
+    }[];
     creates_author_folder?: boolean;
   }>(`${API_BASE}/download-destinations?${params.toString()}`);
   return {
@@ -838,6 +849,8 @@ export const listDownloadDestinations = async (
       path: d.path,
       label: d.label,
       isDefault: Boolean(d.is_default),
+      authorFolderExists:
+        d.author_folder_exists === undefined ? undefined : Boolean(d.author_folder_exists),
     })),
     createsAuthorFolder: Boolean(resp.creates_author_folder),
   };

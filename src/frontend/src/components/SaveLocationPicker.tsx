@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { DownloadDestination, listDownloadDestinations } from '../services/monitoredApi';
+import {
+  DownloadDestination,
+  fsListDirectories,
+  listDownloadDestinations,
+} from '../services/monitoredApi';
 import { joinPath, stripTrailingAuthorName } from '../utils/monitoredPaths';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
@@ -44,15 +48,20 @@ export const SaveLocationPicker = ({
   const [createsAuthorFolder, setCreatesAuthorFolder] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Existence of the author folder under parents picked via Browse, which the
+  // destinations response doesn't cover. Keyed by parent path.
+  const [browsedExists, setBrowsedExists] = useState<Record<string, boolean>>({});
 
   // Reload when the content type flips: ebook and audiobook have separate roots
   // and separate templates, so the author-folder answer can differ too.
   useEffect(() => {
     let alive = true;
     setLoadFailed(false);
+    // Answers are per author+type, so drop any cached checks from the last one.
+    setBrowsedExists({});
     const load = async () => {
       try {
-        const result = await listDownloadDestinations(contentType);
+        const result = await listDownloadDestinations(contentType, authorName);
         if (!alive) return;
         setDestinations(result.destinations);
         setCreatesAuthorFolder(result.createsAuthorFolder);
@@ -67,7 +76,7 @@ export const SaveLocationPicker = ({
     return () => {
       alive = false;
     };
-  }, [contentType]);
+  }, [contentType, authorName]);
 
   const defaultPath = useMemo(
     () => destinations.find((d) => d.isDefault)?.path ?? null,
@@ -85,16 +94,23 @@ export const SaveLocationPicker = ({
   // Options are keyed by parent but labelled with the resolved path. A parent
   // chosen via Browse won't be in the configured list, so carry it explicitly
   // rather than letting the select fall back to Default and download elsewhere.
+  // "✓" marks parents where this author's folder already exists on disk.
   const options = useMemo(() => {
+    const label = (parent: string, exists: boolean | undefined, isDefault: boolean) => {
+      const suffixes = [exists && createsAuthorFolder ? '✓' : '', isDefault ? '— default' : '']
+        .filter(Boolean)
+        .join(' ');
+      return suffixes ? `${resolve(parent)} ${suffixes}` : resolve(parent);
+    };
     const known = destinations.map((d) => ({
       value: d.path,
-      label: d.isDefault ? `${resolve(d.path)} — default` : resolve(d.path),
+      label: label(d.path, d.authorFolderExists, d.isDefault),
     }));
     if (value && !destinations.some((d) => d.path === value)) {
-      known.push({ value, label: resolve(value) });
+      known.push({ value, label: label(value, browsedExists[value], false) });
     }
     return known;
-  }, [destinations, value, resolve]);
+  }, [destinations, value, resolve, browsedExists, createsAuthorFolder]);
 
   const handleSelectChange = useCallback(
     (next: string) => {
@@ -114,6 +130,22 @@ export const SaveLocationPicker = ({
       const parent = createsAuthorFolder ? stripTrailingAuthorName(picked, authorName) : picked;
       onChange(parent === defaultPath ? null : parent);
       setBrowseOpen(false);
+
+      if (!createsAuthorFolder) return;
+      if (parent !== picked) {
+        // The picked path ended in the author folder, so it certainly exists.
+        setBrowsedExists((prev) => ({ ...prev, [parent]: true }));
+        return;
+      }
+      // Best-effort: list the parent and look for the author folder among its
+      // children. Failure just leaves the option unmarked.
+      void fsListDirectories(parent)
+        .then((resp) => {
+          const wanted = authorName.trim();
+          const exists = (resp.directories || []).some((d) => d.name === wanted);
+          setBrowsedExists((prev) => ({ ...prev, [parent]: exists }));
+        })
+        .catch(() => undefined);
     },
     [createsAuthorFolder, authorName, defaultPath, onChange],
   );

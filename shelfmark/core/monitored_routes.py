@@ -259,6 +259,33 @@ def resolve_requested_destination(
     return str(resolved)
 
 
+def author_folder_exists(parent: Path, author: str) -> bool:
+    """True when *parent* already contains this author's folder.
+
+    Post-processing creates the folder from the sanitized author name (the
+    naming template runs every segment through sanitize_filename), so that is
+    the name checked. The raw name is checked too, covering folders created by
+    hand before any download ran.
+    """
+    from shelfmark.core.naming import sanitize_filename
+
+    raw = (author or "").strip()
+    if not raw:
+        return False
+    candidates = {raw, sanitize_filename(raw)}
+    for name in candidates:
+        # A sanitized-empty name (or one that still carries a separator) would
+        # escape *parent*; never let it form the probe path.
+        if not name or "/" in name:
+            continue
+        try:
+            if (parent / name).is_dir():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def template_creates_author_folder(*, is_audiobook: bool) -> bool:
     """True when the active naming template puts {Author} in a directory segment.
 
@@ -2949,6 +2976,9 @@ def register_monitored_routes(
         Query parameters:
           - content_type: "ebook" or "audiobook"; scopes the list so an ebook
             is not offered audiobook-only folders.
+          - author: optional author name; when given (and the naming template
+            creates author folders), each entry gains author_folder_exists so
+            the picker can show which location already files this author.
 
         The first entry is the configured default for that content type, which
         is what the download uses when the picker is left alone.
@@ -2967,6 +2997,8 @@ def register_monitored_routes(
         content_type = (request.args.get("content_type") or "").strip().lower()
         if content_type not in ("ebook", "audiobook"):
             return jsonify({"error": "content_type must be ebook or audiobook"}), 400
+
+        author = (request.args.get("author") or "").strip()
 
         # The session stores the username under "user_id" (see api_download_release);
         # get_destination() needs it to expand a {username} placeholder in DESTINATION.
@@ -3002,14 +3034,14 @@ def register_monitored_routes(
                 {"path": path_str, "label": root.name or path_str, "is_default": False}
             )
 
-        return jsonify(
-            {
-                "destinations": destinations,
-                "creates_author_folder": template_creates_author_folder(
-                    is_audiobook=content_type == "audiobook"
-                ),
-            }
-        )
+        creates = template_creates_author_folder(is_audiobook=content_type == "audiobook")
+        if author and creates:
+            # Flag roots where this author's folder already exists, so the
+            # picker can show which location already files this author.
+            for entry in destinations:
+                entry["author_folder_exists"] = author_folder_exists(Path(entry["path"]), author)
+
+        return jsonify({"destinations": destinations, "creates_author_folder": creates})
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)
