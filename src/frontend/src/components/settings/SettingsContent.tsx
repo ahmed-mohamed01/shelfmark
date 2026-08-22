@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   SettingsTab,
@@ -513,11 +513,15 @@ function SettingsContentPanel({
 
   const renderedFields = (
     <div className="space-y-5">
-      {fieldSegments.map((segment, idx) => {
+      {fieldSegments.map((segment) => {
+        // Key segments by their first field, not by index: when a custom field
+        // takes over the tab the segment list collapses around it, and an
+        // index-based identity would remount the field and reset its state.
+        const segmentKey = `segment-${segment.fields[0]?.key}`;
         if (segment.columns > 0) {
           return (
             <div
-              key={`grid-${idx}`}
+              key={segmentKey}
               className="grid gap-5"
               style={{ gridTemplateColumns: `repeat(${segment.columns}, minmax(0, 1fr))` }}
             >
@@ -525,7 +529,7 @@ function SettingsContentPanel({
             </div>
           );
         }
-        return segment.fields.map(renderSingleField);
+        return <Fragment key={segmentKey}>{segment.fields.map(renderSingleField)}</Fragment>;
       })}
     </div>
   );
