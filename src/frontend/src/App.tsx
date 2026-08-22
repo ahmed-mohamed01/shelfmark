@@ -32,6 +32,7 @@ import { useDownloadTracking } from './hooks/useDownloadTracking';
 import { useMonitoredAutoSearch } from './hooks/useMonitoredAutoSearch';
 import { useMonitoredState } from './hooks/useMonitoredState';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
+import { useReleaseSelection, type QueueSelectionsRequest } from './hooks/useReleaseSelection';
 import { useRequestPolicy } from './hooks/useRequestPolicy';
 import { useRequests } from './hooks/useRequests';
 import { useSearch } from './hooks/useSearch';
@@ -55,6 +56,10 @@ import {
   type DownloadReleasePayload,
 } from './services/api';
 import {
+  standaloneDownloadPayloadExtras,
+  type StandaloneDownloadOptions,
+} from './services/monitoredApi';
+import {
   Book,
   Release,
   RequestRecord,
@@ -75,6 +80,7 @@ import {
   SearchMode,
   isMetadataBook,
 } from './types';
+import { runQueueSelections } from './utils/queueSelections';
 const MonitoredPage = lazy(() =>
   import('./pages/MonitoredPage').then((m) => ({ default: m.MonitoredPage })),
 );
@@ -226,12 +232,19 @@ type PendingOnBehalfDownload =
       releaseContentType: ContentType;
       actingAsUser: ActingAsUserSelection;
       monitoredEntityId?: number;
-      saveLocation?: string | null;
+      standalone?: StandaloneDownloadOptions | null;
     }
   | {
       type: 'combined';
       book: Book;
       combinedState: CombinedSelectionState;
+      actingAsUser: ActingAsUserSelection;
+    }
+  | {
+      type: 'selection';
+      book: Book;
+      request: QueueSelectionsRequest;
+      monitoredEntityId?: number;
       actingAsUser: ActingAsUserSelection;
     };
 
@@ -513,6 +526,8 @@ function App() {
   const [releaseContentTypeOverride, setReleaseContentTypeOverride] = useState<ContentType | null>(
     null,
   );
+  // Assigned after useReleaseSelection; lets the queue handler reset the reducer.
+  const releaseSelectionResetRef = useRef<() => void>(() => {});
 
   // Combined mode state (ebook + audiobook in one transaction)
   const [combinedMode, setCombinedMode] = useState(initialContentTypePref.combinedMode);
@@ -1427,15 +1442,15 @@ function App() {
       monitoredEntityId?: number,
       sessionId?: string | null,
       runId?: string | null,
-      saveLocation?: string | null,
+      standalone?: StandaloneDownloadOptions | null,
     ): Promise<void> => {
       const requestStartedAtSeconds = Date.now() / 1000;
       try {
         trackRelease(book.id, release.source_id);
         const built = buildReleaseDownloadPayload(book, release, releaseContentType);
-        // Standalone downloads may carry a user-chosen save location. The server
-        // re-validates it against the allowed roots before it reaches the queue.
-        const basePayload = saveLocation ? { ...built, destination_override: saveLocation } : built;
+        // Standalone downloads may carry a save location + library-layout flags.
+        // The server re-validates the root and composes the layout itself.
+        const basePayload = { ...built, ...standaloneDownloadPayloadExtras(standalone) };
         const payload =
           monitoredEntityId !== undefined
             ? {
@@ -1617,6 +1632,29 @@ function App() {
     [executeReleaseDownload, getSourceMode, openRequestConfirmation],
   );
 
+  // Queue whatever the selection modal picked: downloads go straight to the
+  // queue (standalone ones with their SAVE TO root + library layout; monitored
+  // ones resolve their own folder), release-level requests are confirmed
+  // together afterwards.
+  // Thin adapter over the branch-only runQueueSelections (keeps the queue
+  // orchestration out of this upstream file — Rule #1).
+  const executeQueueSelections = useCallback(
+    (
+      book: Book,
+      request: QueueSelectionsRequest,
+      monitoredEntityId?: number,
+      onBehalfOfUserId?: number,
+    ): Promise<void> =>
+      runQueueSelections(book, request, {
+        monitoredEntityId,
+        onBehalfOfUserId,
+        executeReleaseDownload,
+        openRequestConfirmation,
+        showToast,
+      }),
+    [executeReleaseDownload, openRequestConfirmation, showToast],
+  );
+
   const handleConfirmOnBehalfDownload = useCallback(async (): Promise<boolean> => {
     if (!pendingOnBehalfDownload) {
       return true;
@@ -1632,6 +1670,13 @@ function App() {
           pendingOnBehalfDownload.combinedState,
           onBehalfOfUserId,
         );
+      } else if (pendingOnBehalfDownload.type === 'selection') {
+        await executeQueueSelections(
+          pendingOnBehalfDownload.book,
+          pendingOnBehalfDownload.request,
+          pendingOnBehalfDownload.monitoredEntityId,
+          onBehalfOfUserId,
+        );
       } else {
         await executeReleaseDownload(
           pendingOnBehalfDownload.book,
@@ -1641,7 +1686,7 @@ function App() {
           pendingOnBehalfDownload.monitoredEntityId,
           undefined,
           undefined,
-          pendingOnBehalfDownload.saveLocation,
+          pendingOnBehalfDownload.standalone,
         );
       }
       setPendingOnBehalfDownload(null);
@@ -1649,7 +1694,13 @@ function App() {
     } catch {
       return false;
     }
-  }, [executeBookDownload, executeCombinedAction, executeReleaseDownload, pendingOnBehalfDownload]);
+  }, [
+    executeBookDownload,
+    executeCombinedAction,
+    executeQueueSelections,
+    executeReleaseDownload,
+    pendingOnBehalfDownload,
+  ]);
 
   // Direct-mode action (download or release-level request based on policy).
   const handleDownload = async (book: Book): Promise<void> => {
@@ -1759,7 +1810,7 @@ function App() {
       monitoredEntityIdOverride?: number | null,
       sessionId?: string | null,
       runId?: string | null,
-      saveLocation?: string | null,
+      standalone?: StandaloneDownloadOptions | null,
     ) => {
       policyTrace('release.action:start', {
         bookId: book.id,
@@ -1778,7 +1829,7 @@ function App() {
           releaseContentType,
           actingAsUser,
           monitoredEntityId,
-          saveLocation,
+          standalone,
         });
         return;
       }
@@ -1790,11 +1841,57 @@ function App() {
         monitoredEntityId,
         sessionId,
         runId,
-        saveLocation,
+        standalone,
       );
     },
     [actingAsUser, releaseMonitoredEntityId, executeReleaseDownload],
   );
+
+  // Queue action for the selection modal. The hook resets its own state after
+  // onQueue settles; this just closes the modal (or parks the request behind
+  // the on-behalf confirmation, like the other download paths).
+  const handleQueueSelections = useCallback(
+    async (request: QueueSelectionsRequest): Promise<void> => {
+      const book = releaseBook;
+      if (!book) return;
+      const monitoredEntityId = releaseMonitoredEntityId ?? undefined;
+      if (actingAsUser) {
+        setPendingOnBehalfDownload({
+          type: 'selection',
+          book,
+          request,
+          monitoredEntityId,
+          actingAsUser,
+        });
+      } else {
+        await executeQueueSelections(book, request, monitoredEntityId);
+      }
+      setCombinedState(null);
+      setReleaseBook(null);
+      setReleaseContentTypeOverride(null);
+      setReleaseMonitoredEntityId(null);
+      // Clear the selection so a later classic modal (e.g. manual query) can't
+      // inherit this session's active content-type step.
+      releaseSelectionResetRef.current();
+    },
+    [
+      releaseBook,
+      releaseMonitoredEntityId,
+      actingAsUser,
+      executeQueueSelections,
+      setReleaseMonitoredEntityId,
+    ],
+  );
+
+  const releaseSelection = useReleaseSelection({
+    onQueue: handleQueueSelections,
+    // Monitored downloads route to the author's configured folder, so the
+    // SAVE TO bar is only offered for standalone ones.
+    showSaveTo: releaseMonitoredEntityId == null && fulfillingRequest === null,
+  });
+  // Held in a ref so handleQueueSelections (defined above, before the hook) can
+  // reset the reducer after queueing without a circular dependency.
+  releaseSelectionResetRef.current = releaseSelection.reset;
 
   const { executeAutoSearch } = useMonitoredAutoSearch({
     config,
@@ -1817,6 +1914,10 @@ function App() {
   ) => {
     let mode = getUniversalDefaultPolicyMode();
     const normalizedContentType = toContentType(releaseContentType);
+    // The release modal offers both steps (ebook + audiobook, each optional), so
+    // the default policy mode for each is needed to disable unavailable steps.
+    let stepPolicy: Awaited<ReturnType<typeof refreshRequestPolicy>> | null = null;
+    let stepIsAdmin = requestRoleIsAdmin;
     policyTrace('universal.get:start', {
       bookId: book.id,
       contentType: normalizedContentType,
@@ -1826,6 +1927,8 @@ function App() {
     try {
       const latestPolicy = await refreshRequestPolicy({ force: true });
       const effectiveIsAdmin = latestPolicy ? Boolean(latestPolicy.is_admin) : requestRoleIsAdmin;
+      stepPolicy = latestPolicy;
+      stepIsAdmin = effectiveIsAdmin;
       mode = resolveDefaultModeFromPolicy(latestPolicy, effectiveIsAdmin, normalizedContentType);
       policyTrace('universal.get:resolved', {
         bookId: book.id,
@@ -1857,18 +1960,14 @@ function App() {
     // Combined mode is only available when both default content types are accessible.
     // An explicit combined:false in options overrides the global setting.
     const effectiveCombined = options?.combined !== undefined ? options.combined : combinedMode;
+    const ebookMode = resolveDefaultModeFromPolicy(stepPolicy, stepIsAdmin, 'ebook');
+    const audiobookMode = resolveDefaultModeFromPolicy(stepPolicy, stepIsAdmin, 'audiobook');
+    const openSelection = () =>
+      releaseSelection.open({
+        initialStep: normalizedContentType,
+        modes: { ebook: ebookMode, audiobook: audiobookMode },
+      });
     if (effectiveCombined) {
-      const latestPolicy2 = await refreshRequestPolicy({ force: true }).catch(() => null);
-      const effectiveIsAdmin2 = latestPolicy2
-        ? Boolean(latestPolicy2.is_admin)
-        : requestRoleIsAdmin;
-      const ebookMode = resolveDefaultModeFromPolicy(latestPolicy2, effectiveIsAdmin2, 'ebook');
-      const audiobookMode = resolveDefaultModeFromPolicy(
-        latestPolicy2,
-        effectiveIsAdmin2,
-        'audiobook',
-      );
-
       if (ebookMode === 'request_book' && audiobookMode === 'request_book') {
         const ebookPayload: CreateRequestPayload = {
           book_data: buildMetadataBookRequestData(book, 'ebook'),
@@ -1883,13 +1982,6 @@ function App() {
         openRequestConfirmation(ebookPayload, [audiobookPayload]);
         return;
       }
-
-      const selectionPhases = getCombinedSelectionPhases({ ebookMode, audiobookMode });
-      setCombinedState({
-        phase: selectionPhases[0],
-        ebookMode,
-        audiobookMode,
-      });
     } else {
       if (mode === 'request_book') {
         policyTrace('universal.get:request_modal', {
@@ -1936,13 +2028,14 @@ function App() {
         const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
         if (!effectiveCombined) setReleaseContentTypeOverride(normalizedContentType);
         setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+        openSelection();
         setReleaseBook({
           ...book,
           description: fullBook.description || book.description,
           series_id: fullBook.series_id || book.series_id,
-          series_name: fullBook.series_name,
-          series_position: fullBook.series_position,
-          series_count: fullBook.series_count,
+          series_name: fullBook.series_name || book.series_name,
+          series_position: fullBook.series_position ?? book.series_position,
+          series_count: fullBook.series_count ?? book.series_count,
         });
       } catch (error) {
         console.error('Failed to load book description, using search data:', error);
@@ -1953,6 +2046,7 @@ function App() {
         });
         if (!effectiveCombined) setReleaseContentTypeOverride(normalizedContentType);
         setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+        openSelection();
         setReleaseBook(book);
       }
     } else {
@@ -1962,6 +2056,7 @@ function App() {
       });
       if (!effectiveCombined) setReleaseContentTypeOverride(normalizedContentType);
       setReleaseMonitoredEntityId(monitoredEntityId ?? null);
+      openSelection();
       setReleaseBook(book);
     }
   };
@@ -2584,7 +2679,13 @@ function App() {
       search_title: trimmed,
     };
     setReleaseBook(syntheticBook);
-  }, [searchInput]);
+    // Manual query is a direct download; open the selection so its SAVE TO bar
+    // shows. Both content types are downloadable (the query is type-agnostic).
+    releaseSelection.open({
+      initialStep: contentType,
+      modes: { ebook: 'download', audiobook: 'download' },
+    });
+  }, [searchInput, releaseSelection, contentType]);
 
   useEffect(() => {
     if (!manualSearchAllowed && activeQueryTarget === 'manual') {
@@ -2681,6 +2782,7 @@ function App() {
   const activeReleaseBook = fulfillingRequest?.book ?? releaseBook;
   const activeReleaseContentType =
     fulfillingRequest?.contentType ??
+    releaseSelection.activeStep ??
     releaseContentTypeOverride ??
     combinedState?.phase ??
     contentType;
@@ -2705,12 +2807,13 @@ function App() {
     setReleaseBook(null);
     setReleaseContentTypeOverride(null);
     setReleaseMonitoredEntityId(null);
-  }, [isBrowseFulfilMode]);
+    releaseSelection.reset();
+  }, [isBrowseFulfilMode, releaseSelection]);
 
   const pendingOnBehalfTitle = pendingOnBehalfDownload
     ? pendingOnBehalfDownload.type === 'book'
       ? pendingOnBehalfDownload.book.title || 'Untitled'
-      : pendingOnBehalfDownload.type === 'combined'
+      : pendingOnBehalfDownload.type === 'combined' || pendingOnBehalfDownload.type === 'selection'
         ? pendingOnBehalfDownload.book.title || 'Untitled'
         : pendingOnBehalfDownload.release.title || pendingOnBehalfDownload.book.title || 'Untitled'
     : '';
@@ -3093,7 +3196,7 @@ function App() {
           <ReleaseModal
             book={activeReleaseBook}
             onClose={handleReleaseModalClose}
-            onDownload={(book, release, ct, saveLocation) =>
+            onDownload={(book, release, ct, standalone) =>
               isBrowseFulfilMode
                 ? handleBrowseFulfilDownload(book, release, ct)
                 : handleReleaseDownload(
@@ -3103,12 +3206,10 @@ function App() {
                     undefined,
                     undefined,
                     undefined,
-                    saveLocation,
+                    standalone,
                   )
             }
-            // Monitored downloads route to the author's configured folder, so the
-            // picker is only offered for standalone ones.
-            allowSaveLocation={!isBrowseFulfilMode && releaseMonitoredEntityId == null}
+            selection={isBrowseFulfilMode ? null : releaseSelection.config}
             onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
             onRequestBook={
               isBrowseFulfilMode || !requestRoleIsAdmin ? undefined : handleReleaseBookRequest

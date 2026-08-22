@@ -4770,6 +4770,37 @@ export const MonitoredPage = ({
                           </svg>
                         </button>
                       </form>
+                      {authorQuery.trim() ? (
+                        <div className="mb-3 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSearchScope('authors')}
+                            aria-pressed={searchScope === 'authors'}
+                            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
+                              searchScope === 'authors'
+                                ? 'bg-emerald-600 text-white shadow-sm'
+                                : 'hover-action border border-[var(--border-muted)] text-gray-700 dark:text-gray-200'
+                            }`}
+                          >
+                            Authors
+                            {authorCards.length || authorResults.length
+                              ? ` (${authorCards.length || authorResults.length})`
+                              : ''}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSearchScope('books')}
+                            aria-pressed={searchScope === 'books'}
+                            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
+                              searchScope === 'books'
+                                ? 'bg-emerald-600 text-white shadow-sm'
+                                : 'hover-action border border-[var(--border-muted)] text-gray-700 dark:text-gray-200'
+                            }`}
+                          >
+                            Books{bookSearchResults.length ? ` (${bookSearchResults.length})` : ''}
+                          </button>
+                        </div>
+                      ) : null}
                       <MonitoredSearchView
                         hideHeader
                         searchScope={searchScope}

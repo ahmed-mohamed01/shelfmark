@@ -16,7 +16,6 @@ from shelfmark.core.monitored_routes import (
     author_folder_exists,
     enrich_release_for_monitored,
     resolve_requested_destination,
-    template_creates_author_folder,
 )
 
 
@@ -111,46 +110,6 @@ class TestAuthorFolderExists:
 
     def test_false_for_empty_author(self, tmp_path: Path):
         assert author_folder_exists(tmp_path, "   ") is False
-
-
-class TestTemplateCreatesAuthorFolder:
-    """The picker shows parent + author, so it must only promise a real folder."""
-
-    @staticmethod
-    def _policy_config(mode: str, template: str):
-        values = {
-            "FILE_ORGANIZATION": mode,
-            "FILE_ORGANIZATION_AUDIOBOOK": mode,
-            "TEMPLATE_ORGANIZE": template,
-            "TEMPLATE_RENAME": template,
-            "TEMPLATE_AUDIOBOOK_ORGANIZE": template,
-            "TEMPLATE_AUDIOBOOK_RENAME": template,
-        }
-        config = MagicMock()
-        config.get = MagicMock(
-            side_effect=lambda key, default=None, **_kwargs: values.get(key, default)
-        )
-        return patch("shelfmark.core.config.config", config)
-
-    def test_true_when_author_is_a_directory_segment(self):
-        with self._policy_config("organize", "{Author}/{Title} ({Year})"):
-            assert template_creates_author_folder(is_audiobook=False) is True
-
-    def test_true_for_nested_author_and_series(self):
-        with self._policy_config("organize", "{Author}/{Series}/{Title}"):
-            assert template_creates_author_folder(is_audiobook=True) is True
-
-    def test_false_when_author_is_only_in_the_filename(self):
-        with self._policy_config("rename", "{Author} - {Title} ({Year})"):
-            assert template_creates_author_folder(is_audiobook=False) is False
-
-    def test_false_when_directory_segment_has_no_author(self):
-        with self._policy_config("organize", "{Series}/{Title}"):
-            assert template_creates_author_folder(is_audiobook=False) is False
-
-    def test_false_when_organization_disabled(self):
-        with self._policy_config("none", "{Author}/{Title}"):
-            assert template_creates_author_folder(is_audiobook=False) is False
 
 
 class TestEnrichReleaseSaveLocation:

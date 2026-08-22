@@ -11,6 +11,7 @@ Import graph: monitored_operations → monitored_db_ops, monitored_files,
 from __future__ import annotations
 
 import contextlib
+import re
 import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -1084,6 +1085,94 @@ def resolve_monitored_output_overrides(
     return None, "organize", f"{{Author}}/{template}"
 
 
+_SERIES_FOLDER_TOKEN = re.compile(r"^\{\s*series\s*\}$", re.IGNORECASE)
+_SERIES_SLASH_TOKEN = re.compile(r"\{\s*series\s*/\s*\}", re.IGNORECASE)
+
+
+def strip_author_prefix(template: str) -> str:
+    """Drop a leading ``{Author}/`` directory segment.
+
+    The standalone SAVE TO bar always files under ``<root>/<Author>``, so the
+    template is applied *inside* the author folder — a leading ``{Author}/``
+    would nest a second one.
+    """
+    cleaned = (template or "").strip().lstrip("/")
+    if cleaned.lower().startswith("{author}/"):
+        cleaned = cleaned[len("{author}/") :].lstrip("/")
+    return cleaned
+
+
+def standalone_author_folder(root: str, author: str | None) -> str | None:
+    """``<root>/<sanitized author>`` — the destination for a one-off download.
+
+    The author folder is always created. If *root* already ends in the author
+    name (the user browsed straight into it) it is returned as-is, so a second
+    folder isn't nested. The author is sanitized the same way the naming
+    template sanitizes ``{Author}``, so the folder matches what post-processing
+    creates and a separator-carrying name can't escape *root*. ``None`` when
+    there is nothing safe to join.
+    """
+    from shelfmark.core.naming import sanitize_filename
+
+    base = (root or "").strip().rstrip("/")
+    name = sanitize_filename((author or "").strip())
+    if not base or not name or "/" in name or name in {".", ".."}:
+        return None
+    if base.rsplit("/", 1)[-1] == name:
+        return base
+    return f"{base}/{name}"
+
+
+def _split_template_segments(template: str) -> list[str]:
+    """Split a template on ``/`` characters that sit outside ``{...}`` blocks."""
+    segments: list[str] = []
+    depth = 0
+    current = ""
+    for ch in template:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        if ch == "/" and depth == 0:
+            segments.append(current)
+            current = ""
+            continue
+        current += ch
+    segments.append(current)
+    return segments
+
+
+def strip_series_folder_segment(template: str) -> str:
+    """Remove directory segments that are exactly the ``{Series}`` token.
+
+    "Series folder off" drops the series *subfolder* while keeping series
+    metadata, so ``{Series}/{SeriesPosition} - {Title}`` becomes
+    ``{SeriesPosition} - {Title}`` and still renders the series position/name in
+    the filename. This matches the design's template-switching intent and avoids
+    the orphaned literals that blanking series *values* would leave behind (e.g.
+    a template's ``({Series} #{SeriesPosition})`` rendering as ``( #)``).
+
+    Only directory segments are considered, never the final (filename) segment.
+    ``{Series/}`` — the conditional-slash spelling — is normalised first.
+    """
+    if not template:
+        return template
+    normalized = _SERIES_SLASH_TOKEN.sub("{Series}/", template)
+    segments = _split_template_segments(normalized)
+    if len(segments) <= 1:
+        return normalized
+    *dirs, last = segments
+    kept = [d for d in dirs if not _SERIES_FOLDER_TOKEN.match(d.strip())]
+    return "/".join([*kept, last])
+
+
+def entity_series_folder_enabled(entity_settings: dict[str, Any] | None) -> bool:
+    """Per-author "series folder" switch; anything but an explicit False means on."""
+    if not isinstance(entity_settings, dict):
+        return True
+    return entity_settings.get("series_folder") is not False
+
+
 def filter_search_candidates(availability_books: list[dict], content_type: str) -> list[dict]:
     """Filter monitored books to those eligible for auto-search.
 
@@ -1141,6 +1230,14 @@ def search_missing_books(
         content_type=content_type,
         user_id=user_id,
     )
+    # "Series folder" off for this author: drop the {Series} directory segment
+    # from the template so books don't get a series subfolder, while keeping the
+    # series metadata so positions/names still render in filenames.
+    series_folder_on = entity_series_folder_enabled(
+        entity.get("settings") if isinstance(entity, dict) else None
+    )
+    if not series_folder_on and isinstance(tmpl_override, str) and tmpl_override.strip():
+        tmpl_override = strip_series_folder_segment(tmpl_override)
 
     availability = compute_book_availability(db, entity_id=entity_id, user_id=user_id)
     candidates = filter_search_candidates(availability.books, content_type)

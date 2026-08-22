@@ -20,13 +20,17 @@ from shelfmark.core.monitored_files import (
 )
 from shelfmark.core.monitored_operations import (
     compute_book_availability,
+    entity_series_folder_enabled,
     filter_search_candidates,
     record_scan_error,
     resolve_book_auto_search_precheck,
     resolve_monitored_output_overrides,
     run_batch_sync,
     search_missing_books,
+    standalone_author_folder,
     start_author_background_sync,
+    strip_author_prefix,
+    strip_series_folder_segment,
     sync_availability_sources,
 )
 from shelfmark.core.monitored_release_scoring import parse_release_date
@@ -286,28 +290,6 @@ def author_folder_exists(parent: Path, author: str) -> bool:
     return False
 
 
-def template_creates_author_folder(*, is_audiobook: bool) -> bool:
-    """True when the active naming template puts {Author} in a directory segment.
-
-    The standalone save picker shows the resolved destination *including* the
-    author folder, so it must only promise that folder when the configured
-    template will actually produce one. Everything downstream is unchanged —
-    the picker still sends the parent, and the template does the nesting.
-    """
-    from shelfmark.download.postprocess.policy import get_file_organization, get_template
-
-    mode = get_file_organization(is_audiobook=is_audiobook)
-    if mode == "none":
-        return False
-
-    template = get_template(is_audiobook=is_audiobook, organization_mode=mode)
-    if "/" not in template:
-        return False
-
-    directory_part = template.rsplit("/", 1)[0]
-    return "{author}" in directory_part.lower()
-
-
 def enrich_release_for_monitored(
     release_payload: dict[str, Any],
     monitored_db: MonitoredDB | None,
@@ -324,7 +306,21 @@ def enrich_release_for_monitored(
     downloads: every download route runs through here, so validating (and
     otherwise stripping) the output overrides at the top guarantees an
     unvetted path can never reach the orchestrator.
+
+    A standalone download may additionally set ``organize: true`` (the SAVE TO
+    bar's "Organize into folders" checkbox) to force *organize* mode, so the file
+    follows the global File Organization template (``TEMPLATE_ORGANIZE`` /
+    ``TEMPLATE_AUDIOBOOK_ORGANIZE``) even when the global setting is rename. Left
+    unset, no layout override is applied and the global setting decides — the
+    picker only chooses the destination root. Monitored authors keep their own
+    per-entity template (below); the two flows are independent.
     """
+    # The organize flag is an instruction to this function, never a task field.
+    organize = release_payload.get("organize")  # True → organize, False → rename, None → global
+    if "organize" in release_payload:
+        release_payload = dict(release_payload)
+        release_payload.pop("organize", None)
+
     # Layout overrides are server-decided; the standalone picker only chooses a
     # destination, so the global File Organization setting still applies. Drop
     # any client-sent layout fields before the monitored block below sets its own.
@@ -356,6 +352,70 @@ def enrich_release_for_monitored(
         except TypeError, ValueError:
             release_payload = dict(release_payload)
             release_payload.pop("monitored_entity_id", None)
+
+    # Standalone SAVE TO layout. The file always lands under <root>/<Author> (the
+    # author folder is created here, so {Author}/ is stripped from the template);
+    # the "Organize into folders" checkbox then decides the layout, reusing the
+    # existing post-processing (transfer.py) for ebook-vs-audiobook handling:
+    #   ebook  ON  → organize (series/naming from the global organize template)
+    #   ebook  OFF → none (original filename, loose in the author folder)
+    #   audiobook ON  → organize (series + per-book folder)
+    #   audiobook OFF → organize, series folder stripped (own per-book folder,
+    #                   no series) — audiobooks are multi-file and need a folder
+    standalone_ct = str(release_payload.get("content_type") or "").strip().lower()
+    if (
+        release_payload.get("monitored_entity_id") is None
+        and organize is not None
+        and standalone_ct in ("ebook", "audiobook")
+    ):
+        from shelfmark.download.postprocess.policy import get_template
+
+        release_payload = dict(release_payload)
+        root = release_payload.get("destination_override")
+        extra_block = release_payload.get("extra")
+        author = release_payload.get("author") or (
+            extra_block.get("author") if isinstance(extra_block, dict) else None
+        )
+        author_dir = standalone_author_folder(root, author) if isinstance(root, str) else None
+        if author_dir is None and author:
+            # No client root (e.g. the picker's default hadn't loaded when queued):
+            # still guarantee the author folder by composing it on the default
+            # destination for this content type.
+            try:
+                from shelfmark.core.utils import get_destination
+
+                default_dest = str(
+                    get_destination(is_audiobook=standalone_ct == "audiobook", user_id=db_user_id)
+                )
+                author_dir = standalone_author_folder(default_dest, author)
+            except Exception:  # noqa: BLE001 — default-dest resolution must never block a download; keep {Author}/ in the template instead
+                author_dir = None
+        if author_dir is not None:
+            # Re-validate the composed <root>/<Author>: an author-named symlink
+            # inside an allowed root could otherwise resolve outside it.
+            author_dir = resolve_requested_destination(
+                author_dir, user_db=user_db, db_user_id=db_user_id
+            )
+        has_author_dir = author_dir is not None
+        if has_author_dir:
+            release_payload["destination_override"] = author_dir
+
+        is_audiobook = standalone_ct == "audiobook"
+        base_tmpl = get_template(is_audiobook=is_audiobook, organization_mode="organize")
+        # Applied inside the author folder → strip {Author}/. Without a validated
+        # author dir, keep {Author}/ so the template still creates the folder.
+        tmpl = strip_author_prefix(base_tmpl) if has_author_dir else base_tmpl
+
+        if organize:
+            release_payload["file_organization_override"] = "organize"
+            release_payload["template_override"] = tmpl
+        elif is_audiobook:
+            release_payload["file_organization_override"] = "organize"
+            release_payload["template_override"] = strip_series_folder_segment(tmpl)
+        else:
+            # Ebook, organize off: keep the original filename in the author folder.
+            release_payload["file_organization_override"] = "none"
+            release_payload.pop("template_override", None)
 
     try:
         monitored_entity_id_int = release_payload.get("monitored_entity_id")
@@ -394,6 +454,8 @@ def enrich_release_for_monitored(
             if org_override is not None:
                 release_payload["file_organization_override"] = org_override
             if tmpl_override is not None:
+                if not entity_series_folder_enabled(settings):
+                    tmpl_override = strip_series_folder_segment(tmpl_override)
                 release_payload["template_override"] = tmpl_override
 
             # Inject the book's release_date from monitored DB so the orchestrator's
@@ -2982,6 +3044,12 @@ def register_monitored_routes(
 
         The first entry is the configured default for that content type, which
         is what the download uses when the picker is left alone.
+
+        The response also carries ``layout``: the global File Organization mode
+        and the organize/rename templates a one-off download follows, so the
+        client can render the exact resolved path for either state of the
+        "Organize into folders" checkbox. ``author_folder_exists`` is probed
+        whenever an author is given and the organize template files by author.
         """
         from shelfmark.core.utils import get_destination
 
@@ -3034,14 +3102,31 @@ def register_monitored_routes(
                 {"path": path_str, "label": root.name or path_str, "is_default": False}
             )
 
-        creates = template_creates_author_folder(is_audiobook=content_type == "audiobook")
-        if author and creates:
-            # Flag roots where this author's folder already exists, so the
-            # picker can show which location already files this author.
+        from shelfmark.download.postprocess.policy import get_template
+
+        is_audiobook = content_type == "audiobook"
+        try:
+            organize_template = get_template(
+                is_audiobook=is_audiobook, organization_mode="organize"
+            )
+        except Exception:  # noqa: BLE001 — route-boundary defensive catch; the picker degrades to roots only
+            logger.warning("Could not resolve organize template", exc_info=True)
+            organize_template = "{Author}/{Title}"
+
+        # A one-off download always files under <root>/<Author>, so mark the roots
+        # that already contain this author's folder.
+        if author:
             for entry in destinations:
                 entry["author_folder_exists"] = author_folder_exists(Path(entry["path"]), author)
 
-        return jsonify({"destinations": destinations, "creates_author_folder": creates})
+        return jsonify(
+            {
+                "destinations": destinations,
+                # The global organize template a one-off "Organize into folders"
+                # download applies inside the author folder ({Author}/ is stripped).
+                "layout": {"organize_template": organize_template},
+            }
+        )
 
     # ------------------------------------------------------------------
     # File system directory browser (for monitored folder picker UI)

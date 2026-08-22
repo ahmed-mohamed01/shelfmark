@@ -818,14 +818,47 @@ export interface DownloadDestination {
 }
 
 /**
+ * The library layout a one-off download gets when "Organize into folders" is on:
+ * organize mode with an `{Author}/`-prefixed template, the same per-user template
+ * monitored downloads use — so both flows land on the same shelf.
+ */
+export interface DownloadDestinationLayout {
+  /** Global organize (path) template — used when "Organize into folders" is on. */
+  organizeTemplate: string;
+}
+
+/**
  * Save locations offered for a standalone (non-monitored) download.
  * The first entry is the configured default for that content type.
  */
 export interface DownloadDestinationsResult {
   destinations: DownloadDestination[];
-  /** Whether the configured naming template nests files in an author folder. */
-  createsAuthorFolder: boolean;
+  layout: DownloadDestinationLayout;
 }
+
+/** What a one-off download carries from the book modal's SAVE TO bar. */
+export interface StandaloneDownloadOptions {
+  /** Chosen parent folder, or null for the configured default. */
+  saveLocation: string | null;
+  /** "Organize into folders": force organize mode using the global organize template. */
+  organize: boolean;
+}
+
+/** Wire form of StandaloneDownloadOptions, spread onto the release download payload. */
+export interface StandaloneDownloadPayloadExtras {
+  destination_override?: string;
+  organize?: boolean;
+}
+
+export const standaloneDownloadPayloadExtras = (
+  options: StandaloneDownloadOptions | null | undefined,
+): StandaloneDownloadPayloadExtras => {
+  if (!options) return {};
+  const extras: StandaloneDownloadPayloadExtras = {};
+  if (options.saveLocation) extras.destination_override = options.saveLocation;
+  extras.organize = options.organize;
+  return extras;
+};
 
 export const listDownloadDestinations = async (
   contentType: 'ebook' | 'audiobook',
@@ -842,7 +875,9 @@ export const listDownloadDestinations = async (
       is_default: boolean;
       author_folder_exists?: boolean;
     }[];
-    creates_author_folder?: boolean;
+    layout?: {
+      organize_template?: string;
+    };
   }>(`${API_BASE}/download-destinations?${params.toString()}`);
   return {
     destinations: (resp.destinations || []).map((d) => ({
@@ -852,7 +887,9 @@ export const listDownloadDestinations = async (
       authorFolderExists:
         d.author_folder_exists === undefined ? undefined : Boolean(d.author_folder_exists),
     })),
-    createsAuthorFolder: Boolean(resp.creates_author_folder),
+    layout: {
+      organizeTemplate: resp.layout?.organize_template || '{Author}/{Title} ({Year})',
+    },
   };
 };
 

@@ -1680,7 +1680,12 @@ export const MonitoredAuthorBooksTab = ({
   const getDefaultBookSearchMode = useCallback(() => {
     const defaultContentType: ContentType =
       defaultReleaseContentType === 'audiobook' ? 'audiobook' : 'ebook';
-    const defaultAction = resolvePrimaryActionForContentType(defaultContentType);
+    // One-off "View books" (unmonitored author) always opens the release modal so the
+    // user can choose the SAVE TO destination; auto-download would bypass it and land
+    // the file in the default location. Monitored authors keep their configured default.
+    const defaultAction: ReleasePrimaryAction = monitoredEntityId
+      ? resolvePrimaryActionForContentType(defaultContentType)
+      : 'interactive_search';
     const isAutoDefault = defaultAction === 'auto_search_download';
     const primaryLabel =
       defaultContentType === 'audiobook'
@@ -1691,7 +1696,7 @@ export const MonitoredAuthorBooksTab = ({
           ? 'Auto search + download eBooks'
           : 'Interactive search eBooks';
     return { defaultContentType, defaultAction, isAutoDefault, primaryLabel };
-  }, [defaultReleaseContentType, resolvePrimaryActionForContentType]);
+  }, [defaultReleaseContentType, resolvePrimaryActionForContentType, monitoredEntityId]);
 
   const getBookMonitorState = useCallback(
     (book: Book): { monitorEbook: boolean; monitorAudiobook: boolean } => {
@@ -3294,7 +3299,17 @@ export const MonitoredAuthorBooksTab = ({
                                               setActiveBookDetails(
                                                 withMonitoredAvailability(book, monitoredBookRows),
                                               )
-                                          : undefined
+                                          : onGetReleases
+                                            ? () =>
+                                                void triggerReleaseSearch(
+                                                  book,
+                                                  defaultReleaseContentType === 'audiobook'
+                                                    ? 'audiobook'
+                                                    : 'ebook',
+                                                  'interactive_search',
+                                                  { combined: false },
+                                                )
+                                            : undefined
                                       }
                                       onToggleSelect={
                                         monitoredEntityId
@@ -3702,6 +3717,8 @@ export const MonitoredAuthorBooksTab = ({
                                                 {renderBookOverflowMenu(book)}
                                               </div>
                                             </>
+                                          ) : onGetReleases ? (
+                                            renderBookTableActions(book)
                                           ) : null
                                         }
                                       />

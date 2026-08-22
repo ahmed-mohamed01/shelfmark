@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 
 import { useSocket } from '../contexts/SocketContext';
 import { getReleaseMatchScore } from '../hooks/useMonitoredState';
+import type { ReleaseSelectionConfig } from '../hooks/useReleaseSelection';
 import { getReleases, getReleaseSources } from '../services/api';
+import type { StandaloneDownloadOptions } from '../services/monitoredApi';
 import {
   Book,
   Release,
@@ -57,7 +59,8 @@ import { Dropdown } from './Dropdown';
 import { DropdownList } from './DropdownList';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { ReleaseCell } from './ReleaseCell';
-import { SaveLocationPicker } from './SaveLocationPicker';
+import { ReleaseSaveToBar } from './ReleaseSaveToBar';
+import { ReleaseSelectionFooter } from './ReleaseSelectionFooter';
 
 function getReleaseRejectReason(release: Release): string | null {
   const raw = release.extra?.match_reject_reason;
@@ -137,10 +140,14 @@ interface ReleaseModalProps {
     book: Book,
     release: Release,
     contentType: ContentType,
-    saveLocation?: string | null,
+    standalone?: StandaloneDownloadOptions | null,
   ) => Promise<void>;
-  /** Show the save-location picker (standalone downloads only; monitored ones resolve their own). */
-  allowSaveLocation?: boolean;
+  /**
+   * Decoupled ebook/audiobook selection: rows toggle-select, Book/Audiobook
+   * pills navigate freely, a SAVE TO bar picks the shelf, one action queues
+   * whatever is picked. Null keeps classic click-row-to-download.
+   */
+  selection?: ReleaseSelectionConfig | null;
   onRequestRelease?: (book: Book, release: Release, contentType: ContentType) => Promise<void>;
   onRequestBook?: (book: Book, contentType: ContentType) => Promise<void>;
   getPolicyModeForSource?: (source: string, contentType: ContentType) => RequestPolicyMode;
@@ -687,7 +694,7 @@ export const ReleaseModal = ({
   book,
   onClose,
   onDownload,
-  allowSaveLocation = false,
+  selection = null,
   onRequestRelease,
   onRequestBook,
   getPolicyModeForSource,
@@ -721,14 +728,13 @@ export const ReleaseModal = ({
   const [isClosing, setIsClosing] = useState(false);
   const [isRequestingBook, setIsRequestingBook] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
-  // Save location for standalone downloads; null means "use the configured default".
-  const [saveLocation, setSaveLocation] = useState<string | null>(null);
-  // Ebooks and audiobooks have separate roots, so a folder chosen for one must
-  // not carry over when the user flips the mode.
-  useEffect(() => {
-    setSaveLocation(null);
-  }, [contentType]);
   const isCombinedMode = combinedMode != null;
+  // Selection mode: decoupled ebook/audiobook picking with one queue action.
+  // Manual-query books use request mode to hide the (empty) book card, but still
+  // get the decoupled selection UI so they can choose a save location.
+  const isManualQuery = book?.provider === 'manual';
+  const isSelectionMode =
+    selection != null && !isCombinedMode && !embedded && (!isRequestMode || isManualQuery);
   const combinedPhase = combinedMode?.phase ?? null;
   const combinedStepLabel = combinedMode?.stepLabel ?? '';
   const combinedEbookMode = combinedMode?.ebookMode ?? null;
@@ -1548,6 +1554,16 @@ export const ReleaseModal = ({
         return;
       }
 
+      // In selection mode, clicking a row toggles it for the active step.
+      if (isSelectionMode && selection) {
+        const mode = getReleaseActionMode(release);
+        if (mode === 'blocked' || mode === 'request_book') {
+          return;
+        }
+        selection.onToggleRelease(contentType, release);
+        return;
+      }
+
       // In combined mode, clicking a row selects it (don't download)
       if (isCombinedMode) {
         const mode = getReleaseActionMode(release);
@@ -1560,7 +1576,7 @@ export const ReleaseModal = ({
 
       const mode = getReleaseActionMode(release);
       if (mode === 'download') {
-        await onDownload(book, release, contentType, allowSaveLocation ? saveLocation : null);
+        await onDownload(book, release, contentType);
         handleClose();
         return;
       }
@@ -1580,8 +1596,8 @@ export const ReleaseModal = ({
       onRequestRelease,
       contentType,
       handleClose,
-      allowSaveLocation,
-      saveLocation,
+      isSelectionMode,
+      selection,
     ],
   );
 
@@ -2218,7 +2234,11 @@ export const ReleaseModal = ({
             )}
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-xs tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
-                {isCombinedMode ? combinedStepLabel : 'Find Releases'}
+                {isCombinedMode
+                  ? combinedStepLabel
+                  : isSelectionMode && selection
+                    ? selection.stepLabel
+                    : 'Find Releases'}
               </p>
               <h3 id={titleId} className="truncate text-lg leading-snug font-semibold">
                 {book.provider === 'manual' ? 'Manual Query' : book.title || 'Untitled'}
@@ -2488,18 +2508,6 @@ export const ReleaseModal = ({
                     )}
                   </div>
                 </div>
-              </div>
-            )}
-
-            {allowSaveLocation && !isCombinedMode && !isRequestMode && (
-              <div className="border-b border-(--border-muted) px-5 py-3">
-                <SaveLocationPicker
-                  contentType={contentType === 'audiobook' ? 'audiobook' : 'ebook'}
-                  authorName={book.author}
-                  value={saveLocation}
-                  onChange={setSaveLocation}
-                  browseOverlayZIndex={1300}
-                />
               </div>
             )}
 
@@ -3122,11 +3130,22 @@ export const ReleaseModal = ({
                         onlineServers={columnConfig.online_servers}
                         showMatchScore={showMatchScore}
                         showReleaseSourceLinks={showReleaseSourceLinks}
-                        selectionMode={isCombinedMode}
+                        selectionMode={isCombinedMode || isSelectionMode}
                         isSelected={
-                          isCombinedMode && selectedRelease?.source_id === release.source_id
+                          isCombinedMode
+                            ? selectedRelease?.source_id === release.source_id
+                            : isSelectionMode
+                              ? selection?.selected[contentType]?.source === release.source &&
+                                selection?.selected[contentType]?.source_id === release.source_id
+                              : false
                         }
-                        onSelect={isCombinedMode ? () => setSelectedRelease(release) : undefined}
+                        onSelect={
+                          isCombinedMode
+                            ? () => setSelectedRelease(release)
+                            : isSelectionMode
+                              ? () => void handleReleaseAction(release)
+                              : undefined
+                        }
                       />
                     ))}
                   </div>
@@ -3172,6 +3191,19 @@ export const ReleaseModal = ({
               </div>
             )}
           </div>
+
+          {/* Selection mode: SAVE TO bar + Book/Audiobook pills + queue action */}
+          {isSelectionMode && selection && selection.showSaveTo && (
+            <ReleaseSaveToBar book={book} selection={selection} browseOverlayZIndex={1300} />
+          )}
+          {isSelectionMode && selection && (
+            <ReleaseSelectionFooter
+              selection={selection}
+              modeForRelease={(release, ct) =>
+                getPolicyModeForSource ? getPolicyModeForSource(release.source, ct) : 'download'
+              }
+            />
+          )}
 
           {/* Combined mode footer */}
           {isCombinedMode && (
