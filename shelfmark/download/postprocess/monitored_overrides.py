@@ -25,7 +25,7 @@ def get_file_organization_for_task(task: DownloadTask) -> str:
     override = task.file_organization_override
     if isinstance(override, str) and override.strip():
         normalized = override.strip().lower()
-        if normalized in {"none", "rename", "organize"}:
+        if normalized in {"none", "rename", "rename_and_group", "organize"}:
             return normalized
 
     return get_file_organization(is_audiobook=check_audiobook(task.content_type))
