@@ -25,6 +25,7 @@ import {
 import { MonitoredHistoryTab } from '../components/MonitoredHistoryTab';
 import { MonitoredSearchView } from '../components/MonitoredSearchView';
 import ReleaseDateSearchModal from '../components/ReleaseDateSearchModal';
+import { SearchScopeDropdown } from '../components/SearchScopeDropdown';
 import { ViewModeToggle, type ViewModeToggleOption } from '../components/ViewModeToggle';
 import { useSocket } from '../contexts/SocketContext';
 import { useSwipe } from '../hooks/useSwipe';
@@ -469,6 +470,8 @@ export const MonitoredPage = ({
     }
   }, [landingTab]);
   const [searchScope, setSearchScope] = useState<'authors' | 'books'>('authors');
+  // Accents the header search pill's border while its scope popover is open.
+  const [headerScopeOpen, setHeaderScopeOpen] = useState(false);
   const [authorQuery, setAuthorQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -1309,7 +1312,10 @@ export const MonitoredPage = ({
       authors: monitoredAuthorsForCards.length,
       books: filteredRegularMonitoredBooksForTable.length,
       upcoming: upcomingMonitoredBooksForTable.length + recentlyReleasedBooksForTable.length,
-      search: searchScope === 'books' ? bookSearchResults.length : authorResults.length,
+      // runAuthorSearch clears every scope's results before each run, so at
+      // most one term is non-zero. Summing keeps the badge stable when the
+      // header scope selector flips without a new search having run.
+      search: bookSearchResults.length + authorResults.length,
     };
     setCachedMonitoredCounts(snapshot);
     try {
@@ -1564,9 +1570,9 @@ export const MonitoredPage = ({
     ? upcomingMonitoredBooksForTable.length + recentlyReleasedBooksForTable.length
     : (cachedMonitoredCounts?.upcoming ?? '–');
   const displaySearchCount = monitoredLoaded
-    ? searchScope === 'books'
-      ? bookSearchResults.length
-      : authorResults.length
+    ? // At most one scope's results are populated (see the counts snapshot
+      // effect), so the sum is scope-flip-stable.
+      bookSearchResults.length + authorResults.length
     : (cachedMonitoredCounts?.search ?? '–');
   const monitoredSearchSortOptions =
     metadataSortOptions && metadataSortOptions.length > 0
@@ -2334,6 +2340,13 @@ export const MonitoredPage = ({
   ]);
 
   useEffect(() => {
+    // Only auto-rerun while the Search tab is showing. The header pill shares
+    // this scope/query state from every tab; without the guard, flipping scope
+    // (or typing) in the header would yank the user into the Search tab and
+    // fire searches they never submitted.
+    if (landingTab !== 'search') {
+      return;
+    }
     if (searchScope !== 'books') {
       return;
     }
@@ -2341,7 +2354,7 @@ export const MonitoredPage = ({
       return;
     }
     void runAuthorSearch();
-  }, [authorQuery, bookSearchSortValue, runAuthorSearch, searchScope]);
+  }, [authorQuery, bookSearchSortValue, landingTab, runAuthorSearch, searchScope]);
 
   useEffect(() => {
     if (!monitoredSearchSortOptions.some((option) => option.value === bookSearchSortValue)) {
@@ -2350,6 +2363,11 @@ export const MonitoredPage = ({
   }, [bookSearchSortValue, monitoredSearchSortOptions]);
 
   useEffect(() => {
+    // Same guard as the books-scope effect above: header-driven scope/query
+    // changes must not auto-search from other tabs.
+    if (landingTab !== 'search') {
+      return;
+    }
     if (searchScope !== 'authors') {
       return;
     }
@@ -2357,7 +2375,7 @@ export const MonitoredPage = ({
       return;
     }
     void runAuthorSearch();
-  }, [authorSearchSortValue, runAuthorSearch, searchScope, authorQuery]);
+  }, [authorSearchSortValue, landingTab, runAuthorSearch, searchScope, authorQuery]);
 
   const deferredAuthorCleanupRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -2990,7 +3008,9 @@ export const MonitoredPage = ({
       headerExtra={
         isDesktop ? (
           <form
-            className="mr-2 hidden items-center rounded-full border border-[var(--border-muted)] sm:flex"
+            className={`mr-2 hidden items-center rounded-full border transition-colors sm:flex ${
+              headerScopeOpen ? 'border-emerald-500' : 'border-[var(--border-muted)]'
+            }`}
             style={{ background: 'var(--surface)' }}
             onSubmit={(e) => {
               e.preventDefault();
@@ -2998,12 +3018,18 @@ export const MonitoredPage = ({
               void runAuthorSearch();
             }}
           >
+            <SearchScopeDropdown
+              compact
+              scope={searchScope}
+              onScopeChange={setSearchScope}
+              onOpenChange={setHeaderScopeOpen}
+            />
             <input
               type="text"
               value={authorQuery}
               onChange={(e) => setAuthorQuery(e.target.value)}
-              placeholder="Search..."
-              className="w-32 rounded-l-full bg-transparent px-4 py-1.5 text-sm text-[var(--text)] placeholder-gray-400 transition-all duration-200 focus:w-52 focus:outline-none"
+              placeholder={searchScope === 'authors' ? 'Search Authors...' : 'Search Books...'}
+              className="w-32 bg-transparent px-3 py-1.5 text-sm text-[var(--text)] placeholder-gray-400 transition-all duration-200 focus:w-52 focus:outline-none"
               style={{ textAlign: 'left' }}
             />
             <button
