@@ -84,7 +84,19 @@ describe('destinationPreview', () => {
       renderMode: 'organize',
     });
     expect(ab.filename.endsWith('.m4b')).toBe(true);
-    expect(ab.directory).toBe('/b/Megan E. O’Keefe');
+    // An audiobook whose flat template renders no book folder still gets one, so
+    // ABS can index it (mirrors the transfer.py guarantee).
+    expect(ab.directory).toBe('/b/Megan E. O’Keefe/Velocity Weapon (2019)');
+  });
+
+  it('gives a lone audiobook its own book folder; leaves ebooks loose', () => {
+    const common = { root: '/b', book: noSeries, renderMode: 'organize' as const };
+    // Author folder is appended, then the audiobook gets a book folder too.
+    const ab = buildDestinationPreview({ ...common, template: '{Title}', contentType: 'audiobook' });
+    expect(ab.full).toBe('/b/Megan E. O’Keefe/Velocity Weapon/Velocity Weapon.m4b');
+    // Ebook: the same flat template leaves the file loose in the author folder.
+    const eb = buildDestinationPreview({ ...common, template: '{Title}', contentType: 'ebook' });
+    expect(eb.full).toBe('/b/Megan E. O’Keefe/Velocity Weapon.epub');
   });
 
   it('stripAuthorPrefix removes only a leading {Author}/ segment', () => {

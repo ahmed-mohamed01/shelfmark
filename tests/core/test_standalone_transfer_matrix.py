@@ -243,3 +243,92 @@ class TestRenameAndGroupThroughOverrideWrapper:
         assert error is None
         assert {p.parent for p in final_paths} == {allowed_root / RELEASE_FOLDER}
         assert sorted(p.name for p in final_paths) == sorted(CHAPTERS)
+
+
+class TestAudiobookAlwaysGetsBookFolder:
+    """A single-file audiobook from a BRANCH-managed download (one carrying a
+    ``template_override`` — the SAVE-TO modal or a monitored auto-download) must land
+    in its own per-book folder so Audiobookshelf indexes it, whatever the template
+    renders. Plain downloads (no override) keep upstream's verbatim-template behavior;
+    ebooks are never foldered by this rule."""
+
+    def _transfer_single(
+        self,
+        tmp_path: Path,
+        template: str,
+        content_type: str,
+        *,
+        dest_sub: str = "",
+        as_override: bool = True,
+        title: str = "The Book",
+    ) -> Path:
+        from shelfmark.core.models import DownloadTask
+        from shelfmark.download.postprocess.transfer import transfer_book_files
+
+        destination = tmp_path / "dest"
+        (destination / dest_sub).mkdir(parents=True)
+        dest = destination / dest_sub if dest_sub else destination
+        ext = "m4b" if content_type == "audiobook" else "epub"
+        source = tmp_path / "src" / f"{title}.{ext}"
+        source.parent.mkdir()
+        source.write_text("x")
+        # A branch download carries the resolved template as task.template_override;
+        # a plain download has none and falls back to the config template.
+        override = template if as_override else None
+        patch_tmpl = None if as_override else (lambda _task, _mode: template)
+        task = DownloadTask(
+            task_id="t",
+            source="direct_download",
+            title=title,
+            author="An Author",
+            format=ext,
+            content_type=content_type,
+            template_override=override,
+        )
+
+        def _run() -> Path:
+            paths, error, _ = transfer_book_files(
+                [source],
+                destination=dest,
+                task=task,
+                use_hardlink=False,
+                is_torrent=False,
+                organization_mode="organize",
+            )
+            assert error is None
+            return paths[0].resolve().relative_to(destination.resolve())
+
+        if patch_tmpl is not None:
+            with patch("shelfmark.download.postprocess.transfer.get_template_for_task", patch_tmpl):
+                return _run()
+        return _run()
+
+    def test_flat_template_audiobook_gets_own_folder(self, tmp_path: Path):
+        # Flat "{Title}" would drop a lone file in the destination; it must be foldered.
+        rel = self._transfer_single(tmp_path, "{Title}", "audiobook")
+        assert rel == Path("The Book/The Book.m4b")
+
+    def test_series_leaf_template_gets_per_book_folder(self, tmp_path: Path):
+        # 1a: "{Series}/{Title}" would drop the file loose in the SHARED series folder;
+        # it must be nested in its own book folder under the series.
+        rel = self._transfer_single(tmp_path, "Foundation/{Title}", "audiobook")
+        assert rel == Path("Foundation/The Book/The Book.m4b")
+
+    def test_template_with_book_folder_is_left_alone(self, tmp_path: Path):
+        rel = self._transfer_single(tmp_path, "{Title}/{Title}", "audiobook")
+        assert rel == Path("The Book/The Book.m4b")
+
+    def test_original_name_leaf_is_left_alone(self, tmp_path: Path):
+        # Monitored-style: title-named folder + original-name file — already correct.
+        rel = self._transfer_single(tmp_path, "{Title}/{OriginalName}", "audiobook")
+        assert rel == Path("The Book/The Book.m4b")
+
+    def test_plain_download_without_override_keeps_upstream_behavior(self, tmp_path: Path):
+        # No template_override => not a branch flow => upstream verbatim behavior (loose).
+        rel = self._transfer_single(tmp_path, "{Title}", "audiobook", as_override=False)
+        assert rel == Path("The Book.m4b")
+
+    def test_ebook_flat_template_may_stay_loose(self, tmp_path: Path):
+        # The guarantee is audiobook-only; an ebook single file is not foldered.
+        rel = self._transfer_single(tmp_path, "{Title}", "ebook")
+        assert rel == Path("The Book.epub")

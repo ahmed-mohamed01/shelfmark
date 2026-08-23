@@ -165,8 +165,20 @@ export const buildDestinationPreview = (input: DestinationPreviewInput): Destina
   }).value;
   const relative = rendered || (input.book.title || 'Untitled').replace(/[\\/:*?"<>|]/g, '_');
   const slash = relative.lastIndexOf('/');
-  const relativeDirectory = slash >= 0 ? relative.slice(0, slash) : '';
+  let relativeDirectory = slash >= 0 ? relative.slice(0, slash) : '';
   const nameBase = slash >= 0 ? relative.slice(slash + 1) : relative;
+  // Mirror ensure_audiobook_book_folder (transfer.py): an audiobook must live in
+  // its own per-book folder (or ABS can't index it). If the file's immediate parent
+  // folder isn't book-specific — its name doesn't contain the title, so it's the
+  // author folder or a shared series folder — give it one named after the file.
+  if (input.contentType === 'audiobook') {
+    const titleSlug = sanitizeFilename(input.book.title || '');
+    const parentSeg = relativeDirectory.split('/').pop() ?? '';
+    const inBookFolder = titleSlug !== '' && parentSeg.toLowerCase().includes(titleSlug.toLowerCase());
+    if (!inBookFolder) {
+      relativeDirectory = relativeDirectory ? `${relativeDirectory}/${nameBase}` : nameBase;
+    }
+  }
   const filename = `${nameBase}.${extension}`;
   const directory = [base, relativeDirectory].filter(Boolean).join('/');
   return {

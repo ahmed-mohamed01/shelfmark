@@ -24,7 +24,10 @@ from shelfmark.download.fs import (
     atomic_move,
     run_blocking_io,
 )
-from shelfmark.download.postprocess.monitored_overrides import get_template_for_task
+from shelfmark.download.postprocess.monitored_overrides import (
+    ensure_audiobook_book_folder,
+    get_template_for_task,
+)
 from shelfmark.download.postprocess.policy import get_file_organization
 
 from .scan import collect_directory_files, scan_directory_tree
@@ -271,6 +274,7 @@ def transfer_book_files(
                 file_metadata,
                 extension=ext or None,
             )
+            dest_path = ensure_audiobook_book_folder(dest_path, task, is_audiobook=is_audiobook)
             run_blocking_io(dest_path.parent.mkdir, parents=True, exist_ok=True)
 
             final_path, op = _transfer_single_file(
