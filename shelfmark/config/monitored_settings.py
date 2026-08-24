@@ -507,4 +507,29 @@ def _migrate_monitoring_settings() -> None:
         src_path.write_text(json.dumps(source_cache[src_name], indent=2) + "\n", encoding="utf-8")
 
 
+@register_settings(
+    "bypass_experimental",
+    "Bypass (Experimental)",
+    icon="plug",
+    order=24,
+    group="direct_download",
+)
+def bypass_experimental_settings() -> list[SettingsField]:
+    """Experimental internal-bypasser tuning (branch-only)."""
+    return [
+        CheckboxField(
+            key="BYPASS_REUSE_BROWSER_SESSION",
+            label="Reuse browser session across searches",
+            description=(
+                "Keep the solved Chrome alive and reuse its cleared DDoS-Guard / Cloudflare "
+                "session for the next same-site search instead of re-solving every time. Cuts "
+                "repeat Anna's Archive searches from ~40s to a few seconds. Internal bypasser "
+                "only; the browser is recycled after 25 uses or 5 minutes. Restart to apply."
+            ),
+            default=False,
+            requires_restart=True,
+        ),
+    ]
+
+
 _migrate_monitoring_settings()

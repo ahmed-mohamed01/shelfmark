@@ -27,6 +27,7 @@ from seleniumbase import cdp_driver
 from seleniumbase.undetected.cdp_driver.connection import ProtocolException
 
 from shelfmark.bypass import BypassCancelledError
+from shelfmark.bypass import monitored_bypass_session as session
 from shelfmark.bypass.challenge import CLOUDFLARE_INDICATORS, DDOS_GUARD_INDICATORS
 from shelfmark.bypass.cookie_store import (
     clear_cf_cookies,
@@ -813,8 +814,9 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
 
     async def _run_bypass() -> str:
         driver = None
+        keep = False
         try:
-            driver = await _create_cdp_browser(url)
+            driver = await session.acquire(url, _create_cdp_browser, _close_cdp_driver)
 
             for attempt in range(retry):
                 _check_cancellation(cancel_flag, "Bypass cancelled before attempt")
@@ -822,6 +824,8 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
                 try:
                     result = await _get(url, driver, cancel_flag)
                     if result:
+                        # A real page came back, so the cleared session is worth keeping.
+                        keep = True
                         return result
                 except BypassCancelledError:
                     raise
@@ -835,14 +839,18 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
                     # On CDP errors, quit and create a fresh browser
                     if type(e).__name__ in DRIVER_RESET_ERRORS:
                         logger.info("Restarting Chrome due to browser error...")
-                        await _close_cdp_driver(driver)
-                        driver = await _create_cdp_browser(url)
+                        await session.discard(driver, _close_cdp_driver)
+                        driver = await session.acquire(
+                            url, _create_cdp_browser, _close_cdp_driver
+                        )
 
             logger.error("Bypass failed after %s attempts", retry)
             return ""
         finally:
-            if driver:
-                await _close_cdp_driver(driver)
+            if driver is not None:
+                # Keep the browser only on a real page; an empty result (challenge still
+                # up) or a cancellation discards it, so a poisoned session is never reused.
+                await session.release(driver, keep=keep, close_fn=_close_cdp_driver)
 
     # Bound the wait: this holds the module-wide LOCKED for its whole duration, and neither
     # page.get() nor page.wait() has a timeout of its own. Without a deadline here a single
@@ -1594,11 +1602,16 @@ def _run_child_process() -> int:
     answer is published.
     """
     exit_code = 0
-    for line in sys.stdin:
-        request_line = line.strip()
-        if not request_line:
-            continue
-        exit_code = _handle_child_request(request_line)
+    try:
+        for line in sys.stdin:
+            request_line = line.strip()
+            if not request_line:
+                continue
+            exit_code = _handle_child_request(request_line)
+    finally:
+        # Close any browser kept alive for session reuse so Chrome is not orphaned at exit.
+        with suppress(Exception):
+            _CDP_WORKER.run(session.shutdown(_close_cdp_driver), timeout=30)
     return exit_code
 
 
