@@ -13,7 +13,7 @@ import {
   type ReleaseSelectionConfig,
   type ReleaseSelectionState,
 } from '../hooks/useReleaseSelection';
-import type { ContentType, Release, RequestPolicyMode } from '../types';
+import type { ContentType, PackBook, Release, RequestPolicyMode } from '../types';
 
 const release = (id: string, source = 'direct_download'): Release =>
   ({ source, source_id: id, title: `Release ${id}` }) as Release;
@@ -136,6 +136,47 @@ describe('useReleaseSelection reducer', () => {
     ).toBe(after);
   });
 
+  it('stores an approved pack plan for the picked release and drops it when the pick changes', () => {
+    const plan: PackBook[] = [
+      { title: 'One', series_position: 1, year: null, files: ['1.epub'] },
+      { title: 'Two', series_position: 2, year: null, files: ['2.epub'] },
+    ];
+    let state = releaseSelectionReducer(open(), {
+      type: 'toggleRelease',
+      step: 'ebook',
+      release: release('a'),
+    })!;
+    state = releaseSelectionReducer(state, { type: 'setPackPlan', step: 'ebook', plan })!;
+    expect(state.packPlans).toEqual({ ebook: plan, audiobook: null });
+
+    // Same plan again is a no-op (no render loop); picking another release clears it.
+    expect(releaseSelectionReducer(state, { type: 'setPackPlan', step: 'ebook', plan })).toBe(
+      state,
+    );
+    const replaced = releaseSelectionReducer(state, {
+      type: 'toggleRelease',
+      step: 'ebook',
+      release: release('b'),
+    })!;
+    expect(replaced.packPlans.ebook).toBeNull();
+    // Deselecting drops it too.
+    const cleared = releaseSelectionReducer(state, {
+      type: 'toggleRelease',
+      step: 'ebook',
+      release: release('a'),
+    })!;
+    expect(cleared.selected.ebook).toBeNull();
+    expect(cleared.packPlans.ebook).toBeNull();
+  });
+
+  it('refuses a pack plan for a step with nothing picked', () => {
+    const state = open();
+    const plan: PackBook[] = [{ title: 'One', series_position: 1, year: null, files: ['1.epub'] }];
+    expect(releaseSelectionReducer(state, { type: 'setPackPlan', step: 'ebook', plan })).toBe(
+      state,
+    );
+  });
+
   it('resets to null and ignores actions while closed', () => {
     const state = open();
     expect(releaseSelectionReducer(state, { type: 'reset' })).toBeNull();
@@ -180,19 +221,38 @@ describe('useReleaseSelection labels', () => {
       'ebook ✓ · audiobook ✓',
     );
     expect(buildSelectionSummary({ ebook: null, audiobook: release('b') })).toBe('audiobook ✓');
+    // An approved multi-book split shows its book count.
+    const twoBooks: PackBook[] = [
+      { title: 'One', series_position: 1, year: null, files: ['1.m4b'] },
+      { title: 'Two', series_position: 2, year: null, files: ['2.m4b'] },
+    ];
+    expect(
+      buildSelectionSummary(
+        { ebook: release('a'), audiobook: release('b') },
+        { ebook: null, audiobook: twoBooks },
+      ),
+    ).toBe('ebook ✓ · audiobook ✓ (2 books)');
   });
 });
 
 describe('buildQueueItems', () => {
+  const audiobookPlan: PackBook[] = [
+    { title: 'One', series_position: 1, year: null, files: ['1.m4b'] },
+    { title: 'Two', series_position: 2, year: null, files: ['2.m4b'] },
+  ];
   const selectionOf = (
     ebook: Release | null,
     audiobook: Release | null,
     showSaveTo = true,
-  ): Pick<ReleaseSelectionConfig, 'selected' | 'roots' | 'previews' | 'showSaveTo'> => ({
+  ): Pick<
+    ReleaseSelectionConfig,
+    'selected' | 'roots' | 'previews' | 'showSaveTo' | 'packPlans'
+  > => ({
     selected: { ebook, audiobook },
     roots: { ebook: '/books/ebooks', audiobook: '/books/audiobooks' },
     previews: { ebook: '/books/ebooks/A/x.epub', audiobook: '/books/audiobooks/A/y.m4b' },
     showSaveTo,
+    packPlans: { ebook: null, audiobook: audiobookPlan },
   });
 
   it('resolves each item mode against its OWN content type, not the active step', () => {
@@ -210,6 +270,7 @@ describe('buildQueueItems', () => {
       contentType: 'audiobook',
       root: '/books/audiobooks',
       preview: '/books/audiobooks/A/y.m4b',
+      bookPlan: audiobookPlan,
     });
   });
 
@@ -217,5 +278,7 @@ describe('buildQueueItems', () => {
     const items = buildQueueItems(selectionOf(release('e'), null, false), () => 'download');
     expect(items[0].root).toBeNull();
     expect(items[0].preview).toBeNull();
+    // The pack plan is independent of the SAVE TO bar.
+    expect(items[0].bookPlan).toBeNull();
   });
 });

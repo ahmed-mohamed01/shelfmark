@@ -2,7 +2,11 @@ import { useCallback } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import { AppConfig, Book, ContentType, OpenReleasesOptions, Release, ReleasePrimaryAction } from '../types';
 import { getReleases } from '../services/api';
-import { precheckMonitoredAutoSearch, recordMonitoredAutoSearchAttempt } from '../services/monitoredApi';
+import {
+  precheckMonitoredAutoSearch,
+  recordMonitoredAutoSearchAttempt,
+  type MonitoredReleaseDownloadOptions,
+} from '../services/monitoredApi';
 import { ActivityItem } from '../components/activity/activityTypes';
 import { policyTrace } from '../utils/policyTrace';
 import { getUnreleasedUntilDateForAutoSearch } from '../utils/monitoredAutoSearchUtils';
@@ -22,9 +26,7 @@ interface UseMonitoredAutoSearchParams {
     book: Book,
     release: Release,
     contentType: ContentType,
-    monitoredEntityId?: number | null,
-    sessionId?: string | null,
-    runId?: string | null,
+    options?: MonitoredReleaseDownloadOptions,
   ) => Promise<void>;
 }
 
@@ -349,7 +351,7 @@ export function useMonitoredAutoSearch({
         if (!suppressPerBookAutoSearchToasts) {
           showToast(`Starting download (match ${bestMatchScore})`, 'info');
         }
-        await handleReleaseDownload(book, bestRelease, normalizedContentType, monitoredEntityId ?? null, sessionId, runId);
+        await handleReleaseDownload(book, bestRelease, normalizedContentType, { monitoredEntityId, sessionId, runId });
         if (!suppressPerBookAutoSearchToasts) {
           showToast(`Queued top match (score ${bestMatchScore})`, 'success');
         }

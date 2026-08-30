@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useReducer, type Reducer } from 'react';
 
-import type { ContentType, Release, RequestPolicyMode } from '../types';
+import type { ContentType, PackBook, Release, RequestPolicyMode } from '../types';
 
 /**
  * Decoupled ebook/audiobook release selection for the book modal.
@@ -25,6 +25,11 @@ export interface ReleaseSelectionState {
   organize: boolean;
   /** Resolved full path per step, as rendered by the SAVE TO bar (for the toast). */
   previews: PerStep<string | null>;
+  /**
+   * Multi-book packs: the split the user approved in the review panel for the
+   * step's picked release (null = file as one book). Cleared whenever the pick changes.
+   */
+  packPlans: PerStep<PackBook[] | null>;
 }
 
 export type ReleaseSelectionAction =
@@ -34,6 +39,7 @@ export type ReleaseSelectionAction =
   | { type: 'setRoot'; step: ContentType; root: string | null }
   | { type: 'setOrganize'; enabled: boolean }
   | { type: 'setPreview'; step: ContentType; preview: string | null }
+  | { type: 'setPackPlan'; step: ContentType; plan: PackBook[] | null }
   | { type: 'reset' };
 
 /** A step is selectable when releases can be picked for it (download or release-level request). */
@@ -63,6 +69,7 @@ export const releaseSelectionReducer: Reducer<
         roots: emptyPerStep<string | null>(null),
         organize: true,
         previews: emptyPerStep<string | null>(null),
+        packPlans: emptyPerStep<PackBook[] | null>(null),
       };
     case 'reset':
       return null;
@@ -80,7 +87,12 @@ export const releaseSelectionReducer: Reducer<
         current.source_id === action.release.source_id
           ? null
           : action.release;
-      return { ...state, selected: { ...state.selected, [action.step]: next } };
+      return {
+        ...state,
+        selected: { ...state.selected, [action.step]: next },
+        // A pack plan belongs to one specific release; any change of pick drops it.
+        packPlans: { ...state.packPlans, [action.step]: null },
+      };
     }
     case 'setRoot': {
       if (!state || state.roots[action.step] === action.root) return state;
@@ -93,6 +105,11 @@ export const releaseSelectionReducer: Reducer<
     case 'setPreview': {
       if (!state || state.previews[action.step] === action.preview) return state;
       return { ...state, previews: { ...state.previews, [action.step]: action.preview } };
+    }
+    case 'setPackPlan': {
+      if (!state || !state.selected[action.step]) return state;
+      if (state.packPlans[action.step] === action.plan) return state;
+      return { ...state, packPlans: { ...state.packPlans, [action.step]: action.plan } };
     }
     default:
       return state;
@@ -131,9 +148,15 @@ export const buildQueueLabel = (modes: RequestPolicyMode[]): string => {
   return 'Download & Request';
 };
 
-/** Selection summary, e.g. `ebook ✓ · audiobook ✓`. */
-export const buildSelectionSummary = (selected: PerStep<Release | null>): string => {
-  const parts = SELECTION_STEPS.filter((step) => selected[step]).map((step) => `${step} ✓`);
+/** Selection summary, e.g. `ebook ✓ · audiobook ✓ (3 books)` for an approved pack split. */
+export const buildSelectionSummary = (
+  selected: PerStep<Release | null>,
+  packPlans?: PerStep<PackBook[] | null>,
+): string => {
+  const parts = SELECTION_STEPS.filter((step) => selected[step]).map((step) => {
+    const plan = packPlans?.[step];
+    return plan && plan.length > 1 ? `${step} ✓ (${plan.length} books)` : `${step} ✓`;
+  });
   return parts.length > 0 ? parts.join(' · ') : 'nothing selected yet — pick either, or both';
 };
 
@@ -146,11 +169,15 @@ export interface QueuedSelectionItem {
   root: string | null;
   /** Resolved full path shown in the PREVIEW line, for the toast. */
   preview: string | null;
+  /** Approved multi-book split for this release, or null to file it as one book. */
+  bookPlan: PackBook[] | null;
 }
 
 export interface QueueSelectionsRequest {
   items: QueuedSelectionItem[];
   organize: boolean;
+  /** Header "Multi-book pack" toggle: force a heuristic split for releases that couldn't be inspected. */
+  multiBook: boolean;
 }
 
 /**
@@ -160,7 +187,10 @@ export interface QueueSelectionsRequest {
  * Pure and exported so the per-step routing is unit-testable.
  */
 export const buildQueueItems = (
-  selection: Pick<ReleaseSelectionConfig, 'selected' | 'roots' | 'previews' | 'showSaveTo'>,
+  selection: Pick<
+    ReleaseSelectionConfig,
+    'selected' | 'roots' | 'previews' | 'showSaveTo' | 'packPlans'
+  >,
   modeForRelease: (release: Release, contentType: ContentType) => RequestPolicyMode,
 ): QueuedSelectionItem[] =>
   SELECTION_STEPS.flatMap((step) => {
@@ -173,6 +203,7 @@ export const buildQueueItems = (
         mode: modeForRelease(release, step),
         root: selection.showSaveTo ? selection.roots[step] : null,
         preview: selection.showSaveTo ? selection.previews[step] : null,
+        bookPlan: selection.packPlans[step],
       },
     ];
   });
@@ -186,6 +217,7 @@ export interface ReleaseSelectionConfig {
   roots: PerStep<string | null>;
   organize: boolean;
   previews: PerStep<string | null>;
+  packPlans: PerStep<PackBook[] | null>;
   stepLabel: string;
   /** Show the SAVE TO bar (standalone downloads; monitored ones resolve their own folder). */
   showSaveTo: boolean;
@@ -194,6 +226,8 @@ export interface ReleaseSelectionConfig {
   onRootChange: (step: ContentType, root: string | null) => void;
   onOrganizeChange: (enabled: boolean) => void;
   onPreviewChange: (step: ContentType, preview: string | null) => void;
+  /** Store (or clear) the approved multi-book split for the step's picked release. */
+  onPackPlanChange: (step: ContentType, plan: PackBook[] | null) => void;
   onQueue: (request: QueueSelectionsRequest) => void | Promise<void>;
 }
 
@@ -229,6 +263,10 @@ export const useReleaseSelection = ({ onQueue, showSaveTo }: UseReleaseSelection
     (step: ContentType, preview: string | null) => dispatch({ type: 'setPreview', step, preview }),
     [],
   );
+  const onPackPlanChange = useCallback(
+    (step: ContentType, plan: PackBook[] | null) => dispatch({ type: 'setPackPlan', step, plan }),
+    [],
+  );
 
   const config = useMemo<ReleaseSelectionConfig | null>(() => {
     if (!state) return null;
@@ -243,6 +281,7 @@ export const useReleaseSelection = ({ onQueue, showSaveTo }: UseReleaseSelection
       roots: state.roots,
       organize: state.organize,
       previews: state.previews,
+      packPlans: state.packPlans,
       stepLabel: buildStepLabel(state.activeStep, state.modes),
       showSaveTo,
       onStepChange,
@@ -250,6 +289,7 @@ export const useReleaseSelection = ({ onQueue, showSaveTo }: UseReleaseSelection
       onRootChange,
       onOrganizeChange,
       onPreviewChange,
+      onPackPlanChange,
       onQueue,
     };
   }, [
@@ -260,6 +300,7 @@ export const useReleaseSelection = ({ onQueue, showSaveTo }: UseReleaseSelection
     onRootChange,
     onOrganizeChange,
     onPreviewChange,
+    onPackPlanChange,
     onQueue,
   ]);
 

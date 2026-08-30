@@ -53,11 +53,10 @@ import {
   isApiResponseError,
   updateSelfUser,
   setBookTargetState,
-  type DownloadReleasePayload,
 } from './services/api';
 import {
-  standaloneDownloadPayloadExtras,
-  type StandaloneDownloadOptions,
+  monitoredDownloadPayloadExtras,
+  type MonitoredReleaseDownloadOptions,
 } from './services/monitoredApi';
 import {
   Book,
@@ -98,10 +97,12 @@ import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
+import { resolveDefaultLanguageCodes } from './utils/languageFilters';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
 import { getEffectiveMetadataSort } from './utils/metadataSort';
 import { policyTrace } from './utils/policyTrace';
 import { buildQueryTargets, getDefaultQueryTargetKey } from './utils/queryTargets';
+import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from './utils/releasePayload';
 import { applyRequestNoteToPayload } from './utils/requestConfirmation';
 import { bookFromRequestData } from './utils/requestFulfil';
 import {
@@ -231,8 +232,7 @@ type PendingOnBehalfDownload =
       release: Release;
       releaseContentType: ContentType;
       actingAsUser: ActingAsUserSelection;
-      monitoredEntityId?: number;
-      standalone?: StandaloneDownloadOptions | null;
+      options?: MonitoredReleaseDownloadOptions;
     }
   | {
       type: 'combined';
@@ -1046,10 +1046,10 @@ function App() {
         return;
       }
       const bookLanguages = config.book_languages || [];
-      const defaultLanguageCodes =
-        config.default_language && config.default_language.length > 0
-          ? config.default_language
-          : [bookLanguages[0]?.code || 'en'];
+      const defaultLanguageCodes = resolveDefaultLanguageCodes(
+        config.default_language,
+        bookLanguages,
+      );
 
       // Populate search input from URL
       if (parsedParams.searchInput) {
@@ -1300,41 +1300,6 @@ function App() {
     [],
   );
 
-  const buildReleaseDownloadPayload = useCallback(
-    (book: Book, release: Release, releaseContentType: ContentType): DownloadReleasePayload => {
-      const isManual = book.provider === 'manual';
-      const releasePreview =
-        typeof release.extra?.preview === 'string' ? release.extra.preview : undefined;
-      const releaseAuthor =
-        typeof release.extra?.author === 'string' ? release.extra.author : undefined;
-
-      return {
-        source: release.source,
-        source_id: release.source_id,
-        title: isManual ? release.title : book.title,
-        author: isManual ? releaseAuthor || '' : book.author,
-        year: book.year,
-        format: release.format,
-        size: release.size,
-        size_bytes: release.size_bytes,
-        download_url: release.download_url,
-        protocol: release.protocol,
-        indexer: release.indexer,
-        seeders: release.seeders,
-        extra: release.extra,
-        preview: isManual ? releasePreview || undefined : book.preview,
-        content_type: releaseContentType,
-        series_name: book.series_name,
-        series_position: book.series_position,
-        subtitle: book.subtitle,
-        // From the release, never the book: book.language is the provider's
-        // canonical edition, which would mislabel a translated release.
-        language: release.language ?? undefined,
-      };
-    },
-    [],
-  );
-
   // When downloading a book while browsing a Hardcover list the user owns,
   // automatically remove it from that list (fire-and-forget).
   const searchFieldLabelsRef = useRef(searchFieldLabels);
@@ -1439,33 +1404,16 @@ function App() {
       release: Release,
       releaseContentType: ContentType,
       onBehalfOfUserId?: number,
-      monitoredEntityId?: number,
-      sessionId?: string | null,
-      runId?: string | null,
-      standalone?: StandaloneDownloadOptions | null,
+      options?: MonitoredReleaseDownloadOptions,
     ): Promise<void> => {
       const requestStartedAtSeconds = Date.now() / 1000;
       try {
         trackRelease(book.id, release.source_id);
-        const built = buildReleaseDownloadPayload(book, release, releaseContentType);
-        // Standalone downloads may carry a save location + library-layout flags.
-        // The server re-validates the root and composes the layout itself.
-        const basePayload = { ...built, ...standaloneDownloadPayloadExtras(standalone) };
-        const payload =
-          monitoredEntityId !== undefined
-            ? {
-                ...basePayload,
-                monitored_entity_id: monitoredEntityId,
-                monitored_book_provider: book.provider,
-                monitored_book_provider_id: book.provider_id,
-                match_score:
-                  typeof release.extra?.match_score === 'number'
-                    ? release.extra.match_score
-                    : undefined,
-                session_id: sessionId || undefined,
-                run_id: runId || undefined,
-              }
-            : basePayload;
+        // Monitored context + standalone SAVE TO layout ride on upstream's payload.
+        const payload = {
+          ...buildReleaseDownloadPayload(book, release, releaseContentType, options),
+          ...monitoredDownloadPayloadExtras(book, release, options),
+        };
         await downloadRelease(payload, onBehalfOfUserId);
         await fetchStatus();
         removeBookFromActiveList(book);
@@ -1546,7 +1494,6 @@ function App() {
       }
     },
     [
-      buildReleaseDownloadPayload,
       fetchStatus,
       openRequestConfirmation,
       refreshRequestPolicy,
@@ -1683,10 +1630,7 @@ function App() {
           pendingOnBehalfDownload.release,
           pendingOnBehalfDownload.releaseContentType,
           onBehalfOfUserId,
-          pendingOnBehalfDownload.monitoredEntityId,
-          undefined,
-          undefined,
-          pendingOnBehalfDownload.standalone,
+          pendingOnBehalfDownload.options,
         );
       }
       setPendingOnBehalfDownload(null);
@@ -1807,10 +1751,7 @@ function App() {
       book: Book,
       release: Release,
       releaseContentType: ContentType,
-      monitoredEntityIdOverride?: number | null,
-      sessionId?: string | null,
-      runId?: string | null,
-      standalone?: StandaloneDownloadOptions | null,
+      options?: MonitoredReleaseDownloadOptions,
     ) => {
       policyTrace('release.action:start', {
         bookId: book.id,
@@ -1819,7 +1760,11 @@ function App() {
         contentType: toContentType(releaseContentType),
       });
 
-      const monitoredEntityId = monitoredEntityIdOverride ?? releaseMonitoredEntityId ?? undefined;
+      // A modal opened for a monitored book inherits its entity unless the caller set one.
+      const effectiveOptions: MonitoredReleaseDownloadOptions = {
+        ...options,
+        monitoredEntityId: options?.monitoredEntityId ?? releaseMonitoredEntityId ?? undefined,
+      };
 
       if (actingAsUser) {
         setPendingOnBehalfDownload({
@@ -1828,21 +1773,11 @@ function App() {
           release,
           releaseContentType,
           actingAsUser,
-          monitoredEntityId,
-          standalone,
+          options: effectiveOptions,
         });
         return;
       }
-      await executeReleaseDownload(
-        book,
-        release,
-        releaseContentType,
-        undefined,
-        monitoredEntityId,
-        sessionId,
-        runId,
-        standalone,
-      );
+      await executeReleaseDownload(book, release, releaseContentType, undefined, effectiveOptions);
     },
     [actingAsUser, releaseMonitoredEntityId, executeReleaseDownload],
   );
@@ -2316,10 +2251,10 @@ function App() {
 
   const bookLanguages = config?.book_languages || DEFAULT_LANGUAGES;
   const supportedFormats = config?.supported_formats || DEFAULT_SUPPORTED_FORMATS;
-  const defaultLanguageCodes =
-    config?.default_language && config.default_language.length > 0
-      ? config.default_language
-      : [bookLanguages[0]?.code || 'en'];
+  const defaultLanguageCodes = useMemo(
+    () => resolveDefaultLanguageCodes(config?.default_language, bookLanguages),
+    [config?.default_language, bookLanguages],
+  );
 
   const logoUrl = withBasePath('/logo.png');
 
@@ -2734,8 +2669,8 @@ function App() {
     (book: Book, contentType: ContentType, monitoredEntityId?: number | null): ReactNode => {
       const onDownload = isBrowseFulfilMode
         ? handleBrowseFulfilDownload
-        : (b: Book, r: Release, ct: ContentType) =>
-            handleReleaseDownload(b, r, ct, monitoredEntityId ?? undefined);
+        : (b: Book, r: Release, ct: ContentType, options?: ReleaseDownloadOptions) =>
+            handleReleaseDownload(b, r, ct, { ...options, monitoredEntityId });
       return (
         <ReleaseModal
           embedded
@@ -3196,18 +3131,10 @@ function App() {
           <ReleaseModal
             book={activeReleaseBook}
             onClose={handleReleaseModalClose}
-            onDownload={(book, release, ct, standalone) =>
+            onDownload={(book, release, ct, options) =>
               isBrowseFulfilMode
                 ? handleBrowseFulfilDownload(book, release, ct)
-                : handleReleaseDownload(
-                    book,
-                    release,
-                    ct,
-                    undefined,
-                    undefined,
-                    undefined,
-                    standalone,
-                  )
+                : handleReleaseDownload(book, release, ct, options)
             }
             selection={isBrowseFulfilMode ? null : releaseSelection.config}
             onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}

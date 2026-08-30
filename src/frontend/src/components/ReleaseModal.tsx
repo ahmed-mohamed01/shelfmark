@@ -4,8 +4,7 @@ import { createPortal } from 'react-dom';
 import { useSocket } from '../contexts/SocketContext';
 import { getReleaseMatchScore } from '../hooks/useMonitoredState';
 import type { ReleaseSelectionConfig } from '../hooks/useReleaseSelection';
-import { getReleases, getReleaseSources } from '../services/api';
-import type { StandaloneDownloadOptions } from '../services/monitoredApi';
+import { getReleases, getReleaseSources, inspectRelease } from '../services/api';
 import {
   Book,
   Release,
@@ -20,6 +19,8 @@ import {
   SearchStatusData,
   ContentType,
   RequestPolicyMode,
+  PackBook,
+  PackPlan,
   isMetadataBook,
 } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
@@ -32,12 +33,14 @@ import {
   buildLanguageNormalizer,
 } from '../utils/languageFilters';
 import { getNestedValue } from '../utils/objectHelpers';
+import { toBookPlanPayload } from '../utils/packReview';
 import {
   getCachedReleases,
   setCachedReleases,
   invalidateCachedReleases,
 } from '../utils/releaseCache';
 import { getReleaseFormats } from '../utils/releaseFormats';
+import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
 import {
   getBookTitleCandidates,
   getBookAuthorCandidates,
@@ -58,6 +61,7 @@ import { BookTargetDropdown } from './BookTargetDropdown';
 import { Dropdown } from './Dropdown';
 import { DropdownList } from './DropdownList';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
+import { PackReviewPanel } from './PackReviewPanel';
 import { ReleaseCell } from './ReleaseCell';
 import { ReleaseSaveToBar } from './ReleaseSaveToBar';
 import { ReleaseSelectionFooter } from './ReleaseSelectionFooter';
@@ -140,7 +144,7 @@ interface ReleaseModalProps {
     book: Book,
     release: Release,
     contentType: ContentType,
-    standalone?: StandaloneDownloadOptions | null,
+    options?: ReleaseDownloadOptions,
   ) => Promise<void>;
   /**
    * Decoupled ebook/audiobook selection: rows toggle-select, Book/Audiobook
@@ -169,6 +173,16 @@ interface ReleaseModalProps {
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   // Combined mode (ebook + audiobook in one transaction)
   combinedMode?: CombinedModeConfig | null;
+}
+
+// A release we couldn't inspect might still be an unnoticed pack: leave a console
+// breadcrumb rather than interrupting the user (the multi-book toggle forces the split).
+function warnUninspectedRelease(release: Release, reason: string | null): void {
+  console.warn(
+    `Could not inspect release "${release.title}" before download${
+      reason ? `: ${reason}` : ''
+    }. If it contains several books, enable the multi-book pack toggle.`,
+  );
 }
 
 // 5-star rating display with partial fill support
@@ -728,6 +742,20 @@ export const ReleaseModal = ({
   const [isClosing, setIsClosing] = useState(false);
   const [isRequestingBook, setIsRequestingBook] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
+  // Multi-book packs: `multiBook` is the manual header toggle (heuristic split for
+  // releases we can't inspect); `packReview` holds an inspected pack awaiting approval.
+  // In selection mode `step` records which pick the review belongs to.
+  const [multiBook, setMultiBook] = useState(false);
+  const [packReview, setPackReview] = useState<{
+    release: Release;
+    plan: PackPlan;
+    books: PackBook[];
+    step?: ContentType;
+  } | null>(null);
+  const [packSubmitting, setPackSubmitting] = useState(false);
+  // Bumped on every selection toggle so a slow inspection of an earlier pick can't
+  // pop the review panel for a release that is no longer selected.
+  const packInspectSeqRef = useRef(0);
   const isCombinedMode = combinedMode != null;
   // Selection mode: decoupled ebook/audiobook picking with one queue action.
   // Manual-query books use request mode to hide the (empty) book card, but still
@@ -1547,6 +1575,32 @@ export const ReleaseModal = ({
     [currentStatus, getReleaseActionMode],
   );
 
+  // Look at a release's files before queueing so a whole-series pack can be
+  // reviewed and filed as separate books instead of one mangled item.
+  const inspectForPack = useCallback(
+    async (
+      release: Release,
+    ): Promise<{ inspected: boolean; plan: PackPlan | null; reason: string | null }> => {
+      if (!book) {
+        return { inspected: false, plan: null, reason: null };
+      }
+      try {
+        const inspection = await inspectRelease(
+          buildReleaseDownloadPayload(book, release, contentType),
+        );
+        return {
+          inspected: inspection.inspected,
+          plan: inspection.plan,
+          reason: inspection.reason,
+        };
+      } catch (error) {
+        console.error('Release inspection failed:', error);
+        return { inspected: false, plan: null, reason: null };
+      }
+    },
+    [book, contentType],
+  );
+
   // Handle row action based on resolved policy mode.
   const handleReleaseAction = useCallback(
     async (release: Release): Promise<void> => {
@@ -1554,13 +1608,34 @@ export const ReleaseModal = ({
         return;
       }
 
-      // In selection mode, clicking a row toggles it for the active step.
+      // In selection mode, clicking a row toggles it for the active step. A newly
+      // picked download is inspected in the background; a pack swaps the list for
+      // the review panel and the approved split then rides with the pick.
       if (isSelectionMode && selection) {
         const mode = getReleaseActionMode(release);
         if (mode === 'blocked' || mode === 'request_book') {
           return;
         }
+        const current = selection.selected[contentType];
+        const selecting = !(
+          current &&
+          current.source === release.source &&
+          current.source_id === release.source_id
+        );
         selection.onToggleRelease(contentType, release);
+        const seq = ++packInspectSeqRef.current;
+        if (!selecting || mode !== 'download') {
+          return;
+        }
+        const { inspected, plan, reason } = await inspectForPack(release);
+        if (seq !== packInspectSeqRef.current) {
+          return;
+        }
+        if (inspected && plan?.is_pack) {
+          setPackReview({ release, plan, books: plan.books, step: contentType });
+        } else if (!inspected && !multiBook) {
+          warnUninspectedRelease(release, reason);
+        }
         return;
       }
 
@@ -1576,7 +1651,18 @@ export const ReleaseModal = ({
 
       const mode = getReleaseActionMode(release);
       if (mode === 'download') {
-        await onDownload(book, release, contentType);
+        const { inspected, plan, reason } = await inspectForPack(release);
+        if (inspected && plan?.is_pack) {
+          setPackReview({ release, plan, books: plan.books });
+          return;
+        }
+        // Not a pack (or couldn't be inspected): queue exactly as before. A release we
+        // couldn't inspect might still be an unnoticed pack, so leave a console breadcrumb
+        // rather than interrupting the user; the multi-book toggle forces the split.
+        if (!inspected && !multiBook) {
+          warnUninspectedRelease(release, reason);
+        }
+        await onDownload(book, release, contentType, multiBook ? { multiBook: true } : {});
         handleClose();
         return;
       }
@@ -1598,8 +1684,53 @@ export const ReleaseModal = ({
       handleClose,
       isSelectionMode,
       selection,
+      inspectForPack,
+      multiBook,
     ],
   );
+
+  const handlePackConfirm = useCallback(
+    async (books: PackBook[] | null): Promise<void> => {
+      if (!book || !packReview) {
+        return;
+      }
+      // Selection mode: the approved split rides with the pick; the footer queues it.
+      if (packReview.step && isSelectionMode && selection) {
+        selection.onPackPlanChange(packReview.step, books);
+        setPackReview(null);
+        return;
+      }
+      setPackSubmitting(true);
+      try {
+        await onDownload(
+          book,
+          packReview.release,
+          contentType,
+          books ? { multiBook: true, bookPlan: toBookPlanPayload(books) } : {},
+        );
+        handleClose();
+      } finally {
+        setPackSubmitting(false);
+      }
+    },
+    [book, packReview, onDownload, contentType, handleClose, isSelectionMode, selection],
+  );
+
+  // Backing out of the review cancels the pick in selection mode; classic mode
+  // simply returns to the list without downloading.
+  const handlePackBack = useCallback(() => {
+    if (packReview?.step && isSelectionMode && selection) {
+      const current = selection.selected[packReview.step];
+      if (
+        current &&
+        current.source === packReview.release.source &&
+        current.source_id === packReview.release.source_id
+      ) {
+        selection.onToggleRelease(packReview.step, packReview.release);
+      }
+    }
+    setPackReview(null);
+  }, [packReview, isSelectionMode, selection]);
 
   if (!book && !isClosing) return null;
   if (!book) return null;
@@ -1660,6 +1791,37 @@ export const ReleaseModal = ({
                 </div>
               </div>
               <div className="flex items-center gap-3 pr-1 pl-2">
+                {/* Multi-book pack toggle (fallback for releases that can't be inspected) */}
+                {!isCombinedMode && (
+                  <button
+                    type="button"
+                    onClick={() => setMultiBook((prev) => !prev)}
+                    className={`hover-surface relative rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
+                      multiBook ? 'text-emerald-600 dark:text-emerald-400' : ''
+                    }`}
+                    aria-label="Multi-book pack"
+                    aria-pressed={multiBook}
+                    title="Multi-book pack: file each subfolder (or each file) as a separate book. Only needed when a release can't be inspected before download."
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      strokeWidth={1.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"
+                      />
+                    </svg>
+                    {multiBook && (
+                      <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-emerald-500" />
+                    )}
+                  </button>
+                )}
+
                 {/* Manual query button */}
                 <button
                   type="button"
@@ -2048,7 +2210,18 @@ export const ReleaseModal = ({
 
         {/* Release list content */}
         <div className="min-h-[200px]">
-          {sourcesLoading ? (
+          {packReview ? (
+            <PackReviewPanel
+              release={packReview.release}
+              plan={packReview.plan}
+              books={packReview.books}
+              onChange={(books) => setPackReview({ ...packReview, books })}
+              onBack={handlePackBack}
+              onConfirm={handlePackConfirm}
+              isSubmitting={packSubmitting}
+              actionVerb={isSelectionMode ? 'Use' : 'Download'}
+            />
+          ) : sourcesLoading ? (
             <ReleaseSkeleton />
           ) : isInitialLoading && filteredReleases.length === 0 ? (
             <ReleaseSkeleton />
@@ -2554,6 +2727,37 @@ export const ReleaseModal = ({
                   </div>
 
                   <div className="flex items-center gap-3 pr-1 pl-2">
+                    {/* Multi-book pack toggle (fallback for releases that can't be inspected) */}
+                    {!isCombinedMode && (
+                      <button
+                        type="button"
+                        onClick={() => setMultiBook((prev) => !prev)}
+                        className={`hover-surface relative rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
+                          multiBook ? 'text-emerald-600 dark:text-emerald-400' : ''
+                        }`}
+                        aria-label="Multi-book pack"
+                        aria-pressed={multiBook}
+                        title="Multi-book pack: file each subfolder (or each file) as a separate book. Only needed when a release can't be inspected before download."
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          strokeWidth={1.5}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"
+                          />
+                        </svg>
+                        {multiBook && (
+                          <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-emerald-500" />
+                        )}
+                      </button>
+                    )}
+
                     {/* Manual query button */}
                     <button
                       type="button"
@@ -3073,7 +3277,18 @@ export const ReleaseModal = ({
 
             {/* Release list content */}
             <div className="min-h-[200px]">
-              {sourcesLoading ? (
+              {packReview ? (
+                <PackReviewPanel
+                  release={packReview.release}
+                  plan={packReview.plan}
+                  books={packReview.books}
+                  onChange={(books) => setPackReview({ ...packReview, books })}
+                  onBack={handlePackBack}
+                  onConfirm={handlePackConfirm}
+                  isSubmitting={packSubmitting}
+                  actionVerb={isSelectionMode ? 'Use' : 'Download'}
+                />
+              ) : sourcesLoading ? (
                 <ReleaseSkeleton />
               ) : sourcesError ? (
                 <ErrorState message={sourcesError} />
@@ -3192,16 +3407,18 @@ export const ReleaseModal = ({
             )}
           </div>
 
-          {/* Selection mode: SAVE TO bar + Book/Audiobook pills + queue action */}
-          {isSelectionMode && selection && selection.showSaveTo && (
+          {/* Selection mode: SAVE TO bar + Book/Audiobook pills + queue action
+              (hidden while a multi-book pack is under review) */}
+          {isSelectionMode && selection && selection.showSaveTo && !packReview && (
             <ReleaseSaveToBar book={book} selection={selection} browseOverlayZIndex={1300} />
           )}
-          {isSelectionMode && selection && (
+          {isSelectionMode && selection && !packReview && (
             <ReleaseSelectionFooter
               selection={selection}
               modeForRelease={(release, ct) =>
                 getPolicyModeForSource ? getPolicyModeForSource(release.source, ct) : 'download'
               }
+              multiBook={multiBook}
             />
           )}
 

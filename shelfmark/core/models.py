@@ -142,6 +142,12 @@ class DownloadTask:
     file_organization_override: str | None = None
     template_override: str | None = None
 
+    # Multi-book packs: one release holding several books. `book_plan` is the split the
+    # user approved before download (list of {title, series_position, year, files});
+    # `multi_book` asks post-processing to split heuristically when no plan exists.
+    multi_book: bool = False
+    book_plan: list[dict[str, Any]] | None = None
+
     # User association (multi-user support)
     user_id: int | None = None  # DB user ID who queued this download
     username: str | None = None  # Username for {User} template variable

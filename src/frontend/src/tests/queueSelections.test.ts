@@ -14,10 +14,18 @@ const mkDeps = (over: Partial<QueueSelectionsDeps> = {}): QueueSelectionsDeps =>
   ...over,
 });
 
-const req = (items: QueueSelectionsRequest['items'], organize = true): QueueSelectionsRequest => ({
+const req = (
+  items: QueueSelectionsRequest['items'],
+  organize = true,
+  multiBook = false,
+): QueueSelectionsRequest => ({
   items,
   organize,
+  multiBook,
 });
+
+const optionsOfCall = (deps: QueueSelectionsDeps, call = 0) =>
+  vi.mocked(deps.executeReleaseDownload).mock.calls[call][4];
 
 describe('runQueueSelections', () => {
   it('queues a standalone download with SAVE TO options + toast', async () => {
@@ -31,14 +39,18 @@ describe('runQueueSelections', () => {
           mode: 'download',
           root: '/books',
           preview: '/books/A/x.epub',
+          bookPlan: null,
         },
       ]),
       deps,
     );
     expect(deps.executeReleaseDownload).toHaveBeenCalledTimes(1);
-    // 8th arg is the standalone options (monitoredEntityId undefined → standalone)
-    const standalone = vi.mocked(deps.executeReleaseDownload).mock.calls[0][7];
-    expect(standalone).toEqual({ saveLocation: '/books', organize: true });
+    // Options carry the standalone SAVE TO choice (monitoredEntityId undefined → standalone)
+    // and no pack fields for a plain single-book pick.
+    expect(optionsOfCall(deps)).toEqual({
+      monitoredEntityId: undefined,
+      standalone: { saveLocation: '/books', organize: true },
+    });
     expect(deps.showToast).toHaveBeenCalledWith('Queued ebook → /books/A/', 'success');
     expect(deps.openRequestConfirmation).not.toHaveBeenCalled();
   });
@@ -54,11 +66,70 @@ describe('runQueueSelections', () => {
           mode: 'download',
           root: '/books',
           preview: null,
+          bookPlan: null,
         },
       ]),
       deps,
     );
-    expect(vi.mocked(deps.executeReleaseDownload).mock.calls[0][7]).toBeNull();
+    expect(optionsOfCall(deps)).toEqual({ monitoredEntityId: 5, standalone: null });
+  });
+
+  it('attaches an approved multi-book plan to the download options + toast', async () => {
+    const deps = mkDeps();
+    const bookPlan = [
+      { title: 'Leviathan Wakes', series_position: 1, year: 2011, files: ['1.m4b'] },
+      { title: 'Caliban’s War', series_position: 2, year: 2012, files: ['2.m4b'] },
+    ];
+    await runQueueSelections(
+      book,
+      req([
+        {
+          contentType: 'audiobook',
+          release: rel('a'),
+          mode: 'download',
+          root: '/audio',
+          preview: '/audio/A/Series/x.m4b',
+          bookPlan,
+        },
+      ]),
+      deps,
+    );
+    expect(optionsOfCall(deps)).toEqual({
+      monitoredEntityId: undefined,
+      standalone: { saveLocation: '/audio', organize: true },
+      bookPlan,
+    });
+    expect(deps.showToast).toHaveBeenCalledWith(
+      'Queued audiobook (2 books) → /audio/A/Series/',
+      'success',
+    );
+  });
+
+  it('forwards the header multi-book toggle as a heuristic split', async () => {
+    const deps = mkDeps({ monitoredEntityId: 5 });
+    await runQueueSelections(
+      book,
+      req(
+        [
+          {
+            contentType: 'ebook',
+            release: rel('a'),
+            mode: 'download',
+            root: null,
+            preview: null,
+            bookPlan: null,
+          },
+        ],
+        true,
+        true,
+      ),
+      deps,
+    );
+    expect(optionsOfCall(deps)).toEqual({
+      monitoredEntityId: 5,
+      standalone: null,
+      multiBook: true,
+    });
   });
 
   it('aggregates request_release items into one confirmation, no toast', async () => {
@@ -72,6 +143,7 @@ describe('runQueueSelections', () => {
           mode: 'request_release',
           root: null,
           preview: null,
+          bookPlan: null,
         },
         {
           contentType: 'audiobook',
@@ -79,6 +151,7 @@ describe('runQueueSelections', () => {
           mode: 'request_release',
           root: null,
           preview: null,
+          bookPlan: null,
         },
       ]),
       deps,
@@ -101,6 +174,7 @@ describe('runQueueSelections', () => {
           mode: 'download',
           root: '/books',
           preview: '/books/A/x.epub',
+          bookPlan: null,
         },
         {
           contentType: 'audiobook',
@@ -108,6 +182,7 @@ describe('runQueueSelections', () => {
           mode: 'request_release',
           root: null,
           preview: null,
+          bookPlan: null,
         },
       ]),
       deps,

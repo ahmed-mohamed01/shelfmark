@@ -18,6 +18,8 @@ interface ReleaseSelectionFooterProps {
    * non-active step must not be judged by the active step's type.
    */
   modeForRelease: (release: Release, contentType: ContentType) => RequestPolicyMode;
+  /** Header "Multi-book pack" toggle — forces a heuristic split for releases that couldn't be inspected. */
+  multiBook?: boolean;
 }
 
 const STEP_LABEL: Record<ContentType, string> = { ebook: 'Book', audiobook: 'Audiobook' };
@@ -44,6 +46,7 @@ const CheckIcon = () => (
 export const ReleaseSelectionFooter = ({
   selection,
   modeForRelease,
+  multiBook = false,
 }: ReleaseSelectionFooterProps) => {
   const [queueing, setQueueing] = useState(false);
 
@@ -61,7 +64,7 @@ export const ReleaseSelectionFooter = ({
     if (!canQueue) return;
     setQueueing(true);
     try {
-      await selection.onQueue({ items, organize: selection.organize });
+      await selection.onQueue({ items, organize: selection.organize, multiBook });
     } finally {
       setQueueing(false);
     }
@@ -108,7 +111,7 @@ export const ReleaseSelectionFooter = ({
         </div>
 
         <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">
-          {buildSelectionSummary(selection.selected)}
+          {buildSelectionSummary(selection.selected, selection.packPlans)}
         </span>
 
         <span className="flex-1" />

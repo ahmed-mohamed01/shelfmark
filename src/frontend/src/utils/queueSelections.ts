@@ -1,5 +1,8 @@
 import type { QueueSelectionsRequest } from '../hooks/useReleaseSelection';
-import type { StandaloneDownloadOptions } from '../services/monitoredApi';
+import type {
+  MonitoredReleaseDownloadOptions,
+  StandaloneDownloadOptions,
+} from '../services/monitoredApi';
 import type { Book, ContentType, CreateRequestPayload, Release } from '../types';
 import {
   buildMetadataBookRequestData,
@@ -20,10 +23,7 @@ export interface QueueSelectionsDeps {
     release: Release,
     contentType: ContentType,
     onBehalfOfUserId?: number,
-    monitoredEntityId?: number,
-    sessionId?: string | null,
-    runId?: string | null,
-    standalone?: StandaloneDownloadOptions | null,
+    options?: MonitoredReleaseDownloadOptions,
   ) => Promise<void>;
   openRequestConfirmation: (
     payload: CreateRequestPayload,
@@ -58,19 +58,27 @@ export const runQueueSelections = async (
         monitoredEntityId === undefined
           ? { saveLocation: item.root, organize: request.organize }
           : null;
+      // Multi-book packs: the split approved in the review panel, or the header
+      // toggle forcing a heuristic split for a release that couldn't be inspected.
+      const options: MonitoredReleaseDownloadOptions = {
+        monitoredEntityId,
+        standalone,
+        ...(request.multiBook ? { multiBook: true } : {}),
+        ...(item.bookPlan ? { bookPlan: item.bookPlan } : {}),
+      };
       // eslint-disable-next-line no-await-in-loop -- queue downloads one at a time to preserve order
       await deps.executeReleaseDownload(
         book,
         item.release,
         item.contentType,
         onBehalfOfUserId,
-        monitoredEntityId,
-        undefined,
-        undefined,
-        standalone,
+        options,
       );
       const folder = item.preview ? item.preview.slice(0, item.preview.lastIndexOf('/') + 1) : '';
-      queued.push(folder ? `${item.contentType} → ${folder}` : item.contentType);
+      const what = item.bookPlan
+        ? `${item.contentType} (${item.bookPlan.length} books)`
+        : item.contentType;
+      queued.push(folder ? `${what} → ${folder}` : what);
     } else if (item.mode === 'request_release') {
       const payload: CreateRequestPayload = {
         book_data: buildMetadataBookRequestData(book, item.contentType),

@@ -63,6 +63,7 @@ from shelfmark.core.notifications import (
     notify_user,
 )
 from shelfmark.core.prefix_middleware import PrefixMiddleware
+from shelfmark.core.release_inspect_routes import register_release_inspect_routes
 from shelfmark.core.request_helpers import (
     coerce_bool,
     emit_ws_event,
@@ -1074,6 +1075,9 @@ def _serialize_release(release: Release) -> dict:
     return result
 
 
+register_release_inspect_routes(app, login_required)
+
+
 @app.route("/api/releases/download", methods=["POST"])
 @login_required
 def api_download_release() -> Response | tuple[Response, int]:
@@ -1212,7 +1216,7 @@ def api_config() -> Response | tuple[Response, int]:
             "build_version": BUILD_VERSION,
             "release_version": RELEASE_VERSION,
             "book_languages": _SUPPORTED_BOOK_LANGUAGE,
-            "default_language": app_config.BOOK_LANGUAGE,
+            "default_language": app_config.get("BOOK_LANGUAGE", ["en"], user_id=db_user_id),
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
             **monitored_cfg,
@@ -2932,6 +2936,7 @@ def api_releases() -> Response | tuple[Response, int]:
                     manual_query=query_text if source_query_filters is not None else manual_query,
                     indexers=indexers,
                     source_filters=source_query_filters,
+                    user_id=db_user_id,
                 )
 
                 if plan.source_filters is not None:
@@ -2984,6 +2989,8 @@ def api_releases() -> Response | tuple[Response, int]:
             if languages_param
             else None
         )
+        # Without an explicit filter the plan falls back to this user's default languages.
+        db_user_id = get_session_db_user_id(session)
         # Content type for audiobook vs ebook search
         content_type = request.args.get("content_type", "ebook").strip()
 

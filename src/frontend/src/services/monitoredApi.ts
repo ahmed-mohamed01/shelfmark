@@ -1,4 +1,6 @@
+import type { Book, Release } from '../types';
 import { getApiBase } from '../utils/basePath';
+import type { ReleaseDownloadOptions } from '../utils/releasePayload';
 import { fetchJSON, isApiResponseError } from './api';
 
 const API_BASE = getApiBase();
@@ -857,6 +859,56 @@ export const standaloneDownloadPayloadExtras = (
   const extras: StandaloneDownloadPayloadExtras = {};
   if (options.saveLocation) extras.destination_override = options.saveLocation;
   extras.organize = options.organize;
+  return extras;
+};
+
+/**
+ * Everything a download from this branch carries on top of upstream's
+ * `ReleaseDownloadOptions` (multi-book packs): the monitored-entity context and
+ * the standalone SAVE TO layout. Travels as upstream's `options` argument so the
+ * App-level download handlers keep upstream's call shape (Rule #1).
+ */
+export interface MonitoredReleaseDownloadOptions extends ReleaseDownloadOptions {
+  /** Set for monitored-entity downloads; null/undefined for standalone ones. */
+  monitoredEntityId?: number | null;
+  sessionId?: string | null;
+  runId?: string | null;
+  /** SAVE TO root + organize flag for standalone downloads. */
+  standalone?: StandaloneDownloadOptions | null;
+}
+
+/** Wire form of MonitoredReleaseDownloadOptions, spread onto the release download payload. */
+export interface MonitoredDownloadPayloadExtras extends StandaloneDownloadPayloadExtras {
+  monitored_entity_id?: number;
+  monitored_book_provider?: string;
+  monitored_book_provider_id?: string;
+  match_score?: number;
+  session_id?: string;
+  run_id?: string;
+}
+
+/**
+ * Monitored context + standalone layout for the release download payload. The
+ * server re-validates the root and composes the layout itself; monitored
+ * downloads additionally record which entity/book/auto-search run queued them.
+ */
+export const monitoredDownloadPayloadExtras = (
+  book: Book,
+  release: Release,
+  options: MonitoredReleaseDownloadOptions | null | undefined,
+): MonitoredDownloadPayloadExtras => {
+  const extras: MonitoredDownloadPayloadExtras = standaloneDownloadPayloadExtras(
+    options?.standalone,
+  );
+  if (options?.monitoredEntityId == null) return extras;
+  extras.monitored_entity_id = options.monitoredEntityId;
+  extras.monitored_book_provider = book.provider;
+  extras.monitored_book_provider_id = book.provider_id;
+  if (typeof release.extra?.match_score === 'number') {
+    extras.match_score = release.extra.match_score;
+  }
+  if (options.sessionId) extras.session_id = options.sessionId;
+  if (options.runId) extras.run_id = options.runId;
   return extras;
 };
 
