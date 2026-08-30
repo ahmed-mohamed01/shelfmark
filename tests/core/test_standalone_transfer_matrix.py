@@ -122,6 +122,8 @@ def _task_from(payload: dict[str, object], ct: str) -> DownloadTask:
         destination_override=payload.get("destination_override"),  # type: ignore[arg-type]
         file_organization_override=payload.get("file_organization_override"),  # type: ignore[arg-type]
         template_override=payload.get("template_override"),  # type: ignore[arg-type]
+        multi_book=bool(payload.get("multi_book")),
+        book_plan=payload.get("book_plan"),  # type: ignore[arg-type]
     )
 
 
@@ -332,3 +334,112 @@ class TestAudiobookAlwaysGetsBookFolder:
         # The guarantee is audiobook-only; an ebook single file is not foldered.
         rel = self._transfer_single(tmp_path, "{Title}", "ebook")
         assert rel == Path("The Book.epub")
+
+
+def _pack_plan(
+    ext: str, *, second: tuple[str, ...] = ("two-a", "two-b")
+) -> list[dict[str, object]]:
+    """An approved two-book split, as ``orchestrator._normalize_book_plan`` keeps it."""
+    return [
+        {
+            "title": "Book One",
+            "series_position": 1,
+            "year": 2011,
+            "files": [f"Book 1 - Book One/one.{ext}"],
+        },
+        {
+            "title": "Book Two",
+            "series_position": 2,
+            "year": 2012,
+            "files": [f"Book 2 - Book Two/{stem}.{ext}" for stem in second],
+        },
+    ]
+
+
+def _stage_pack(tmp_path: Path, plan: list[dict[str, object]]) -> tuple[Path, list[Path]]:
+    """Lay the plan's files out on disk the way a downloaded series pack arrives."""
+    pack = tmp_path / "staging" / "Series Pack"
+    files: list[Path] = []
+    for entry in plan:
+        for rel in entry["files"]:  # type: ignore[union-attr]
+            path = pack / str(rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("data")
+            files.append(path)
+    return pack, files
+
+
+class TestStandalonePackTransfers:
+    """Upstream v1.3.12 multi-book packs (``f441b85``) × the SAVE-TO shelf.
+
+    ``transfer._transfer_book_groups`` re-enters ``transfer_book_files`` once per book
+    with a ``dataclasses.replace`` of the task, so our ``destination_override`` /
+    ``template_override`` must survive that copy: every book of a series pack lands
+    under ``<root>/<Author>/…`` with its *own* title — never the searched one — and
+    a multi-file book inside the pack still keeps its original filenames (935f7b9).
+    """
+
+    @staticmethod
+    def _pack_task(
+        ct: str, *, organize: bool, root: Path, user_db: MagicMock, plan: list[dict[str, object]]
+    ) -> DownloadTask:
+        payload = _payload(ct, organize=organize, root=root)
+        payload["multi_book"] = True
+        payload["book_plan"] = plan
+        return _task_from(enrich_release_for_monitored(payload, None, 1, user_db=user_db), ct)
+
+    def test_audiobook_pack_files_each_book_under_the_shelf(
+        self, mock_user_db, mock_config, allowed_root, tmp_path
+    ):
+        plan = _pack_plan("m4b")
+        pack, files = _stage_pack(tmp_path, plan)
+        task = self._pack_task(
+            "audiobook", organize=True, root=allowed_root, user_db=mock_user_db, plan=plan
+        )
+
+        paths = _transfer(task, files, source_root=pack)
+
+        series_dir = allowed_root.resolve() / AUTHOR / SERIES
+        by_book: dict[Path, list[str]] = {}
+        for path in paths:
+            by_book.setdefault(path.parent, []).append(path.name)
+        assert {parent: sorted(names) for parent, names in by_book.items()} == {
+            series_dir / "Book One": ["one.m4b"],
+            series_dir / "Book Two": ["two-a.m4b", "two-b.m4b"],
+        }
+        assert all(TITLE not in path.parts for path in paths)
+
+    def test_ebook_pack_files_each_book_under_the_shelf(
+        self, mock_user_db, mock_config, allowed_root, tmp_path
+    ):
+        plan = _pack_plan("epub", second=("two",))
+        pack, files = _stage_pack(tmp_path, plan)
+        task = self._pack_task(
+            "ebook", organize=True, root=allowed_root, user_db=mock_user_db, plan=plan
+        )
+
+        paths = _transfer(task, files, source_root=pack)
+
+        series_dir = allowed_root.resolve() / AUTHOR / SERIES
+        # Title and year come from the plan, the series from the searched book.
+        assert sorted(paths) == [
+            series_dir / "Book One (2011).epub",
+            series_dir / "Book Two (2012).epub",
+        ]
+
+    def test_ebook_pack_with_organize_off_lands_loose_in_the_author_folder(
+        self, mock_user_db, mock_config, allowed_root, tmp_path
+    ):
+        # Upstream only splits packs in organizing modes; the ebook OFF cell is
+        # ``none``, so the pack's files keep their names loose under <root>/<Author>.
+        plan = _pack_plan("epub", second=("two",))
+        pack, files = _stage_pack(tmp_path, plan)
+        task = self._pack_task(
+            "ebook", organize=False, root=allowed_root, user_db=mock_user_db, plan=plan
+        )
+
+        paths = _transfer(task, files, source_root=pack)
+
+        author_dir = allowed_root.resolve() / AUTHOR
+        assert {path.parent for path in paths} == {author_dir}
+        assert sorted(path.name for path in paths) == ["one.epub", "two.epub"]
