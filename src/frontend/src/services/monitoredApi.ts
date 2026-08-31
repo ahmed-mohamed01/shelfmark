@@ -178,8 +178,19 @@ export interface MonitoredBookRow {
   first_seen_at: string;
 }
 
+let inFlightMonitoredEntitiesRequest: Promise<MonitoredEntity[]> | null = null;
+
 export const listMonitoredEntities = async (): Promise<MonitoredEntity[]> => {
-  return fetchJSON<MonitoredEntity[]>(`${API_BASE}/monitored`);
+  if (inFlightMonitoredEntitiesRequest) {
+    return inFlightMonitoredEntitiesRequest;
+  }
+
+  const request = fetchJSON<MonitoredEntity[]>(`${API_BASE}/monitored`).finally(() => {
+    inFlightMonitoredEntitiesRequest = null;
+  });
+
+  inFlightMonitoredEntitiesRequest = request;
+  return request;
 };
 
 export const createMonitoredEntity = async (payload: {
@@ -740,6 +751,27 @@ export interface MonitoredBooksResponse {
   last_checked_at: string | null;
   sync_status: 'idle' | 'syncing' | 'error';
 }
+
+export interface AllMonitoredBooksResponse {
+  entities: Array<MonitoredBooksResponse & { entity_id: number }>;
+}
+
+let inFlightAllMonitoredBooksRequest: Promise<AllMonitoredBooksResponse> | null = null;
+
+export const listAllMonitoredBooks = async (): Promise<AllMonitoredBooksResponse> => {
+  if (inFlightAllMonitoredBooksRequest) {
+    return inFlightAllMonitoredBooksRequest;
+  }
+
+  const request = fetchJSON<AllMonitoredBooksResponse>(`${API_BASE}/monitored/books`).finally(
+    () => {
+      inFlightAllMonitoredBooksRequest = null;
+    },
+  );
+
+  inFlightAllMonitoredBooksRequest = request;
+  return request;
+};
 
 export const listMonitoredBooks = async (entityId: number): Promise<MonitoredBooksResponse> => {
   const existing = inFlightMonitoredBooksRequests.get(entityId);

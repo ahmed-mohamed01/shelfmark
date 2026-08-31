@@ -80,6 +80,8 @@ export const BookMonitorModal = ({ book, onClose, onMonitored }: BookMonitorModa
 
   // Load root folder suggestions from user settings, falling back to system destinations
   useEffect(() => {
+    if (!book) return undefined;
+
     let alive = true;
     const load = async () => {
       try {
@@ -112,7 +114,7 @@ export const BookMonitorModal = ({ book, onClose, onMonitored }: BookMonitorModa
     };
     void load();
     return () => { alive = false; };
-  }, []);
+  }, [book]);
 
   // Auto-populate paths when book + roots change
   useEffect(() => {

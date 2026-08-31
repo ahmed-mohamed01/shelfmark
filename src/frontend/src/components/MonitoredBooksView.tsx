@@ -216,8 +216,10 @@ export function MonitoredBooksView({
                 return (
                   <div
                     key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}`}
-                    className="animate-pop-up will-change-transform"
-                    style={{ animationDelay: `${bookIndex * 30}ms` }}
+                    className={bookIndex < 12 ? 'animate-pop-up' : undefined}
+                    style={
+                      bookIndex < 12 ? { animationDelay: `${bookIndex * 20}ms` } : undefined
+                    }
                   >
                     <MonitoredBookTableRow
                       leadingControl={(
@@ -326,8 +328,10 @@ export function MonitoredBooksView({
                   return (
                     <div
                       key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}:compact`}
-                      className="animate-pop-up will-change-transform"
-                      style={{ animationDelay: `${bookIndex * 30}ms` }}
+                      className={bookIndex < 12 ? 'animate-pop-up' : undefined}
+                      style={
+                        bookIndex < 12 ? { animationDelay: `${bookIndex * 20}ms` } : undefined
+                      }
                     >
                       <MonitoredBookCompactTile
                         title={book.title || 'Unknown title'}

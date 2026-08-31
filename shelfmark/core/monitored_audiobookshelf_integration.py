@@ -35,6 +35,7 @@ from shelfmark.core.monitored_integration_matching import (
 from shelfmark.core.monitored_integration_matching import (
     norm as _norm,
 )
+from shelfmark.core.monitored_yield import cooperative_yield
 
 logger = setup_logger(__name__)
 
@@ -463,7 +464,9 @@ def sync_abs_availability_for_entity(
     # in the minified payload — resolved concurrently after the loop.
     format_fetch_targets: list[tuple[int, str]] = []
 
-    for item in candidate_items:
+    for item_index, item in enumerate(candidate_items, 1):
+        if item_index % 50 == 0:
+            cooperative_yield()
         meta = (item.get("media") or {}).get("metadata") or {}
         abs_title = (meta.get("title") or item.get("path") or "?").strip()
         item_path = (item.get("path") or "").strip()

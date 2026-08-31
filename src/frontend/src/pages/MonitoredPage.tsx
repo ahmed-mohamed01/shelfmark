@@ -32,7 +32,8 @@ import { useSwipe } from '../hooks/useSwipe';
 import { searchMetadata } from '../services/api';
 import {
   listMonitoredEntities,
-  listMonitoredBooks,
+  listAllMonitoredBooks,
+  AllMonitoredBooksResponse,
   updateMonitoredBooksMonitorFlags,
   MetadataAuthor,
   MonitoredEntity,
@@ -559,6 +560,16 @@ export const MonitoredPage = ({
     [],
   );
   const [monitoredBooksReloadTick, setMonitoredBooksReloadTick] = useState(0);
+  // Key the books fetch on the entity id-set, not array identity: the mount
+  // sequence sets sources twice (localStorage snapshot, then network) with
+  // identical ids, and identity-keyed deps double-fetched the batch endpoint.
+  const monitoredBooksSourcesKey = useMemo(
+    () => monitoredBooksSources.map((entity) => entity.id).join(','),
+    [monitoredBooksSources],
+  );
+  // Holds the mount-time books prefetch so the first keyed fetch can reuse it
+  // even when it resolves before entities land (the in-flight dedup window).
+  const initialBooksPrefetchRef = useRef<Promise<AllMonitoredBooksResponse> | null>(null);
   const [monitoredLoaded, setMonitoredLoaded] = useState(false);
   const [monitoredBooksRows, setMonitoredBooksRows] = useState<MonitoredBookListRow[]>([]);
   const [monitoredBooksLoading, setMonitoredBooksLoading] = useState(false);
@@ -917,6 +928,9 @@ export const MonitoredPage = ({
   useEffect(() => {
     let alive = true;
     setMonitoredLoaded(false);
+    const booksPrefetch = listAllMonitoredBooks();
+    booksPrefetch.catch(() => {});
+    initialBooksPrefetchRef.current = booksPrefetch;
 
     const toMonitoredAuthor = (entity: MonitoredEntity): MonitoredAuthor | null => {
       if (entity.kind !== 'author') {
@@ -1430,63 +1444,84 @@ export const MonitoredPage = ({
       setMonitoredBooksLoading(true);
       setMonitoredBooksLoadError(null);
 
-      const responses = await Promise.allSettled(
-        monitoredBooksSources.map(async (entity) => {
-          const booksResponse = await listMonitoredBooks(entity.id);
-          return { entity, books: booksResponse.books };
-        }),
-      );
-
-      if (!alive) {
+      // No sources yet (first render before entities load): mirror the old
+      // fan-out's no-request behavior instead of fetching for an empty map.
+      if (monitoredBooksSources.length === 0) {
+        // Drop the mount prefetch: it resolved against zero entities, and the
+        // first real source set must not consume that empty response.
+        initialBooksPrefetchRef.current = null;
+        setMonitoredBooksRows([]);
+        setMonitoredBooksLoading(false);
+        setMonitoredBooksEverLoaded(true);
         return;
       }
 
-      const rows: MonitoredBookListRow[] = [];
-      let failedCount = 0;
-
-      for (const result of responses) {
-        if (result.status !== 'fulfilled') {
-          failedCount += 1;
-          continue;
+      try {
+        const pendingPrefetch = initialBooksPrefetchRef.current;
+        initialBooksPrefetchRef.current = null;
+        const response = await (pendingPrefetch ?? listAllMonitoredBooks());
+        if (!alive) {
+          return;
         }
-        const { entity, books } = result.value;
-        const settings = entity.settings || {};
-        const bookSettingsAuthorName =
-          typeof settings.book_author === 'string' ? settings.book_author.trim() : '';
-        const bookSettingsSourceUrl =
-          typeof settings.book_source_url === 'string' ? settings.book_source_url.trim() : '';
 
-        for (const book of books || []) {
-          const displayAuthor =
-            entity.kind === 'book'
-              ? extractPrimaryAuthorName(book.authors || '') ||
-                bookSettingsAuthorName ||
-                entity.name ||
-                'Unknown author'
-              : entity.name;
-          rows.push({
-            ...book,
-            author_entity_id: entity.id,
-            author_name: displayAuthor,
-            author_provider: entity.provider,
-            author_provider_id: entity.provider_id,
-            author_source_url: entity.cached_source_url || bookSettingsSourceUrl || undefined,
-          });
+        const entitiesById = new Map(monitoredBooksSources.map((entity) => [entity.id, entity]));
+        const rows: MonitoredBookListRow[] = [];
+
+        for (const booksResponse of response.entities) {
+          const entity = entitiesById.get(booksResponse.entity_id);
+          if (!entity) {
+            continue;
+          }
+          const settings = entity.settings || {};
+          const bookSettingsAuthorName =
+            typeof settings.book_author === 'string' ? settings.book_author.trim() : '';
+          const bookSettingsSourceUrl =
+            typeof settings.book_source_url === 'string' ? settings.book_source_url.trim() : '';
+
+          for (const book of booksResponse.books || []) {
+            const displayAuthor =
+              entity.kind === 'book'
+                ? extractPrimaryAuthorName(book.authors || '') ||
+                  bookSettingsAuthorName ||
+                  entity.name ||
+                  'Unknown author'
+                : entity.name;
+            rows.push({
+              ...book,
+              author_entity_id: entity.id,
+              author_name: displayAuthor,
+              author_provider: entity.provider,
+              author_provider_id: entity.provider_id,
+              author_source_url: entity.cached_source_url || bookSettingsSourceUrl || undefined,
+            });
+          }
+        }
+
+        setMonitoredBooksRows(rows);
+        setMonitoredBooksLoadError(null);
+      } catch (error) {
+        if (!alive) {
+          return;
+        }
+        console.error('Failed to load monitored books:', error);
+        setMonitoredBooksLoadError(
+          error instanceof Error ? error.message : 'Failed to load monitored books',
+        );
+      } finally {
+        if (alive) {
+          setMonitoredBooksLoading(false);
+          setMonitoredBooksEverLoaded(true);
         }
       }
-
-      setMonitoredBooksRows(rows);
-      setMonitoredBooksLoadError(
-        failedCount > 0 ? 'Some monitored books could not be loaded.' : null,
-      );
-      setMonitoredBooksLoading(false);
-      setMonitoredBooksEverLoaded(true);
     })();
 
     return () => {
       alive = false;
     };
-  }, [monitoredBooksSources, monitoredBooksReloadTick]);
+    // monitoredBooksSources is read via closure; the id-set key below
+    // captures every change that should trigger a refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitoredBooksSourcesKey, monitoredBooksReloadTick]);
 
   // Re-fetch books when navigating back from author page (hidden state may have changed)
   const prevPathnameRef = useRef(location.pathname);

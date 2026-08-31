@@ -35,6 +35,8 @@ from shelfmark.core.monitored_types import (
     SearchSummary,
     is_transient_provider_error,
 )
+from shelfmark.core.monitored_utils import covers_cache_enabled_cached
+from shelfmark.core.monitored_yield import cooperative_yield
 
 if TYPE_CHECKING:
     from shelfmark.core.monitored_db import MonitoredDB
@@ -186,7 +188,12 @@ def _sync_author_core(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Release date enrichment failed for entity %d: %s", entity_id, exc)
 
-    existing_files = db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+    existing_files = (
+        db.list_monitored_book_files(
+            user_ids=[user_id], entity_id=entity_id, verify_paths=True
+        )
+        or []
+    )
 
     if books and existing_files:
         from shelfmark.core.monitored_files import expand_monitored_file_rows_for_equivalent_books
@@ -307,9 +314,7 @@ def _run_author_sync(
             {"entity_id": entity_id, "phase": "fetching_covers"},
         )
         try:
-            from shelfmark.config.env import is_covers_cache_enabled
-
-            if is_covers_cache_enabled():
+            if covers_cache_enabled_cached():
                 import base64
                 from urllib.parse import parse_qs, urlparse
 
@@ -330,8 +335,7 @@ def _run_author_sync(
                     book_provider = book.get("provider")
                     if cover_url and book_id and book_provider:
                         cache_id = f"{book_provider}_{book_id}"
-                        if img_cache.get(cache_id) is None:
-                            covers_to_fetch.append((cache_id, cover_url))
+                        covers_to_fetch.append((cache_id, cover_url))
 
                 if covers_to_fetch:
                     from shelfmark.core.monitored_concurrency import bounded_map
@@ -339,9 +343,19 @@ def _run_author_sync(
                     def _fetch_cover(job: tuple[str, str]) -> None:
                         cid, curl = job
                         try:
-                            img_cache.fetch_and_cache(cid, curl)
+                            if img_cache.get(cid) is None:
+                                img_cache.fetch_and_cache(cid, curl)
                         except Exception as cover_exc:  # noqa: BLE001 — cover prefetch is best-effort.
                             logger.debug("Cover prefetch failed for %s: %s", cid, cover_exc)
+                            return
+                        try:
+                            from shelfmark.core.monitored_thumbnails import (
+                                get_or_create_thumbnail,
+                            )
+
+                            get_or_create_thumbnail(cid, url=curl, width=300)
+                        except Exception:  # noqa: BLE001, S110 — thumbnail prewarm is best-effort
+                            pass
 
                     bounded_map(_fetch_cover, covers_to_fetch)
 
@@ -641,6 +655,7 @@ def run_batch_sync(
                 batch_id=batch_id,
                 triggered_by=triggered_by,
             )
+        cooperative_yield()
 
     # Retry transient failures once
     if retry_queue:
@@ -697,6 +712,7 @@ def run_batch_sync(
                     batch_id=batch_id,
                     triggered_by=triggered_by,
                 )
+            cooperative_yield()
 
     _broadcast(
         ws_manager,
@@ -738,7 +754,14 @@ def compute_book_availability(
     )
 
     books = db.list_monitored_books(user_ids=[user_id], entity_id=entity_id) or []
-    files = db.list_monitored_book_files(user_ids=[user_id], entity_id=entity_id) or []
+    # verify_paths: this availability feeds auto-search skip decisions and
+    # monitor-mode flags — a stale row here suppresses re-downloads (review F1).
+    files = (
+        db.list_monitored_book_files(
+            user_ids=[user_id], entity_id=entity_id, verify_paths=True
+        )
+        or []
+    )
 
     if books and files:
         files = expand_monitored_file_rows_for_equivalent_books(books=books, file_rows=files)

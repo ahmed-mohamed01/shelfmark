@@ -1310,6 +1310,46 @@ class MonitoredDB:
         finally:
             conn.close()
 
+    def list_monitored_books_for_entities(
+        self, *, user_ids: list[int], entity_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """List the lightweight grid projection for visible monitored entities."""
+        if not entity_ids:
+            return {}
+
+        user_clause, user_params = self._user_id_clause(user_ids)
+        results: dict[int, list[dict[str, Any]]] = {}
+        conn = self._connect()
+        try:
+            # Keep each query comfortably below SQLite's bind-variable limit.
+            for offset in range(0, len(entity_ids), 400):
+                chunk = entity_ids[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT b.id, b.entity_id, b.provider, b.provider_book_id,
+                           b.title, b.authors, b.publish_year, b.release_date,
+                           substr(b.description, 1, 200) AS description, b.isbn_13, b.cover_url,
+                           b.series_name, b.series_position, b.series_count,
+                           b.language, b.rating, b.ratings_count, b.readers_count,
+                           b.monitor_ebook, b.monitor_audiobook, b.state,
+                           b.hidden, b.saved_monitor_ebook, b.saved_monitor_audiobook,
+                           b.ebook_last_search_status, b.audiobook_last_search_status,
+                           b.first_seen_at
+                    FROM monitored_books b
+                    JOIN monitored_entities e ON e.id = b.entity_id
+                    WHERE b.entity_id IN ({placeholders}) AND {user_clause}
+                    ORDER BY b.first_seen_at DESC, b.id DESC
+                    """,  # noqa: S608 — placeholders and the user clause are internally generated
+                    [*chunk, *user_params],
+                ).fetchall()
+                for row in rows:
+                    payload = dict(row)
+                    results.setdefault(int(payload["entity_id"]), []).append(payload)
+            return results
+        finally:
+            conn.close()
+
     def get_best_book_cover_urls_batch(
         self, *, user_ids: list[int], entity_ids: list[int]
     ) -> dict[int, dict[str, str]]:
@@ -1470,6 +1510,61 @@ class MonitoredDB:
                 if monitor_audiobook is not None:
                     result["monitor_audiobook"] = 1 if monitor_audiobook else 0
                 return result
+            finally:
+                conn.close()
+
+    def set_monitored_book_monitor_flags_batch(
+        self,
+        entity_id: int,
+        updates: list[dict[str, Any]],
+    ) -> int:
+        """Update automatic per-format monitor flags in one transaction."""
+        if not updates:
+            return 0
+
+        with self._lock:
+            conn = self._connect()
+            conn.isolation_level = None
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                updated = 0
+                for index, item in enumerate(updates):
+                    savepoint = f"monitor_flags_{index}"
+                    conn.execute(f"SAVEPOINT {savepoint}")
+                    try:
+                        provider = str(item.get("provider") or "").strip()
+                        provider_book_id = str(item.get("provider_book_id") or "").strip()
+                        if not provider or not provider_book_id:
+                            conn.execute(f"RELEASE {savepoint}")
+                            continue
+                        cursor = conn.execute(
+                            """
+                            UPDATE monitored_books
+                            SET monitor_ebook = ?, monitor_audiobook = ?
+                            WHERE entity_id = ?
+                              AND provider = ?
+                              AND provider_book_id = ?
+                            """,
+                            (
+                                1 if item.get("monitor_ebook") else 0,
+                                1 if item.get("monitor_audiobook") else 0,
+                                entity_id,
+                                provider,
+                                provider_book_id,
+                            ),
+                        )
+                        conn.execute(f"RELEASE {savepoint}")
+                        updated += int(cursor.rowcount or 0)
+                    except Exception as exc:  # noqa: BLE001 — isolate one malformed row
+                        conn.execute(f"ROLLBACK TO {savepoint}")
+                        conn.execute(f"RELEASE {savepoint}")
+                        logger.warning(
+                            "Batch monitor-flag update skipped one row for entity %s: %s",
+                            entity_id,
+                            exc,
+                        )
+                conn.execute("COMMIT")
+                return updated
             finally:
                 conn.close()
 
@@ -2941,6 +3036,7 @@ class MonitoredDB:
         *,
         user_ids: list[int],
         entity_id: int,
+        verify_paths: bool = False,
     ) -> list[dict[str, Any]] | None:
         """List matched files for a monitored entity (None if entity not found)."""
 
@@ -2960,6 +3056,9 @@ class MonitoredDB:
             ).fetchall()
         finally:
             conn.close()
+
+        if not verify_paths:
+            return [dict(row) for row in rows]
 
         stale_ids: list[int] = []
         existing_rows: list[dict[str, Any]] = []
@@ -3006,6 +3105,37 @@ class MonitoredDB:
                     cleanup_conn.close()
 
         return existing_rows
+
+    def list_monitored_book_files_for_entities(
+        self, *, user_ids: list[int], entity_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """List file rows for visible entities without filesystem verification."""
+        if not entity_ids:
+            return {}
+
+        user_clause, user_params = self._user_id_clause(user_ids)
+        results: dict[int, list[dict[str, Any]]] = {}
+        conn = self._connect()
+        try:
+            for offset in range(0, len(entity_ids), 400):
+                chunk = entity_ids[offset : offset + 400]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT f.*
+                    FROM monitored_book_files f
+                    JOIN monitored_entities e ON e.id = f.entity_id
+                    WHERE f.entity_id IN ({placeholders}) AND {user_clause}
+                    ORDER BY f.updated_at DESC, f.id DESC
+                    """,  # noqa: S608 — placeholders and the user clause are internally generated
+                    [*chunk, *user_params],
+                ).fetchall()
+                for row in rows:
+                    payload = dict(row)
+                    results.setdefault(int(payload["entity_id"]), []).append(payload)
+            return results
+        finally:
+            conn.close()
 
     def get_monitored_book_file_match(
         self,

@@ -25,6 +25,7 @@ logger = setup_logger(__name__)
 
 # Default TTL: 7 days
 DEFAULT_TTL = 7 * 24 * 60 * 60
+_MISS = object()
 
 
 class MetadataFileCache:
@@ -34,7 +35,7 @@ class MetadataFileCache:
         self.cache_dir = cache_dir
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
-        self._mem: dict[str, dict[str, Any]] = {}
+        self._mem: dict[str, dict[str, Any] | object] = {}
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -63,6 +64,8 @@ class MetadataFileCache:
         with self._lock:
             # Check in-memory first
             entry = self._mem.get(key)
+            if entry is _MISS:
+                return None
             if entry is not None:
                 if self._is_valid(entry):
                     return entry.get("data")
@@ -71,6 +74,11 @@ class MetadataFileCache:
         # Check disk
         path = self._path(kind, provider, item_id)
         if not path.exists():
+            with self._lock:
+                # Waiting on the lock is a yield point under gevent: a
+                # concurrent set() may have installed the entry — keep it.
+                if key not in self._mem:
+                    self._mem[key] = _MISS
             return None
 
         try:
@@ -138,7 +146,9 @@ class MetadataFileCache:
 
         # Clean memory
         with self._lock:
-            expired_keys = [k for k, v in self._mem.items() if not self._is_valid(v)]
+            expired_keys = [
+                k for k, v in self._mem.items() if v is not _MISS and not self._is_valid(v)
+            ]
             for k in expired_keys:
                 del self._mem[k]
                 removed += 1

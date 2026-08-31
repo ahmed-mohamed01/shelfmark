@@ -30,6 +30,7 @@ from shelfmark.core.monitored_integration_matching import (
 from shelfmark.core.monitored_integration_matching import (
     norm as _norm,
 )
+from shelfmark.core.monitored_yield import cooperative_yield
 
 logger = setup_logger(__name__)
 
@@ -363,7 +364,9 @@ def sync_grimmory_availability_for_entity(
 
     pending_files: list[dict[str, Any]] = []
 
-    for item in gm_items:
+    for item_index, item in enumerate(gm_items, 1):
+        if item_index % 50 == 0:
+            cooperative_yield()
         gm_id = item.get("id")
         gm_title = (item.get("title") or str(gm_id) or "?").strip()
         if gm_id is None:

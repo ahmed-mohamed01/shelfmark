@@ -1639,7 +1639,7 @@ def api_status() -> Response | tuple[Response, int]:
 
         user_id = None if is_admin else db_user_id
         status = backend.queue_status(user_id=user_id)
-        if user_db is not None:
+        if user_db is not None and any(status.values()):
             updated_requests = sync_delivery_states_from_queue_status(
                 user_db,
                 queue_status=status,

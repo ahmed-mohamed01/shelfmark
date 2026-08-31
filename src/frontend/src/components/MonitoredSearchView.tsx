@@ -481,8 +481,8 @@ export function MonitoredSearchView({
               return (
                 <div
                   key={`${author.provider}:${author.provider_id}`}
-                  className="animate-pop-up will-change-transform"
-                  style={{ animationDelay: `${index * 30}ms` }}
+                  className={index < 12 ? 'animate-pop-up' : undefined}
+                  style={index < 12 ? { animationDelay: `${index * 20}ms` } : undefined}
                 >
                   <MonitoredAuthorCompactTile
                     name={name || 'Unknown author'}

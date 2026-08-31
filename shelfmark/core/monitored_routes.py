@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
+import time
 import re
 import threading
 import uuid
@@ -40,6 +42,7 @@ from shelfmark.core.monitored_types import (
     MonitoredPathError,
 )
 from shelfmark.core.monitored_utils import (
+    covers_cache_enabled_cached,
     extract_author_photo_url,
     normalize_preferred_languages,
     transform_cached_cover_urls,
@@ -74,7 +77,9 @@ _AUDIO_FILE_TYPES: frozenset[str] = frozenset(
 # Total Link: rel=preload header size we'll emit on the entities-list
 # response. Kept well under common nginx proxy_buffer_size (4 KiB) so
 # reverse proxies don't 502 with "upstream sent too big header".
-_MAX_LINK_HEADER_BYTES = 2048
+_MAX_LINK_HEADER_BYTES = 3072
+_GLOBAL_MONITOR_USER_ID: tuple[float, int] | None = None  # (monotonic ts, user id)
+_GLOBAL_MONITOR_USER_ID_TTL = 60.0
 
 
 def _row_is_audiobook(file_type: str | None) -> bool:
@@ -83,9 +88,18 @@ def _row_is_audiobook(file_type: str | None) -> bool:
 
 
 def _resolve_global_monitor_user_id(user_db: UserDB) -> int:
+    global _GLOBAL_MONITOR_USER_ID
+    if _GLOBAL_MONITOR_USER_ID is not None:
+        ts, cached_id = _GLOBAL_MONITOR_USER_ID
+        # TTL revalidation: the synthetic user can be deleted via user
+        # management, and tests swap the DB under the module (review F5).
+        if time.monotonic() - ts < _GLOBAL_MONITOR_USER_ID_TTL:
+            return cached_id
+
     user = user_db.get_user(username="global")
     if user:
-        return int(user["id"])
+        _GLOBAL_MONITOR_USER_ID = (time.monotonic(), int(user["id"]))
+        return _GLOBAL_MONITOR_USER_ID[1]
     created = user_db.create_user(
         username="global",
         password_hash=None,
@@ -94,7 +108,8 @@ def _resolve_global_monitor_user_id(user_db: UserDB) -> int:
         auth_source="builtin",
         role="admin",
     )
-    return int(created["id"])
+    _GLOBAL_MONITOR_USER_ID = (time.monotonic(), int(created["id"]))
+    return _GLOBAL_MONITOR_USER_ID[1]
 
 
 def _resolve_visible_user_ids(
@@ -620,6 +635,86 @@ def register_monitored_routes(
     ws_manager: Any = None,
 ) -> None:
 
+    @app.after_request
+    def _gzip_monitored_json(response: Response) -> Response:
+        try:
+            if not request.path.startswith("/api/monitored"):
+                return response
+            if not (response.content_type or "").startswith("application/json"):
+                return response
+            if response.direct_passthrough or response.headers.get("Content-Encoding"):
+                return response
+            # Negotiable resource: shared caches must key on Accept-Encoding
+            # even when we return it uncompressed.
+            response.vary.add("Accept-Encoding")
+            # Quality-aware: "gzip;q=0" is an explicit rejection (review F6).
+            if request.accept_encodings.quality("gzip") <= 0:
+                return response
+
+            body = response.get_data()
+            if len(body) <= 2048:
+                return response
+            compressed = gzip.compress(body, compresslevel=5)
+            response.set_data(compressed)
+            response.headers["Content-Encoding"] = "gzip"
+            response.headers["Content-Length"] = str(len(compressed))
+            response.vary.add("Accept-Encoding")
+        except Exception as exc:  # noqa: BLE001 — compression must never break a response
+            logger.debug("Failed to gzip monitored JSON response: %s", exc)
+        return response
+
+    def _assemble_monitored_books_payload(
+        *,
+        rows: list[dict[str, Any]],
+        files: list[dict[str, Any]],
+        entity: dict[str, Any] | None,
+        db_user_id: int,
+    ) -> dict[str, Any]:
+        for row in rows:
+            row["no_release_date"] = parse_release_date(row.get("release_date")) is None
+
+        if rows and files:
+            from shelfmark.core.monitored_files import (
+                expand_monitored_file_rows_for_equivalent_books,
+            )
+
+            files = expand_monitored_file_rows_for_equivalent_books(
+                books=rows,
+                file_rows=files,
+            )
+
+        from shelfmark.core.monitored_files import with_monitored_book_availability
+
+        rows = with_monitored_book_availability(
+            books=rows,
+            file_rows=files,
+            user_id=db_user_id,
+        )
+        transform_cached_cover_urls(rows)
+
+        try:
+            from shelfmark.core.metadata_cache import get_metadata_file_cache
+
+            mcache = get_metadata_file_cache()
+            for row in rows:
+                row_provider = row.get("provider")
+                provider_book_id = row.get("provider_book_id")
+                if not row_provider or not provider_book_id:
+                    continue
+                cached_meta = mcache.get("books", row_provider, provider_book_id)
+                if cached_meta and isinstance(cached_meta, dict):
+                    extra = cached_meta.get("additional_series")
+                    if extra:
+                        row["additional_series"] = extra
+        except Exception:  # noqa: BLE001, S110 — best-effort route enrichment
+            pass
+
+        return {
+            "books": rows,
+            "last_checked_at": entity.get("last_checked_at") if entity else None,
+            "sync_status": entity.get("sync_status", "idle") if entity else "idle",
+        }
+
     @app.before_request
     def _ensure_auth_none_user() -> None:
         """Auto-provision a db_user_id for auth-none mode (Sonarr-style single user).
@@ -910,7 +1005,6 @@ def register_monitored_routes(
         import base64
         import binascii
 
-        from shelfmark.config.env import is_covers_cache_enabled
         from shelfmark.core.monitored_thumbnails import (
             ALLOWED_THUMB_WIDTHS,
             get_or_create_thumbnail,
@@ -922,7 +1016,7 @@ def register_monitored_routes(
         if gate is not None:
             return gate
 
-        if not is_covers_cache_enabled():
+        if not covers_cache_enabled_cached():
             return jsonify({"error": "Cover caching is disabled"}), 404
 
         width = request.args.get("w", type=int)
@@ -1029,7 +1123,11 @@ def register_monitored_routes(
             )
             existing_files = (
                 monitored_db.list_monitored_book_files(
-                    user_ids=visible_user_ids, entity_id=entity_id
+                    user_ids=visible_user_ids,
+                    entity_id=entity_id,
+                    # Feeds apply_monitor_modes_for_books: a stale row would
+                    # flip monitor flags off for deleted files (review F2).
+                    verify_paths=True,
                 )
                 or []
             )
@@ -1145,8 +1243,26 @@ def register_monitored_routes(
             for row in rows:
                 settings = row.get("settings") or {}
                 url = settings.get("photo_url") or row.get("best_book_cover_url")
-                if url and isinstance(url, str) and url.startswith("/"):
-                    entry = f"<{url}>; rel=preload; as=image"
+                if (
+                    url
+                    and isinstance(url, str)
+                    and url.startswith("/")
+                    and "/api/covers/" in url
+                ):
+                    base_url = url.replace("/api/covers/", "/api/monitored/thumb/", 1)
+                    sep = "&" if "?" in base_url else "?"
+                    w150 = f"{base_url}{sep}w=150"
+                    w300 = f"{base_url}{sep}w=300"
+                    w450 = f"{base_url}{sep}w=450"
+                    # Candidates and sizes MUST mirror RowThumbnail's srcset and
+                    # THUMB_SIZES (src/frontend/src/utils/monitoredThumbnail.ts)
+                    # exactly, or the browser picks a different variant and the
+                    # preload is wasted (review F7).
+                    entry = (
+                        f"<{w300}>; rel=preload; as=image; "
+                        f'imagesrcset="{w150} 150w, {w300} 300w, {w450} 450w"; '
+                        'imagesizes="(max-width: 640px) 33vw, (max-width: 1024px) 20vw, 12vw"'
+                    )
                     added = len(entry) + (2 if preload_urls else 0)  # ", " separator
                     if total_bytes + added > _MAX_LINK_HEADER_BYTES:
                         break
@@ -1451,6 +1567,56 @@ def register_monitored_routes(
 
         return jsonify({"ok": True})
 
+    @app.route("/api/monitored/books", methods=["GET"])
+    def api_list_all_monitored_books() -> Response | tuple[Response, int]:
+        import time as _time
+
+        _t0 = _time.perf_counter()
+        try:
+            db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
+                user_db, resolve_auth_mode=resolve_auth_mode
+            )
+            if gate is not None:
+                return gate
+
+            entities = monitored_db.list_monitored_entities(user_ids=visible_user_ids)
+            entity_ids = [int(entity["id"]) for entity in entities]
+            books_by_entity = monitored_db.list_monitored_books_for_entities(
+                user_ids=visible_user_ids,
+                entity_ids=entity_ids,
+            )
+            _t_db = _time.perf_counter()
+
+            files_by_entity = monitored_db.list_monitored_book_files_for_entities(
+                user_ids=visible_user_ids,
+                entity_ids=entity_ids,
+            )
+            _t_files = _time.perf_counter()
+
+            payloads: list[dict[str, Any]] = []
+            for entity in entities:
+                entity_id = int(entity["id"])
+                payload = _assemble_monitored_books_payload(
+                    rows=books_by_entity.get(entity_id, []),
+                    files=files_by_entity.get(entity_id, []),
+                    entity=entity,
+                    db_user_id=db_user_id,
+                )
+                payloads.append({"entity_id": entity_id, **payload})
+            _t_meta = _time.perf_counter()
+
+            response = jsonify({"entities": payloads})
+            response.headers["Server-Timing"] = (
+                f"db;dur={(_t_db - _t0) * 1000:.1f},"
+                f"files;dur={(_t_files - _t_db) * 1000:.1f},"
+                f"meta;dur={(_t_meta - _t_files) * 1000:.1f},"
+                f"total;dur={(_t_meta - _t0) * 1000:.1f}"
+            )
+        except Exception as exc:  # noqa: BLE001 — route boundary
+            logger.error_trace(f"Failed to list all monitored books: {exc}")
+            return jsonify({"error": "Failed to list monitored books"}), 500
+        return response, 200
+
     @app.route("/api/monitored/<int:entity_id>/books", methods=["GET"])
     def api_list_monitored_books(entity_id: int) -> Response | tuple[Response, int]:
         db_user_id, _global_user_id, visible_user_ids, gate = _resolve_visible_user_ids(
@@ -1463,57 +1629,18 @@ def register_monitored_routes(
         if rows is None:
             return jsonify({"error": "Not found"}), 404
 
-        for row in rows:
-            row["no_release_date"] = parse_release_date(row.get("release_date")) is None
-
         files = (
             monitored_db.list_monitored_book_files(user_ids=visible_user_ids, entity_id=entity_id)
             or []
         )
-        if rows and files:
-            from shelfmark.core.monitored_files import (
-                expand_monitored_file_rows_for_equivalent_books,
-            )
-
-            files = expand_monitored_file_rows_for_equivalent_books(
-                books=rows,
-                file_rows=files,
-            )
-
-        from shelfmark.core.monitored_files import with_monitored_book_availability
-
-        rows = with_monitored_book_availability(
-            books=rows,
-            file_rows=files,
-            user_id=db_user_id,
-        )
-        transform_cached_cover_urls(rows)
-
-        # Enrich books with additional_series from the metadata file cache
-        try:
-            from shelfmark.core.metadata_cache import get_metadata_file_cache
-
-            mcache = get_metadata_file_cache()
-            for row in rows:
-                row_provider = row.get("provider")
-                provider_book_id = row.get("provider_book_id")
-                if not row_provider or not provider_book_id:
-                    continue
-                cached_meta = mcache.get("books", row_provider, provider_book_id)
-                if cached_meta and isinstance(cached_meta, dict):
-                    extra = cached_meta.get("additional_series")
-                    if extra:
-                        row["additional_series"] = extra
-        except Exception:  # noqa: BLE001, S110 — best-effort path inside a route handler; intentional swallow
-            pass  # Best-effort enrichment
-
-        # Include sync_status and last_checked_at for the frontend
         entity = monitored_db.get_monitored_entity(user_ids=visible_user_ids, entity_id=entity_id)
-        last_checked_at = entity.get("last_checked_at") if entity else None
-        sync_status = entity.get("sync_status", "idle") if entity else "idle"
-
         return jsonify(
-            {"books": rows, "last_checked_at": last_checked_at, "sync_status": sync_status}
+            _assemble_monitored_books_payload(
+                rows=rows,
+                files=files,
+                entity=entity,
+                db_user_id=db_user_id,
+            )
         )
 
     @app.route("/api/monitored/<int:entity_id>/files", methods=["GET"])

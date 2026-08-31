@@ -8,7 +8,25 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from typing import Any
+
+_covers_enabled_cache: tuple[float, bool] | None = None
+
+
+def covers_cache_enabled_cached(ttl: float = 5.0) -> bool:
+    """Return the covers-cache setting without probing config writability per call."""
+    global _covers_enabled_cache
+    now = time.monotonic()
+    cached = _covers_enabled_cache
+    if cached is not None and now - cached[0] < ttl:
+        return cached[1]
+
+    from shelfmark.config.env import is_covers_cache_enabled
+
+    enabled = is_covers_cache_enabled()
+    _covers_enabled_cache = (now, enabled)
+    return enabled
 
 # =============================================================================
 # Numeric parsing
@@ -95,11 +113,10 @@ def transform_cached_cover_urls(
     if not rows:
         return
 
-    from shelfmark.config.env import is_covers_cache_enabled
     from shelfmark.core.config import config as app_config
     from shelfmark.core.utils import normalize_base_path
 
-    if not is_covers_cache_enabled():
+    if not covers_cache_enabled_cached():
         return
 
     base_path = normalize_base_path(app_config.get("URL_BASE", ""))
@@ -140,11 +157,10 @@ def transform_cached_event_thumbnail_urls(events: list[dict[str, Any]]) -> None:
     if not events:
         return
 
-    from shelfmark.config.env import is_covers_cache_enabled
     from shelfmark.core.config import config as app_config
     from shelfmark.core.utils import normalize_base_path
 
-    if not is_covers_cache_enabled():
+    if not covers_cache_enabled_cached():
         return
 
     base_path = normalize_base_path(app_config.get("URL_BASE", ""))

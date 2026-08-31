@@ -147,8 +147,9 @@ class TestPruneManualOverride:
 
     def test_prune_only_affects_matching_source(self, seeded: dict, db_path: str) -> None:
         """A manual filesystem row must not be touched by an audiobookshelf prune.
-        Queries the DB directly because ``list_monitored_book_files`` filters
-        out filesystem rows whose path doesn't exist on disk.
+        Queries the DB directly for full row details (``source`` column).
+        Note: ``list_monitored_book_files`` no longer filters stale paths by
+        default — pass ``verify_paths=True`` for that behavior.
         """
         import sqlite3
 
@@ -168,7 +169,7 @@ class TestPruneManualOverride:
             keep_paths=[],
             source="audiobookshelf",
         )
-        # Raw DB check — bypass list_monitored_book_files' stale-file filtering.
+        # Raw DB check — read the source column directly.
         conn = sqlite3.connect(db_path)
         rows = conn.execute(
             "SELECT path, source FROM monitored_book_files WHERE entity_id = ?",

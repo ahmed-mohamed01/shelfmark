@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.monitored_yield import cooperative_yield
 from shelfmark.download.postprocess.policy import (
     get_supported_audiobook_formats,
     get_supported_formats,
@@ -914,6 +915,7 @@ def scan_monitored_author_files(
                 pending_files=pending_files,
                 rejections=rejections,
             )
+            cooperative_yield()
 
     if audiobook_path is not None:
         seen_dirs: set[str] = set()
@@ -989,6 +991,7 @@ def scan_monitored_author_files(
                 pending_files=pending_files,
                 rejections=rejections,
             )
+            cooperative_yield()
 
     # Flush all matched/candidate rows in one transaction. Order is preserved so
     # the "one matched per book" demotion/eviction logic behaves identically to
@@ -1151,6 +1154,7 @@ def apply_monitor_modes_for_books(
 
     from shelfmark.core.monitored_release_scoring import parse_release_date
 
+    updates: list[dict[str, Any]] = []
     for row in books:
         # Hidden books should keep monitor flags at 0 — skip recomputation
         if row.get("hidden"):
@@ -1172,14 +1176,16 @@ def apply_monitor_modes_for_books(
         monitor_ebook = compute_monitor_flag(ebook_mode, has_ebook, explicit_release_date, today)
         monitor_audio = compute_monitor_flag(audio_mode, has_audio, explicit_release_date, today)
 
-        monitored_db.set_monitored_book_monitor_flags(
-            user_ids=[db_user_id],
-            entity_id=entity_id,
-            provider=provider,
-            provider_book_id=provider_book_id,
-            monitor_ebook=monitor_ebook,
-            monitor_audiobook=monitor_audio,
+        updates.append(
+            {
+                "provider": provider,
+                "provider_book_id": provider_book_id,
+                "monitor_ebook": monitor_ebook,
+                "monitor_audiobook": monitor_audio,
+            }
         )
+
+    monitored_db.set_monitored_book_monitor_flags_batch(entity_id, updates)
 
 
 # ---------------------------------------------------------------------------

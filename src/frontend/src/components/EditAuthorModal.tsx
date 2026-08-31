@@ -77,6 +77,8 @@ export const EditAuthorModal = ({
 
   // Load root folder suggestions for quick-jump buttons
   useEffect(() => {
+    if (!open) return undefined;
+
     let alive = true;
     const loadRoots = async () => {
       try {
@@ -115,7 +117,7 @@ export const EditAuthorModal = ({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !entityId) {

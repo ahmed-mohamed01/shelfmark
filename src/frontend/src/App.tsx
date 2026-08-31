@@ -83,6 +83,9 @@ import { runQueueSelections } from './utils/queueSelections';
 const MonitoredPage = lazy(() =>
   import('./pages/MonitoredPage').then((m) => ({ default: m.MonitoredPage })),
 );
+if (typeof requestIdleCallback === 'function') {
+  requestIdleCallback(() => void import('./pages/MonitoredPage'));
+}
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { OnboardingModal } from './components/OnboardingModal';
 import { SelfSettingsModal, SettingsModal } from './components/settings';
@@ -758,42 +761,10 @@ function App() {
           getConfig(),
           getMetadataProviders(),
         ]);
-        const nextCombinedModeAllowed =
-          cfg.search_mode === 'universal' &&
-          (cfg.show_combined_selector ?? true) &&
-          getDefaultMode('ebook') !== 'blocked' &&
-          getDefaultMode('audiobook') !== 'blocked';
-        const nextEffectiveCombinedMode =
-          nextCombinedModeAllowed && (combinedMode || cfg.force_combined_search);
-        const activeConfiguredProvider =
-          nextEffectiveCombinedMode && metadataProviderState.configured_provider_combined
-            ? metadataProviderState.configured_provider_combined
-            : getConfiguredMetadataProviderForContentType({
-                contentType,
-                configuredMetadataProvider: metadataProviderState.configured_provider,
-                configuredAudiobookMetadataProvider:
-                  metadataProviderState.configured_provider_audiobook,
-              });
-        let nextMetadataConfig: MetadataSearchConfig | null = null;
-
-        if (cfg.search_mode === 'universal') {
-          try {
-            nextMetadataConfig = await getMetadataSearchConfig(
-              contentType,
-              activeConfiguredProvider ?? undefined,
-            );
-          } catch (metadataConfigError) {
-            console.error(
-              'Failed to load metadata search config during config sync:',
-              metadataConfigError,
-            );
-          }
-        }
-
         const resolvedMetadataDefaultSort = getEffectiveMetadataSort({
           currentSort: '',
-          defaultSort: nextMetadataConfig?.default_sort || cfg.metadata_default_sort || 'relevance',
-          sortOptions: nextMetadataConfig?.sort_options ?? cfg.metadata_sort_options,
+          defaultSort: cfg.metadata_default_sort || 'relevance',
+          sortOptions: cfg.metadata_sort_options,
         });
 
         // Check if search mode changed (only on settings save)
@@ -807,13 +778,12 @@ function App() {
         setConfig({
           ...cfg,
           metadata_default_sort: resolvedMetadataDefaultSort,
-          metadata_sort_options: nextMetadataConfig?.sort_options ?? cfg.metadata_sort_options,
+          metadata_sort_options: cfg.metadata_sort_options,
         });
         setMetadataProviders(metadataProviderState.providers);
         setConfiguredMetadataProvider(metadataProviderState.configured_provider);
         setConfiguredAudiobookMetadataProvider(metadataProviderState.configured_provider_audiobook);
         setConfiguredCombinedMetadataProvider(metadataProviderState.configured_provider_combined);
-        setActiveMetadataConfig(nextMetadataConfig);
 
         // Show onboarding modal on first run (settings enabled but not completed yet)
         if (mode === 'initial' && cfg.settings_enabled && !cfg.onboarding_complete) {
@@ -853,7 +823,7 @@ function App() {
         console.error('Failed to load config:', error);
       }
     },
-    [clearTracking, combinedMode, contentType, getDefaultMode, setAdvancedFilters, setBooks],
+    [clearTracking, setAdvancedFilters, setBooks],
   );
 
   // Fetch config when authenticated
@@ -886,7 +856,7 @@ function App() {
   }, [config, combinedMode, combinedModeAllowed]);
 
   const defaultMetadataProviderForContentType =
-    combinedMode && configuredCombinedMetadataProvider
+    effectiveCombinedMode && configuredCombinedMetadataProvider
       ? configuredCombinedMetadataProvider
       : getConfiguredMetadataProviderForContentType({
           contentType,
@@ -942,6 +912,19 @@ function App() {
         );
         if (isMounted) {
           setActiveMetadataConfig(nextConfig);
+          setConfig((currentConfig) =>
+            currentConfig
+              ? {
+                  ...currentConfig,
+                  metadata_default_sort: getEffectiveMetadataSort({
+                    currentSort: '',
+                    defaultSort: nextConfig.default_sort || 'relevance',
+                    sortOptions: nextConfig.sort_options,
+                  }),
+                  metadata_sort_options: nextConfig.sort_options,
+                }
+              : currentConfig,
+          );
         }
       } catch (error) {
         console.error('Failed to load metadata search config:', error);
@@ -1031,7 +1014,15 @@ function App() {
 
   // Execute URL-based search when params are present
   useEffect(() => {
-    if (wasProcessed && parsedParams && !urlSearchExecutedRef.current && config) {
+    // In universal mode, wait for the provider-specific metadata config so a
+    // deep-linked sort resolves against the right option set (review F12).
+    if (
+      wasProcessed &&
+      parsedParams &&
+      !urlSearchExecutedRef.current &&
+      config &&
+      (config.search_mode !== 'universal' || activeMetadataConfig)
+    ) {
       urlSearchExecutedRef.current = true;
 
       const parsedSearchMode = config.search_mode || 'direct';
@@ -1135,6 +1126,7 @@ function App() {
   }, [
     wasProcessed,
     parsedParams,
+    activeMetadataConfig,
     contentType,
     config,
     advancedFilters,
@@ -3103,7 +3095,7 @@ function App() {
                       config?.release_primary_action_audiobook || 'interactive_search'
                     }
                     releaseCombinedMode={config?.release_combined_mode || false}
-                    metadataSortOptions={config?.metadata_sort_options}
+                    metadataSortOptions={resolvedMetadataSortOptions}
                     showBooksInMultipleSeries={config?.show_books_in_multiple_series !== false}
                     status={currentStatus}
                     onShowToast={showToast}

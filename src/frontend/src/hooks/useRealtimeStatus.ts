@@ -31,6 +31,8 @@ export const useRealtimeStatus = ({
   const [error, setError] = useState<string | null>(null);
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const socketRef = useRef(socket);
+  socketRef.current = socket;
 
   // Polling function
   const pollStatus = useCallback(() => {
@@ -121,12 +123,12 @@ export const useRealtimeStatus = ({
 
   // Force refresh function
   const forceRefresh = useCallback(async () => {
-    if (socket?.connected) {
-      socket.emit('request_status');
+    if (socketRef.current?.connected) {
+      socketRef.current.emit('request_status');
     } else {
       pollStatus();
     }
-  }, [socket, pollStatus]);
+  }, [pollStatus]);
 
   // Cleanup polling on unmount
   useMountEffect(() => {

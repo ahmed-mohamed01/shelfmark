@@ -3288,8 +3288,12 @@ export const MonitoredAuthorBooksTab = ({
                                 return (
                                   <div
                                     key={book.id}
-                                    className="animate-pop-up will-change-transform"
-                                    style={{ animationDelay: `${bookIndex * 30}ms` }}
+                                    className={bookIndex < 12 ? 'animate-pop-up' : undefined}
+                                    style={
+                                      bookIndex < 12
+                                        ? { animationDelay: `${bookIndex * 20}ms` }
+                                        : undefined
+                                    }
                                   >
                                     <MonitoredBookCompactTile
                                       title={book.title || 'Untitled'}
@@ -3432,8 +3436,12 @@ export const MonitoredAuthorBooksTab = ({
                                   return (
                                     <div
                                       key={book.id}
-                                      className="animate-pop-up will-change-transform"
-                                      style={{ animationDelay: `${bookIndex * 30}ms` }}
+                                      className={bookIndex < 12 ? 'animate-pop-up' : undefined}
+                                      style={
+                                        bookIndex < 12
+                                          ? { animationDelay: `${bookIndex * 20}ms` }
+                                          : undefined
+                                      }
                                     >
                                       <MonitoredBookTableRow
                                         isDimmed={isDormant || isRemovedFromProvider}

@@ -14,10 +14,29 @@ full-size ``/api/covers`` path is left untouched for detail views.
 from __future__ import annotations
 
 import io
+import threading
 
 from shelfmark.core.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Dedicated tiny pool for WEBP encodes: sharing download/fs's I/O threadpool
+# would let a cold grid's ~50 encodes starve file moves/hardlinks (review F9).
+_encode_pool = None
+
+
+def _encode_off_hub(source_bytes: bytes, width: int) -> bytes:
+    global _encode_pool
+    try:
+        from gevent import monkey
+        from gevent.threadpool import ThreadPool
+    except ImportError:
+        return _resize_thumbnail(source_bytes, width)
+    if not monkey.is_module_patched("threading"):
+        return _resize_thumbnail(source_bytes, width)
+    if _encode_pool is None:
+        _encode_pool = ThreadPool(2)
+    return _encode_pool.apply(_resize_thumbnail, (source_bytes, width))
 
 # Detect Pillow once at import. If it's missing, the resize feature can't work
 # and we degrade to serving the full-size source — but LOUDLY, so a deploy that
@@ -46,9 +65,22 @@ _WEBP_QUALITY = 82
 # predictable. Covers/portraits are ~2:3, so heights are bounded to 2x width.
 ALLOWED_THUMB_WIDTHS: tuple[int, ...] = (150, 300, 450)
 
+_thumbnail_inflight: dict[str, threading.Event] = {}
+_thumbnail_inflight_lock = threading.Lock()
+
 
 def _variant_cache_id(cache_id: str, width: int) -> str:
     return f"{cache_id}_w{width}"
+
+
+def _resize_thumbnail(source_bytes: bytes, width: int) -> bytes:
+    """Decode, resize, and encode one thumbnail outside the gevent hub."""
+    with _PIL_Image.open(io.BytesIO(source_bytes)) as src_img:
+        img = src_img if src_img.mode in ("RGB", "RGBA") else src_img.convert("RGB")
+        img.thumbnail((width, width * 2))
+        buf = io.BytesIO()
+        img.save(buf, format="WEBP", quality=_WEBP_QUALITY, method=4)
+        return buf.getvalue()
 
 
 def get_or_create_thumbnail(
@@ -74,33 +106,58 @@ def get_or_create_thumbnail(
     if cached_variant is not None:
         return cached_variant
 
-    # Obtain the full-size source: cache hit, or fetch from origin on miss.
-    source = cache.get(cache_id)
-    if source is None and url:
-        source = cache.fetch_and_cache(cache_id, url)
-    if source is None:
-        return None
+    with _thumbnail_inflight_lock:
+        inflight_event = _thumbnail_inflight.get(variant_id)
+        is_creator = inflight_event is None
+        if inflight_event is None:
+            inflight_event = threading.Event()
+            _thumbnail_inflight[variant_id] = inflight_event
 
-    # Pillow missing → can't resize; serve the source. The one-time warning at
-    # import already flagged this, so don't repeat it per tile.
-    if not _PILLOW_AVAILABLE:
-        return source
+    if not is_creator:
+        inflight_event.wait(timeout=15)
+        cached_variant = cache.get(variant_id)
+        if cached_variant is not None:
+            return cached_variant
+        # Timed out (or creator failed without a cached result): take over
+        # ownership so a hung creator cannot stall this variant forever and
+        # late waiters do not stampede as untracked producers (review F8).
+        with _thumbnail_inflight_lock:
+            current = _thumbnail_inflight.get(variant_id)
+            if current is inflight_event or current is None:
+                inflight_event = threading.Event()
+                _thumbnail_inflight[variant_id] = inflight_event
+                is_creator = True
 
-    source_bytes, _source_type = source
     try:
-        with _PIL_Image.open(io.BytesIO(source_bytes)) as src_img:
-            img = src_img if src_img.mode in ("RGB", "RGBA") else src_img.convert("RGB")
-            # thumbnail() only ever downscales and preserves aspect ratio; the
-            # height bound keeps portrait covers from being clipped.
-            img.thumbnail((width, width * 2))
-            buf = io.BytesIO()
-            img.save(buf, format="WEBP", quality=_WEBP_QUALITY, method=4)
-            webp_bytes = buf.getvalue()
-    except (OSError, ValueError) as exc:
-        # A genuinely undecodable/unencodable image (truncated download, exotic
-        # format) — fall back to the source for this one tile.
-        logger.debug("Thumbnail resize failed for %s @w%d: %s", cache_id, width, exc)
-        return source
+        # Obtain the full-size source: cache hit, or fetch from origin on miss.
+        source = cache.get(cache_id)
+        if source is None and url:
+            source = cache.fetch_and_cache(cache_id, url)
+        if source is None:
+            return None
 
-    cache.put(variant_id, webp_bytes, "image/webp")
-    return webp_bytes, "image/webp"
+        # Pillow missing → can't resize; serve the source. The one-time warning at
+        # import already flagged this, so don't repeat it per tile.
+        if not _PILLOW_AVAILABLE:
+            return source
+
+        source_bytes, _source_type = source
+        try:
+            # Pillow decode/resize/WEBP encode is CPU-heavy and otherwise blocks
+            # the single gevent worker on a cache miss.
+            webp_bytes = _encode_off_hub(source_bytes, width)
+        except (OSError, ValueError) as exc:
+            # A genuinely undecodable/unencodable image (truncated download, exotic
+            # format) — fall back to the source for this one tile.
+            logger.debug("Thumbnail resize failed for %s @w%d: %s", cache_id, width, exc)
+            return source
+
+        cache.put(variant_id, webp_bytes, "image/webp")
+        return webp_bytes, "image/webp"
+    finally:
+        if is_creator:
+            with _thumbnail_inflight_lock:
+                inflight_event.set()
+                # Only remove our own entry — a takeover may have replaced it.
+                if _thumbnail_inflight.get(variant_id) is inflight_event:
+                    _thumbnail_inflight.pop(variant_id, None)

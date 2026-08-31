@@ -2,6 +2,7 @@
 
 import ipaddress
 import json
+import os
 import socket
 import threading
 import time
@@ -91,6 +92,7 @@ class ImageCacheService:
         self.index_path = cache_dir / "cache_index.json"
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] = {}
+        self._index_reloaded_at = 0.0
 
         # Stats tracking
         self._hits = 0
@@ -181,9 +183,8 @@ class ImageCacheService:
         try:
             # Write to temp file first, then rename for atomicity
             temp_path = self.index_path.with_suffix(".tmp")
-            with temp_path.open("w") as f:
-                json.dump(self._index, f)
-            temp_path.rename(self.index_path)
+            temp_path.write_text(json.dumps(self._index))
+            os.replace(temp_path, self.index_path)
         except OSError:
             pass
 
@@ -265,7 +266,10 @@ class ImageCacheService:
 
             # Try reloading from disk if not found (handles multiprocess case)
             if not entry:
-                self._load_index()
+                now = time.time()
+                if now - self._index_reloaded_at > 60:
+                    self._load_index()
+                    self._index_reloaded_at = now
                 entry = self._index.get(cache_id)
                 if not entry:
                     self._misses += 1
