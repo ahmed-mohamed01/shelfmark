@@ -137,7 +137,7 @@ export function MonitoredBooksView({
                   </span>
                 </button>
               ) : null}
-              {!isCollapsed && group.rows.map((book, bookIndex) => {
+              {!isCollapsed && group.rows.map((book) => {
                 const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
                 const isDormant = isMonitoredBookDormantState(book);
                 const authorName = book.author_name || 'Unknown author';
@@ -216,10 +216,7 @@ export function MonitoredBooksView({
                 return (
                   <div
                     key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}`}
-                    className={bookIndex < 12 ? 'animate-pop-up' : undefined}
-                    style={
-                      bookIndex < 12 ? { animationDelay: `${bookIndex * 20}ms` } : undefined
-                    }
+                    className="animate-blink-in"
                   >
                     <MonitoredBookTableRow
                       leadingControl={(
@@ -300,7 +297,7 @@ export function MonitoredBooksView({
                 className="grid gap-4 items-start"
                 style={booksGridStyle}
               >
-                {group.rows.map((book, bookIndex) => {
+                {group.rows.map((book) => {
                   const isSelected = Boolean(selectedBookKeys[getSelectionKey(book)]);
                   const isDormant = isMonitoredBookDormantState(book);
                   const authorName = book.author_name || 'Unknown author';
@@ -328,10 +325,7 @@ export function MonitoredBooksView({
                   return (
                     <div
                       key={`${book.author_entity_id}:${book.provider || 'unknown'}:${book.provider_book_id || book.id}:compact`}
-                      className={bookIndex < 12 ? 'animate-pop-up' : undefined}
-                      style={
-                        bookIndex < 12 ? { animationDelay: `${bookIndex * 20}ms` } : undefined
-                      }
+                      className="animate-blink-in"
                     >
                       <MonitoredBookCompactTile
                         title={book.title || 'Unknown title'}

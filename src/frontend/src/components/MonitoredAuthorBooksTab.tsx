@@ -3221,7 +3221,7 @@ export const MonitoredAuthorBooksTab = ({
                                 gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? Math.min(booksCompactMinWidth, 100) : booksCompactMinWidth}px, 1fr))`,
                               }}
                             >
-                              {group.books.map((book, bookIndex) => {
+                              {group.books.map((book) => {
                                 const isSelected = Boolean(selectedBookIds[book.id]);
                                 const _bookProvider = (book.provider || '').trim();
                                 const _bookProviderId = (book.provider_id || '').trim();
@@ -3288,12 +3288,7 @@ export const MonitoredAuthorBooksTab = ({
                                 return (
                                   <div
                                     key={book.id}
-                                    className={bookIndex < 12 ? 'animate-pop-up' : undefined}
-                                    style={
-                                      bookIndex < 12
-                                        ? { animationDelay: `${bookIndex * 20}ms` }
-                                        : undefined
-                                    }
+                                    className="animate-blink-in"
                                   >
                                     <MonitoredBookCompactTile
                                       title={book.title || 'Untitled'}
@@ -3389,7 +3384,7 @@ export const MonitoredAuthorBooksTab = ({
                                   <div />
                                 </div>
                               ) : null}
-                              {group.books.map((book, bookIndex) =>
+                              {group.books.map((book) =>
                                 (() => {
                                   const popularity = extractBookPopularity(book);
                                   const hasPopularity =
@@ -3436,12 +3431,7 @@ export const MonitoredAuthorBooksTab = ({
                                   return (
                                     <div
                                       key={book.id}
-                                      className={bookIndex < 12 ? 'animate-pop-up' : undefined}
-                                      style={
-                                        bookIndex < 12
-                                          ? { animationDelay: `${bookIndex * 20}ms` }
-                                          : undefined
-                                      }
+                                      className="animate-blink-in"
                                     >
                                       <MonitoredBookTableRow
                                         isDimmed={isDormant || isRemovedFromProvider}

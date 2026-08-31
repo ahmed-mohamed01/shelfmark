@@ -87,7 +87,7 @@ export function MonitoredAuthorsView({
   if (viewMode === 'table') {
     return (
       <div key="table" className="flex flex-col gap-2">
-        {authors.map((author, index) => {
+        {authors.map((author) => {
           const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
           const stats = typeof authorEntityId === 'number' ? authorAvailabilityStats.get(authorEntityId) : undefined;
           const parts: string[] = [];
@@ -108,8 +108,7 @@ export function MonitoredAuthorsView({
           return (
             <div
               key={`${author.provider}:${author.provider_id}`}
-              className={index < 12 ? 'animate-pop-up' : undefined}
-              style={index < 12 ? { animationDelay: `${index * 20}ms` } : undefined}
+              className="animate-blink-in"
             >
               <MonitoredAuthorTableRow
                 name={author.name || 'Unknown author'}
@@ -145,7 +144,7 @@ export function MonitoredAuthorsView({
       className="grid gap-4 items-start"
       style={compactGridStyle}
     >
-      {authors.map((author, index) => {
+      {authors.map((author) => {
         const authorEntityId = entityIdByName.get((author.name || '').toLowerCase());
         const stats = typeof authorEntityId === 'number' ? authorAvailabilityStats.get(authorEntityId) : undefined;
         const isSelected = typeof authorEntityId === 'number'
@@ -156,8 +155,7 @@ export function MonitoredAuthorsView({
         return (
           <div
             key={`${author.provider}:${author.provider_id}`}
-            className={index < 12 ? 'animate-pop-up' : undefined}
-            style={index < 12 ? { animationDelay: `${index * 20}ms` } : undefined}
+            className="animate-blink-in"
           >
             <MonitoredAuthorCompactTile
               name={author.name || 'Unknown author'}

@@ -473,7 +473,7 @@ export function MonitoredSearchView({
           </div>
         ) : (
           <div className="grid items-start gap-4" style={compactGridStyle}>
-            {displayedAuthors.map((author, index) => {
+            {displayedAuthors.map((author) => {
               const name = author.name;
               const isMonitored = monitoredNames.has(name.toLowerCase());
               const booksCount = author.stats?.books_count;
@@ -481,8 +481,7 @@ export function MonitoredSearchView({
               return (
                 <div
                   key={`${author.provider}:${author.provider_id}`}
-                  className={index < 12 ? 'animate-pop-up' : undefined}
-                  style={index < 12 ? { animationDelay: `${index * 20}ms` } : undefined}
+                  className="animate-blink-in"
                 >
                   <MonitoredAuthorCompactTile
                     name={name || 'Unknown author'}
