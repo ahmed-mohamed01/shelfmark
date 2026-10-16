@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Book, ButtonStateInfo, SortOption } from '../types';
+
 import { useSearchMode } from '../contexts/SearchModeContext';
+import { SORT_OPTIONS } from '../data/filterOptions';
+import { Book, ButtonStateInfo, SortOption } from '../types';
+import { Dropdown } from './Dropdown';
 import { CardView } from './resultsViews/CardView';
 import { CompactView } from './resultsViews/CompactView';
 import { ListView } from './resultsViews/ListView';
-import { Dropdown } from './Dropdown';
-import { SORT_OPTIONS } from '../data/filterOptions';
 
 // Grid layout classes by view mode
 const GRID_CLASSES = {
@@ -33,6 +34,8 @@ interface ResultsSectionProps {
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
   totalFound?: number;
+  // Direct mode: total result count from release sources
+  directTotalResults?: number | string | null;
   customAction?: {
     label: string;
     onClick: (book: Book) => void;
@@ -65,6 +68,7 @@ export const ResultsSection = ({
   isLoadingMore,
   onLoadMore,
   totalFound,
+  directTotalResults,
   customAction,
   hideSortControl = false,
   hideViewToggle = false,
@@ -117,10 +121,15 @@ export const ResultsSection = ({
   if (!visible) return null;
 
   return (
-    <section id="results-section" className="mb-4 sm:mb-8 w-full">
-      <div className="flex items-center justify-between mb-2 sm:mb-3 relative z-10">
+    <section id="results-section" className="mb-4 w-full sm:mb-8">
+      <div className="relative z-10 mb-2 flex items-center justify-between sm:mb-3">
+        {/* Left: Sort control or Hardcover link */}
         {!hideSortControl && showSortControl ? (
-          <SortControl value={sortValue} onChange={onSortChange} metadataSortOptions={metadataSortOptions} />
+          <SortControl
+            value={sortValue}
+            onChange={onSortChange}
+            metadataSortOptions={metadataSortOptions}
+          />
         ) : hideSortControl ? (
           <div />
         ) : resultsSourceUrl ? (
@@ -128,7 +137,7 @@ export const ResultsSection = ({
             href={resultsSourceUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200 animate-pop-up"
+            className="animate-pop-up inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
           >
             View list on Hardcover
             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -142,16 +151,42 @@ export const ResultsSection = ({
           </a>
         ) : null}
 
+        {/* Center: Results count (direct mode total from release sources) */}
+        <div className="flex flex-1 justify-center">
+          {(() => {
+            const count = directTotalResults ?? null;
+            if (count === null || count === 0) return null;
+            const isCapped = directTotalResults === '500+';
+            const totalCount = isCapped ? 500 : Number(count);
+            // AA-style: show page range + total
+            if (totalCount === 1) {
+              return (
+                <span className="mx-2 mt-4 px-2 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                  Result 1 (1 Total)
+                </span>
+              );
+            }
+            const shownEnd = Math.min(totalCount, 50);
+            const totalStr = isCapped ? '500+' : String(totalCount);
+            return (
+              <span className="mx-2 mt-4 px-2 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                Results 1-{shownEnd} ({totalStr} Total)
+              </span>
+            );
+          })()}
+        </div>
+
+        {/* Right: View toggle buttons - Desktop: show all 3, Mobile: show Compact and List only */}
         {!hideViewToggle ? (
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="ml-auto flex items-center gap-2">
             {isDesktop && (
               <button
                 onClick={() => setViewMode('card')}
-                className={`p-2 rounded-full transition-all duration-200 ${
+                className={`rounded-full p-2 transition-all duration-200 ${
                   viewMode === 'card'
                     ? searchMode === 'universal'
-                      ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                      : 'text-white bg-sky-700 hover:bg-sky-800'
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                      : 'bg-sky-700 text-white hover:bg-sky-800'
                     : 'hover-action text-gray-900 dark:text-gray-100'
                 }`}
                 title="Card view"
@@ -159,7 +194,7 @@ export const ResultsSection = ({
                 aria-pressed={viewMode === 'card'}
               >
                 <svg
-                  className="w-5 h-5"
+                  className="h-5 w-5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -175,11 +210,11 @@ export const ResultsSection = ({
             )}
             <button
               onClick={() => setViewMode('compact')}
-              className={`p-2 rounded-full transition-all duration-200 ${
+              className={`rounded-full p-2 transition-all duration-200 ${
                 viewMode === 'compact'
                   ? searchMode === 'universal'
-                    ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                    : 'text-white bg-sky-700 hover:bg-sky-800'
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    : 'bg-sky-700 text-white hover:bg-sky-800'
                   : 'hover-action text-gray-900 dark:text-gray-100'
               }`}
               title="Compact view"
@@ -187,7 +222,7 @@ export const ResultsSection = ({
               aria-pressed={viewMode === 'compact'}
             >
               <svg
-                className="w-5 h-5"
+                className="h-5 w-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -201,11 +236,11 @@ export const ResultsSection = ({
             </button>
             <button
               onClick={() => setViewMode('list')}
-              className={`p-2 rounded-full transition-all duration-200 ${
+              className={`rounded-full p-2 transition-all duration-200 ${
                 viewMode === 'list'
                   ? searchMode === 'universal'
-                    ? 'text-white bg-emerald-600 hover:bg-emerald-700'
-                    : 'text-white bg-sky-700 hover:bg-sky-800'
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    : 'bg-sky-700 text-white hover:bg-sky-800'
                   : 'hover-action text-gray-900 dark:text-gray-100'
               }`}
               title="List view"
@@ -213,7 +248,7 @@ export const ResultsSection = ({
               aria-pressed={viewMode === 'list'}
             >
               <svg
-                className="w-5 h-5"
+                className="h-5 w-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -252,9 +287,10 @@ export const ResultsSection = ({
             const shouldUseCardLayout = isDesktop && viewMode === 'card';
             const animationDelay = index * 50;
             // Use appropriate button state function based on search mode
-            const buttonState = searchMode === 'universal'
-              ? getUniversalButtonState(book.id)
-              : getButtonState(book.id);
+            const buttonState =
+              searchMode === 'universal'
+                ? getUniversalButtonState(book.id)
+                : getButtonState(book.id);
 
             return shouldUseCardLayout ? (
               <CardView
@@ -291,9 +327,7 @@ export const ResultsSection = ({
           })}
         </div>
       )}
-      {books.length === 0 && (
-        <div className="mt-4 text-sm opacity-80">No results found.</div>
-      )}
+      {books.length === 0 && <div className="mt-4 text-sm opacity-80">No results found.</div>}
 
       {/* Load More button (universal mode pagination) */}
       {searchMode === 'universal' && hasMore && onLoadMore && (
@@ -301,17 +335,29 @@ export const ResultsSection = ({
           <button
             onClick={onLoadMore}
             disabled={isLoadingMore}
-            className={`px-3 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+            className={`rounded-full px-3 py-2 text-sm font-medium transition-all duration-200 ${
               isLoadingMore
-                ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-wait'
-                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                ? 'cursor-wait bg-gray-300 text-gray-500 dark:bg-gray-600 dark:text-gray-400'
+                : 'bg-emerald-600 text-white hover:bg-emerald-700'
             }`}
           >
             {isLoadingMore ? (
               <span className="flex items-center gap-2">
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24">
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    fill="none"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  />
                 </svg>
                 Loading...
               </span>
@@ -345,10 +391,13 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
   const { searchMode } = useSearchMode();
   // Use different sort options based on search mode
   // For universal mode, use dynamic options from API (with fallback)
-  const sortOptions = searchMode === 'universal'
-    ? (metadataSortOptions && metadataSortOptions.length > 0 ? metadataSortOptions : DEFAULT_UNIVERSAL_SORT_OPTIONS)
-    : SORT_OPTIONS;
-  const selected = sortOptions.find(option => option.value === value) ?? sortOptions[0];
+  const sortOptions =
+    searchMode === 'universal'
+      ? metadataSortOptions && metadataSortOptions.length > 0
+        ? metadataSortOptions
+        : DEFAULT_UNIVERSAL_SORT_OPTIONS
+      : SORT_OPTIONS;
+  const selected = sortOptions.find((option) => option.value === value) ?? sortOptions[0];
 
   return (
     <Dropdown
@@ -358,7 +407,7 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
         <button
           type="button"
           onClick={toggle}
-          className={`relative flex items-center gap-2 px-3 py-2 rounded-full transition-all duration-200 text-gray-900 dark:text-gray-100 hover-action ${
+          className={`hover-action relative flex items-center gap-2 rounded-full px-3 py-2 text-gray-900 transition-all duration-200 dark:text-gray-100 ${
             isOpen ? 'bg-(--hover-action)' : ''
           } animate-pop-up`}
           aria-haspopup="listbox"
@@ -371,7 +420,7 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
             viewBox="0 0 24 24"
             strokeWidth={1.5}
             stroke="currentColor"
-            className="w-5 h-5 sm:w-6 sm:h-6"
+            className="h-5 w-5 sm:h-6 sm:w-6"
           >
             <path
               strokeLinecap="round"
@@ -385,17 +434,17 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
     >
       {({ close }) => (
         <div role="listbox" aria-label="Sort results">
-          {sortOptions.map(option => {
+          {sortOptions.map((option) => {
             const isSelected = option.value === selected.value;
             return (
               <button
                 type="button"
                 key={option.value || 'default'}
-                className={`w-full px-3 py-2 text-left text-base flex items-center justify-between gap-2 hover-surface ${
+                className={`hover-surface flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-base ${
                   isSelected
                     ? searchMode === 'universal'
-                      ? 'text-emerald-600 dark:text-emerald-400 font-medium'
-                      : 'text-sky-600 dark:text-sky-300 font-medium'
+                      ? 'font-medium text-emerald-600 dark:text-emerald-400'
+                      : 'font-medium text-sky-600 dark:text-sky-300'
                     : ''
                 }`}
                 onClick={() => {
@@ -413,7 +462,7 @@ const SortControl = ({ value, onChange, metadataSortOptions }: SortControlProps)
                     viewBox="0 0 24 24"
                     strokeWidth={1.5}
                     stroke="currentColor"
-                    className="w-4 h-4"
+                    className="h-4 w-4"
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                   </svg>

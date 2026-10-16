@@ -1,78 +1,78 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 
 import type { ContentType } from '../../types';
+import {
+  CONTENT_TYPE_STORAGE_KEY,
+  resolveContentTypePreference,
+  type ContentTypePreference,
+} from '../../utils/contentTypePreference';
+import { useDependencyEffect } from '../useMountEffect';
 
-const CONTENT_TYPE_STORAGE_KEY = 'preferred-content-type';
-
-const readInitialPreference = (): { contentType: ContentType; combinedMode: boolean } => {
+const readStoredPreference = (): string | null => {
   try {
-    const saved = localStorage.getItem(CONTENT_TYPE_STORAGE_KEY);
-    if (saved === 'combined') {
-      return { contentType: 'ebook', combinedMode: true };
-    }
-    if (saved === 'ebook' || saved === 'audiobook') {
-      return { contentType: saved, combinedMode: false };
-    }
+    return localStorage.getItem(CONTENT_TYPE_STORAGE_KEY);
   } catch {
     // localStorage may be unavailable in private browsing
+    return null;
   }
-  return { contentType: 'ebook', combinedMode: false };
 };
 
-export const useContentTypePreferences = (): {
+export const useContentTypePreferences = (
+  serverDefault?: ContentType | null,
+): {
   contentType: ContentType;
   setContentType: Dispatch<SetStateAction<ContentType>>;
   combinedMode: boolean;
   setCombinedMode: Dispatch<SetStateAction<boolean>>;
 } => {
-  const initialPreference = readInitialPreference();
-  const [contentType, setContentTypeState] = useState<ContentType>(
-    () => initialPreference.contentType,
+  // Both values live in one state object so each setter can derive the other
+  // from a pure updater instead of mirroring it into a ref during render.
+  const [preference, setPreference] = useState<ContentTypePreference>(() =>
+    resolveContentTypePreference(readStoredPreference(), null),
   );
-  const [combinedMode, setCombinedModeState] = useState<boolean>(
-    () => initialPreference.combinedMode,
-  );
-  const contentTypeRef = useRef(contentType);
-  const combinedModeRef = useRef(combinedMode);
-  contentTypeRef.current = contentType;
-  combinedModeRef.current = combinedMode;
+  const { contentType, combinedMode, source } = preference;
 
-  const persistPreference = useCallback(
-    (nextContentType: ContentType, nextCombinedMode: boolean) => {
-      try {
-        localStorage.setItem(
-          CONTENT_TYPE_STORAGE_KEY,
-          nextCombinedMode ? 'combined' : nextContentType,
-        );
-      } catch {
-        // localStorage may be unavailable in private browsing
-      }
-    },
-    [],
-  );
+  const setContentType: Dispatch<SetStateAction<ContentType>> = useCallback((value) => {
+    setPreference((current) => ({
+      ...current,
+      contentType: typeof value === 'function' ? value(current.contentType) : value,
+      source: 'chosen',
+    }));
+  }, []);
 
-  const setContentType: Dispatch<SetStateAction<ContentType>> = useCallback(
-    (value) => {
-      setContentTypeState((current) => {
-        const nextContentType = typeof value === 'function' ? value(current) : value;
-        persistPreference(nextContentType, combinedModeRef.current);
-        return nextContentType;
-      });
-    },
-    [persistPreference],
-  );
+  const setCombinedMode: Dispatch<SetStateAction<boolean>> = useCallback((value) => {
+    setPreference((current) => ({
+      ...current,
+      combinedMode: typeof value === 'function' ? value(current.combinedMode) : value,
+      source: 'chosen',
+    }));
+  }, []);
 
-  const setCombinedMode: Dispatch<SetStateAction<boolean>> = useCallback(
-    (value) => {
-      setCombinedModeState((current) => {
-        const nextCombinedMode = typeof value === 'function' ? value(current) : value;
-        persistPreference(contentTypeRef.current, nextCombinedMode);
-        return nextCombinedMode;
-      });
-    },
-    [persistPreference],
-  );
+  // The config arrives after the first render, so the configured default is applied here.
+  // It only lands while nothing has chosen a tab, which leaves a deep-linked content type
+  // and a stored choice both untouched, and it does not count as a choice itself.
+  useDependencyEffect(() => {
+    if (!serverDefault) {
+      return;
+    }
+    setPreference((current) =>
+      current.source === 'unset' ? resolveContentTypePreference(null, serverDefault) : current,
+    );
+  }, [serverDefault]);
+
+  // Persist only what the user actually chose. Writing on every load would store a default
+  // nobody picked, which is what stopped the configured default from ever being seen.
+  useDependencyEffect(() => {
+    if (source !== 'chosen') {
+      return;
+    }
+    try {
+      localStorage.setItem(CONTENT_TYPE_STORAGE_KEY, combinedMode ? 'combined' : contentType);
+    } catch {
+      // localStorage may be unavailable in private browsing
+    }
+  }, [contentType, combinedMode, source]);
 
   return {
     contentType,

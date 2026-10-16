@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS download_history (
     download_path TEXT,
     retry_payload TEXT,
     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    terminal_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    terminal_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    downloads INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_download_history_user_status
@@ -188,6 +189,11 @@ class UserDB:
         self._db_path = db_path
         self._lock = threading.Lock()
 
+    @property
+    def db_path(self) -> str:
+        """Filesystem path of the SQLite database."""
+        return self._db_path
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
@@ -205,6 +211,7 @@ class UserDB:
                 self._migrate_download_history_queued_at(conn)
                 self._migrate_download_history_download_id(conn)
                 self._migrate_download_history_retry_payload(conn)
+                self._migrate_download_history_downloads(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -278,6 +285,13 @@ class UserDB:
         column_names = {str(col["name"]) for col in columns}
         if "retry_payload" not in column_names:
             conn.execute("ALTER TABLE download_history ADD COLUMN retry_payload TEXT")
+
+    def _migrate_download_history_downloads(self, conn: sqlite3.Connection) -> None:
+        """Ensure download_history.downloads exists for download count persistence."""
+        columns = conn.execute("PRAGMA table_info(download_history)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+        if "downloads" not in column_names:
+            conn.execute("ALTER TABLE download_history ADD COLUMN downloads INTEGER")
 
     def create_user(
         self,
@@ -430,6 +444,26 @@ class UserDB:
         try:
             rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_first_admin(self) -> dict[str, Any] | None:
+        """Return the lowest-id admin user, or None. Used as the identity for SHELFMARK_API_KEY requests."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def has_admin(self) -> bool:
+        """Return True when at least one admin user exists."""
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").fetchone()
+            return row is not None
         finally:
             conn.close()
 

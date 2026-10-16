@@ -1,11 +1,12 @@
 import { useState } from 'react';
 
 import { useSearchMode } from '../../contexts/SearchModeContext';
-import { Book, ButtonStateInfo } from '../../types';
+import type { Book, ButtonStateInfo } from '../../types';
+import { getDownloadsCount } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldBadges } from '../shared';
+import { DisplayFieldBadges, LibraryBadge } from '../shared';
 
 const SkeletonLoader = () => (
   <div className="h-full w-full animate-pulse bg-linear-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
@@ -112,6 +113,7 @@ export const CardView = ({
               #{book.series_position}
             </div>
           )}
+          <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
           {book.preview && !imageError ? (
             <>
               {!imageLoaded && (
@@ -222,6 +224,16 @@ export const CardView = ({
                   <span>{book.size}</span>
                 </>
               )}
+              {searchMode !== 'universal' &&
+                (() => {
+                  const d = getDownloadsCount(book);
+                  return d != null && d > 0 ? (
+                    <>
+                      {' '}
+                      <span>•</span> <span>{d.toLocaleString()}</span>{' '}
+                    </>
+                  ) : null;
+                })()}
             </div>
           )}
         </div>

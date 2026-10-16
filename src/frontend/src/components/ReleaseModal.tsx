@@ -512,7 +512,7 @@ const ReleaseRow = ({
           </p>
           {/* Plugin-provided info line (format, size, indexer, seeders, etc.) */}
           {mobileColumns.length > 0 && (
-            <div className="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+            <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
               {(() => {
                 // Pre-filter columns that will render content to avoid orphan dots
                 const columnsWithContent = mobileColumns.filter((col) => {
@@ -538,6 +538,11 @@ const ReleaseRow = ({
                     if (!value || value === col.fallback) {
                       return Boolean(col.fallback);
                     }
+                  }
+
+                  if (col.render_type === 'text' || col.render_type === 'number') {
+                    // Optional detail columns (series, narrator, bitrate) are often blank
+                    return value.trim() !== '';
                   }
 
                   return true;
@@ -848,6 +853,11 @@ export const ReleaseModal = ({
     } finally {
       setIsRequestingBook(false);
     }
+    // Kept against the advisory: the body really does read both. `handleClose` is aliased
+    // from the `onClose` prop, which is why the compiler names the source instead, and
+    // dropping `contentType` would let this close over a stale one and request the wrong
+    // format. Correctness first; the cost is an extra callback identity.
+    // oxlint-disable-next-line react/memo-dependencies
   }, [book, onRequestBook, isRequestingBook, contentType, handleClose]);
 
   // Handle ESC key
@@ -1520,7 +1530,9 @@ export const ReleaseModal = ({
     const narratorField = book.display_fields.find((f) => f.icon === 'microphone');
 
     return { starField, ratingsField, usersField, pagesField, lengthField, narratorField };
-  }, [book?.display_fields]);
+    // `book`, not `book?.display_fields`: the body reads `book.display_fields`
+    // unguarded after the early return, which is the dependency the compiler infers.
+  }, [book]);
 
   const getReleaseActionMode = useCallback(
     (release: Release): RequestPolicyMode => {
@@ -1713,6 +1725,9 @@ export const ReleaseModal = ({
         setPackSubmitting(false);
       }
     },
+    // Same as handleRequestBook above: the body reads `onDownload`, `contentType` and
+    // `handleClose`, so they stay in the list whatever the advisory infers.
+    // oxlint-disable-next-line react/memo-dependencies
     [book, packReview, onDownload, contentType, handleClose, isSelectionMode, selection],
   );
 
@@ -2695,7 +2710,7 @@ export const ReleaseModal = ({
                   {sourcesError || 'No release sources are available for this book.'}
                 </div>
               ) : (
-                <div className="flex items-center justify-between px-5">
+                <div className="flex items-center px-5">
                   {/* Tabs - scrollable on narrow screens */}
                   <div className="scrollbar-hide min-w-0 flex-1 overflow-x-auto">
                     <div className="relative flex gap-1">
@@ -2726,7 +2741,40 @@ export const ReleaseModal = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 pr-1 pl-2">
+                  {/* Results count from release sources. Deliberately not flex-1: a
+                      second growing child would halve the scrollable tab strip beside
+                      it, and it would claim that space even on tabs whose source
+                      reports no total (only direct_download does). Hidden below sm:
+                      the label is ~150px and the full-screen mobile modal has no room
+                      for it without pushing the tabs out of reach. */}
+                  <div className="hidden flex-none justify-center sm:flex">
+                    {(() => {
+                      const searchInfo = releasesBySource[activeTab]?.search_info?.[activeTab];
+                      const totalCount = searchInfo?.total_results;
+                      if (totalCount === undefined || totalCount === null || totalCount === 0)
+                        return null;
+                      const isCapped = totalCount === '500+';
+                      const totalCountNum = isCapped ? 500 : Number(totalCount);
+                      // AA-style: show page range + total
+                      if (totalCountNum === 1) {
+                        return (
+                          <span className="mx-2 shrink-0 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                            Result 1 (1 Total)
+                          </span>
+                        );
+                      }
+                      const shownEnd = Math.min(totalCountNum, 50);
+                      const totalStr = isCapped ? '500+' : String(totalCountNum);
+                      return (
+                        <span className="mx-2 shrink-0 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                          Results 1-{shownEnd} ({totalStr} Total)
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Right: Controls */}
+                  <div className="ml-auto flex items-center gap-3 pr-1 pl-2">
                     {/* Multi-book pack toggle (fallback for releases that can't be inspected) */}
                     {!isCombinedMode && (
                       <button

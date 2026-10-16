@@ -34,6 +34,7 @@ export interface Book {
   status_message?: string; // Detailed status message (e.g., "Trying Libgen (2/5)")
   added_time?: number; // Timestamp when added to queue
   content_type?: string; // "ebook", "audiobook", or related book subtype
+  library?: LibraryOwnership; // "already in your library" flags from the library check
   source?: string; // Release source handler (e.g., "direct_download", "prowlarr")
   source_display_name?: string; // Human-readable source name (e.g., "Direct Download")
   // Metadata provider fields (used in universal search mode)
@@ -69,6 +70,23 @@ export interface Book {
   titles_by_language?: Record<string, string>;
   username?: string;
   retry_available?: boolean;
+  downloads?: number;
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * Extract download count from a book's data.
+ * Checks both the direct `downloads` field and the `extra.downloads` fallback.
+ */
+export function getDownloadsCount(book: Book): number | null {
+  if (book.downloads != null && book.downloads > 0) {
+    return book.downloads;
+  }
+  const extraDownloads = book.extra?.downloads;
+  if (extraDownloads != null && typeof extraDownloads === 'number' && extraDownloads > 0) {
+    return extraDownloads;
+  }
+  return null;
 }
 
 // Status response types
@@ -302,6 +320,14 @@ export interface QueuedDownloadResult {
 
 export type RequestSubmissionResult = RequestRecord | QueuedDownloadResult;
 
+/** How the library holds a book, per format: owned outright, or inside a collection. */
+export type LibraryHolding = 'owned' | 'collection';
+
+export interface LibraryOwnership {
+  ebook?: LibraryHolding | null;
+  audiobook?: LibraryHolding | null;
+}
+
 export type BooksOutputMode = 'folder' | 'booklore' | 'email';
 
 export interface AppConfig {
@@ -313,6 +339,7 @@ export interface AppConfig {
   release_version: string;
   book_languages: Language[];
   default_language: string[];
+  default_content_type: ContentType;
   supported_formats: string[];
   supported_audiobook_formats: string[]; // Audiobook formats (m4b, mp3)
   show_release_match_score?: boolean;
@@ -337,6 +364,7 @@ export interface AppConfig {
   show_books_in_multiple_series?: boolean; // Display books in all series they belong to
   hardcover_auto_remove_on_download: boolean; // Auto-remove from active Hardcover list on download
   download_to_browser_content_types: string[]; // Auto-download completed files to browser for selected content types
+  release_search_timeout: number; // Server-side budget for one release search, in seconds
   settings_enabled: boolean; // Whether config directory is mounted and writable
   onboarding_complete: boolean; // Whether the user has completed initial setup
   default_sort: string; // Default sort for direct mode
@@ -510,6 +538,7 @@ export interface Release {
 // Search info returned by release sources
 export interface SourceSearchInfo {
   search_type: 'isbn' | 'title_author' | 'categories' | 'expanded' | 'manual' | 'query';
+  total_results?: number | string | null;
 }
 
 // Response from /api/releases endpoint

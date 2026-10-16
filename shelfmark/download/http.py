@@ -5,13 +5,14 @@ import time
 from http import HTTPStatus
 from io import BytesIO
 from typing import TYPE_CHECKING, NoReturn
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from tqdm import tqdm
 
-from shelfmark.bypass import BypassCancelledError, cookie_store
+from shelfmark.bypass import BypassCancelledError, ChallengeNotSolvedError, cookie_store
 from shelfmark.bypass.challenge import challenge_marker
+from shelfmark.bypass.waiting_room import WaitingRoomTimeoutError, is_aa_waiting_room
 from shelfmark.core import search_deadline
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
@@ -29,6 +30,10 @@ logger = setup_logger(__name__)
 _RNG = random.SystemRandom()
 
 _MAX_REDIRECTS = 5
+# DDoS-Guard's re-check probe. Its 302 to `?check=1` is one hop of a handshake rather
+# than a page: the parameter asserts the caller already holds the cookies that hop
+# issued.
+_DDG_CHECK_PARAM = "check"
 # Z-Library answers the first hit with a 503 whose only real payload is a Set-Cookie; echoing
 # that cookie back returns the 302 to the real page. Two attempts cover the handshake without
 # letting a server that keeps re-issuing cookies hold us in the loop.
@@ -37,6 +42,8 @@ _HTTP_STATUS_FORBIDDEN = HTTPStatus.FORBIDDEN
 _HTTP_STATUS_NOT_FOUND = HTTPStatus.NOT_FOUND
 _HTTP_STATUS_RATE_LIMITED = HTTPStatus.TOO_MANY_REQUESTS
 _HTTP_STATUS_SERVICE_UNAVAILABLE = HTTPStatus.SERVICE_UNAVAILABLE
+# DiamWall uses this non-standard status for its browser-verification page.
+_HTTP_STATUS_CHALLENGE = 513
 _HTTP_STATUS_OK = HTTPStatus.OK
 _HTTP_STATUS_RANGE_NOT_SATISFIABLE = HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE
 _HTTP_STATUS_PARTIAL_CONTENT = HTTPStatus.PARTIAL_CONTENT
@@ -48,6 +55,7 @@ _BYPASS_GRACE_SLACK_SECONDS = 30.0
 _BYPASSER_ERRORS = (
     AttributeError,
     BypassCancelledError,
+    ChallengeNotSolvedError,
     KeyError,
     OSError,
     RuntimeError,
@@ -252,6 +260,33 @@ def _response_challenge_marker(response: requests.Response) -> str | None:
         return None
 
 
+def _solvable_url(url: str) -> str:
+    """The URL a solver should open, given one we may be mid-handshake on.
+
+    The manual AA redirect follower in `html_get_page` walks DDoS-Guard's handshake by
+    reassigning `current_url`, so by the time a 403, a 503 challenge or a redirect loop
+    hands that URL to a bypasser it is often the `?check=1` probe rather than the page
+    we actually wanted. A solver opens it in a fresh browser holding none of the cookies
+    the probe exists to collect, so DDoS-Guard cannot verify it automatically and answers
+    with the manual CAPTCHA page that nothing can solve - the failure in #1292, where
+    FlareSolverr reported "Challenge solved!" over a 4.7 KB DDOS-GUARD interstitial.
+
+    Handing over the pre-probe URL instead lets the solver's browser run the whole
+    handshake itself, which is what a real browser does and what the solver is for.
+
+    Scoped to the hosts whose redirects we follow manually: everywhere else `check` is
+    an ordinary query parameter and none of our business.
+    """
+    if not network.should_rotate_dns_for_url(url):
+        return url
+    parsed = urlparse(url)
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    kept = [(key, value) for key, value in params if key != _DDG_CHECK_PARAM]
+    if len(kept) == len(params):
+        return url
+    return urlunparse(parsed._replace(query=urlencode(kept)))
+
+
 def _fatal_mirror_reason(e: Exception) -> str | None:
     """Return why ``e`` proves the mirror is unusable, or None if it may recover.
 
@@ -293,10 +328,10 @@ def _try_rotation(
         )
         if action in ("mirror", "dns") and new_base:
             new_url = selector.rewrite(original_url)
-            logger.info("[%s] switching to: %s", action, new_url)
+            logger.info("[%s] switching mirror", action)
             return new_url
     elif network.should_rotate_dns_for_url(current_url) and network.rotate_dns_provider():
-        logger.info("[dns-rotate] retrying: %s", original_url)
+        logger.info("[dns-rotate] retrying download")
         return original_url
     return None
 
@@ -371,6 +406,9 @@ def html_get_page(
         retry-loop branch above with `continue`, and with MAX_RETRY=1 there is no
         later attempt for that branch to run on either.
         """
+        # Every handoff reaches the solver through here, so this is the one place the
+        # mid-handshake `?check=1` URL has to be unwound. See _solvable_url.
+        bypass_url = _solvable_url(bypass_url)
         # Never start a minutes-long browser solve on a budget that has already run out:
         # nothing downstream would get to report the real reason before the caller's
         # deadline (or its reverse proxy) cut the request off.
@@ -404,6 +442,21 @@ def html_get_page(
                     status_callback("resolving", "Rate limited, try again shortly")
                 except _STATUS_CALLBACK_ERRORS:
                     logger.debug("Rate-limit status callback failed", exc_info=True)
+            return _fail(str(e), bypass_url)
+        except WaitingRoomTimeoutError as e:
+            logger.info("Waiting room timed out: %s", e)
+            return _fail(str(e), bypass_url)
+        except ChallengeNotSolvedError as e:
+            # Not a bypasser malfunction: it ran, and the host answered with something it
+            # cannot clear - DDoS-Guard's manual CAPTCHA, typically. Must precede the
+            # generic handler below, whose "the protection bypasser failed" is what sent
+            # #1292 off to fix a FlareSolverr that was working perfectly.
+            logger.info("Bypass ran but did not clear the protection: %s", e)
+            if status_callback:
+                try:
+                    status_callback("error", str(e))
+                except _STATUS_CALLBACK_ERRORS:
+                    logger.debug("Unsolved-challenge status callback failed", exc_info=True)
             return _fail(str(e), bypass_url)
         except _BYPASSER_ERRORS as e:
             logger.warning("Bypasser error: %s: %s", type(e).__name__, e)
@@ -568,6 +621,27 @@ def html_get_page(
                             current_url,
                         )
 
+                if response.status_code == _HTTP_STATUS_CHALLENGE:
+                    marker = _response_challenge_marker(response)
+                    if marker and _bypass_handoff_allowed():
+                        if cookies:
+                            logger.debug(
+                                "513 challenge with cookies presented; purging: %s", current_url
+                            )
+                            _purge_clearance(current_url)
+                        logger.info(
+                            "513 challenge detected (%s); switching to bypasser: %s",
+                            marker,
+                            current_url,
+                        )
+                        return _run_bypasser(current_url)
+                    if marker:
+                        logger.debug(
+                            "513 challenge (%s) but no bypasser handoff available: %s",
+                            marker,
+                            current_url,
+                        )
+
                 if is_aa_url and response.is_redirect:
                     location = response.headers.get("Location", "")
                     if not location:
@@ -658,6 +732,14 @@ def html_get_page(
                     continue
 
                 response.raise_for_status()
+                if (
+                    _bypass_handoff_allowed()
+                    and not _is_using_external_bypasser()
+                    and is_aa_waiting_room(current_url, response.text)
+                ):
+                    # A successful HTTP response can still need a live browser: the
+                    # queue's JavaScript must finish in the session that entered it.
+                    return _run_bypasser(current_url)
                 if success_delay > 0:
                     time.sleep(success_delay)
                 return _result(response.text, response.url)
@@ -821,12 +903,7 @@ def download_url(
                     f"Connecting (Attempt {attempt + 1}/{MAX_DOWNLOAD_RETRIES})",
                 )
 
-            logger.info(
-                "Downloading: %s (attempt %s/%s)",
-                current_url,
-                attempt + 1,
-                MAX_DOWNLOAD_RETRIES,
-            )
+            logger.info("Downloading (attempt %s/%s)", attempt + 1, MAX_DOWNLOAD_RETRIES)
             # Try with CF cookies/UA if available
             cookies = _apply_cf_bypass(current_url, headers)
             response = requests.get(
@@ -864,7 +941,7 @@ def download_url(
                 and bytes_downloaded < total_size * 0.9
                 and response.headers.get("content-type", "").startswith("text/html")
             ):
-                logger.warning("Received HTML instead of file: %s", current_url)
+                logger.warning("Received HTML instead of file")
                 return None
 
             logger.debug("Download completed: %s bytes", bytes_downloaded)
@@ -882,18 +959,21 @@ def download_url(
                 parsed = urlparse(current_url)
                 if _is_configured_zlib_host(parsed.hostname) and referer:
                     zlib_cookie_refresh_attempted = True
-                    logger.info("Z-Library 403 - refreshing cookies via referer: %s", referer)
+                    logger.info("Z-Library 403 - refreshing cookies via referer")
                     try:
                         get_bypassed_page(referer, selector, cancel_flag)
                         time.sleep(0.5)
                         # Retry with fresh cookies (don't increment attempt)
                         continue
                     except _BYPASSER_ERRORS as cookie_err:
-                        logger.warning("Z-Library cookie refresh failed: %s", cookie_err)
+                        logger.warning(
+                            "Z-Library cookie refresh failed: %s",
+                            type(cookie_err).__name__,
+                        )
 
             # Non-retryable errors
             if status in _HTTP_STATUS_NON_RETRYABLE:
-                logger.warning("Download failed (%s): %s", status, current_url)
+                logger.warning("Download failed (%s)", status)
                 return None
 
             # Rate limited - skip to next source immediately
@@ -907,7 +987,7 @@ def download_url(
 
             # Timeout - don't retry, server likely overloaded
             if isinstance(e, requests.exceptions.Timeout):
-                logger.warning("Timeout: %s - skipping to next source", current_url)
+                logger.warning("Timeout - skipping to next source")
                 if status_callback:
                     status_callback("resolving", "Server timed out, trying next")
                 return None
@@ -934,14 +1014,14 @@ def download_url(
                     attempt += 1
                     continue
 
-            logger.warning("Download error: %s: %s", type(e).__name__, e)
+            logger.warning("Download error: %s", type(e).__name__)
             if attempt < MAX_DOWNLOAD_RETRIES - 1:
                 time.sleep(_backoff_delay(attempt + 1))
             attempt += 1
         else:
             return buffer
 
-    logger.error("Download failed after %s attempts: %s", MAX_DOWNLOAD_RETRIES, link)
+    logger.error("Download failed after %s attempts", MAX_DOWNLOAD_RETRIES)
     return None
 
 
@@ -1031,7 +1111,7 @@ def _try_resume(
             logger.info("Resume completed: %s bytes", start_byte)
 
         except requests.exceptions.RequestException as e:
-            logger.debug("Resume attempt %s failed: %s", attempt + 1, e)
+            logger.debug("Resume attempt %s failed: %s", attempt + 1, type(e).__name__)
         else:
             return buffer
 
@@ -1047,5 +1127,7 @@ def get_absolute_url(base_url: str, url: str) -> str:
     parsed = urlparse(url)
     base = urlparse(base_url)
     if not parsed.netloc or not parsed.scheme:
-        parsed = parsed._replace(netloc=base.netloc, scheme=base.scheme)
+        parsed = parsed._replace(
+            netloc=parsed.netloc or base.netloc, scheme=parsed.scheme or base.scheme
+        )
     return parsed.geturl()

@@ -568,6 +568,7 @@ class TestRetryDownloadEndpointGuardrails:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="direct",
             retry_payload=retry_payload,
         )
@@ -763,6 +764,7 @@ class TestRetryDownloadEndpointGuardrails:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="requested",
             retry_payload=retry_payload,
         )

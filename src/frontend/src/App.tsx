@@ -22,6 +22,8 @@ import { RequestConfirmationModal } from './components/RequestConfirmationModal'
 import { ResultsSection } from './components/ResultsSection';
 import { SearchSection } from './components/SearchSection';
 import { ToastContainer } from './components/ToastContainer';
+import { useBookTargetDeselectSync } from './hooks/app/useBookTargetDeselectSync';
+import { useContentTypePreferences } from './hooks/app/useContentTypePreferences';
 import {
   resolveDefaultModeFromPolicy,
   resolveSourceModeFromPolicy,
@@ -29,6 +31,7 @@ import {
 import { useActivity } from './hooks/useActivity';
 import { useAuth } from './hooks/useAuth';
 import { useDownloadTracking } from './hooks/useDownloadTracking';
+import { useLatestCallback } from './hooks/useLatestCallback';
 import { useMonitoredAutoSearch } from './hooks/useMonitoredAutoSearch';
 import { useMonitoredState } from './hooks/useMonitoredState';
 import { useRealtimeStatus } from './hooks/useRealtimeStatus';
@@ -37,7 +40,7 @@ import { useRequestPolicy } from './hooks/useRequestPolicy';
 import { useRequests } from './hooks/useRequests';
 import { useSearch } from './hooks/useSearch';
 import { useToast } from './hooks/useToast';
-import { useUrlSearch } from './hooks/useUrlSearch';
+import { useExternalHashChange, useSyncUrlSearchHash, useUrlSearch } from './hooks/useUrlSearch';
 import { LoginPage } from './pages/LoginPage';
 import {
   getSourceRecordInfo,
@@ -74,6 +77,7 @@ import {
   ActingAsUserSelection,
   MetadataProviderSummary,
   MetadataSearchConfig,
+  MetadataSearchField,
   QueuedDownloadResult,
   QueryTargetOption,
   SearchMode,
@@ -95,7 +99,7 @@ import { DEFAULT_LANGUAGES, DEFAULT_SUPPORTED_FORMATS } from './data/languages';
 import { formatActingAsUserName } from './utils/actingAsUser';
 import { buildLoginRedirectPath, getReturnToFromSearch } from './utils/authRedirect';
 import { withBasePath } from './utils/basePath';
-import { emitBookTargetChange, onBookTargetChange } from './utils/bookTargetEvents';
+import { emitBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
@@ -104,7 +108,7 @@ import { resolveDefaultLanguageCodes } from './utils/languageFilters';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
 import { getEffectiveMetadataSort } from './utils/metadataSort';
 import { policyTrace } from './utils/policyTrace';
-import { buildQueryTargets, getDefaultQueryTargetKey } from './utils/queryTargets';
+import { buildQueryTargets, findQueryTarget, getDefaultQueryTargetKey } from './utils/queryTargets';
 import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from './utils/releasePayload';
 import { applyRequestNoteToPayload } from './utils/requestConfirmation';
 import { bookFromRequestData } from './utils/requestFulfil';
@@ -121,25 +125,10 @@ import {
   applyDirectPolicyModeToButtonState,
   applyUniversalPolicyModeToButtonState,
 } from './utils/requestPolicyUi';
+import { getSearchByPreference, setSearchByPreference } from './utils/searchByPreference';
+import { buildUrlSearchHash } from './utils/urlSearchHash';
 
 import './styles.css';
-
-const CONTENT_TYPE_STORAGE_KEY = 'preferred-content-type';
-
-const getInitialContentType = (): { contentType: ContentType; combinedMode: boolean } => {
-  try {
-    const saved = localStorage.getItem(CONTENT_TYPE_STORAGE_KEY);
-    if (saved === 'combined') {
-      return { contentType: 'ebook', combinedMode: true };
-    }
-    if (saved === 'ebook' || saved === 'audiobook') {
-      return { contentType: saved, combinedMode: false };
-    }
-  } catch {
-    // localStorage may be unavailable in private browsing
-  }
-  return { contentType: 'ebook', combinedMode: false };
-};
 
 const POLICY_GUARD_ERROR_CODES = new Set(['policy_requires_request', 'policy_blocked']);
 const isPolicyGuardError = (error: unknown): boolean => {
@@ -309,9 +298,13 @@ function App() {
     void fetchStatus();
   }, [authChecked, isAuthenticated, authIsAdmin, username, fetchStatus]);
 
+  // Declared here because the content type default below reads from it
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
-  const initialContentTypePref = useMemo(() => getInitialContentType(), []);
-  const [contentType, setContentType] = useState<ContentType>(initialContentTypePref.contentType);
+  const { contentType, setContentType, combinedMode, setCombinedMode } = useContentTypePreferences(
+    config?.default_content_type,
+  );
 
   const {
     policy: requestPolicy,
@@ -384,8 +377,6 @@ function App() {
     socket,
   });
 
-  const [config, setConfig] = useState<AppConfig | null>(null);
-
   const {
     transientDownloadActivityItems,
     setTransientDownloadActivityItems,
@@ -454,6 +445,7 @@ function App() {
     updateAdvancedFilters,
     handleSearch,
     handleResetSearch,
+    reSortByDownloads,
     searchFieldValues,
     updateSearchFieldValue,
     searchFieldLabels,
@@ -462,6 +454,7 @@ function App() {
     isLoadingMore,
     loadMore,
     totalFound,
+    directTotalResults,
     resultsSourceUrl,
   } = useSearch({
     showToast,
@@ -472,17 +465,10 @@ function App() {
   });
 
   // When a book is removed from the Hardcover list currently being browsed, remove it from results
-  const searchFieldValuesRef = useRef(searchFieldValues);
-  searchFieldValuesRef.current = searchFieldValues;
-
-  useEffect(() => {
-    return onBookTargetChange((event) => {
-      if (event.selected) return;
-      const activeListValue = searchFieldValuesRef.current.hardcover_list;
-      if (!activeListValue || String(activeListValue) !== event.target) return;
-      setBooks((prev) => prev.filter((book) => book.provider_id !== event.bookId));
-    });
-  }, [setBooks]);
+  useBookTargetDeselectSync({
+    activeListValue: searchFieldValues.hardcover_list,
+    setBooks,
+  });
 
   const [pendingRequestPayload, setPendingRequestPayload] = useState<CreateRequestPayload | null>(
     null,
@@ -533,17 +519,7 @@ function App() {
   const releaseSelectionResetRef = useRef<() => void>(() => {});
 
   // Combined mode state (ebook + audiobook in one transaction)
-  const [combinedMode, setCombinedMode] = useState(initialContentTypePref.combinedMode);
   const [combinedState, setCombinedState] = useState<CombinedSelectionState | null>(null);
-
-  // Persist content type + combined mode to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(CONTENT_TYPE_STORAGE_KEY, combinedMode ? 'combined' : contentType);
-    } catch {
-      // localStorage may be unavailable in private browsing
-    }
-  }, [contentType, combinedMode]);
 
   // Clear combined state when combined mode is turned off
   // (combinedModeAllowed guard is in a separate effect below, after effectiveSearchMode is declared)
@@ -564,7 +540,12 @@ function App() {
   const [activeMetadataConfig, setActiveMetadataConfig] = useState<MetadataSearchConfig | null>(
     null,
   );
-  const [activeQueryTarget, setActiveQueryTarget] = useState<string>('general');
+  // Falls back to the stored "Search By" default from the user's last-used mode;
+  // an invalid/stale value is harmless since effectiveActiveQueryTarget below re-validates
+  // it against the current queryTargets once config/search fields are known.
+  const [activeQueryTarget, setActiveQueryTarget] = useState<string>(
+    () => getSearchByPreference() || 'general',
+  );
   const [activeResultsSort, setActiveResultsSort] = useState('');
   const [downloadsSidebarOpen, setDownloadsSidebarOpen] = useState(false);
   const [sidebarPinnedOpen, setSidebarPinnedOpen] = useState(false);
@@ -576,7 +557,6 @@ function App() {
     }
     prefetchActivityHistory();
   }, [downloadsSidebarOpen, prefetchActivityHistory]);
-
   const headerRef = useCallback((el: HTMLDivElement | null) => {
     if (headerObserverRef.current) {
       headerObserverRef.current.disconnect();
@@ -593,6 +573,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selfSettingsOpen, setSelfSettingsOpen] = useState(false);
   const [configBannerOpen, setConfigBannerOpen] = useState(false);
+
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
   // Expose debug function to trigger onboarding from browser console
@@ -606,8 +587,22 @@ function App() {
 
   // URL-based search: parse URL params for automatic search on page load
   const urlSearchEnabled = isAuthenticated && config !== null;
-  const { parsedParams, wasProcessed } = useUrlSearch({ enabled: urlSearchEnabled });
+  // Bumped when the hash changes to something we didn't write - a shared link pasted into
+  // an already-open tab. Re-parses the URL and re-arms the bootstrap effect so it applies.
+  const [urlSearchNonce, setUrlSearchNonce] = useState(0);
+  const { parsedParams, wasProcessed } = useUrlSearch({
+    enabled: urlSearchEnabled,
+    nonce: urlSearchNonce,
+  });
+  // The bootstrap effect below guards on this ref; the state mirrors it so the URL hash
+  // sync can react once the bootstrap has applied (a ref alone would not re-render).
   const urlSearchExecutedRef = useRef(false);
+  const [hasExecutedUrlSearchBootstrap, setHasExecutedUrlSearchBootstrap] = useState(false);
+  useExternalHashChange(() => {
+    urlSearchExecutedRef.current = false;
+    setHasExecutedUrlSearchBootstrap(false);
+    setUrlSearchNonce((value) => value + 1);
+  });
 
   // Track previous status and search mode for change detection
   const prevStatusRef = useRef<StatusData>({});
@@ -799,12 +794,16 @@ function App() {
 
         // Determine the default sort based on search mode
         const defaultSort =
-          cfg.search_mode === 'universal'
-            ? resolvedMetadataDefaultSort
-            : cfg.default_sort || 'relevance';
+          cfg.search_mode === 'universal' ? resolvedMetadataDefaultSort : (cfg.default_sort ?? '');
 
         if (cfg?.supported_formats) {
-          if (mode === 'initial') {
+          // Seeding the defaults must not undo filters a shared link already applied.
+          // The URL bootstrap is gated on config being loaded, so normally it runs after
+          // this and wins on its own - but nothing guarantees this is the only 'initial'
+          // load (React's StrictMode double-invokes the mount effect that triggers it in
+          // development), and a late one would reset `formats` to the full supported list
+          // and drop the link's own sort.
+          if (mode === 'initial' && !urlSearchExecutedRef.current) {
             setAdvancedFilters((prev) => ({
               ...prev,
               formats: cfg.supported_formats,
@@ -998,6 +997,7 @@ function App() {
       contentTypeOverride?: ContentType;
       searchModeOverride?: SearchMode;
       providerOverride?: string;
+      sort?: string;
     }) => {
       void refreshRequestPolicy();
       void handleSearch({
@@ -1007,137 +1007,11 @@ function App() {
         contentTypeOverride: opts.contentTypeOverride,
         searchMode: opts.searchModeOverride,
         providerOverride: opts.providerOverride,
+        sort: opts.sort,
       });
     },
     [refreshRequestPolicy, handleSearch, config],
   );
-
-  // Execute URL-based search when params are present
-  useEffect(() => {
-    // In universal mode, wait for the provider-specific metadata config so a
-    // deep-linked sort resolves against the right option set (review F12).
-    if (
-      wasProcessed &&
-      parsedParams &&
-      !urlSearchExecutedRef.current &&
-      config &&
-      (config.search_mode !== 'universal' || activeMetadataConfig)
-    ) {
-      urlSearchExecutedRef.current = true;
-
-      const parsedSearchMode = config.search_mode || 'direct';
-      const urlContentTypeOverride =
-        parsedSearchMode === 'universal' ? parsedParams.contentType : undefined;
-
-      if (urlContentTypeOverride && urlContentTypeOverride !== contentType) {
-        setContentType(urlContentTypeOverride);
-      }
-
-      if (!parsedParams.hasSearchParams) {
-        return;
-      }
-      const bookLanguages = config.book_languages || [];
-      const defaultLanguageCodes = resolveDefaultLanguageCodes(
-        config.default_language,
-        bookLanguages,
-      );
-
-      // Populate search input from URL
-      if (parsedParams.searchInput) {
-        setSearchInput(parsedParams.searchInput);
-      }
-
-      let nextQueryTarget = 'general';
-      if (parsedSearchMode === 'direct') {
-        if (parsedParams.advancedFilters.isbn) {
-          nextQueryTarget = 'isbn';
-        } else if (parsedParams.advancedFilters.author) {
-          nextQueryTarget = 'author';
-        } else if (parsedParams.advancedFilters.title) {
-          nextQueryTarget = 'title';
-        }
-      }
-      setActiveQueryTarget(nextQueryTarget);
-
-      const resolvedUrlMetadataSort =
-        parsedSearchMode === 'universal'
-          ? getEffectiveMetadataSort({
-              currentSort:
-                typeof parsedParams.advancedFilters.sort === 'string'
-                  ? parsedParams.advancedFilters.sort
-                  : '',
-              defaultSort: resolvedMetadataDefaultSort,
-              sortOptions: resolvedMetadataSortOptions,
-            })
-          : parsedParams.advancedFilters.sort;
-
-      // Apply advanced filters from URL
-      if (Object.keys(parsedParams.advancedFilters).length > 0) {
-        setAdvancedFilters((prev) => ({
-          ...prev,
-          ...parsedParams.advancedFilters,
-          ...(parsedSearchMode === 'universal' && resolvedUrlMetadataSort
-            ? { sort: resolvedUrlMetadataSort }
-            : {}),
-        }));
-
-        const hasAdvancedValues = ['content', 'lang', 'formats'].some(
-          (key) => parsedParams.advancedFilters[key as keyof typeof parsedParams.advancedFilters],
-        );
-        if (hasAdvancedValues) {
-          setShowAdvanced(true);
-        }
-      }
-
-      // Build query and trigger search
-      const mergedFilters = {
-        ...advancedFilters,
-        ...parsedParams.advancedFilters,
-        ...(parsedSearchMode === 'universal' && resolvedUrlMetadataSort
-          ? { sort: resolvedUrlMetadataSort }
-          : {}),
-      };
-
-      const query = buildSearchQuery({
-        searchInput:
-          parsedSearchMode === 'direct' && nextQueryTarget !== 'general'
-            ? ''
-            : parsedParams.searchInput,
-        showAdvanced: true,
-        advancedFilters: {
-          ...(mergedFilters as typeof advancedFilters),
-          isbn: nextQueryTarget === 'isbn' ? String(parsedParams.advancedFilters.isbn || '') : '',
-          author:
-            nextQueryTarget === 'author' ? String(parsedParams.advancedFilters.author || '') : '',
-          title:
-            nextQueryTarget === 'title' ? String(parsedParams.advancedFilters.title || '') : '',
-        },
-        bookLanguages,
-        defaultLanguage: defaultLanguageCodes,
-        searchMode: parsedSearchMode,
-      });
-
-      runSearchWithPolicyRefresh({
-        query,
-        contentTypeOverride: urlContentTypeOverride,
-        searchModeOverride: parsedSearchMode,
-      });
-    }
-  }, [
-    wasProcessed,
-    parsedParams,
-    activeMetadataConfig,
-    contentType,
-    config,
-    advancedFilters,
-    resolvedMetadataDefaultSort,
-    resolvedMetadataSortOptions,
-    runSearchWithPolicyRefresh,
-    setSearchInput,
-    setAdvancedFilters,
-    setShowAdvanced,
-    setActiveQueryTarget,
-  ]);
 
   const handleSettingsSaved = useCallback(() => {
     loadConfig('settings-saved');
@@ -1294,45 +1168,43 @@ function App() {
 
   // When downloading a book while browsing a Hardcover list the user owns,
   // automatically remove it from that list (fire-and-forget).
-  const searchFieldLabelsRef = useRef(searchFieldLabels);
-  searchFieldLabelsRef.current = searchFieldLabels;
-  const metadataConfigRef = useRef(activeMetadataConfig);
-  metadataConfigRef.current = activeMetadataConfig;
+  // Stable identity for the download handlers below, while still reading the current
+  // search field values, labels and metadata config. Not an Effect Event: the callers
+  // are download handlers, not Effects. See useLatestCallback.
+  const removeBookFromActiveList = useLatestCallback((book: Book) => {
+    if (config?.hardcover_auto_remove_on_download === false) return;
+    if (!bookSupportsTargets(book)) return;
+    const activeList = searchFieldValues.hardcover_list;
+    if (!activeList) return;
+    const target = String(activeList);
+    const provider = book.provider;
+    const bookId = book.provider_id;
+    if (!provider || !bookId) return;
 
-  const removeBookFromActiveList = useCallback(
-    (book: Book) => {
-      if (config?.hardcover_auto_remove_on_download === false) return;
-      if (!bookSupportsTargets(book)) return;
-      const activeList = searchFieldValuesRef.current.hardcover_list;
-      if (!activeList) return;
-      const target = String(activeList);
+    // Only auto-remove from lists the user owns (Reading Status / My Lists)
+    const listField = activeMetadataConfig?.search_fields.find(
+      (f) => f.key === 'hardcover_list' && f.type === 'DynamicSelectSearchField',
+    );
+    if (listField && listField.type === 'DynamicSelectSearchField') {
+      const group = getDynamicOptionGroup(listField.options_endpoint, target);
+      if (group && group !== 'Reading Status' && group !== 'My Lists') return;
+    }
 
-      // Only auto-remove from lists the user owns (Reading Status / My Lists)
-      const listField = metadataConfigRef.current?.search_fields.find(
-        (f) => f.key === 'hardcover_list' && f.type === 'DynamicSelectSearchField',
-      );
-      if (listField && listField.type === 'DynamicSelectSearchField') {
-        const group = getDynamicOptionGroup(listField.options_endpoint, target);
-        if (group && group !== 'Reading Status' && group !== 'My Lists') return;
-      }
-
-      void setBookTargetState(book.provider!, book.provider_id!, target, false)
-        .then((result) => {
-          if (result.changed) {
-            emitBookTargetChange({
-              provider: book.provider!,
-              bookId: book.provider_id!,
-              target,
-              selected: false,
-            });
-            const listName = searchFieldLabelsRef.current['hardcover_list'];
-            showToast(`Removed from ${listName || 'list'}`, 'info');
-          }
-        })
-        .catch(() => {});
-    },
-    [config?.hardcover_auto_remove_on_download, showToast],
-  );
+    void setBookTargetState(provider, bookId, target, false)
+      .then((result) => {
+        if (result.changed) {
+          emitBookTargetChange({
+            provider,
+            bookId,
+            target,
+            selected: false,
+          });
+          const listName = searchFieldLabels['hardcover_list'];
+          showToast(`Removed from ${listName || 'list'}`, 'info');
+        }
+      })
+      .catch(() => undefined);
+  });
 
   const executeBookDownload = useCallback(
     async (book: Book, onBehalfOfUserId?: number): Promise<void> => {
@@ -2256,26 +2128,226 @@ function App() {
     effectiveSearchMode === 'universal' &&
     (universalDefaultMode === 'download' || universalDefaultMode === 'request_release');
 
+  // Keep the last known search fields so queryTargets doesn't collapse to
+  // [general] while the metadata config briefly reloads on content type switch.
+  // Held in state rather than a ref written during render: a ref read back in the same
+  // pass is what `react/refs` forbids, and this is the adjust-state-during-render shape
+  // React documents for exactly this - carry the previous value until a new one arrives.
+  const [stableSearchFields, setStableSearchFields] = useState<MetadataSearchField[]>(
+    () => activeMetadataConfig?.search_fields ?? [],
+  );
+  const incomingSearchFields = activeMetadataConfig?.search_fields;
+  if (incomingSearchFields && incomingSearchFields !== stableSearchFields) {
+    setStableSearchFields(incomingSearchFields);
+  }
+
   const queryTargets = useMemo<QueryTargetOption[]>(
     () =>
       buildQueryTargets({
         searchMode: effectiveSearchMode,
-        metadataSearchFields: activeMetadataConfig?.search_fields ?? [],
+        metadataSearchFields: stableSearchFields,
         manualSearchAllowed,
       }),
-    [effectiveSearchMode, activeMetadataConfig?.search_fields, manualSearchAllowed],
+    [effectiveSearchMode, stableSearchFields, manualSearchAllowed],
   );
 
+  const effectiveActiveQueryTarget = useMemo(() => {
+    if (queryTargets.some((target) => target.key === activeQueryTarget)) {
+      return activeQueryTarget;
+    }
+    return getDefaultQueryTargetKey(queryTargets);
+  }, [queryTargets, activeQueryTarget]);
+
+  // Persist only what the user explicitly picked in the selector. Persisting the derived
+  // `effectiveActiveQueryTarget` instead would overwrite the stored default with `general`
+  // every time it collapses for reasons the user didn't choose: a cold load before the
+  // metadata search fields resolve, the logo reset, logout, or a `view_series` browse.
+  const handleQueryTargetChange = useCallback((nextTarget: string) => {
+    setActiveQueryTarget(nextTarget);
+    setSearchByPreference(nextTarget);
+  }, []);
+
+  // Execute URL-based search when params are present. Mirrors upstream's
+  // UrlSearchBootstrapMount, run as a guarded effect so it can wait for the
+  // provider-specific metadata config in universal mode (a deep-linked sort or
+  // `search_by` then resolves against the right option set).
   useEffect(() => {
-    setActiveQueryTarget((prev) => {
-      if (queryTargets.some((target) => target.key === prev)) return prev;
-      return getDefaultQueryTargetKey(queryTargets);
+    if (
+      !wasProcessed ||
+      !parsedParams ||
+      urlSearchExecutedRef.current ||
+      !config ||
+      (config.search_mode === 'universal' && !activeMetadataConfig)
+    ) {
+      return;
+    }
+    urlSearchExecutedRef.current = true;
+    setHasExecutedUrlSearchBootstrap(true);
+
+    const parsedSearchMode = config.search_mode || 'direct';
+    const urlContentTypeOverride =
+      parsedSearchMode === 'universal' ? parsedParams.contentType : undefined;
+    const urlForcesCombined =
+      parsedSearchMode === 'universal' && parsedParams.combinedMode === true && combinedModeAllowed;
+
+    if (urlContentTypeOverride && urlContentTypeOverride !== contentType) {
+      setContentType(urlContentTypeOverride);
+    }
+
+    if (urlForcesCombined && !combinedMode) {
+      setCombinedMode(true);
+    } else if (urlContentTypeOverride && combinedMode) {
+      setCombinedMode(false);
+    }
+
+    const urlSearchByTarget = findQueryTarget(queryTargets, parsedParams.searchBy);
+    const urlSearchByOverride = urlSearchByTarget?.key;
+
+    // Search By target can be deep-linked on its own (e.g. `#search_by=manual`, no query),
+    // so apply it even when there's nothing else to search for.
+    if (urlSearchByOverride) {
+      setActiveQueryTarget(urlSearchByOverride);
+    }
+
+    if (!parsedParams.hasSearchParams) {
+      return;
+    }
+
+    const bookLanguages = config.book_languages || [];
+    const defaultLanguageCodes = resolveDefaultLanguageCodes(
+      config.default_language,
+      bookLanguages,
+    );
+
+    let nextQueryTarget = urlSearchByOverride || 'general';
+    if (parsedSearchMode === 'direct' && !urlSearchByOverride) {
+      if (parsedParams.advancedFilters.isbn) {
+        nextQueryTarget = 'isbn';
+      } else if (parsedParams.advancedFilters.author) {
+        nextQueryTarget = 'author';
+      } else if (parsedParams.advancedFilters.title) {
+        nextQueryTarget = 'title';
+      }
+    }
+    setActiveQueryTarget(nextQueryTarget);
+
+    // Route `q` through the active target, mirroring how the live search dispatch reads it:
+    // direct fields and text fields are typed into searchInput, other provider fields are
+    // dispatched as fieldValues. Legacy links carry the value under the field's own param
+    // (`?author=herbert`) instead, so fall back to that.
+    const targetKey = urlSearchByTarget?.field?.key ?? nextQueryTarget;
+    const legacyDirectValue =
+      targetKey === 'isbn' || targetKey === 'author' || targetKey === 'title'
+        ? parsedParams.advancedFilters[targetKey]
+        : undefined;
+    const targetQueryValue = parsedParams.searchInput || legacyDirectValue || '';
+
+    const usesProviderFieldValue =
+      urlSearchByTarget?.source === 'provider-field' &&
+      urlSearchByTarget.field !== undefined &&
+      urlSearchByTarget.field.type !== 'TextSearchField';
+
+    if (usesProviderFieldValue && urlSearchByTarget?.field && targetQueryValue) {
+      updateSearchFieldValue(urlSearchByTarget.field.key, targetQueryValue);
+    } else if (targetQueryValue) {
+      setSearchInput(targetQueryValue);
+    }
+
+    const urlFieldValues =
+      urlSearchByTarget?.source === 'provider-field' && urlSearchByTarget.field && targetQueryValue
+        ? { [urlSearchByTarget.field.key]: targetQueryValue }
+        : undefined;
+
+    // Manual mode opens the release browser off an explicit submit - it has no results
+    // list to bootstrap, so a deep link fills the input and stops there.
+    if (urlSearchByTarget?.source === 'manual') {
+      return;
+    }
+
+    const resolvedUrlMetadataSort =
+      parsedSearchMode === 'universal'
+        ? getEffectiveMetadataSort({
+            currentSort:
+              typeof parsedParams.advancedFilters.sort === 'string'
+                ? parsedParams.advancedFilters.sort
+                : '',
+            defaultSort: resolvedMetadataDefaultSort,
+            sortOptions: resolvedMetadataSortOptions,
+          })
+        : parsedParams.advancedFilters.sort;
+
+    if (Object.keys(parsedParams.advancedFilters).length > 0) {
+      setAdvancedFilters((prev) => ({
+        ...prev,
+        ...parsedParams.advancedFilters,
+        ...(parsedSearchMode === 'universal' && resolvedUrlMetadataSort
+          ? { sort: resolvedUrlMetadataSort }
+          : {}),
+      }));
+
+      const hasAdvancedValues = (['content', 'lang', 'formats'] as const).some((key) => {
+        const value = parsedParams.advancedFilters[key];
+        return Array.isArray(value) ? value.length > 0 : Boolean(value);
+      });
+      if (hasAdvancedValues) {
+        setShowAdvanced(true);
+      }
+    }
+
+    const mergedFilters = {
+      ...advancedFilters,
+      ...parsedParams.advancedFilters,
+      ...(parsedSearchMode === 'universal' && resolvedUrlMetadataSort
+        ? { sort: resolvedUrlMetadataSort }
+        : {}),
+    };
+
+    const query = buildSearchQuery({
+      searchInput: nextQueryTarget === 'general' ? targetQueryValue : '',
+      showAdvanced: true,
+      advancedFilters: {
+        ...(mergedFilters as typeof advancedFilters),
+        isbn: nextQueryTarget === 'isbn' ? targetQueryValue : '',
+        author: nextQueryTarget === 'author' ? targetQueryValue : '',
+        title: nextQueryTarget === 'title' ? targetQueryValue : '',
+      },
+      bookLanguages,
+      defaultLanguage: defaultLanguageCodes,
+      searchMode: parsedSearchMode,
     });
-  }, [queryTargets]);
+
+    runSearchWithPolicyRefresh({
+      query,
+      contentTypeOverride: urlContentTypeOverride,
+      searchModeOverride: parsedSearchMode,
+      fieldValues: urlFieldValues,
+      sort: parsedParams.advancedFilters.sort,
+    });
+  }, [
+    wasProcessed,
+    parsedParams,
+    activeMetadataConfig,
+    contentType,
+    combinedMode,
+    combinedModeAllowed,
+    config,
+    advancedFilters,
+    queryTargets,
+    resolvedMetadataDefaultSort,
+    resolvedMetadataSortOptions,
+    runSearchWithPolicyRefresh,
+    setContentType,
+    setCombinedMode,
+    setSearchInput,
+    setAdvancedFilters,
+    setShowAdvanced,
+    updateSearchFieldValue,
+  ]);
 
   const activeQueryOption = useMemo(
-    () => queryTargets.find((target) => target.key === activeQueryTarget) ?? queryTargets[0],
-    [queryTargets, activeQueryTarget],
+    () =>
+      queryTargets.find((target) => target.key === effectiveActiveQueryTarget) ?? queryTargets[0],
+    [queryTargets, effectiveActiveQueryTarget],
   );
 
   const activeQueryField = activeQueryOption?.field ?? null;
@@ -2292,27 +2364,27 @@ function App() {
         ? (queryTargets.find((target) => target.field?.key === seriesBrowseCapability.field_key) ??
           null)
         : null,
-    [queryTargets, seriesBrowseCapability?.field_key],
+    // `seriesBrowseCapability` whole: the body reads `.field_key` off it unguarded
+    // inside the ternary, so that object is the dependency the compiler infers.
+    [queryTargets, seriesBrowseCapability],
   );
 
   const activeQueryValue = useMemo(() => {
     if (
       !activeQueryOption ||
       activeQueryOption.source === 'general' ||
-      activeQueryOption.source === 'manual'
+      activeQueryOption.source === 'manual' ||
+      activeQueryOption.source === 'direct-field'
     ) {
       return searchInput;
     }
 
-    if (activeQueryOption.source === 'direct-field') {
-      if (activeQueryOption.key === 'isbn') return advancedFilters.isbn;
-      if (activeQueryOption.key === 'author') return advancedFilters.author;
-      if (activeQueryOption.key === 'title') return advancedFilters.title;
+    if (!activeQueryOption.field) {
       return '';
     }
 
-    if (!activeQueryOption.field) {
-      return '';
+    if (activeQueryOption.field.type === 'TextSearchField') {
+      return searchInput;
     }
 
     if (activeQueryOption.field.type === 'CheckboxSearchField') {
@@ -2322,7 +2394,41 @@ function App() {
     }
 
     return searchFieldValues[activeQueryOption.field.key] ?? '';
-  }, [activeQueryOption, searchInput, advancedFilters, searchFieldValues]);
+  }, [activeQueryOption, searchInput, searchFieldValues]);
+
+  // The sort the app applies with no user choice, mirroring what loadConfig seeds
+  // advancedFilters.sort with - a sort equal to it is a default, not a shared intent.
+  const urlHashDefaultSort =
+    effectiveSearchMode === 'universal'
+      ? resolvedMetadataDefaultSort
+      : (config?.default_sort ?? '');
+
+  // Keep the URL hash fragment live as search state changes. Gated until any URL-driven
+  // bootstrap has applied (or there was nothing to apply), so we don't clobber a shared
+  // link's params with the initial default state before they've been read.
+  const readyToSyncUrlHash = wasProcessed && (!parsedParams || hasExecutedUrlSearchBootstrap);
+  const urlSearchHash = useMemo(
+    () =>
+      buildUrlSearchHash({
+        queryValue: activeQueryValue,
+        searchBy: effectiveActiveQueryTarget,
+        contentType,
+        combinedMode,
+        advancedFilters,
+        defaultSort: urlHashDefaultSort,
+        defaultFormats: supportedFormats,
+      }),
+    [
+      activeQueryValue,
+      effectiveActiveQueryTarget,
+      contentType,
+      combinedMode,
+      advancedFilters,
+      urlHashDefaultSort,
+      supportedFormats,
+    ],
+  );
+  useSyncUrlSearchHash({ enabled: readyToSyncUrlHash, hash: urlSearchHash });
 
   const activeQueryValueLabel = useMemo(() => {
     if (!activeQueryOption?.field) {
@@ -2371,29 +2477,25 @@ function App() {
       if (
         !activeQueryOption ||
         activeQueryOption.source === 'general' ||
-        activeQueryOption.source === 'manual'
+        activeQueryOption.source === 'manual' ||
+        activeQueryOption.source === 'direct-field'
       ) {
         setSearchInput(typeof value === 'string' ? value : String(value ?? ''));
         return;
       }
 
-      if (activeQueryOption.source === 'direct-field') {
-        const nextValue = typeof value === 'string' ? value : String(value ?? '');
-        if (activeQueryOption.key === 'isbn') {
-          updateAdvancedFilters({ isbn: nextValue });
-        } else if (activeQueryOption.key === 'author') {
-          updateAdvancedFilters({ author: nextValue });
-        } else if (activeQueryOption.key === 'title') {
-          updateAdvancedFilters({ title: nextValue });
-        }
-        return;
-      }
-
       if (activeQueryOption.field) {
+        if (activeQueryOption.field.type === 'TextSearchField') {
+          setSearchInput(typeof value === 'string' ? value : String(value ?? ''));
+          if (label !== undefined) {
+            updateSearchFieldValue(activeQueryOption.field.key, value, label);
+          }
+          return;
+        }
         updateSearchFieldValue(activeQueryOption.field.key, value, label);
       }
     },
-    [activeQueryOption, setSearchInput, updateAdvancedFilters, updateSearchFieldValue],
+    [activeQueryOption, setSearchInput, updateSearchFieldValue],
   );
 
   const handleSearchModeChange = useCallback(
@@ -2590,7 +2692,9 @@ function App() {
 
       return book.provider === activeMetadataConfig.provider;
     },
-    [activeMetadataConfig?.provider, seriesBrowseCapability?.sort, seriesBrowseTarget?.field],
+    // `activeMetadataConfig` whole: the body reads `.provider` off it unguarded on
+    // the last line, so that object is the dependency the compiler infers.
+    [activeMetadataConfig, seriesBrowseCapability?.sort, seriesBrowseTarget?.field],
   );
 
   const handleManualSearch = useCallback(() => {
@@ -2615,10 +2719,10 @@ function App() {
   }, [searchInput, releaseSelection, contentType]);
 
   useEffect(() => {
-    if (!manualSearchAllowed && activeQueryTarget === 'manual') {
+    if (!manualSearchAllowed && effectiveActiveQueryTarget === 'manual') {
       setActiveQueryTarget(getDefaultQueryTargetKey(queryTargets));
     }
-  }, [manualSearchAllowed, activeQueryTarget, queryTargets]);
+  }, [manualSearchAllowed, effectiveActiveQueryTarget, queryTargets]);
 
   // Unified search dispatch: intercepts manual search mode, otherwise runs normal search
   const handleSearchDispatch = useCallback(() => {
@@ -2642,6 +2746,7 @@ function App() {
       fieldValues: request.fieldValues,
       searchModeOverride: effectiveSearchMode,
       providerOverride: request.providerOverride,
+      sort: advancedFilters.sort,
     });
   }, [
     activeQueryOption,
@@ -2807,8 +2912,8 @@ function App() {
           combinedModeLocked={combinedModeLocked}
           onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           queryTargets={queryTargets}
-          activeQueryTarget={activeQueryTarget}
-          onQueryTargetChange={setActiveQueryTarget}
+          activeQueryTarget={effectiveActiveQueryTarget}
+          onQueryTargetChange={handleQueryTargetChange}
           activeQueryField={activeQueryField}
         />
       </div>
@@ -2847,7 +2952,7 @@ function App() {
           onClose={() => setShowAdvanced(false)}
         />
 
-        {!isInitialState && activeQueryTarget === 'manual' && (
+        {!isInitialState && effectiveActiveQueryTarget === 'manual' && (
           <p className="px-4 pt-2 text-xs opacity-50 sm:px-6 lg:ml-16 lg:px-8">
             Manual search queries release sources directly. Some sources may return limited
             metadata, which can affect file naming templates.
@@ -2874,8 +2979,8 @@ function App() {
             queryValueLabel={activeQueryValueLabel}
             onQueryValueChange={handleActiveQueryValueChange}
             queryTargets={queryTargets}
-            activeQueryTarget={activeQueryTarget}
-            onQueryTargetChange={setActiveQueryTarget}
+            activeQueryTarget={effectiveActiveQueryTarget}
+            onQueryTargetChange={handleQueryTargetChange}
             showAdvanced={showAdvanced}
             onAdvancedToggle={hasAdvancedContent ? () => setShowAdvanced(!showAdvanced) : undefined}
             advancedFilters={advancedFilters}
@@ -2920,11 +3025,19 @@ function App() {
                 updateAdvancedFilters({ sort: request.appliedSort });
               }
               setActiveResultsSort(request.appliedSort);
+
+              // "Most downloads" is a client-side sort — just re-sort existing books
+              if (request.appliedSort === 'downloads' && effectiveSearchMode === 'direct') {
+                reSortByDownloads();
+                return;
+              }
+
               runSearchWithPolicyRefresh({
                 query: request.query,
                 fieldValues: request.fieldValues,
                 searchModeOverride: effectiveSearchMode,
                 providerOverride: request.providerOverride,
+                sort: request.appliedSort,
               });
             }}
             metadataSortOptions={resolvedMetadataSortOptions}
@@ -2932,6 +3045,7 @@ function App() {
             isLoadingMore={isLoadingMore}
             onLoadMore={() => loadMore(config, effectiveSearchMode)}
             totalFound={totalFound}
+            directTotalResults={directTotalResults}
             onShowToast={showToast}
             resultsSourceUrl={resultsSourceUrl}
           />

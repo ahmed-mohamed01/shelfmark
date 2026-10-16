@@ -207,6 +207,7 @@ class DownloadHistoryService:
             "content_type": row.get("content_type"),
             "source": row.get("source"),
             "source_display_name": row.get("source_display_name"),
+            "downloads": row.get("downloads"),
             "status_message": row.get("status_message"),
             "download_path": DownloadHistoryService._resolve_existing_download_path(
                 row.get("download_path")
@@ -272,6 +273,7 @@ class DownloadHistoryService:
         size: str | None,
         preview: str | None,
         content_type: str | None,
+        downloads: int | None,
         origin: str,
         retry_payload: dict[str, Any] | None = None,
     ) -> None:
@@ -307,15 +309,16 @@ class DownloadHistoryService:
                     title, author, format, size, preview, content_type,
                     origin, final_status,
                     status_message, download_path, retry_payload,
-                    queued_at, terminal_at
+                    queued_at, terminal_at, downloads
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     final_status = 'active',
                     status_message = NULL,
                     download_path = NULL,
                     retry_payload = excluded.retry_payload,
-                    terminal_at = ?
+                    terminal_at = ?,
+                    downloads = excluded.downloads
                 """,
                     (
                         normalized_task_id,
@@ -334,6 +337,7 @@ class DownloadHistoryService:
                         normalized_retry_payload,
                         recorded_at,
                         recorded_at,
+                        downloads,
                         recorded_at,
                     ),
                 )
@@ -463,6 +467,50 @@ class DownloadHistoryService:
                 conn.commit()
             finally:
                 conn.close()
+
+    def list_active(self) -> list[dict[str, Any]]:
+        """Return every row still marked active, oldest first."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM download_history WHERE final_status = 'active' ORDER BY id"
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                normalized = self._normalize_row_dict(dict(row))
+                if normalized is not None:
+                    result.append(normalized)
+            return result
+        finally:
+            conn.close()
+
+    def list_request_ids(self) -> set[int]:
+        """Return the id of every request that has at least one download row."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT request_id FROM download_history WHERE request_id IS NOT NULL"
+            ).fetchall()
+            return {int(row["request_id"]) for row in rows}
+        finally:
+            conn.close()
+
+    def list_request_task_ids(self, *, user_id: int) -> list[str]:
+        """Return the task ids of every request-linked download owned by ``user_id``.
+
+        A non-admin addresses these downloads by an opaque id, so routes resolve it
+        against this set, which also confines the lookup to the user's own downloads.
+        """
+        normalized_user_id = normalize_optional_positive_int(user_id, "user_id")
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT task_id FROM download_history WHERE user_id = ? AND request_id IS NOT NULL",
+                (normalized_user_id,),
+            ).fetchall()
+            return [str(row["task_id"]) for row in rows]
+        finally:
+            conn.close()
 
     def list_recent(
         self,

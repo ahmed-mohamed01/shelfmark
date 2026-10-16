@@ -9,6 +9,7 @@ import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { isUserCancelledError } from '../utils/errors';
 import { BookTargetDropdown } from './BookTargetDropdown';
+import { LibraryBadge, isInLibrary } from './shared';
 
 interface DetailsModalProps {
   book: Book | null;
@@ -179,7 +180,15 @@ export const DetailsModal = ({
                 {book.title || 'Untitled'}
               </h3>
               {onAuthorClick && book.author ? (
-                <button type="button" onClick={() => { onAuthorClick(book.author!); handleClose(); }} className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline truncate text-left" title={`Search for ${book.author}`}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAuthorClick(book.author!);
+                    handleClose();
+                  }}
+                  className="truncate text-left text-sm text-emerald-600 hover:underline dark:text-emerald-400"
+                  title={`Search for ${book.author}`}
+                >
                   {book.author}
                 </button>
               ) : (
@@ -299,6 +308,13 @@ export const DetailsModal = ({
                       </div>
                     ))}
                 </div>
+
+                {isMetadata && isInLibrary(book.library) && (
+                  <div className={`${infoCardClass} space-y-1`}>
+                    <p className={infoLabelClass}>Library</p>
+                    <LibraryBadge library={book.library} />
+                  </div>
+                )}
 
                 {/* ISBN - Universal mode only */}
                 {isMetadata && (book.isbn_13 || book.isbn_10) && (

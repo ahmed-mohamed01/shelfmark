@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from contextlib import suppress
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any, TypedDict
 
@@ -106,7 +107,8 @@ def _normalize_json_object_list(payload: object, *, context: str) -> list[dict[s
     return [_normalize_json_object(item, context=context) for item in payload]
 
 
-def _get_field_value(fields: object, name: str) -> object | None:
+def get_indexer_field(fields: object, name: str) -> object | None:
+    """Return a setting's value from a Prowlarr indexer's "fields" list."""
     if not isinstance(fields, list):
         return None
 
@@ -117,6 +119,17 @@ def _get_field_value(fields: object, name: str) -> object | None:
             return field.get("value")
 
     return None
+
+
+def is_myanonamouse_indexer(indexer: Mapping[str, Any]) -> bool:
+    """Whether a Prowlarr indexer record is the MyAnonamouse implementation."""
+    implementation = str(
+        indexer.get("implementation")
+        or indexer.get("implementationName")
+        or indexer.get("definitionName")
+        or ""
+    )
+    return implementation.strip().lower() == "myanonamouse"
 
 
 class ProwlarrClient:
@@ -235,6 +248,34 @@ class ProwlarrClient:
             logger.exception("Failed to get indexers")
             return []
 
+    def get_disabled_indexers(self, *, now: datetime | None = None) -> dict[int, str]:
+        """Get indexers in failure back-off, keyed by ID with their disabledTill value."""
+        try:
+            entries = _normalize_json_object_list(
+                self._request("GET", "/api/v1/indexerstatus"),
+                context="Prowlarr indexer status",
+            )
+        except _PROWLARR_CLIENT_ERRORS:
+            logger.exception("Failed to get indexer status")
+            return {}
+
+        current = now or datetime.now(UTC)
+        disabled: dict[int, str] = {}
+        for entry in entries:
+            indexer_id = coerce_int_like(entry.get("indexerId"))
+            disabled_till_raw = entry.get("disabledTill")
+            if indexer_id is None or not disabled_till_raw:
+                continue
+            try:
+                disabled_till = datetime.fromisoformat(str(disabled_till_raw))
+            except ValueError:
+                continue
+            if disabled_till.tzinfo is None:
+                disabled_till = disabled_till.replace(tzinfo=UTC)
+            if disabled_till > current:
+                disabled[indexer_id] = str(disabled_till_raw)
+        return disabled
+
     def get_enabled_indexers_detailed(
         self, *, raise_on_error: bool = False
     ) -> list[dict[str, Any]]:
@@ -271,14 +312,8 @@ class ProwlarrClient:
             if restrict_to is not None and idx_id_int not in restrict_to:
                 continue
 
-            impl = str(
-                idx.get("implementation")
-                or idx.get("implementationName")
-                or idx.get("definitionName")
-                or ""
-            )
             # Currently only MyAnonamouse provides consistently rich Torznab metadata.
-            if impl.strip().lower() == "myanonamouse":
+            if is_myanonamouse_indexer(idx):
                 enriched_ids.append(idx_id_int)
 
         return enriched_ids
@@ -310,9 +345,9 @@ class ProwlarrClient:
                 continue
 
             fields = idx.get("fields")
-            ratio_limit = coerce_float_like(_get_field_value(fields, _INDEXER_FIELD_SEED_RATIO))
+            ratio_limit = coerce_float_like(get_indexer_field(fields, _INDEXER_FIELD_SEED_RATIO))
             seeding_time_limit = coerce_int_like(
-                _get_field_value(fields, _INDEXER_FIELD_SEED_TIME_MINUTES)
+                get_indexer_field(fields, _INDEXER_FIELD_SEED_TIME_MINUTES)
             )
 
             settings: IndexerSeedSettings = {}

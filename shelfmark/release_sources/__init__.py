@@ -1,7 +1,7 @@
 """Release source plugin system - base classes and registry."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -46,6 +46,7 @@ class BrowseRecord:
     content: str | None = None
     format: str | None = None
     size: str | None = None
+    downloads: int | None = None
     info: dict[str, list[str]] | None = None
     description: str | None = None
     download_urls: list[str] = field(default_factory=list)
@@ -138,6 +139,9 @@ class ColumnSchema:
     uppercase: bool = False  # Force uppercase display
     sortable: bool = False  # Show in sort dropdown (opt-in)
     sort_key: str | None = None  # Field to sort by (defaults to `key` if None)
+    # Optional visibility gates, applied by apply_column_visibility() before serialization.
+    setting_key: str | None = None  # Boolean setting that shows/hides this column
+    content_types: tuple[str, ...] | None = None  # Only show for these ("ebook", "audiobook")
 
 
 class LeadingCellType(StrEnum):
@@ -197,6 +201,60 @@ class ReleaseColumnConfig:
     action_button: SourceActionButton | None = (
         None  # Custom action button (replaces default expand search)
     )
+
+
+def _split_grid_template(template: str) -> list[str]:
+    """Split a grid-template-columns string into tracks, keeping minmax(a, b) whole."""
+    tracks: list[str] = []
+    current = ""
+    depth = 0
+    for char in template:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char.isspace() and depth == 0:
+            if current:
+                tracks.append(current)
+            current = ""
+            continue
+        current += char
+    if current:
+        tracks.append(current)
+    return tracks
+
+
+def apply_column_visibility(
+    config: ReleaseColumnConfig,
+    *,
+    content_type: str,
+    is_setting_enabled: Callable[[str], bool],
+) -> ReleaseColumnConfig:
+    """Drop columns gated off by content type or a disabled setting.
+
+    The grid template's first track is the title; the rest line up with columns, so
+    removing a column removes its track too. A template that doesn't line up is
+    rebuilt from the remaining columns' widths.
+    """
+    keep = [
+        (column.content_types is None or content_type in column.content_types)
+        and (column.setting_key is None or is_setting_enabled(column.setting_key))
+        for column in config.columns
+    ]
+
+    if all(keep):
+        return config
+
+    columns = [column for column, visible in zip(config.columns, keep, strict=True) if visible]
+    tracks = _split_grid_template(config.grid_template)
+    if len(tracks) == len(config.columns) + 1:
+        grid_tracks = [tracks[0]] + [
+            track for track, visible in zip(tracks[1:], keep, strict=True) if visible
+        ]
+    else:
+        grid_tracks = [tracks[0] if tracks else "minmax(0,2fr)"] + [c.width for c in columns]
+
+    return replace(config, columns=columns, grid_template=" ".join(grid_tracks))
 
 
 def serialize_column_config(config: ReleaseColumnConfig) -> dict[str, Any]:
@@ -368,12 +426,21 @@ class ReleaseSource(ABC):
         return None
 
 
+@dataclass(frozen=True)
+class HandoffResult:
+    """An external handoff that completed without a Shelfmark book payload."""
+
+    path: str
+    message: str
+
+
 class DownloadHandler(ABC):
     """Interface for executing downloads.
 
     A handler may either:
     - download directly into ``TMP_DIR`` (managed by Shelfmark), or
     - return a path owned by an external client (e.g. torrent/usenet).
+    - finish an external handoff without producing a book payload.
 
     The orchestrator is responsible for post-processing (archive extraction, output mode
     handling) and transferring files into their final destination.
@@ -386,8 +453,8 @@ class DownloadHandler(ABC):
         cancel_flag: Event,
         progress_callback: Callable[[float], None],
         status_callback: Callable[[str, str | None], None],
-    ) -> str | None:
-        """Execute download and return a path to the downloaded payload."""
+    ) -> str | HandoffResult | None:
+        """Execute download and return a payload path or completed external handoff."""
 
     def post_process_cleanup(self, task: DownloadTask, *, success: bool) -> None:
         """Run optional cleanup after orchestrator post-processing.
@@ -422,6 +489,7 @@ _BUILTIN_SOURCE_MODULES = (
     "shelfmark.release_sources.audiobookbay",
     "shelfmark.release_sources.direct_download",
     "shelfmark.release_sources.irc",
+    "shelfmark.release_sources.libgen",
     "shelfmark.release_sources.newznab",
     "shelfmark.release_sources.prowlarr",
 )
@@ -519,6 +587,10 @@ def browse_record_to_book_metadata(
     """Convert a source-native browse record into generic book metadata."""
     resolved_title = title_override or str(record.title or "").strip() or "Unknown title"
     resolved_author = author_override or str(record.author or "").strip()
+    # `author_override` is the frontend's display string, `authors.join(', ')` - every
+    # contributor, translators included. The split below is the only place that knows the
+    # commas were joins rather than part of a name, so `search_author` is taken from it
+    # rather than from the joined text. See issue #1252.
     authors = [part.strip() for part in resolved_author.split(",") if part.strip()]
     publish_year = None
 
@@ -535,7 +607,7 @@ def browse_record_to_book_metadata(
         provider_display_name=get_source_display_name(record.source),
         title=resolved_title,
         search_title=resolved_title,
-        search_author=resolved_author or None,
+        search_author=authors[0] if authors else None,
         authors=authors,
         cover_url=record.preview,
         description=record.description,

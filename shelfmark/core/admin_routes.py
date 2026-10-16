@@ -18,7 +18,7 @@ from shelfmark.config.booklore_settings import (
     get_booklore_library_options,
     get_booklore_path_options,
 )
-from shelfmark.config.env import CWA_DB_PATH
+from shelfmark.config.env import CWA_DB_PATH, DISABLE_LOCAL_AUTH
 from shelfmark.core.admin_settings_routes import (
     register_admin_settings_routes,
     validate_user_settings,
@@ -127,6 +127,27 @@ def _serialize_user(
     return payload
 
 
+_LAST_LOCAL_ADMIN_MESSAGE = (
+    "Local and OIDC authentication need a local admin account with a password. "
+    "Create another local admin first, or change the authentication method."
+)
+
+
+def _is_last_local_password_admin(user_db: UserDB, user: dict[str, Any]) -> bool:
+    """Return True when *user* is the only admin who can sign in with a password."""
+    if user.get("role") != "admin" or not user.get("password_hash"):
+        return False
+    return not any(
+        other["id"] != user["id"] and other.get("role") == "admin" and other.get("password_hash")
+        for other in user_db.list_users()
+    )
+
+
+def _auth_mode_requires_local_admin(auth_mode: str) -> bool:
+    """Return whether the active auth mode relies on a local password admin."""
+    return auth_mode in {AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC} and not DISABLE_LOCAL_AUTH
+
+
 def _sync_all_cwa_users(user_db: UserDB) -> dict[str, int]:
     """Sync all users from the Calibre-Web database into users.db."""
     if not CWA_DB_PATH or not CWA_DB_PATH.exists():
@@ -161,7 +182,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
 
         @wraps(f)
         def decorated(*args: P.args, **kwargs: P.kwargs) -> ResponseReturnValue:
-            auth_mode = load_active_auth_mode(CWA_DB_PATH, user_db=user_db)
+            auth_mode = load_active_auth_mode()
             g.auth_mode = auth_mode
             if auth_mode != "none":
                 if "user_id" not in session:
@@ -280,6 +301,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
 
         # Handle optional password update
         password = data.get("password", "")
+        password_hash: str | None = None
         if password:
             if not capabilities["canSetPassword"]:
                 return jsonify(
@@ -292,7 +314,7 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
                 return jsonify(
                     {"error": f"Password must be at least {MIN_PASSWORD_LENGTH} characters"}
                 ), 400
-            user_db.update_user(user_id, password_hash=generate_password_hash(password))
+            password_hash = generate_password_hash(password)
 
         # Update user fields
         user_fields = {}
@@ -349,19 +371,26 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
                 }
             ), 400
 
-        # Allow demoting the last admin account.
-        # Auth mode resolution automatically falls back to "none" when no
-        # local password admin remains.
+        if (
+            role_changed
+            and user_fields["role"] != "admin"
+            and _auth_mode_requires_local_admin(g.auth_mode)
+            and _is_last_local_password_admin(user_db, user)
+        ):
+            return jsonify(
+                {
+                    "error": "Cannot remove admin role from the last local admin account",
+                    "message": _LAST_LOCAL_ADMIN_MESSAGE,
+                }
+            ), 400
 
         # Avoid unnecessary writes for no-op field updates.
         for field in ("role", "email", "display_name"):
             if field in user_fields and user_fields[field] == user.get(field):
                 user_fields.pop(field)
 
-        if user_fields:
-            user_db.update_user(user_id, **user_fields)
-
-        # Update per-user settings
+        # Validate per-user settings
+        validated_settings: dict[str, Any] | None = None
         if "settings" in data:
             if not isinstance(data["settings"], dict):
                 return jsonify({"error": "Settings must be an object"}), 400
@@ -375,6 +404,14 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
                     }
                 ), 400
 
+        # Apply the writes only once the whole payload has been accepted.
+        if password_hash is not None:
+            user_fields["password_hash"] = password_hash
+
+        if user_fields:
+            user_db.update_user(user_id, **user_fields)
+
+        if validated_settings is not None:
             user_db.set_user_settings(user_id, validated_settings)
             # Ensure runtime reads see updated per-user overrides immediately.
             try:
@@ -465,9 +502,15 @@ def register_admin_routes(app: Flask, user_db: UserDB) -> None:
                 }
             ), 400
 
-        # Allow deleting the last local admin account.
-        # Auth mode resolution automatically falls back to "none" when no
-        # local password admin remains.
+        if _auth_mode_requires_local_admin(g.auth_mode) and _is_last_local_password_admin(
+            user_db, user
+        ):
+            return jsonify(
+                {
+                    "error": "Cannot delete the last local admin account",
+                    "message": _LAST_LOCAL_ADMIN_MESSAGE,
+                }
+            ), 400
 
         user_db.delete_user(user_id)
         logger.info("Admin deleted user %s: %s", user_id, user["username"])

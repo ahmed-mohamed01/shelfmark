@@ -1,4 +1,4 @@
-import type { Book, Release } from '../types';
+import type { Book, LibraryOwnership, Release } from '../types';
 import { isRecord, isStringArray } from './objectHelpers';
 
 /**
@@ -6,6 +6,7 @@ import { isRecord, isStringArray } from './objectHelpers';
  * Used by both search and single-book endpoints.
  */
 export interface MetadataBookData {
+  library?: LibraryOwnership; // ownership flags from the library check
   provider: string;
   provider_display_name?: string;
   provider_id: string;
@@ -64,6 +65,7 @@ interface SourceBackedBookData {
   language?: unknown;
   format?: unknown;
   size?: unknown;
+  downloads?: unknown;
   preview?: unknown;
   publisher?: unknown;
   info?: Record<string, string | string[]>;
@@ -105,6 +107,7 @@ export function transformMetadataToBook(data: MetadataBookData): Book {
     search_author: data.search_author,
     authors: data.authors,
     titles_by_language: data.titles_by_language,
+    library: data.library,
     info: {
       ...(data.isbn_13 && { ISBN: data.isbn_13 }),
       ...(data.isbn_10 && !data.isbn_13 && { ISBN: data.isbn_10 }),
@@ -161,6 +164,7 @@ const transformSourceBackedDataToBook = (data: SourceBackedBookData): Book => {
     language: toOptionalText(data.language),
     format: toOptionalText(data.format),
     size: toOptionalText(data.size),
+    downloads: typeof data.downloads === 'number' ? data.downloads : undefined,
     preview: toOptionalText(data.preview),
     publisher: toOptionalText(data.publisher),
     info: data.info,
@@ -185,6 +189,7 @@ export function transformReleaseToDirectBook(release: Release): Book {
     language: release.language || extra.language,
     format: release.format,
     size: release.size,
+    downloads: extra.downloads,
     preview: extra.preview,
     publisher: extra.publisher,
     info: parseBookInfo(extra.info),

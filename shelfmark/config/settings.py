@@ -204,6 +204,7 @@ register_group(
 
 # Direct mode sort options
 _AA_SORT_OPTIONS = [
+    {"value": "", "label": "Most downloads"},
     {"value": "relevance", "label": "Most relevant"},
     {"value": "newest", "label": "Newest (publication year)"},
     {"value": "oldest", "label": "Oldest (publication year)"},
@@ -388,6 +389,13 @@ def _clear_metadata_cache(current_values: dict) -> dict:
         }
 
 
+def _test_calibre_library(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Action-button callback: read the Calibre database and count the books."""
+    from shelfmark.core import library_index
+
+    return library_index.test_connection("calibre", current_values)
+
+
 @register_settings("general", "General", icon="settings", order=0)
 def general_settings() -> list[SettingsField]:
     """Core application settings."""
@@ -410,6 +418,31 @@ def general_settings() -> list[SettingsField]:
             label="Audiobook Library URL",
             description="Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text.",
             placeholder="http://audiobookshelf:8080",
+        ),
+        CheckboxField(
+            key="LIBRARY_CHECK_CALIBRE_ENABLED",
+            label="Mark books already in your Calibre library",
+            description=(
+                "Read the Calibre metadata.db and mark search results you already own, so you "
+                "do not download a second copy. Read only, nothing is written to the library."
+            ),
+            default=False,
+        ),
+        TextField(
+            key="CALIBRE_LIBRARY_DB_PATH",
+            label="Calibre metadata.db path",
+            description=(
+                "Path to metadata.db as seen from inside the Shelfmark container. Mount the "
+                "Calibre library folder read-only, e.g. /path/to/calibre-library:/calibre-library:ro."
+            ),
+            default="/calibre-library/metadata.db",
+            placeholder="/calibre-library/metadata.db",
+        ),
+        ActionButton(
+            key="test_calibre_library",
+            label="Test Calibre library",
+            description="Check that Shelfmark can read the Calibre database and count the books.",
+            callback=_test_calibre_library,
         ),
         HeadingField(
             key="search_defaults_heading",
@@ -479,11 +512,25 @@ def search_mode_settings() -> list[SettingsField]:
             user_overridable=True,
         ),
         SelectField(
+            key="DEFAULT_CONTENT_TYPE",
+            label="Default Content Type",
+            description=(
+                "Which tab the search page opens on. Users can override this for their "
+                "own account, and a browser that has already picked a tab keeps its choice."
+            ),
+            options=[
+                {"value": "ebook", "label": "Ebook"},
+                {"value": "audiobook", "label": "Audiobook"},
+            ],
+            default="ebook",
+            user_overridable=True,
+        ),
+        SelectField(
             key="AA_DEFAULT_SORT",
             label="Default Sort Order",
             description="Default sort order for search results.",
             options=_AA_SORT_OPTIONS,
-            default="relevance",
+            default="",
             show_when={"field": "SEARCH_MODE", "value": "direct"},
         ),
         CheckboxField(
@@ -571,6 +618,51 @@ def search_mode_settings() -> list[SettingsField]:
             description="Show separate Auto and Interactive actions instead of a single Get button in standalone search results.",
             default=False,
             show_when={"field": "SEARCH_MODE", "value": "universal"},
+        ),
+        HeadingField(
+            key="release_columns_heading",
+            title="Release List Columns",
+            description=(
+                "Optional columns in the release list. Rows stay blank where a source "
+                "doesn't provide the detail."
+            ),
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+        ),
+        CheckboxField(
+            key="SHOW_SERIES_COLUMN",
+            label="Show Series Column",
+            description=(
+                "Series name and number, for books and audiobooks. Filled in for "
+                "MyAnonamouse results from Prowlarr when a MAM session ID is set in the "
+                "Prowlarr settings."
+            ),
+            default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
+        CheckboxField(
+            key="SHOW_NARRATOR_COLUMN",
+            label="Show Narrator Column",
+            description=(
+                "Audiobooks only. Filled in for MyAnonamouse results from Prowlarr when a "
+                "MAM session ID is set in the Prowlarr settings."
+            ),
+            default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
+        CheckboxField(
+            key="SHOW_BITRATE_COLUMN",
+            label="Show Bitrate Column",
+            description=(
+                "Audiobooks only. AudiobookBay lists it for most releases. In Prowlarr "
+                "results it needs a MAM session ID and is read from the MyAnonamouse "
+                "uploader's tags, so some releases won't have one. Other Prowlarr indexers "
+                "fill it only if they report a bitrate attribute, which most don't."
+            ),
+            default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
         ),
     ]
 
@@ -1030,12 +1122,30 @@ def download_settings() -> list[SettingsField]:
                 "value": "folder",
             },
         ),
+        TextField(
+            key="NAMING_WORD_SEPARATOR",
+            label="Word Separator",
+            description=(
+                "Replaces spaces inside naming template values (e.g. 'Conan Doyle' -> "
+                "'Conan.Doyle' with '.'). Applies to books and audiobooks, rename and "
+                "organize templates alike. Literal characters typed into a template "
+                "(like the '-' in '{Author} - {Title}') are left as-is. Leave empty to "
+                "keep spaces as-is."
+            ),
+            default="",
+            placeholder=".",
+            max_length=5,
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
+        ),
         # Rename mode template - filename only
         _naming_template_field(
             key="TEMPLATE_RENAME",
             label="Naming Template",
             description=(
-                "Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} "
+                "Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} "
                 "(source filename without extension). Universal adds: {Series}, "
                 "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
@@ -1054,7 +1164,7 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_ORGANIZE",
             label="Path Template",
             description=(
-                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, "
+                "Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, "
                 "{OriginalName} (source filename without extension). Universal adds: {Series}, "
                 "{SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
@@ -1342,9 +1452,9 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
             description=(
-                "Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} "
+                "Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} "
                 "(source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, "
-                "{PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
+                "{PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: "
                 "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
                 "Rename templates are filename-only (no '/' or '\\'); use Organize for folders. "
                 "Applies to single-file downloads."
@@ -1362,10 +1472,13 @@ def download_settings() -> list[SettingsField]:
             key="TEMPLATE_AUDIOBOOK_ORGANIZE",
             label="Path Template",
             description=(
-                "Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, "
+                "Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, "
                 "{OriginalName} (source filename without extension), {Series}, {SeriesPosition}, "
-                "{Subtitle}, {PrimaryTitle}, {PartNumber}. Use arbitrary prefix/suffix: "
-                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty."
+                "{Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: "
+                "{Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. "
+                "{Narrator} and a Series fallback come from MyAnonamouse results (needs a MAM "
+                "session ID); {{Narrator}} writes Audiobookshelf's '{Name}' style and is left "
+                "out entirely when there is no narrator."
             ),
             default="{Author}/{Title}/{Title}",
             placeholder="{Author}/{Series/}{Title}{ - Part }{PartNumber}",
@@ -1732,6 +1845,18 @@ def cloudflare_bypass_settings() -> list[SettingsField]:
             max_value=300000,
             requires_restart=True,
             show_when={"field": "USING_EXTERNAL_BYPASSER", "value": True},
+        ),
+        NumberField(
+            key="BYPASS_PAGE_SOURCE_TIMEOUT",
+            label="Page Read Timeout (seconds)",
+            description=(
+                "How long to wait for a solved page to produce its content before the "
+                "bypass is retried. Raise it if solves succeed but searches still fail."
+            ),
+            default=20,
+            min_value=1,
+            max_value=120,
+            show_when={"field": "USING_EXTERNAL_BYPASSER", "value": False},
         ),
         NumberField(
             key="BYPASS_BROWSER_IDLE_TIMEOUT",

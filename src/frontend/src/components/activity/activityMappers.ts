@@ -1,4 +1,5 @@
 import type { Book, RequestRecord, StatusData } from '../../types';
+import { getDownloadsCount } from '../../types';
 import { STATUS_LABELS, isActiveDownloadStatus } from './activityStyles.js';
 import type { ActivityItem, ActivityVisualStatus } from './activityTypes';
 
@@ -87,10 +88,14 @@ export const downloadToActivityItem = (book: Book, statusKey: DownloadStatusKey)
     typeof book.request_id === 'number' && Number.isFinite(book.request_id) && book.request_id > 0
       ? Math.trunc(book.request_id)
       : undefined;
+  const downloadsCount = getDownloadsCount(book);
+  const downloadsText =
+    downloadsCount != null ? `${downloadsCount.toLocaleString()} downloads` : undefined;
   const metaLine = joinMetaParts([
     toOptionalText(book.format)?.toUpperCase(),
     toOptionalText(book.size),
     toOptionalText(book.source_display_name) || toSourceLabel(book.source),
+    downloadsText,
     toOptionalText(book.username),
   ]);
   const progress = getDownloadProgress(visualStatus, book.progress);
@@ -115,6 +120,7 @@ export const downloadToActivityItem = (book: Book, statusKey: DownloadStatusKey)
     downloadRetryAvailable,
     downloadPath: toOptionalText(book.download_path),
     sizeRaw: toOptionalText(book.size),
+    downloads: downloadsCount ?? undefined,
     requestId,
   };
 };
@@ -181,4 +187,26 @@ export const requestToActivityItem = (
     requestNote: toOptionalText(record.note),
     requestRecord: record,
   };
+};
+
+/** The id of the download a fulfilled request item was delivered through, if listed. */
+export const linkedDownloadIdForRequest = (
+  item: ActivityItem,
+  latestDownloadIdByRequestId: Map<number, string>,
+): string | null => {
+  if (item.kind !== 'request' || item.visualStatus !== 'fulfilled') {
+    return null;
+  }
+
+  const sourceId = item.requestRecord?.release_data?.source_id;
+  if (typeof sourceId === 'string' && sourceId.trim()) {
+    return sourceId.trim();
+  }
+
+  // Non-admins don't receive the release's source_id (#1418), so their request is
+  // matched to the download queued for it instead.
+  if (typeof item.requestId !== 'number') {
+    return null;
+  }
+  return latestDownloadIdByRequestId.get(item.requestId) ?? null;
 };

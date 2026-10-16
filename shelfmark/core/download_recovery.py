@@ -88,6 +88,14 @@ def register(
     ExternalClientHandler._download_id_hook = _on_download_id_available
 
 
+# Upstream's ``startup_reconcile`` finalizes every history row still "active" at boot as an
+# error ("Interrupted") before the download coordinator starts. This module instead reconnects
+# those rows to downloads that outlived the restart in the client (phase 1) and re-queues the
+# rest (phase 2), so the close-out must not run first or there is nothing left to recover.
+# ``main.py`` checks this flag before calling the upstream reconcile.
+RECOVERY_SUPERSEDES_STARTUP_RECONCILE = True
+
+
 def startup_recover() -> None:
     """Scan download clients for stale active downloads and reconcile.
 

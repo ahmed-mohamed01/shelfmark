@@ -164,7 +164,6 @@ export function useReleaseSearchSession(
   const lastStatusTimeRef = useRef(0);
   const pendingStatusRef = useRef<SearchStatusData | null>(null);
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  activeTabRef.current = activeTab;
 
   const allTabs = useMemo(() => {
     return buildReleaseTabs(
@@ -289,6 +288,7 @@ export function useReleaseSearchSession(
               [tabName]: {
                 ...existing,
                 releases: [...existing.releases, ...mergedReleases],
+                search_info: response.search_info,
               },
             };
           });
@@ -363,7 +363,6 @@ export function useReleaseSearchSession(
     indexerFilterInitializedRef.current = new Set<string>();
     const nextInitialActiveTab = preferredDefaultReleaseSource || '';
     initialActiveTabRef.current = nextInitialActiveTab;
-    activeTabRef.current = nextInitialActiveTab;
     pendingStatusRef.current = null;
     lastStatusTimeRef.current = 0;
     if (statusTimeoutRef.current) {
@@ -381,6 +380,7 @@ export function useReleaseSearchSession(
       ? nextInitialActiveTab
       : (tabs[0]?.name ?? '');
 
+    activeTabRef.current = nextActiveTab;
     setActiveTabState(nextActiveTab);
     setReleasesBySource({});
     setLoadingBySource({});
@@ -458,6 +458,7 @@ export function useReleaseSearchSession(
 
   const setActiveTab = useCallback(
     (tabName: string) => {
+      activeTabRef.current = tabName;
       setActiveTabState(tabName);
 
       if (!tabName) {

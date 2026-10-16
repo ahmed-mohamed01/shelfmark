@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 from flask import Flask, Response, g, jsonify, request, session
 from werkzeug.security import generate_password_hash
 
-from shelfmark.config.env import CWA_DB_PATH
 from shelfmark.core.admin_settings_routes import (
     build_user_notification_test_response,
     validate_user_settings,
@@ -191,7 +190,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
 
         @wraps(f)
         def decorated(*args: object, **kwargs: object) -> Response | tuple[Response, int]:
-            auth_mode = load_active_auth_mode(CWA_DB_PATH, user_db=user_db)
+            auth_mode = load_active_auth_mode()
             g.auth_mode = auth_mode
             if auth_mode != "none" and "user_id" not in session:
                 return jsonify({"error": "Authentication required"}), 401
@@ -302,6 +301,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
         auth_source = capabilities["authSource"]
 
         password = data.get("password", "")
+        password_hash: str | None = None
         if password:
             if not capabilities["canSetPassword"]:
                 return jsonify(
@@ -314,7 +314,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
                 return jsonify(
                     {"error": f"Password must be at least {MIN_PASSWORD_LENGTH} characters"}
                 ), 400
-            user_db.update_user(user_id, password_hash=generate_password_hash(password))
+            password_hash = generate_password_hash(password)
 
         user_fields: dict[str, Any] = {}
         if "email" in data:
@@ -363,9 +363,7 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
             if field in user_fields and user_fields[field] == user.get(field):
                 user_fields.pop(field)
 
-        if user_fields:
-            user_db.update_user(user_id, **user_fields)
-
+        validated_settings: dict[str, Any] | None = None
         if "settings" in data:
             settings_payload = data["settings"]
             if not isinstance(settings_payload, dict):
@@ -397,6 +395,14 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
                     }
                 ), 400
 
+        # Apply the writes only once the whole payload has been accepted.
+        if password_hash is not None:
+            user_fields["password_hash"] = password_hash
+
+        if user_fields:
+            user_db.update_user(user_id, **user_fields)
+
+        if validated_settings is not None:
             user_db.set_user_settings(user_id, validated_settings)
             try:
                 app_config.refresh(force=True)
