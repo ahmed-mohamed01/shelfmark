@@ -474,14 +474,62 @@ Live distribution as a sanity reference: pdf 7034, epub 6397, so about 13.4k off
 
 - `content_type != "ebook"`: return `[]`.
 - Queries, in order, first non-empty result wins: `plan.manual_query`; else
-  `plan.title_variants[i].title` for each variant; else `book.title`.
+  `plan.title_variants[i].title` for each variant; else `book.title`. Each query
+  carries an `allow_fallback` flag into `index.search`: a manual query is exactly
+  what the user typed and is never shortened to a series name; metadata titles are.
   **No author terms**: the index has no author field, so adding the author would hide
   every match.
+- Query parsing (`index.parse_query`), because metadata providers send titles like
+  `7th Time Loop: The Villainess ... (Light Novel), Vol. 1` while the files are named
+  `7th Time Loop - Volume 01 ...`:
+  - The input is stripped, its whitespace runs collapsed to single spaces and the
+    text capped at 512 characters before any regex runs: a padded or runaway title
+    cannot make the marker scans quadratic. The trailing-number lookup itself scans
+    back from the end in one pass, never a right-anchored regex search.
+  - Drop bracketed segments (`(...)`, `[...]`, `{...}`) anywhere in the query, then
+    collapse whitespace again before volume matching, so an annotation after the
+    volume (`Spice and Wolf, Book 3 (Light Novel)`) cannot leave the marker half
+    removed.
+  - Volume markers, case-insensitive: `Volume 01`, `Vol. 3`, `Vol 3`, `Vol.1`,
+    `v1` as a separate word, and ranges `Vol. 1-3` / `Volumes 1-3` / `Volume 01 - 03`.
+    A range is a requested `(lo, hi)`; a scalar marker is `(v, v)`. Every number needs
+    an end boundary (`v1beta` is not volume 1), and the number cannot backtrack to a
+    shorter prefix to dodge it.
+  - Marker precedence: a `Volume`/`Vol`/`v` marker anywhere is the volume, and any
+    `Book`/`Part` markers stay in the title text (`Series Volume 1 Part 2` is volume
+    1; `Part 2 Volume 4` is volume 4 with `Part 2` kept, so it still matches
+    `Part 2 ... v04` file names). `Book`/`Part` are volume markers only when no
+    `Volume`/`Vol`/`v` marker exists. A bare trailing `, 1` / ` 1` counts only when
+    no explicit marker does; when an explicit marker and a bare trailing number
+    overlap, the explicit marker wins. Among markers of one tier the last in the text
+    wins, and the marker is removed from the text. A title that is only a marker
+    (`42`, `Vol. 1`) keeps it: stripping the only term would make the query
+    unsearchable.
+  - Series variants, longest first, de-duplicated by their normalised form and dropped
+    when empty: the cleaned full title; the part before the first `": "`; the part
+    before the first `" - "`. The colon split needs the space, so `Re:Zero` stays
+    intact. The cleaned full title is always tried; a shorter variant is tried only
+    when it keeps at least 2 normalised terms, so `Magic: Missing Subtitle` never
+    falls back to every `Magic ...` series.
+- Entry volumes, precomputed at flatten time as `IndexEntry.volumes`, an inclusive
+  `(low, high)` range or `None`: parsed case-insensitively from the file name's
+  `Volume 01`, `Vol. 3`, `Vol 3`, `v03` and ranges like `Volume 01-17` (`A-B` gives
+  `(A, B)`), with the same boundary, range and marker-precedence rules as the query
+  (`Part 2 v04` is volume 4; `Part 2` alone is volume 2); `None` when the name
+  declares no volume.
+- Match: for each series variant in order, every distinct term must be a substring of
+  the entry's `haystack` (`normalise(folder + " " + file name)`); the first variant
+  with hits wins, so a query never widens past what the metadata title itself matched.
+  Linear scan over about 13.4k precomputed strings takes milliseconds.
+- Volume filter: when the query asked for volumes `(lo, hi)`, keep only entries whose
+  `volumes` range overlaps it (`entry.low <= hi and lo <= entry.high`). Entries with
+  no declared volume (a `Complete` omnibus, extras) are excluded rather than guessed.
+  With no requested volume the behaviour is the plain all-terms rule.
 - Normalise: `unicodedata.normalize("NFKD")`, drop combining marks, `casefold()`, replace
   every run of non-alphanumerics with one space, strip. Same as the prototype.
-- Match: every distinct query term is a substring of the entry's `haystack`
-  (`normalise(folder + " " + file name)`). Linear scan over about 13.4k precomputed
-  strings takes milliseconds.
+- INFO log per lookup: `Searching Elscione for: %s (volume %s, %d hits)` with the
+  variant that produced the hits and the requested volume (`3.0`, or `1.0-3.0` for a
+  range).
 - Order: folder, then file name with a natural sort key (so `Volume 2` sorts before
   `Volume 10`). Cap at `ELSCIONE_MAX_RESULTS` (default 50, range 1-200).
 - `plan.languages` is ignored: the index has no language data. `language` stays `None`;

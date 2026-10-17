@@ -121,6 +121,7 @@ def test_staging_name_file_organization_none_uses_sanitised_index_name(tmp_path)
         format="epub",
         size_bytes=10,
         haystack="we ird",
+        volumes=None,
     )
     sample.install_entries(entries)
     status = MagicMock()

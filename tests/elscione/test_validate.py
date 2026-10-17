@@ -22,6 +22,7 @@ def _entry(size_bytes, fmt="epub"):
         format=fmt,
         size_bytes=size_bytes,
         haystack="x y",
+        volumes=None,
     )
 
 

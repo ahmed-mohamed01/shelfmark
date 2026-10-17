@@ -8,7 +8,6 @@ terms are deliberately never added to a query: they would hide every match.
 from typing import TYPE_CHECKING, ClassVar
 
 from shelfmark.core.config import config
-from shelfmark.core.logger import setup_logger
 from shelfmark.release_sources import (
     BrowseRecord,
     ColumnAlign,
@@ -26,8 +25,6 @@ from shelfmark.release_sources.elscione import index
 if TYPE_CHECKING:
     from shelfmark.core.search_plan import ReleaseSearchPlan
     from shelfmark.metadata_providers import BookMetadata
-
-logger = setup_logger(__name__)
 
 _DEFAULT_MAX_RESULTS = 50
 
@@ -53,32 +50,35 @@ def _file_stem(name: str) -> str:
     return head if dot else name
 
 
-def _build_queries(plan: ReleaseSearchPlan, book: BookMetadata) -> list[str]:
-    """Build ordered, de-duplicated title queries.
+def _build_queries(plan: ReleaseSearchPlan, book: BookMetadata) -> list[tuple[str, bool]]:
+    """Build ordered, de-duplicated ``(query, allow_fallback)`` pairs.
 
     Never the author: the index has no author data, so an author term would
     filter every release out. Each title variant gets its own query, and the
-    first one with hits wins (the caller tries them in order).
+    first one with hits wins (the caller tries them in order). A manual query
+    is exactly what the user typed, so it is never shortened to a series name
+    (``allow_fallback`` False); metadata titles are shortened, because their
+    long forms never match the file names.
     """
-    queries: list[str] = []
+    candidates: list[tuple[str, bool]] = []
     if plan.manual_query:
-        queries.append(plan.manual_query.strip())
+        candidates.append((plan.manual_query.strip(), False))
     else:
         for variant in plan.title_variants:
             title = (variant.title or "").strip()
             if title:
-                queries.append(title)
-    if not queries and book.title:
-        queries.append(book.title.strip())
+                candidates.append((title, True))
+    if not candidates and book.title:
+        candidates.append((book.title.strip(), True))
 
-    deduped: list[str] = []
+    queries: list[tuple[str, bool]] = []
     seen: set[str] = set()
-    for query in queries:
+    for query, allow_fallback in candidates:
         if not query or query.casefold() in seen:
             continue
         seen.add(query.casefold())
-        deduped.append(query)
-    return deduped
+        queries.append((query, allow_fallback))
+    return queries
 
 
 @register_source("elscione")
@@ -126,10 +126,10 @@ class ElscioneSource(ReleaseSource):
             hi=200,
         )
 
-        for query in queries:
-            # index.search raises SourceUnavailableError while the index builds.
-            hits = index.search(query, max_results)
-            logger.info("Searching Elscione for: %s (%d hits)", query, len(hits))
+        for query, allow_fallback in queries:
+            # index.search raises SourceUnavailableError while the index builds,
+            # and logs the variant that produced whatever hits it returns.
+            hits = index.search(query, max_results, allow_fallback=allow_fallback)
             if hits:
                 return [self._entry_to_release(entry) for entry in hits]
         return []

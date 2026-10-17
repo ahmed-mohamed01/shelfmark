@@ -166,6 +166,121 @@ LIST_OF_ROOTS_INDEX = [
     },
 ]
 
+# The metadata title exactly as BookOrbit/Hardcover send it: bracketed
+# annotation, subtitle and volume marker, none of which the file names repeat.
+SEVENTH_TIME_LOOP_TITLE = (
+    "7th Time Loop: The Villainess Enjoys a Carefree Life "
+    "Married to Her Worst Enemy! (Light Novel), Vol. 1"
+)
+# A series whose folder matches the metadata's short form but whose file
+# names never carry the subtitle, plus an omnibus that spans volumes.
+SEVENTH_TIME_LOOP_INDEX = {
+    "name": ROOT_NAME,
+    "path": ".",
+    "folders": [
+        {
+            "name": "7th Time Loop",
+            "path": "7th Time Loop",
+            "folders": [],
+            "files": [
+                {
+                    "name": "7th Time Loop - Volume 01 [Seven Seas][Kobo].epub",
+                    "path": "7th Time Loop/7th Time Loop - Volume 01 [Seven Seas][Kobo].epub",
+                    "size": 1024,
+                },
+                {
+                    "name": "7th Time Loop - Volume 02 [Seven Seas][Kobo].epub",
+                    "path": "7th Time Loop/7th Time Loop - Volume 02 [Seven Seas][Kobo].epub",
+                    "size": 2048,
+                },
+                {
+                    "name": "7th Time Loop - Volume 10 [Seven Seas][Kobo].epub",
+                    "path": "7th Time Loop/7th Time Loop - Volume 10 [Seven Seas][Kobo].epub",
+                    "size": 4096,
+                },
+                {
+                    "name": "7th Time Loop - Complete [enjugroup][Kobo].epub",
+                    "path": "7th Time Loop/7th Time Loop - Complete [enjugroup][Kobo].epub",
+                    "size": 8192,
+                },
+            ],
+        },
+        {
+            "name": "Omnibus Collection",
+            "path": "Omnibus Collection",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Omnibus Collection - Volume 01-17.epub",
+                    "path": "Omnibus Collection/Omnibus Collection - Volume 01-17.epub",
+                    "size": 16384,
+                },
+            ],
+        },
+        # Two series sharing the word "Magic": a subtitle-bearing query for a
+        # third, unknown one must not fall back to the single word "Magic".
+        {
+            "name": "Magic Academy",
+            "path": "Magic Academy",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Magic Academy - Vol 1.epub",
+                    "path": "Magic Academy/Magic Academy - Vol 1.epub",
+                    "size": 512,
+                },
+            ],
+        },
+        {
+            "name": "Magic Knight",
+            "path": "Magic Knight",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Magic Knight - Vol 2.epub",
+                    "path": "Magic Knight/Magic Knight - Vol 2.epub",
+                    "size": 1024,
+                },
+            ],
+        },
+        # A series with both numbered volumes and an omnibus spanning them, for
+        # range requests.
+        {
+            "name": "Range Series",
+            "path": "Range Series",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Range Series - Volume 01.epub",
+                    "path": "Range Series/Range Series - Volume 01.epub",
+                    "size": 2048,
+                },
+                {
+                    "name": "Range Series - Volume 02.epub",
+                    "path": "Range Series/Range Series - Volume 02.epub",
+                    "size": 2048,
+                },
+                {
+                    "name": "Range Series - Volume 03.epub",
+                    "path": "Range Series/Range Series - Volume 03.epub",
+                    "size": 2048,
+                },
+                {
+                    "name": "Range Series - Volume 10.epub",
+                    "path": "Range Series/Range Series - Volume 10.epub",
+                    "size": 2048,
+                },
+                {
+                    "name": "Range Series - Volume 01-17.epub",
+                    "path": "Range Series/Range Series - Volume 01-17.epub",
+                    "size": 4096,
+                },
+            ],
+        },
+    ],
+    "files": [],
+}
+
 
 def deep_tree(levels: int) -> dict:
     """A single chain of ``levels`` folders with one epub at the bottom."""
@@ -215,6 +330,11 @@ def install_entries(entries: dict) -> None:
 def sample_entries(max_bytes: int = MAX_BYTES) -> dict:
     """Flattened entries of SAMPLE_INDEX, keyed by path."""
     return index.flatten_index(SAMPLE_INDEX, max_bytes=max_bytes).entries
+
+
+def seventh_time_loop_entries(max_bytes: int = MAX_BYTES) -> dict:
+    """Flattened entries of SEVENTH_TIME_LOOP_INDEX, keyed by path."""
+    return index.flatten_index(SEVENTH_TIME_LOOP_INDEX, max_bytes=max_bytes).entries
 
 
 @contextlib.contextmanager

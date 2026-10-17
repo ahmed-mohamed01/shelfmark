@@ -82,6 +82,10 @@ class IndexEntry:
     format: str
     size_bytes: int
     haystack: str
+    # Inclusive volume range declared by the file name, e.g. (1, 17) for
+    # "Volume 01-17" or (2, 2) for "Vol 2". None when the name declares no
+    # volume, so a volume-filtered search skips it instead of guessing.
+    volumes: tuple[float, float] | None
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,159 @@ def natural_key(text: str) -> tuple[tuple[int, int | str], ...]:
         else:
             key.append((1, part))
     return tuple(key)
+
+
+@dataclass(frozen=True)
+class ParsedQuery:
+    """A query split into series-name candidates plus the volumes it asked for."""
+
+    series_variants: list[str]
+    # The inclusive requested range: a scalar "Vol. 3" is (3, 3) and a range
+    # marker "Vol. 1-3" is (1, 3). None when the query names no volume.
+    volume_range: tuple[float, float] | None
+
+
+# Bracketed annotations, e.g. "(Light Novel)" or "[Seven Seas]": noise for
+# matching, because file names never repeat the metadata title's brackets.
+_BRACKETED = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}")
+# A volume number with an explicit end boundary: "v1beta" is not volume 1, and
+# the atomic group cannot backtrack to a shorter prefix that would dodge it.
+# The capture lives inside the atomic group, so the number is still readable.
+_VOLUME_NUMBER = r"(?>(\d+(?:\.\d+)?))"
+# Volume/Vol/v markers with an optional range, e.g. "Volume 01", "Vol. 3",
+# "v03", "Volume 01-17".
+_MAIN_VOLUME = re.compile(
+    rf"\b(?:volumes?|vol\.?|v)\s*{_VOLUME_NUMBER}(?:\s*-\s*{_VOLUME_NUMBER})?\b",
+    re.IGNORECASE,
+)
+# Book/Part markers, the weaker tier: they name a volume only when no
+# Volume/Vol/v marker exists anywhere ("Part 2 Volume 4" is volume 4).
+_PART_VOLUME = re.compile(
+    rf"\b(?:parts?|books?)\s*{_VOLUME_NUMBER}(?:\s*-\s*{_VOLUME_NUMBER})?\b",
+    re.IGNORECASE,
+)
+# Inputs are stripped, collapsed and capped before any regex runs (see
+# parse_query), so a padded or runaway title cannot make them scan megabytes.
+_QUERY_MAX_LENGTH = 512
+
+
+def _trailing_number(text: str) -> tuple[float, tuple[int, int]] | None:
+    """A bare trailing number after the title, e.g. "Some Series, 12".
+
+    The number is scanned back from the end in one pass: a right-anchored
+    regex would restart at every offset, which is quadratic on padded input.
+    The text is already collapsed, so the number can only follow a space or a
+    comma, and a string that is only the number is a title ("42"), not a
+    volume.
+    """
+    end = len(text)
+    start = end
+    while start > 0 and text[start - 1].isdigit():
+        start -= 1
+    if start in (end, 0):
+        return None
+    if text[start - 1] == "." and start >= 2 and text[start - 2].isdigit():
+        # One decimal point belongs to the number ("1.5").
+        start -= 1
+        while start > 0 and text[start - 1].isdigit():
+            start -= 1
+        if start == 0:
+            return None
+    if text[start - 1] not in ", ":
+        return None
+    return float(text[start:end]), (start, end)
+
+
+def parse_query(text: str) -> ParsedQuery:
+    """Parse a metadata-style title into series-name variants and a volume.
+
+    BookOrbit and Hardcover send series titles like "7th Time Loop: The
+    Villainess ... (Light Novel), Vol. 1" while the files are named
+    "7th Time Loop - Volume 01 ...": the long form matches nothing under the
+    all-terms rule. Bracketed segments are dropped and the volume marker is
+    extracted and removed. A Volume/Vol/v marker anywhere is the volume, with
+    any Book/Part markers left in the title text; Book/Part count only when no
+    Volume/Vol/v marker exists, and a bare trailing number only when no
+    explicit marker does.
+    """
+    cleaned = " ".join(text.split())[:_QUERY_MAX_LENGTH]
+    cleaned = " ".join(_BRACKETED.sub(" ", cleaned).split())
+
+    candidates = list(_MAIN_VOLUME.finditer(cleaned))
+    if not candidates:
+        candidates = list(_PART_VOLUME.finditer(cleaned))
+    trailing = _trailing_number(cleaned) if not candidates else None
+    # The last marker in the text wins; equal end positions go to the longer
+    # span, so the explicit marker beats the bare number inside it.
+    marker = max(candidates, key=lambda m: (m.end(), -m.start())) if candidates else None
+
+    selected: tuple[tuple[float, float], tuple[int, int]] | None = None
+    if marker is not None:
+        low = float(marker.group(1))
+        high = float(marker.group(2)) if marker.group(2) is not None else low
+        selected = ((min(low, high), max(low, high)), marker.span())
+    elif trailing is not None:
+        selected = ((trailing[0], trailing[0]), trailing[1])
+    volume_range: tuple[float, float] | None = None
+    if selected is not None:
+        requested, (start, end) = selected
+        remainder = cleaned[:start] + cleaned[end:]
+        if normalise(remainder):
+            # A title that is only a marker ("42", "Vol. 1") stays a title;
+            # stripping its only term would make the query unsearchable.
+            volume_range = requested
+            cleaned = remainder
+    cleaned = " ".join(cleaned.split()).strip(", ")
+
+    # Full title first (the metadata order), then the shorter forms; the colon
+    # split needs the space so "Re:Zero" survives it. A shorter form must keep
+    # at least two terms: a single word ("Magic") would match every series
+    # sharing the name, which is not what a subtitle-bearing title asked for.
+    parts = [cleaned]
+    head, sep, _ = cleaned.partition(": ")
+    if sep:
+        parts.append(head)
+    head, sep, _ = cleaned.partition(" - ")
+    if sep:
+        parts.append(head)
+    variants: list[str] = []
+    seen: set[str] = set()
+    for position, part in enumerate(parts):
+        key = normalise(part)
+        if not key or key in seen or (position and len(key.split()) < 2):
+            continue
+        seen.add(key)
+        variants.append(part)
+    return ParsedQuery(series_variants=variants, volume_range=volume_range)
+
+
+def entry_volumes(name: str) -> tuple[float, float] | None:
+    """The inclusive volume range a file name declares, None when it does not.
+
+    "Volume 01-17" covers every volume in 1..17, "Vol. 3" and "v03" are the
+    single-volume (3, 3), and "Volume 1.5" keeps its decimal. The marker tiers
+    follow parse_query: Volume/Vol/v beats Book/Part, which count only when no
+    Volume/Vol/v marker exists. A name with no marker at all ("Complete")
+    declares nothing, so a volume-filtered search skips it rather than guess.
+    """
+    match = _MAIN_VOLUME.search(name)
+    if match is None:
+        match = _PART_VOLUME.search(name)
+    if match is None:
+        return None
+    low = float(match.group(1))
+    high = float(match.group(2)) if match.group(2) is not None else low
+    return (min(low, high), max(low, high))
+
+
+def _format_volume_range(volume_range: tuple[float, float] | None) -> str:
+    """The volume part of the search log line: "3.0" or "1.0-3.0"."""
+    if volume_range is None:
+        return "None"
+    low, high = volume_range
+    if low == high:
+        return str(low)
+    return f"{low}-{high}"
 
 
 def coerce_int(value: object, default: int, *, lo: int, hi: int) -> int:
@@ -365,6 +522,7 @@ def flatten_index(raw: object, *, max_bytes: int) -> FlattenResult:
                 format=extension,
                 size_bytes=size,
                 haystack=normalise(f"{folder} {name}"),
+                volumes=entry_volumes(name),
             )
 
     return FlattenResult(entries=entries, skipped=skipped, samples=samples)
@@ -512,11 +670,16 @@ def download_order() -> list[str]:
     return configured
 
 
-def search(query: str, max_results: int) -> list[IndexEntry]:
-    """Search the index for every distinct term of ``query`` at once.
+def search(query: str, max_results: int, *, allow_fallback: bool = True) -> list[IndexEntry]:
+    """Search the index for the best series variant of ``query`` (spec 5.3).
 
-    Raises SourceUnavailableError when no index is loaded or cached, after
-    starting a background build; search never waits on the network itself.
+    Each variant in turn applies the all-terms-substring match; the first with
+    hits wins, and a requested volume range keeps only entries whose declared
+    range overlaps it. ``allow_fallback`` False (a manual query: what the user
+    typed) tries only the cleaned full title, because shortening it to a
+    series name would silently widen the search to unrelated series. Raises
+    SourceUnavailableError when no index is loaded or cached, after starting a
+    background build; search never waits on the network itself.
     """
     with _STATE_LOCK:
         _ensure_loaded_unlocked()
@@ -534,15 +697,47 @@ def search(query: str, max_results: int) -> list[IndexEntry]:
         start_background_refresh()
     _maybe_warn_stale(age, interval, fetched_at)
 
-    terms: list[str] = []
-    for term in normalise(query).split():
-        if term not in terms:
-            terms.append(term)
-    if not terms:
-        return []
-    # Term-as-substring over the precomputed haystacks: ~13k normalised strings,
-    # scanned in milliseconds.
-    hits = [entry for entry in entries.values() if all(term in entry.haystack for term in terms)]
+    # The variants go longest first; the first one with hits wins, so a query
+    # never widens past what the metadata title itself matched, and a shorter
+    # form needs at least two terms (parse_query) so it cannot fall back to a
+    # single shared word.
+    parsed = parse_query(query)
+    variants = parsed.series_variants if allow_fallback else parsed.series_variants[:1]
+    hits: list[IndexEntry] = []
+    winner = variants[0] if variants else query
+    for variant in variants:
+        terms: list[str] = []
+        for term in normalise(variant).split():
+            if term not in terms:
+                terms.append(term)
+        if not terms:
+            continue
+        # Term-as-substring over the precomputed haystacks: ~13k normalised
+        # strings, scanned in milliseconds.
+        found = [
+            entry for entry in entries.values() if all(term in entry.haystack for term in terms)
+        ]
+        if parsed.volume_range is not None:
+            # Volumes were asked for: an entry must declare a range overlapping
+            # them, so unnumbered files ("Complete", extras) cannot sneak in.
+            low, high = parsed.volume_range
+            found = [
+                entry
+                for entry in found
+                if entry.volumes is not None
+                and entry.volumes[0] <= high
+                and low <= entry.volumes[1]
+            ]
+        if found:
+            winner = variant
+            hits = found
+            break
+    logger.info(
+        "Searching Elscione for: %s (volume %s, %d hits)",
+        winner,
+        _format_volume_range(parsed.volume_range),
+        len(hits),
+    )
     hits.sort(key=lambda entry: (natural_key(entry.folder), natural_key(entry.name)))
     return hits[:max_results]
 

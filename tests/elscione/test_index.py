@@ -136,6 +136,169 @@ def test_natural_key_orders_numbers_numerically():
     assert index.natural_key("Vol 10") > index.natural_key("Vol 9")
 
 
+# --- Query parsing and entry volumes ----------------------------------------------
+
+
+def test_parse_query_strips_brackets_extracts_volume_and_splits_variants():
+    parsed = index.parse_query(sample.SEVENTH_TIME_LOOP_TITLE)
+    assert parsed.volume_range == (1.0, 1.0)
+    assert parsed.series_variants[0] == (
+        "7th Time Loop: The Villainess Enjoys a Carefree Life Married to Her Worst Enemy!"
+    )
+    assert parsed.series_variants[1] == "7th Time Loop"
+
+
+def test_parse_query_comma_volume_marker():
+    parsed = index.parse_query("Spice and Wolf, Vol. 3")
+    assert parsed.volume_range == (3.0, 3.0)
+    assert parsed.series_variants == ["Spice and Wolf"]
+
+
+def test_parse_query_volume_marker_beats_part_marker():
+    # "Part 2" names a real part of the series here, not the volume.
+    parsed = index.parse_query("Series Volume 1 Part 2")
+    assert parsed.volume_range == (1.0, 1.0)
+    assert "Part 2" in parsed.series_variants[0]
+
+
+def test_parse_query_part_marker_yields_to_volume_marker():
+    parsed = index.parse_query("Ascendance of a Bookworm: Part 2 Volume 4")
+    assert parsed.volume_range == (4.0, 4.0)
+    # "Part 2" stays in the text so it matches "Part 2 ... v04" file names.
+    assert parsed.series_variants[0] == "Ascendance of a Bookworm: Part 2"
+    assert "Ascendance of a Bookworm" in parsed.series_variants
+
+
+def test_parse_query_annotation_after_the_volume_marker():
+    # The explicit "Book 3" marker must win over the bare trailing "3" inside
+    # it, not leave "Book" behind in the variant.
+    parsed = index.parse_query("Spice and Wolf, Book 3 (Light Novel)")
+    assert parsed.volume_range == (3.0, 3.0)
+    assert parsed.series_variants == ["Spice and Wolf"]
+
+
+def test_parse_query_trailing_whitespace_after_the_volume_marker():
+    parsed = index.parse_query("Spice and Wolf, Vol. 3  ")
+    assert parsed.volume_range == (3.0, 3.0)
+    assert parsed.series_variants == ["Spice and Wolf"]
+
+
+def test_parse_query_bracket_only_title_has_no_volume():
+    parsed = index.parse_query("Overlord (Light Novel)")
+    assert parsed.volume_range is None
+    assert parsed.series_variants == ["Overlord"]
+
+
+def test_parse_query_colon_without_space_is_not_a_split():
+    parsed = index.parse_query("Re:Zero - Starting Life in Another World, Vol. 5")
+    assert parsed.volume_range == (5.0, 5.0)
+    assert parsed.series_variants[0] == "Re:Zero - Starting Life in Another World"
+    assert "Re:Zero" in parsed.series_variants
+
+
+def test_parse_query_unspaced_hyphen_is_not_a_split():
+    parsed = index.parse_query("86--EIGHTY-SIX, Vol. 2")
+    assert parsed.volume_range == (2.0, 2.0)
+    assert parsed.series_variants == ["86--EIGHTY-SIX"]
+
+
+def test_parse_query_drops_single_term_short_variants():
+    # "Magic" alone would match every series sharing the word, which is not
+    # what a subtitle-bearing title asked for.
+    parsed = index.parse_query("Magic: Missing Subtitle")
+    assert parsed.series_variants == ["Magic: Missing Subtitle"]
+
+
+def test_parse_query_trailing_bare_number_is_a_volume():
+    assert index.parse_query("Some Series, 12").volume_range == (12.0, 12.0)
+    assert index.parse_query("Some Series 12").series_variants == ["Some Series"]
+
+
+def test_parse_query_title_that_is_only_a_number_is_not_a_volume():
+    # Stripping the only term would make the query unsearchable, so a bare
+    # number stays a title without a volume.
+    parsed = index.parse_query("42")
+    assert parsed.volume_range is None
+    assert parsed.series_variants == ["42"]
+
+
+def test_parse_query_title_that_is_only_a_marker_stays_intact():
+    parsed = index.parse_query("Vol. 1")
+    assert parsed.volume_range is None
+    assert parsed.series_variants == ["Vol. 1"]
+
+
+def test_parse_query_requires_a_boundary_after_the_number():
+    parsed = index.parse_query("Series v1beta")
+    assert parsed.volume_range is None
+    assert parsed.series_variants == ["Series v1beta"]
+
+
+def test_parse_query_range_marker_is_a_requested_range():
+    parsed = index.parse_query("Series Vol. 1-3")
+    assert parsed.volume_range == (1.0, 3.0)
+    assert parsed.series_variants == ["Series"]
+    assert index.parse_query("Series Volumes 1-3").volume_range == (1.0, 3.0)
+    assert index.parse_query("Series Volume 01 - 03").volume_range == (1.0, 3.0)
+
+
+def test_parse_query_whitespace_padded_input_is_fast():
+    # The old trailing-number regex rescanned from every offset, quadratic on
+    # padded input; parsing must now stay one bounded pass.
+    started = time.perf_counter()
+    parsed = index.parse_query(" " * 40000 + "X")
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.1
+    assert parsed.series_variants == ["X"]
+    assert parsed.volume_range is None
+
+
+def test_parse_query_caps_runaway_input():
+    parsed = index.parse_query("A " * 400)
+    assert len(parsed.series_variants[0]) <= 512
+
+
+def test_parse_query_offers_full_title_then_split_forms():
+    parsed = index.parse_query("[Publisher] A Series: A Subtitle - An Extra")
+    assert parsed.series_variants == [
+        "A Series: A Subtitle - An Extra",
+        "A Series",
+        "A Series: A Subtitle",
+    ]
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("Series - Volume 01-17.epub", (1.0, 17.0)),
+        ("Series - Volumes 01-17.epub", (1.0, 17.0)),
+        ("Series - Volume 01-17 [Complete].epub", (1.0, 17.0)),
+        ("Series - Vol. 3.epub", (3.0, 3.0)),
+        ("Series - Vol 3.epub", (3.0, 3.0)),
+        ("Series - Volume 1.5.epub", (1.5, 1.5)),
+        ("Series - v03.epub", (3.0, 3.0)),
+        ("Series - Volume 01 - Extra.epub", (1.0, 1.0)),
+        ("Series Part 2 v04.epub", (4.0, 4.0)),
+        ("Series Part 2.epub", (2.0, 2.0)),
+        ("Series Book 3.epub", (3.0, 3.0)),
+        ("Series v1beta.epub", None),
+        ("7th Time Loop - Complete [enjugroup][Kobo].epub", None),
+        ("Plain Name.epub", None),
+        ("Voltron 5.epub", None),
+    ],
+)
+def test_entry_volumes_parses_file_names(name, expected):
+    assert index.entry_volumes(name) == expected
+
+
+def test_flatten_precomputes_volume_ranges():
+    entries = index.flatten_index(sample.SAMPLE_INDEX, max_bytes=sample.MAX_BYTES).entries
+    assert entries["!Yaoi/Amazing Grace/Amazing Grace - Vol 2.epub"].volumes == (2.0, 2.0)
+    assert entries["!Yaoi/Amazing Grace/Amazing Grace - Vol 10.epub"].volumes == (10.0, 10.0)
+    assert entries[sample.AMAZING_GRACE_PATH].volumes is None
+    assert entries["Root Book.epub"].volumes is None
+
+
 # --- Refresh ----------------------------------------------------------------------
 
 

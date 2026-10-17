@@ -1,5 +1,6 @@
 """Tests for ElscioneSource: availability gating, query building, release mapping."""
 
+import logging
 import types
 from unittest.mock import MagicMock, patch
 
@@ -69,9 +70,9 @@ class TestIsAvailable:
 # --- Query building ----------------------------------------------------------------
 
 
-def test_build_queries_manual_query_wins():
+def test_build_queries_manual_query_wins_and_is_never_shortened():
     assert _build_queries(_plan(manual_query="  amazing grace "), _book("ignored")) == [
-        "amazing grace"
+        ("amazing grace", False)
     ]
 
 
@@ -80,17 +81,17 @@ def test_build_queries_uses_every_variant_title_but_never_author():
         variants=[_variant("Amazing Grace", "Kiito Kiito"), _variant("Vol 1", "Kiito Kiito")]
     )
     queries = _build_queries(plan, _book("x"))
-    assert queries == ["Amazing Grace", "Vol 1"]
-    assert all("Kiito" not in query for query in queries)
+    assert queries == [("Amazing Grace", True), ("Vol 1", True)]
+    assert all("Kiito" not in query for query, _fallback in queries)
 
 
 def test_build_queries_dedups_casefolded_variants():
     plan = _plan(variants=[_variant("Amazing Grace", ""), _variant("AMAZING GRACE", "")])
-    assert _build_queries(plan, _book("x")) == ["Amazing Grace"]
+    assert _build_queries(plan, _book("x")) == [("Amazing Grace", True)]
 
 
 def test_build_queries_book_title_fallback():
-    assert _build_queries(_plan(), _book("Fallback Title")) == ["Fallback Title"]
+    assert _build_queries(_plan(), _book("Fallback Title")) == [("Fallback Title", True)]
 
 
 def test_build_queries_no_queries_at_all():
@@ -100,9 +101,9 @@ def test_build_queries_no_queries_at_all():
 # --- Search ------------------------------------------------------------------------
 
 
-def _installed_search(query, *, content_type="ebook", max_results=None, values=None):
+def _installed_search(query, *, content_type="ebook", max_results=None, values=None, entries=None):
     """Search through the source with the sample index installed."""
-    sample.install_entries(sample.sample_entries())
+    sample.install_entries(entries if entries is not None else sample.sample_entries())
     overrides = {**_AVAILABLE}
     if max_results is not None:
         overrides["ELSCIONE_MAX_RESULTS"] = max_results
@@ -198,6 +199,85 @@ def test_search_without_index_raises_and_starts_exactly_one_refresh():
         with pytest.raises(SourceUnavailableError, match="index is being built"):
             ElscioneSource().search(_book("x"), _plan(variants=[_variant("Amazing Grace")]))
     started.assert_called_once()
+
+
+# --- Metadata-style titles and volume matching ---------------------------------------
+
+
+def _seventh_time_loop_search(query):
+    return _installed_search(query, entries=sample.seventh_time_loop_entries())
+
+
+def test_search_long_metadata_title_falls_back_to_the_series_name():
+    # The full metadata title matches nothing (the files never carry the
+    # subtitle), so the "7th Time Loop" variant must take over.
+    releases = _seventh_time_loop_search(sample.SEVENTH_TIME_LOOP_TITLE)
+    assert [release.source_id for release in releases] == [
+        "7th Time Loop/7th Time Loop - Volume 01 [Seven Seas][Kobo].epub"
+    ]
+
+
+def test_search_volume_request_skips_other_volumes_and_unnumbered_files():
+    releases = _seventh_time_loop_search(sample.SEVENTH_TIME_LOOP_TITLE)
+    ids = [release.source_id for release in releases]
+    assert not any("Volume 02" in path or "Volume 10" in path for path in ids)
+    # The omnibus-style "Complete" file declares no volume, so it cannot be
+    # assumed to contain volume 1.
+    assert not any("Complete" in path for path in ids)
+
+
+def test_search_without_volume_returns_every_file():
+    releases = _seventh_time_loop_search("7th Time Loop")
+    assert len(releases) == 4
+
+
+def test_search_volume_range_entry_covers_the_requested_volume():
+    releases = _seventh_time_loop_search("Omnibus Collection, Vol. 5")
+    assert [release.source_id for release in releases] == [
+        "Omnibus Collection/Omnibus Collection - Volume 01-17.epub"
+    ]
+
+
+def test_search_volume_excludes_entries_whose_range_misses_it():
+    releases = _seventh_time_loop_search("Omnibus Collection, Vol. 18")
+    assert releases == []
+
+
+def test_search_logs_the_variant_that_hit_and_its_volume():
+    _seventh_time_loop_search(sample.SEVENTH_TIME_LOOP_TITLE)
+    with sample.captured_logs(index.logger, level=logging.INFO) as messages:
+        _seventh_time_loop_search(sample.SEVENTH_TIME_LOOP_TITLE)
+    searches = [m for m in messages if m.startswith("Searching Elscione for:")]
+    assert searches == ["Searching Elscione for: 7th Time Loop (volume 1.0, 1 hits)"]
+
+
+def test_search_short_variant_never_widens_to_unrelated_series():
+    # "Magic: Missing Subtitle" is neither "Magic Academy" nor "Magic Knight",
+    # so the one-term "Magic" fallback must not fire.
+    releases = _installed_search(
+        "Magic: Missing Subtitle", entries=sample.seventh_time_loop_entries()
+    )
+    assert releases == []
+
+
+def test_manual_query_is_never_shortened():
+    # What the user typed is searched as typed (brackets and volume aside);
+    # the "7th Time Loop" fallback a metadata title gets would silently
+    # change the search.
+    plan = _plan(manual_query=sample.SEVENTH_TIME_LOOP_TITLE)
+    releases = _installed_search(plan, entries=sample.seventh_time_loop_entries())
+    assert releases == []
+
+
+def test_search_volume_range_request_matches_overlapping_entries():
+    releases = _seventh_time_loop_search("Range Series, Vol. 1-3")
+    ids = {release.source_id for release in releases}
+    assert ids == {
+        "Range Series/Range Series - Volume 01.epub",
+        "Range Series/Range Series - Volume 02.epub",
+        "Range Series/Range Series - Volume 03.epub",
+        "Range Series/Range Series - Volume 01-17.epub",
+    }
 
 
 # --- Records and columns -------------------------------------------------------------
