@@ -16,6 +16,7 @@ in a single assignment so a concurrent search never sees a half-built one.
 
 import ipaddress
 import json
+import math
 import re
 import threading
 import time
@@ -188,6 +189,17 @@ def _trailing_number(text: str) -> tuple[float, tuple[int, int]] | None:
     return float(text[start:end]), (start, end)
 
 
+def _volume_number(text: str) -> float | None:
+    """A parsed volume number, or None when it is not finite.
+
+    A file name or title can carry an absurd digit run where its volume
+    number would be; float() answers that with inf, which no filter, log or
+    cover can use, so it counts as no volume at all.
+    """
+    value = float(text)
+    return value if math.isfinite(value) else None
+
+
 def parse_query(text: str) -> ParsedQuery:
     """Parse a metadata-style title into series-name variants and a volume.
 
@@ -198,7 +210,8 @@ def parse_query(text: str) -> ParsedQuery:
     extracted and removed. A Volume/Vol/v marker anywhere is the volume, with
     any Book/Part markers left in the title text; Book/Part count only when no
     Volume/Vol/v marker exists, and a bare trailing number only when no
-    explicit marker does.
+    explicit marker does. A number too large to be finite is not a volume,
+    though its marker text is still stripped: no haystack ever carries it.
     """
     cleaned = " ".join(text.split())[:_QUERY_MAX_LENGTH]
     cleaned = " ".join(_BRACKETED.sub(" ", cleaned).split())
@@ -211,22 +224,27 @@ def parse_query(text: str) -> ParsedQuery:
     # span, so the explicit marker beats the bare number inside it.
     marker = max(candidates, key=lambda m: (m.end(), -m.start())) if candidates else None
 
-    selected: tuple[tuple[float, float], tuple[int, int]] | None = None
-    if marker is not None:
-        low = float(marker.group(1))
-        high = float(marker.group(2)) if marker.group(2) is not None else low
-        selected = ((min(low, high), max(low, high)), marker.span())
-    elif trailing is not None:
-        selected = ((trailing[0], trailing[0]), trailing[1])
+    selected_span: tuple[int, int] | None = None
     volume_range: tuple[float, float] | None = None
-    if selected is not None:
-        requested, (start, end) = selected
+    if marker is not None:
+        low = _volume_number(marker.group(1))
+        high = _volume_number(marker.group(2)) if marker.group(2) is not None else low
+        selected_span = marker.span()
+        if low is not None and high is not None:
+            volume_range = (min(low, high), max(low, high))
+    elif trailing is not None:
+        selected_span = trailing[1]
+        if math.isfinite(trailing[0]):
+            volume_range = (trailing[0], trailing[0])
+    if selected_span is not None:
+        start, end = selected_span
         remainder = cleaned[:start] + cleaned[end:]
         if normalise(remainder):
             # A title that is only a marker ("42", "Vol. 1") stays a title;
             # stripping its only term would make the query unsearchable.
-            volume_range = requested
             cleaned = remainder
+        else:
+            volume_range = None
     cleaned = " ".join(cleaned.split()).strip(", ")
 
     # Full title first (the metadata order), then the shorter forms; the colon
@@ -258,15 +276,18 @@ def entry_volumes(name: str) -> tuple[float, float] | None:
     single-volume (3, 3), and "Volume 1.5" keeps its decimal. The marker tiers
     follow parse_query: Volume/Vol/v beats Book/Part, which count only when no
     Volume/Vol/v marker exists. A name with no marker at all ("Complete")
-    declares nothing, so a volume-filtered search skips it rather than guess.
+    declares nothing, so a volume-filtered search skips it rather than guess;
+    so does an absurd digit run, which parses to inf rather than a volume.
     """
     match = _MAIN_VOLUME.search(name)
     if match is None:
         match = _PART_VOLUME.search(name)
     if match is None:
         return None
-    low = float(match.group(1))
-    high = float(match.group(2)) if match.group(2) is not None else low
+    low = _volume_number(match.group(1))
+    high = _volume_number(match.group(2)) if match.group(2) is not None else low
+    if low is None or high is None:
+        return None
     return (min(low, high), max(low, high))
 
 
@@ -278,6 +299,33 @@ def _format_volume_range(volume_range: tuple[float, float] | None) -> str:
     if low == high:
         return str(low)
     return f"{low}-{high}"
+
+
+def _volume_with_origin(
+    parsed: tuple[float, float] | None, default_volume: float | None
+) -> tuple[tuple[float, float] | None, str]:
+    """The requested range plus where it came from, for the log line (spec 5.3).
+
+    A volume parsed from the title wins; the metadata's series position is the
+    fallback when the title carries none, as a scalar ``(v, v)``.
+    """
+    if parsed is not None:
+        return parsed, "title"
+    if default_volume is not None:
+        return (default_volume, default_volume), "series position"
+    return None, "none"
+
+
+def requested_volume(
+    query: str, default_volume: float | None
+) -> tuple[tuple[float, float] | None, str]:
+    """The volume range a query asks for and where it came from (spec 5.3).
+
+    ``search`` applies the same rules internally; the release mapping calls
+    this too, so the cover lands on exactly the entries the requested volume
+    describes without either side re-deriving the fallback.
+    """
+    return _volume_with_origin(parse_query(query).volume_range, default_volume)
 
 
 def coerce_int(value: object, default: int, *, lo: int, hi: int) -> int:
@@ -670,16 +718,28 @@ def download_order() -> list[str]:
     return configured
 
 
-def search(query: str, max_results: int, *, allow_fallback: bool = True) -> list[IndexEntry]:
+def search(
+    query: str,
+    max_results: int,
+    *,
+    allow_fallback: bool = True,
+    default_volume: float | None = None,
+) -> list[IndexEntry]:
     """Search the index for the best series variant of ``query`` (spec 5.3).
 
     Each variant in turn applies the all-terms-substring match; the first with
     hits wins, and a requested volume range keeps only entries whose declared
     range overlaps it. ``allow_fallback`` False (a manual query: what the user
     typed) tries only the cleaned full title, because shortening it to a
-    series name would silently widen the search to unrelated series. Raises
-    SourceUnavailableError when no index is loaded or cached, after starting a
-    background build; search never waits on the network itself.
+    series name would silently widen the search to unrelated series.
+    ``default_volume`` is the metadata's series position, a volume preference
+    when the title itself carries no volume: the winning variant's hits
+    narrow to entries covering the position, and an empty narrowed set falls
+    back to the unfiltered hits, because the metadata numbering need not
+    match the site's file numbering. A manual query passes None so what the
+    user typed is never narrowed. Raises SourceUnavailableError when no index
+    is loaded or cached, after starting a background build; search never
+    waits on the network itself.
     """
     with _STATE_LOCK:
         _ensure_loaded_unlocked()
@@ -702,8 +762,15 @@ def search(query: str, max_results: int, *, allow_fallback: bool = True) -> list
     # form needs at least two terms (parse_query) so it cannot fall back to a
     # single shared word.
     parsed = parse_query(query)
+    volume_range, origin = _volume_with_origin(parsed.volume_range, default_volume)
+    # A title volume is a hard filter: the query says which volume it is. A
+    # series position is a preference: the metadata numbering need not match
+    # the site's file numbering, so an empty narrowed set falls back to the
+    # variant's unfiltered hits instead of hiding every release.
+    preference = origin == "series position"
     variants = parsed.series_variants if allow_fallback else parsed.series_variants[:1]
     hits: list[IndexEntry] = []
+    unmatched = False
     winner = variants[0] if variants else query
     for variant in variants:
         terms: list[str] = []
@@ -717,27 +784,34 @@ def search(query: str, max_results: int, *, allow_fallback: bool = True) -> list
         found = [
             entry for entry in entries.values() if all(term in entry.haystack for term in terms)
         ]
-        if parsed.volume_range is not None:
+        if volume_range is not None:
             # Volumes were asked for: an entry must declare a range overlapping
             # them, so unnumbered files ("Complete", extras) cannot sneak in.
-            low, high = parsed.volume_range
-            found = [
+            low, high = volume_range
+            narrowed = [
                 entry
                 for entry in found
                 if entry.volumes is not None
                 and entry.volumes[0] <= high
                 and low <= entry.volumes[1]
             ]
+            if narrowed:
+                found = narrowed
+            elif preference:
+                unmatched = True
+            else:
+                found = []
         if found:
             winner = variant
             hits = found
             break
-    logger.info(
-        "Searching Elscione for: %s (volume %s, %d hits)",
-        winner,
-        _format_volume_range(parsed.volume_range),
-        len(hits),
-    )
+    volume_clause = "volume None"
+    if volume_range is not None:
+        volume_clause = f"volume {_format_volume_range(volume_range)} from {origin}"
+        if unmatched:
+            # The series position preference matched no numbered file here.
+            volume_clause += ", unmatched"
+    logger.info("Searching Elscione for: %s (%s, %d hits)", winner, volume_clause, len(hits))
     hits.sort(key=lambda entry: (natural_key(entry.folder), natural_key(entry.name)))
     return hits[:max_results]
 

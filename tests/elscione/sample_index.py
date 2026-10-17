@@ -282,6 +282,60 @@ SEVENTH_TIME_LOOP_INDEX = {
 }
 
 
+# A series whose numbering stops at Volume 02: a series position past the
+# last file must fall back to these hits instead of hiding them.
+TWO_VOLUME_INDEX = {
+    "name": ROOT_NAME,
+    "path": ".",
+    "folders": [
+        {
+            "name": "Trilogia",
+            "path": "Trilogia",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Trilogia - Volume 01.epub",
+                    "path": "Trilogia/Trilogia - Volume 01.epub",
+                    "size": 1024,
+                },
+                {
+                    "name": "Trilogia - Volume 02.epub",
+                    "path": "Trilogia/Trilogia - Volume 02.epub",
+                    "size": 2048,
+                },
+            ],
+        },
+    ],
+    "files": [],
+}
+
+
+# A series whose second file carries an absurd digit run where its volume
+# number would be: float() answers inf, which must count as no volume.
+ABSURD_VOLUME_NAME = "Weird Series - Volume " + "9" * 309 + ".epub"
+ABSURD_VOLUME_PATH = "Weird Series/" + ABSURD_VOLUME_NAME
+ABSURD_VOLUME_INDEX = {
+    "name": ROOT_NAME,
+    "path": ".",
+    "folders": [
+        {
+            "name": "Weird Series",
+            "path": "Weird Series",
+            "folders": [],
+            "files": [
+                {
+                    "name": "Weird Series - Volume 01.epub",
+                    "path": "Weird Series/Weird Series - Volume 01.epub",
+                    "size": 1024,
+                },
+                {"name": ABSURD_VOLUME_NAME, "path": ABSURD_VOLUME_PATH, "size": 2048},
+            ],
+        },
+    ],
+    "files": [],
+}
+
+
 def deep_tree(levels: int) -> dict:
     """A single chain of ``levels`` folders with one epub at the bottom."""
     path = "/".join(f"d{i}" for i in range(levels))
@@ -335,6 +389,16 @@ def sample_entries(max_bytes: int = MAX_BYTES) -> dict:
 def seventh_time_loop_entries(max_bytes: int = MAX_BYTES) -> dict:
     """Flattened entries of SEVENTH_TIME_LOOP_INDEX, keyed by path."""
     return index.flatten_index(SEVENTH_TIME_LOOP_INDEX, max_bytes=max_bytes).entries
+
+
+def two_volume_entries(max_bytes: int = MAX_BYTES) -> dict:
+    """Flattened entries of TWO_VOLUME_INDEX, keyed by path."""
+    return index.flatten_index(TWO_VOLUME_INDEX, max_bytes=max_bytes).entries
+
+
+def absurd_volume_entries(max_bytes: int = MAX_BYTES) -> dict:
+    """Flattened entries of ABSURD_VOLUME_INDEX, keyed by path."""
+    return index.flatten_index(ABSURD_VOLUME_INDEX, max_bytes=max_bytes).entries
 
 
 @contextlib.contextmanager

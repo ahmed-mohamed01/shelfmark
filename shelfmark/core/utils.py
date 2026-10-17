@@ -314,8 +314,9 @@ def transform_cover_url(cover_url: str | None, cache_id: str) -> str | None:
     if not cover_url:
         return cover_url
 
-    # Skip if already a local URL (starts with /)
-    if cover_url.startswith("/"):
+    # Skip if already a local URL (starts with /) or an inline image (data:), which
+    # carries the image itself and has nothing to fetch.
+    if cover_url.startswith(("/", "data:")):
         return cover_url
 
     # Check if cover caching is enabled

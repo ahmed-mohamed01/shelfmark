@@ -5,9 +5,12 @@ is a local substring match, not a scrape. The index has no author field, so auth
 terms are deliberately never added to a query: they would hide every match.
 """
 
+import hashlib
+import math
 from typing import TYPE_CHECKING, ClassVar
 
 from shelfmark.core.config import config
+from shelfmark.core.utils import transform_cover_url
 from shelfmark.release_sources import (
     BrowseRecord,
     ColumnAlign,
@@ -21,6 +24,7 @@ from shelfmark.release_sources import (
     register_source,
 )
 from shelfmark.release_sources.elscione import index
+from shelfmark.release_sources.elscione.placeholder import placeholder_cover
 
 if TYPE_CHECKING:
     from shelfmark.core.search_plan import ReleaseSearchPlan
@@ -81,6 +85,26 @@ def _build_queries(plan: ReleaseSearchPlan, book: BookMetadata) -> list[tuple[st
     return queries
 
 
+def _series_volume(book: BookMetadata) -> float | None:
+    """The book's series position as a volume preference, when usable.
+
+    A provider can move the volume out of the title and into the series
+    position ("#1 of 7"), leaving the plan's title variants with no volume to
+    parse, so the metadata's number is the only volume the request has.
+    Values that are not finite positive whole numbers are ignored: position 0
+    or NaN would filter out every numbered file, and a fractional position
+    (1.5) names a novella that site numbering usually does not carry, so it is
+    left out of the request rather than risk narrowing the hits to nothing.
+    """
+    position = book.series_position
+    if position is None:
+        return None
+    volume = float(position)
+    if not math.isfinite(volume) or volume <= 0 or not volume.is_integer():
+        return None
+    return volume
+
+
 @register_source("elscione")
 class ElscioneSource(ReleaseSource):
     """Release source that searches the cached Elscione file index."""
@@ -126,15 +150,31 @@ class ElscioneSource(ReleaseSource):
             hi=200,
         )
 
+        # The title variants may carry no volume at all (the provider moved it
+        # into the series position), so the metadata's number stands in as a
+        # volume preference: index.search narrows the hits to entries covering
+        # it and falls back to the unfiltered hits when none does, because the
+        # metadata numbering need not match the site's file numbering. A manual
+        # query is what the user typed and is never narrowed by it.
+        default_volume = _series_volume(book)
         for query, allow_fallback in queries:
             # index.search raises SourceUnavailableError while the index builds,
             # and logs the variant that produced whatever hits it returns.
-            hits = index.search(query, max_results, allow_fallback=allow_fallback)
+            candidate_volume = default_volume if allow_fallback else None
+            hits = index.search(
+                query,
+                max_results,
+                allow_fallback=allow_fallback,
+                default_volume=candidate_volume,
+            )
             if hits:
-                return [self._entry_to_release(entry) for entry in hits]
+                requested, _origin = index.requested_volume(query, candidate_volume)
+                return [self._entry_to_release(entry, book, requested) for entry in hits]
         return []
 
-    def _entry_to_release(self, entry: index.IndexEntry) -> Release:
+    def _entry_to_release(
+        self, entry: index.IndexEntry, book: BookMetadata, requested: tuple[float, float] | None
+    ) -> Release:
         """Map an index entry to a Release.
 
         ``source_id`` is the bare root-relative path, as requested: it contains
@@ -142,6 +182,40 @@ class ElscioneSource(ReleaseSource):
         None because the handler builds the URL from the index entry, never from
         this payload.
         """
+        extra: dict = {
+            "book_title": entry.folder,
+            "root": entry.root,
+            "index_fetched_at": index.fetched_at_iso(),
+            "language": None,  # the index has no language data; nothing is guessed
+        }
+        if (
+            requested is not None
+            and book.cover_url
+            and entry.volumes is not None
+            and entry.volumes[0] <= requested[0]
+            and requested[1] <= entry.volumes[1]
+        ):
+            # The release modal renders extra.preview as its leading thumbnail
+            # cell; the cover belongs to the entry that is actually the
+            # requested volume, not to every file the series matched.
+            # Proxied here with a slash-free cache id: the release serializer would
+            # otherwise key the cover cache on source_id, a file path whose slashes
+            # the /api/covers/<id> route cannot match. The id mixes the cover URL
+            # in, so one omnibus entry (Volume 01-17) caches book #1's cover and
+            # book #2's cover separately instead of serving the first forever. A
+            # local URL is left alone there.
+            cache_id = (
+                "elscione_"
+                + hashlib.sha256(f"{entry.path}\n{book.cover_url}".encode()).hexdigest()[:16]
+            )
+            extra["preview"] = transform_cover_url(book.cover_url, cache_id)
+        else:
+            # Every other row would render the grey "No Cover" box: the index
+            # has no cover images, so fill the cell with a generated
+            # Bauhaus-style cover keyed by the series and the entry itself.
+            extra["preview"] = placeholder_cover(
+                entry.folder, entry.folder, entry.volumes, entry.path
+            )
         return Release(
             source="elscione",
             source_id=entry.path,
@@ -156,12 +230,7 @@ class ElscioneSource(ReleaseSource):
             protocol=ReleaseProtocol.HTTP,
             indexer="Elscione",
             content_type="ebook",
-            extra={
-                "book_title": entry.folder,
-                "root": entry.root,
-                "index_fetched_at": index.fetched_at_iso(),
-                "language": None,  # the index has no language data; nothing is guessed
-            },
+            extra=extra,
         )
 
     def search_results_are_releases(self) -> bool:

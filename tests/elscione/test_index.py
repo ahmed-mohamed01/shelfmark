@@ -242,6 +242,15 @@ def test_parse_query_range_marker_is_a_requested_range():
     assert index.parse_query("Series Volume 01 - 03").volume_range == (1.0, 3.0)
 
 
+def test_parse_query_absurd_volume_is_no_volume():
+    # A 309-digit number parses to inf, which no filter can use: the marker
+    # text is still stripped (no haystack ever carries that digit run), but
+    # the query asks for no volume, so nothing is filtered out by it.
+    parsed = index.parse_query("Weird Series, Vol. " + "9" * 309)
+    assert parsed.volume_range is None
+    assert parsed.series_variants == ["Weird Series"]
+
+
 def test_parse_query_whitespace_padded_input_is_fast():
     # The old trailing-number regex rescanned from every offset, quadratic on
     # padded input; parsing must now stay one bounded pass.
@@ -289,6 +298,12 @@ def test_parse_query_offers_full_title_then_split_forms():
 )
 def test_entry_volumes_parses_file_names(name, expected):
     assert index.entry_volumes(name) == expected
+
+
+def test_entry_volumes_absurd_digit_run_is_no_volume():
+    # float() answers a 309-digit run with inf, and int(inf) would abort the
+    # release mapping: the file declares no volume, exactly like "Complete".
+    assert index.entry_volumes("Series - Volume " + "9" * 309 + ".epub") is None
 
 
 def test_flatten_precomputes_volume_ranges():

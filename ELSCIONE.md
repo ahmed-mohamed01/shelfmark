@@ -45,6 +45,18 @@ download client (see BookOrbit's `docs/SHELFMARK.md`).
 
 ## Release notes
 
+### Covers and volume narrowing (2026-10-17)
+
+- Elscione rows now have pictures. The row for the requested volume shows the book's own
+  cover; every other row gets a generated cover in the style of BookOrbit's default
+  "Bauhaus" placeholder (series-coloured, with the volume number), instead of "No Cover".
+  Covers are generated locally: no extra metadata or API requests.
+- Opening a book from Hardcover narrows the Elscione tab to that book's volume using its
+  series position ("#1 of 7"). If the site numbers it differently, all volumes are shown
+  instead of nothing; fractional positions (novellas) do not narrow.
+- Fixed covers for Elscione releases being routed through the cover cache under a file path
+  the cache route cannot serve.
+
 ### elscione-3890560 (2026-10-17)
 
 - Stable image tag: this branch now builds `:elscione` and `:elscione-<commit>` on every push,
@@ -77,12 +89,14 @@ download client (see BookOrbit's `docs/SHELFMARK.md`).
 
 - Download speed is set by the site, about 500 KB/s per file (a 10 MB volume takes about 20 s).
   The first download after the browser closes adds a 5 to 30 second bot-check solve.
-- Elscione has no author or language data; releases show title, format and size only.
+- Elscione has no author, language or cover data; releases show title, format and size,
+  and generated covers except for the requested volume.
 - Files over the size cap (64 MB by default) are not offered.
 
 ## Keeping in sync with upstream
 
 Everything Elscione-specific lives in new files. The upstream files touched are small hooks:
 `shelfmark/bypass/cookie_store.py`, `shelfmark/bypass/challenge.py`,
-`shelfmark/bypass/internal_bypasser.py` and one line in `shelfmark/release_sources/__init__.py`.
+`shelfmark/bypass/internal_bypasser.py`, one line in `shelfmark/release_sources/__init__.py`,
+and `transform_cover_url` in `shelfmark/core/utils.py` (passes `data:` image URLs through).
 Re-apply those when merging a new upstream release.

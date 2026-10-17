@@ -525,11 +525,25 @@ Live distribution as a sanity reference: pdf 7034, epub 6397, so about 13.4k off
   `volumes` range overlaps it (`entry.low <= hi and lo <= entry.high`). Entries with
   no declared volume (a `Complete` omnibus, extras) are excluded rather than guessed.
   With no requested volume the behaviour is the plain all-terms rule.
+- Series position preference: a metadata provider can move the volume out of the title
+  and into `book.series_position` ("#1 of 7"), leaving the title variants with no
+  volume to parse. For non-manual queries (`allow_fallback` True) the series position
+  is threaded into `index.search` as `default_volume` and used when the title itself
+  carries no volume. Only finite positive whole numbers are used; fractional
+  positions (1.5, a novella no `Volume NN` file carries) are ignored. Unlike a title
+  volume this is a preference, not a hard filter: the metadata numbering need not match
+  the site's file numbering (a book at position 3 may be the site's "Volume 02"), so
+  the winning variant's hits narrow to entries covering the position, and an empty
+  narrowed set falls back to the variant's unfiltered hits. A manual query never gets
+  it: what the user typed is searched as typed.
 - Normalise: `unicodedata.normalize("NFKD")`, drop combining marks, `casefold()`, replace
   every run of non-alphanumerics with one space, strip. Same as the prototype.
 - INFO log per lookup: `Searching Elscione for: %s (volume %s, %d hits)` with the
-  variant that produced the hits and the requested volume (`3.0`, or `1.0-3.0` for a
-  range).
+  variant that produced the hits; when a volume was requested the volume part is
+  `volume %s from %s`, naming the origin (`3.0 from title` for a parsed marker,
+  `1.0-3.0 from title` for a parsed range, `3.0 from series position` for the
+  metadata preference), and the series position preference falling back to the
+  unfiltered hits appends `, unmatched`.
 - Order: folder, then file name with a natural sort key (so `Volume 2` sorts before
   `Volume 10`). Cap at `ELSCIONE_MAX_RESULTS` (default 50, range 1-200).
 - `plan.languages` is ignored: the index has no language data. `language` stays `None`;
@@ -554,6 +568,26 @@ Release(
            "index_fetched_at": "...", "language": None},
 )
 ```
+
+- When a volume was requested (parsed from the title or from the series position) and
+  the book has a `cover_url`, releases whose entry volume range covers the requested
+  volume carry `extra["preview"] = book.cover_url`: the release modal renders that key
+  as its leading thumbnail cell, so the matching row shows the book's cover instead of
+  the "No Cover" placeholder. Every other row (and every row of a request with no
+  `cover_url`) carries the generated placeholder below; when the series position
+  preference fell back to unfiltered hits, no row covers the position, so no row
+  claims the book's cover.
+- `placeholder.py` fills the remaining rows: a generated cover in the style of
+  BookOrbit's default "Bauhaus" placeholder, returned by `placeholder_cover(series,
+  title, volume, seed)` as an SVG `data:image/svg+xml;utf8,...` URL the row renders
+  with a plain `<img src>`, so no frontend change, no route, no network. It ports
+  BookOrbit's TypeScript (fnv1a hash, mulberry32 rng, palette grouping, Bauhaus
+  schemes, micro-tier composition): the palette is keyed by the series, so a series
+  reads as a set while its volumes differ; numbered entries draw the giant volume
+  numeral, unnumbered ones the sun motif, over a monogram. Inputs are the entry
+  itself (`series = title = entry.folder`, `volume = entry.volumes`, `seed =
+  entry.path`); deterministic per entry, `lru_cache`d (4096), a few hundred bytes
+  per cover.
 
 - `search_results_are_releases()` returns True. `get_record()` returns a `BrowseRecord`
   for a path present in the index, else None.
