@@ -42,6 +42,12 @@ DDG_COOKIE_NAMES = {
 # forever, however good the __ddg* clearance is.
 AA_COOKIE_NAMES = {"aa_ddg_check"}
 
+# Anubis (https://anubis.techaro.lol) proof-of-work pass. Current releases name their
+# cookies techaro.lol-anubis-*; older ones used within.website-x-cmd-anubis-*. Without
+# them a plain HTTP request to an Anubis-protected host is challenged again, however
+# good the Cloudflare clearance next to it is.
+ANUBIS_COOKIE_PREFIXES = ("techaro.lol-anubis", "within.website-x-cmd-anubis")
+
 # DDoS-Guard cookies that describe *one* check rather than granting clearance, and so
 # must never be replayed on a later request. Observed live on Anna's Archive:
 #
@@ -93,7 +99,8 @@ def _should_extract_cookie(name: str, *, extract_all: bool) -> bool:
     is_cf = name in CF_COOKIE_NAMES or name.startswith("cf_")
     is_ddg = name in DDG_COOKIE_NAMES or name.startswith("__ddg")
     is_aa = name in AA_COOKIE_NAMES
-    return is_cf or is_ddg or is_aa
+    is_anubis = name.startswith(ANUBIS_COOKIE_PREFIXES)
+    return is_cf or is_ddg or is_aa or is_anubis
 
 
 def _cookie_field(cookie: Any, name: str) -> Any:

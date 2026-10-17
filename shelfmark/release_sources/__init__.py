@@ -488,6 +488,7 @@ _HANDLERS: dict[str, type[DownloadHandler]] = {}
 _BUILTIN_SOURCE_MODULES = (
     "shelfmark.release_sources.audiobookbay",
     "shelfmark.release_sources.direct_download",
+    "shelfmark.release_sources.elscione",
     "shelfmark.release_sources.irc",
     "shelfmark.release_sources.libgen",
     "shelfmark.release_sources.newznab",

@@ -23,6 +23,9 @@ DDOS_GUARD_INDICATORS = [
 
 OTHER_CHALLENGE_INDICATORS = [
     "diamwall",
+    # Anubis proof-of-work interstitial, with both apostrophe spellings.
+    "making sure you're not a bot",
+    "making sure you\u2019re not a bot",
 ]
 
 # Markers that exist only in raw markup: the bypassers scan rendered innerText, where

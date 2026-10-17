@@ -26,7 +26,8 @@ import requests
 from seleniumbase import cdp_driver
 from seleniumbase.undetected.cdp_driver.connection import ProtocolException
 
-from shelfmark.bypass import BypassCancelledError
+from shelfmark.bypass import BypassCancelledError, page_fetch
+from shelfmark.bypass import browser_session as session
 from shelfmark.bypass.challenge import (
     CLOUDFLARE_INDICATORS,
     DDOS_GUARD_INDICATORS,
@@ -983,6 +984,7 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
 
     async def _run_bypass() -> str:
         driver = None
+        result = ""
         # Stop retrying while there is still time to say so. A challenge nothing can solve
         # would otherwise spend every one of `retry` passes and be cut off mid-pass by the
         # worker deadline, which surfaces to the caller as `RuntimeError: TimeoutError` -
@@ -990,7 +992,7 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
         # reverse proxy. Giving up a pass early returns the real "bypass failed" instead.
         deadline = time.monotonic() + timeout - _RESERVE_FOR_CLEAN_FAILURE_SECONDS
         try:
-            driver = await _create_cdp_browser(url)
+            driver = await session.acquire(url, _create_cdp_browser, _close_cdp_driver)
 
             for attempt in range(retry):
                 _check_cancellation(cancel_flag, "Bypass cancelled before attempt")
@@ -1020,14 +1022,18 @@ def _run_bypass_in_current_process(url: str, retry: int, cancel_flag: Event | No
                     # On CDP errors, quit and create a fresh browser
                     if type(e).__name__ in DRIVER_RESET_ERRORS:
                         logger.info("Restarting Chrome due to browser error...")
-                        await _close_cdp_driver(driver)
-                        driver = await _create_cdp_browser(url)
+                        await session.discard(driver, _close_cdp_driver)
+                        driver = await session.acquire(url, _create_cdp_browser, _close_cdp_driver)
 
             logger.error("Bypass failed for %s", url)
             return ""
         finally:
             if driver:
-                await _close_cdp_driver(driver)
+                await session.release(
+                    driver,
+                    keep=bool(result) and not (cancel_flag and cancel_flag.is_set()),
+                    close_fn=_close_cdp_driver,
+                )
 
     # Bound the wait: this holds the module-wide LOCKED for its whole duration, and neither
     # page.get() nor page.wait() has a timeout of its own. Without a deadline here a single
@@ -1110,9 +1116,11 @@ class _BypassHelper:
         self._idle_timer: threading.Timer | None = None
 
     def _idle_timeout(self) -> float:
-        return _coerce_non_negative_float(
-            app_config.get("BYPASS_BROWSER_IDLE_TIMEOUT", _HELPER_IDLE_TIMEOUT_DEFAULT),
-            _HELPER_IDLE_TIMEOUT_DEFAULT,
+        return session.helper_idle_timeout(
+            _coerce_non_negative_float(
+                app_config.get("BYPASS_BROWSER_IDLE_TIMEOUT", _HELPER_IDLE_TIMEOUT_DEFAULT),
+                _HELPER_IDLE_TIMEOUT_DEFAULT,
+            )
         )
 
     def _spawn(self) -> subprocess.Popen[str]:
@@ -1815,6 +1823,8 @@ def _publish_result(result_path: Path, payload: dict[str, Any]) -> None:
 def _handle_child_request(request_line: str) -> int:
     """Answer one request from the parent."""
     request = json.loads(request_line or "{}")
+    if request.get("op") == "page_fetch":
+        return page_fetch.handle_child_request(request)
     result_path = Path(str(request["result_path"]))
     url = str(request["url"])
     retry = _coerce_positive_int(
@@ -1865,15 +1875,22 @@ def _run_child_process() -> int:
     answer is published.
     """
     exit_code = 0
-    for line in sys.stdin:
-        request_line = line.strip()
-        if not request_line:
-            continue
-        exit_code = _handle_child_request(request_line)
+    try:
+        for line in sys.stdin:
+            request_line = line.strip()
+            if not request_line:
+                continue
+            exit_code = _handle_child_request(request_line)
+    finally:
+        _CDP_WORKER.run(session.shutdown(_close_cdp_driver), timeout=30)
     return exit_code
 
 
 if __name__ == "__main__":
+    # The helper runs this file as __main__; register it under its real name so a lazy
+    # `import shelfmark.bypass.internal_bypasser` (browser_session, page_fetch) gets this
+    # copy, with its CDP loop and cached browser, rather than loading a second one.
+    sys.modules["shelfmark.bypass.internal_bypasser"] = sys.modules[__name__]
     # Started here rather than in _run_child_process() so it only ever watches a real
     # spawned helper, never a test or an embedded call.
     _start_parent_watchdog()
