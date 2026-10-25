@@ -30,6 +30,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _reset_config_dir_writable_cache():
+    """The writable-config-dir probe is remembered; each test starts without it."""
+    from shelfmark.config.env import reset_config_dir_writable_cache
+
+    reset_config_dir_writable_cache()
+    yield
+    reset_config_dir_writable_cache()
+
+
+@pytest.fixture(autouse=True)
 def _clear_torrent_fetch_cache():
     """Keep the shared torrent fetch cache from leaking between tests."""
     from shelfmark.download.clients.torrent_utils import clear_torrent_fetch_cache
@@ -37,6 +47,24 @@ def _clear_torrent_fetch_cache():
     clear_torrent_fetch_cache()
     yield
     clear_torrent_fetch_cache()
+
+
+@pytest.fixture(autouse=True)
+def _public_destination_dns(monkeypatch):
+    """Resolve every host to a public address for the destination guard.
+
+    The guard looks hosts up before a request. Tests use made-up and real hostnames and
+    must not depend on the DNS of the machine running them (a filtering resolver answers
+    ``::`` for some mirrors), so the guard's resolver is stubbed. Tests of the guard
+    itself replace it again.
+    """
+    from shelfmark.download import network
+
+    monkeypatch.setattr(
+        network,
+        "_system_getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
 
 
 @pytest.fixture

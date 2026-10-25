@@ -12,19 +12,25 @@ This document lists all configuration options that can be set via environment va
 - [Search Mode](#search-mode)
 - [Downloads](#downloads)
 - [Security](#security)
+- [Hardcover Sync](#hardcover-sync)
 - [Network](#network)
 - [Advanced](#advanced)
 - [Prowlarr](#prowlarr)
+- [Jackett](#jackett)
 - [Newznab](#newznab)
+- [Soulseek (slskd)](#soulseek-slskd)
 - [AudiobookBay](#audiobookbay)
 - [Libgen Search](#libgen-search)
+- [Webshare.cz](#websharecz)
 - [IRC](#irc)
 - [Download Clients](#download-clients)
 - [Metadata Providers](#metadata-providers)
   - [Hardcover](#metadata-providers-hardcover)
   - [Open Library](#metadata-providers-open-library)
   - [Google Books](#metadata-providers-google-books)
-  - [Moly.hu](#metadata-providers-moly.hu)
+  - [Moly.hu](#metadata-providers-molyhu)
+  - [Databáze knih](#metadata-providers-databáze-knih)
+  - [DNB](#metadata-providers-dnb)
 - [Direct Download](#direct-download)
   - [Download Sources](#direct-download-download-sources)
   - [Cloudflare Bypass](#direct-download-cloudflare-bypass)
@@ -44,13 +50,15 @@ These environment variables are used at startup before the settings system loads
 | `ENABLE_LOGGING` | Enable file logging under LOG_ROOT/shelfmark/ (including shelfmark.log and startup logs). | boolean | `true` |
 | `FLASK_HOST` | Host address for the Flask web server. | string | `0.0.0.0` |
 | `FLASK_PORT` | Port number for the Flask web server. | number | `8084` |
+| `SOCKETIO_ALLOWED_ORIGINS` | Extra origins allowed to open the live-update websocket, comma separated (e.g. https://books.example.com). The app's own origin is always allowed, including behind a proxy that sends X-Forwarded-Host and X-Forwarded-Proto. Only needed if your proxy changes Host without sending those headers. | string | `unset` |
 | `SESSION_COOKIE_SECURE` | Enable secure cookies (requires HTTPS). | boolean | `false` |
 | `CWA_DB_PATH` | Path to the Calibre-Web database for authentication integration. | string (path) | `/auth/app.db` |
 | `HIDE_LOCAL_AUTH` | Hide the username/password login form when OIDC is active. | boolean | `false` |
 | `DISABLE_LOCAL_AUTH` | Disable username/password login and remove the local-admin prerequisite for OIDC. Implies HIDE_LOCAL_AUTH; with AUTH_METHOD=builtin, everyone is locked out until auth env vars are changed. | boolean | `false` |
 | `SHELFMARK_API_KEY` | Optional static API key. When set, requests carrying it as 'Authorization: Bearer <key>' (or X-Api-Key) are authenticated as an admin; browser sessions keep working. Unset = off. | string | `unset` |
-| `SHELFMARK_API_KEY_READONLY` | Optional read-only API key. Can only GET `/api/stats`; never an admin. Unset = off. | string | `unset` |
+| `SHELFMARK_API_KEY_READONLY` | Optional second API key for dashboards and monitors. Send it like SHELFMARK_API_KEY. It can only GET /api/stats (counters only, no titles or user names). Every other request, and any write, is refused with 403, and it never gets a session. Unset = off. | string | `unset` |
 | `OIDC_AUTO_REDIRECT` | Automatically redirect to the OIDC provider instead of showing the login page. | boolean | `false` |
+| `UMASK` | File creation mask for the app process, read by entrypoint.sh. The default 0022 gives files 644 and directories 755. | string (octal) | `0022` |
 | `DOCKERMODE` | Indicates the application is running inside a Docker container. | boolean | `false` |
 | `ONBOARDING` | Show the onboarding wizard on first run. Set to false to skip (useful for ephemeral storage). | boolean | `true` |
 
@@ -99,6 +107,13 @@ Port number for the Flask web server.
 - **Type:** number
 - **Default:** `8084`
 
+#### `SOCKETIO_ALLOWED_ORIGINS`
+
+Extra origins allowed to open the live-update websocket, comma separated (e.g. https://books.example.com). The app's own origin is always allowed, including behind a proxy that sends X-Forwarded-Host and X-Forwarded-Proto. Only needed if your proxy changes Host without sending those headers.
+
+- **Type:** string
+- **Default:** `unset`
+
 #### `SESSION_COOKIE_SECURE`
 
 Enable secure cookies (requires HTTPS).
@@ -136,7 +151,7 @@ Optional static API key. When set, requests carrying it as 'Authorization: Beare
 
 #### `SHELFMARK_API_KEY_READONLY`
 
-Optional second API key for dashboards. Send it like `SHELFMARK_API_KEY`. It can only `GET /api/stats` (counters only, no titles or user names). Every other request, and any write, is refused with 403, and it never gets a session. Unset = off.
+Optional second API key for dashboards and monitors. Send it like SHELFMARK_API_KEY. It can only GET /api/stats (counters only, no titles or user names). Every other request, and any write, is refused with 403, and it never gets a session. Unset = off.
 
 - **Type:** string
 - **Default:** `unset`
@@ -147,6 +162,13 @@ Automatically redirect to the OIDC provider instead of showing the login page.
 
 - **Type:** boolean
 - **Default:** `false`
+
+#### `UMASK`
+
+File creation mask for the app process, read by entrypoint.sh. The default 0022 gives files 644 and directories 755.
+
+- **Type:** string (octal)
+- **Default:** `0022`
 
 #### `DOCKERMODE`
 
@@ -166,7 +188,7 @@ Show the onboarding wizard on first run. Set to false to skip (useful for epheme
 
 ## Egress / VPN Routing
 
-These startup-only variables are consumed by `entrypoint.sh` / `wireguard.sh` to select and configure the WireGuard transparent-egress kill-switch. `USING_WIREGUARD` and [`USING_TOR`](#using_tor) (documented under Network) are mutually exclusive; both require root startup.
+These startup-only variables are consumed by `entrypoint.sh` / `wireguard.sh` to select and configure the WireGuard transparent-egress kill-switch. `USING_WIREGUARD` and [`USING_TOR`](#using_tor) (documented under Network) are mutually exclusive; both require root startup. `TOR_CHECK_INTERVAL` and `TOR_MAX_FAILURES` tune the Tor watchdog in `tor.sh`.
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
@@ -180,6 +202,8 @@ These startup-only variables are consumed by `entrypoint.sh` / `wireguard.sh` to
 | `WIREGUARD_ALLOW_IPV6_LEAK` | Escape hatch: continue startup even when an IPv6 kill-switch cannot be installed AND IPv6 cannot be disabled. Only set when the container has no IPv6 connectivity, as IPv6 egress may otherwise bypass the tunnel. | boolean | `false` |
 | `WIREGUARD_ALLOW_WEBUI_OFFTUNNEL` | When false (default) the kill-switch is strictly fail-closed: the only off-tunnel egress permitted is loopback, the tunnel device and the LAN allowlist. Set true only if a NON-LAN client (e.g. a public reverse proxy on a different segment) must reach the WebUI; it permits app-server REPLY packets (--sport FLASK_PORT, conntrack REPLY) to leave off-tunnel. Server replies only, never client-initiated egress, so it cannot leak outbound browsing/downloads or the real IP for outbound requests, but it is still an off-tunnel path while the tunnel is down, hence opt-in. LAN WebUI clients never need it (covered by LAN_NETWORK). | boolean | `false` |
 | `WIREGUARD_STALE_AFTER` | Seconds since the last WireGuard handshake before the healthcheck bounces the tunnel. | number | `180` |
+| `TOR_CHECK_INTERVAL` | Seconds between Tor watchdog probes. The watchdog resets the container when Tor stops being usable, so the restart policy rebuilds the Tor setup. | integer (seconds) | `30` |
+| `TOR_MAX_FAILURES` | Consecutive failed Tor watchdog probes before the container is reset. 2 tolerates one failed probe. | integer | `2` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -254,6 +278,20 @@ Seconds since the last WireGuard handshake before the healthcheck bounces the tu
 - **Type:** number
 - **Default:** `180`
 
+#### `TOR_CHECK_INTERVAL`
+
+Seconds between Tor watchdog probes. The watchdog resets the container when Tor stops being usable, so the restart policy rebuilds the Tor setup.
+
+- **Type:** integer (seconds)
+- **Default:** `30`
+
+#### `TOR_MAX_FAILURES`
+
+Consecutive failed Tor watchdog probes before the container is reset. 2 tolerates one failed probe.
+
+- **Type:** integer
+- **Default:** `2`
+
 </details>
 
 ## General
@@ -265,6 +303,10 @@ Seconds since the last WireGuard handshake before the healthcheck bounces the tu
 | `AUDIOBOOK_LIBRARY_URL` | Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text. | string | _none_ |
 | `LIBRARY_CHECK_CALIBRE_ENABLED` | Read the Calibre metadata.db and mark search results you already own, so you do not download a second copy. Read only, nothing is written to the library. | boolean | `false` |
 | `CALIBRE_LIBRARY_DB_PATH` | Path to metadata.db as seen from inside the Shelfmark container. Mount the Calibre library folder read-only, e.g. /path/to/calibre-library:/calibre-library:ro. | string | `/calibre-library/metadata.db` |
+| `LIBRARY_CHECK_AUDIOBOOKSHELF_ENABLED` | Ask your Audiobookshelf server which audiobooks you already own, so synced and automatic downloads skip them. Read only, nothing is written to Audiobookshelf. | boolean | `false` |
+| `AUDIOBOOKSHELF_URL` | Base URL reachable from the Shelfmark container (not the public URL). Often the host LAN IP, e.g. http://10.0.0.91:13378. | string | _none_ |
+| `AUDIOBOOKSHELF_TOKEN` | API token from Audiobookshelf (Settings > Users > your user > API Token). | string (secret) | _none_ |
+| `AUDIOBOOKSHELF_LIBRARY_IDS` | Comma-separated library IDs to check. Leave blank for all book libraries. | string | _none_ |
 | `SUPPORTED_FORMATS` | Book formats to include in search results. ZIP/RAR archives are extracted automatically and book files are used if found. | string (comma-separated) | `epub,mobi,azw3,fb2,djvu,cbz,cbr` |
 | `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3,m4a,mp4,flac,ogg,wma,aac,wav,opus,zip,rar` |
 
@@ -315,6 +357,42 @@ Path to metadata.db as seen from inside the Shelfmark container. Mount the Calib
 
 - **Type:** string
 - **Default:** `/calibre-library/metadata.db`
+
+#### `LIBRARY_CHECK_AUDIOBOOKSHELF_ENABLED`
+
+**Mark audiobooks already in your Audiobookshelf library**
+
+Ask your Audiobookshelf server which audiobooks you already own, so synced and automatic downloads skip them. Read only, nothing is written to Audiobookshelf.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `AUDIOBOOKSHELF_URL`
+
+**Audiobookshelf URL**
+
+Base URL reachable from the Shelfmark container (not the public URL). Often the host LAN IP, e.g. http://10.0.0.91:13378.
+
+- **Type:** string
+- **Default:** _none_
+
+#### `AUDIOBOOKSHELF_TOKEN`
+
+**Audiobookshelf API Token**
+
+API token from Audiobookshelf (Settings > Users > your user > API Token).
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `AUDIOBOOKSHELF_LIBRARY_IDS`
+
+**Audiobookshelf Library IDs (optional)**
+
+Comma-separated library IDs to check. Leave blank for all book libraries.
+
+- **Type:** string
+- **Default:** _none_
 
 #### `SUPPORTED_FORMATS`
 
@@ -512,8 +590,8 @@ Audiobooks only. AudiobookBay lists it for most releases. In Prowlarr results it
 | `INGEST_DIR` | Directory where downloaded files are saved. Use {User} for per-user folders (e.g. /books/{User}). | string | `/books` |
 | `FILE_ORGANIZATION` | Choose how downloaded book files are named and organized. | string (choice) | `rename` |
 | `NAMING_WORD_SEPARATOR` | Replaces spaces inside naming template values (e.g. 'Conan Doyle' -> 'Conan.Doyle' with '.'). Applies to books and audiobooks, rename and organize templates alike. Literal characters typed into a template (like the '-' in '{Author} - {Title}') are left as-is. Leave empty to keep spaces as-is. | string | _empty string_ |
-| `TEMPLATE_RENAME` | Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
-| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
+| `TEMPLATE_RENAME` | Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
+| `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
 | `HARDLINK_TORRENTS` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `false` |
 | `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
 | `BOOKLORE_USERNAME` | Grimmory account username | string | _none_ |
@@ -534,12 +612,13 @@ Audiobooks only. AudiobookBay lists it for most releases. In Prowlarr results it
 | `EMAIL_ALLOW_UNVERIFIED_TLS` | Disable TLS certificate verification (not recommended). | boolean | `false` |
 | `DESTINATION_AUDIOBOOK` | Directory where downloaded audiobook files are saved. Leave empty to use the Books destination. | string | _none_ |
 | `FILE_ORGANIZATION_AUDIOBOOK` | Choose how downloaded audiobook files are named and organized. | string (choice) | `rename` |
-| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
-| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. {Narrator} and a Series fallback come from MyAnonamouse results (needs a MAM session ID); {{Narrator}} writes Audiobookshelf's '{Name}' style and is left out entirely when there is no narrator. | string | `{Author}/{Title}/{Title}` |
+| `TEMPLATE_AUDIOBOOK_RENAME` | Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title}` |
+| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. {Narrator} and a Series fallback come from MyAnonamouse results (needs a MAM session ID); {{Narrator}} writes Audiobookshelf's '{Name}' style and is left out entirely when there is no narrator. | string | `{Author}/{Title}/{Title}` |
 | `HARDLINK_TORRENTS_AUDIOBOOK` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `true` |
 | `AUTO_OPEN_DOWNLOADS_SIDEBAR` | Automatically open the downloads sidebar when a new download is queued. | boolean | `false` |
 | `DOWNLOAD_TO_BROWSER_CONTENT_TYPES` | Automatically download completed files to your browser for the selected content types. | string (comma-separated) | _empty list_ |
-| `MAX_CONCURRENT_DOWNLOADS` | Maximum number of simultaneous downloads. | number | `3` |
+| `MAX_CONCURRENT_DOWNLOADS` | Maximum number of simultaneous downloads. Not used while Max Concurrent Downloads Per Source is above 0. | number | `3` |
+| `MAX_CONCURRENT_DOWNLOADS_PER_SOURCE` | Simultaneous downloads allowed from each source (Soulseek, AudiobookBay, Direct Download and so on). A source at its limit does not hold the others back, so a Soulseek download waiting in a peer's queue cannot stop a torrent from starting. Above 0 this replaces Max Concurrent Downloads: the total can be this number for every source that has downloads at once. 0 uses the single limit above for all sources together. | number | `0` |
 | `STATUS_TIMEOUT` | How long to keep completed/failed downloads in the queue display. | number | `3600` |
 
 <details>
@@ -588,7 +667,7 @@ Replaces spaces inside naming template values (e.g. 'Conan Doyle' -> 'Conan.Doyl
 
 **Naming Template**
 
-Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title} ({Year})`
@@ -597,7 +676,7 @@ Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, 
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
+Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.
 
 - **Type:** string
 - **Default:** `{Author}/{Title} ({Year})`
@@ -798,7 +877,7 @@ Choose how downloaded audiobook files are named and organized.
 
 **Naming Template**
 
-Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
+Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads.
 
 - **Type:** string
 - **Default:** `{Author} - {Title}`
@@ -807,7 +886,7 @@ Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, 
 
 **Path Template**
 
-Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. {Narrator} and a Series fallback come from MyAnonamouse results (needs a MAM session ID); {{Narrator}} writes Audiobookshelf's '{Name}' style and is left out entirely when there is no narrator.
+Use / to create folders. Variables: {Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. {Narrator} and a Series fallback come from MyAnonamouse results (needs a MAM session ID); {{Narrator}} writes Audiobookshelf's '{Name}' style and is left out entirely when there is no narrator.
 
 - **Type:** string
 - **Default:** `{Author}/{Title}/{Title}`
@@ -843,12 +922,23 @@ Automatically download completed files to your browser for the selected content 
 
 **Max Concurrent Downloads**
 
-Maximum number of simultaneous downloads.
+Maximum number of simultaneous downloads. Not used while Max Concurrent Downloads Per Source is above 0.
 
 - **Type:** number
 - **Default:** `3`
 - **Requires restart:** Yes
 - **Constraints:** min: 1, max: 10
+
+#### `MAX_CONCURRENT_DOWNLOADS_PER_SOURCE`
+
+**Max Concurrent Downloads Per Source**
+
+Simultaneous downloads allowed from each source (Soulseek, AudiobookBay, Direct Download and so on). A source at its limit does not hold the others back, so a Soulseek download waiting in a peer's queue cannot stop a torrent from starting. Above 0 this replaces Max Concurrent Downloads: the total can be this number for every source that has downloads at once. 0 uses the single limit above for all sources together.
+
+- **Type:** number
+- **Default:** `0`
+- **Requires restart:** Yes
+- **Constraints:** min: 0, max: 10
 
 #### `STATUS_TIMEOUT`
 
@@ -1027,6 +1117,197 @@ Custom label for the OIDC sign-in button on the login page.
 
 </details>
 
+## Hardcover Sync
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `HARDCOVER_SYNC_ENABLED` | Periodically sync the selected Hardcover shelves into requests. | boolean | `false` |
+| `HARDCOVER_SYNC_TOKEN` | Bearer token for your Hardcover account. Leave blank to reuse the token from the Hardcover metadata provider. | string (secret) | _none_ |
+| `HARDCOVER_SYNC_STATUSES` | Which Hardcover reading shelf to pull from. | string (choice) | `1` |
+| `HARDCOVER_SYNC_CONTENT_TYPE` | Content type for synced requests. "Ebooks and audiobooks" creates one request of each per shelf book; every request is checked against its own library and downloaded with its own format guard and source priority. | string (choice) | `audiobook` |
+| `HARDCOVER_SYNC_INTERVAL` | How often the scheduled sync runs (minimum 1 minute). | number | `6` |
+| `HARDCOVER_SYNC_INTERVAL_UNIT` | Whether the sync interval is measured in minutes or hours. | string (choice) | `hours` |
+| `AUTO_DOWNLOAD_ENABLED` | Auto-approve and auto-download matching releases for synced requests. | boolean | `false` |
+| `AUTO_DOWNLOAD_SOURCE_PRIORITY` | Drag to set which release sources are tried first for audiobook requests. The first source with a strict match wins. Disabled sources are skipped. | JSON array | _empty list_ |
+| `AUTO_DOWNLOAD_EBOOK_SOURCE_PRIORITY` | Drag to set which release sources are tried first for ebook requests. The first source with a strict match wins. Disabled sources are skipped. | JSON array | _empty list_ |
+| `AUTO_DOWNLOAD_MIN_SEEDERS` | Skip torrent releases with fewer seeders than this. | number | `1` |
+| `AUTO_DOWNLOAD_RETRY_DAYS` | A synced request whose download failed, or was interrupted (a restart, say), goes back to pending after this many days and is tried again, a few per pass. A release that failed is not picked again, and a request is given up on after three failed retries. A download the stall timer cancelled counts as failed; one cancelled by a person, and rejected requests, are never retried. 0 turns retries off. | number | `7` |
+| `AUTO_DOWNLOAD_FAILURE_RETRY_MINUTES` | A download that failed, or that was given up on (stalled, no seeders), goes back to pending this many minutes later and another release is chosen, without waiting for the retry days above or the next sync cycle. The release that failed is not picked again, and a request is given up on after three failed attempts. 0 turns this off. | number | `0` |
+| `AUTO_DOWNLOAD_RETRY_FAILED_RELEASE_DAYS` | A release that failed or stalled is kept out of the search for this many days, then it may be picked again. A torrent that stalled can be revived by new seeds, so a failure should not shut a book out for good. A request is still given up on after three failed attempts. | number | `7` |
+| `AUTO_DOWNLOAD_BACKOFF_MAX_DAYS` | A request that no source has a match for is searched every cycle at first. After three passes in a row with no match it is searched once a day, then every two days, and at most this often apart. A match, or Sync now, starts it over. 0 searches every unmatched request every cycle. | number | `3` |
+| `AUTO_DOWNLOAD_EXISTENCE_CHECK_ENABLED` | An audiobook request that stays unmatched is looked up on Audible (US and UK) through your Audiobookshelf server. Either way it stays pending and its reason says what the store answered (with the ASIN when listed), for you to decline or keep; it is checked again after a week. A lookup that fails decides nothing. Needs the Audiobookshelf URL and token below. | boolean | `false` |
+| `AUTO_DOWNLOAD_EXISTENCE_CHECK_AFTER_PASSES` | How many consecutive passes with no strict match a request goes through before the store is asked. A pass that matched, or a reopen, starts the count over. | number | `3` |
+| `AUTO_DOWNLOAD_AUDIOBOOK_MIN_SIZE_PERCENT` | A copy of an audiobook smaller than this share of the largest copy found for the same book is probably a lower-bitrate copy. It is tried after the others, and a single m4b that small is not preferred over a fuller set of chapter files. 0 turns the check off. | number | `67` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `HARDCOVER_SYNC_ENABLED`
+
+**Enable scheduled sync**
+
+Periodically sync the selected Hardcover shelves into requests.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `HARDCOVER_SYNC_TOKEN`
+
+**Hardcover API Token**
+
+Bearer token for your Hardcover account. Leave blank to reuse the token from the Hardcover metadata provider.
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `HARDCOVER_SYNC_STATUSES`
+
+**Shelves to sync**
+
+Which Hardcover reading shelf to pull from.
+
+- **Type:** string (choice)
+- **Default:** `1`
+- **Options:** `1` (Want to Read), `2` (Currently Reading), `3` (Read), `5` (Did Not Finish)
+
+#### `HARDCOVER_SYNC_CONTENT_TYPE`
+
+**Request as**
+
+Content type for synced requests. "Ebooks and audiobooks" creates one request of each per shelf book; every request is checked against its own library and downloaded with its own format guard and source priority.
+
+- **Type:** string (choice)
+- **Default:** `audiobook`
+- **Options:** `audiobook` (Audiobooks), `ebook` (Ebooks), `both` (Ebooks and audiobooks)
+
+#### `HARDCOVER_SYNC_INTERVAL`
+
+**Sync interval**
+
+How often the scheduled sync runs (minimum 1 minute).
+
+- **Type:** number
+- **Default:** `6`
+- **Constraints:** min: 1, max: 10000
+
+#### `HARDCOVER_SYNC_INTERVAL_UNIT`
+
+**Interval unit**
+
+Whether the sync interval is measured in minutes or hours.
+
+- **Type:** string (choice)
+- **Default:** `hours`
+- **Options:** `minutes` (Minutes), `hours` (Hours)
+
+#### `AUTO_DOWNLOAD_ENABLED`
+
+**Enable automatic downloads**
+
+Auto-approve and auto-download matching releases for synced requests.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `AUTO_DOWNLOAD_SOURCE_PRIORITY`
+
+**Audiobook source priority**
+
+Drag to set which release sources are tried first for audiobook requests. The first source with a strict match wins. Disabled sources are skipped.
+
+- **Type:** JSON array
+- **Default:** _empty list_
+
+#### `AUTO_DOWNLOAD_EBOOK_SOURCE_PRIORITY`
+
+**Ebook source priority**
+
+Drag to set which release sources are tried first for ebook requests. The first source with a strict match wins. Disabled sources are skipped.
+
+- **Type:** JSON array
+- **Default:** _empty list_
+
+#### `AUTO_DOWNLOAD_MIN_SEEDERS`
+
+**Minimum seeders (torrents)**
+
+Skip torrent releases with fewer seeders than this.
+
+- **Type:** number
+- **Default:** `1`
+- **Constraints:** min: 0, max: 1000
+
+#### `AUTO_DOWNLOAD_RETRY_DAYS`
+
+**Retry failed downloads after (days)**
+
+A synced request whose download failed, or was interrupted (a restart, say), goes back to pending after this many days and is tried again, a few per pass. A release that failed is not picked again, and a request is given up on after three failed retries. A download the stall timer cancelled counts as failed; one cancelled by a person, and rejected requests, are never retried. 0 turns retries off.
+
+- **Type:** number
+- **Default:** `7`
+- **Constraints:** min: 0, max: 365
+
+#### `AUTO_DOWNLOAD_FAILURE_RETRY_MINUTES`
+
+**Try another release after a failed download (minutes)**
+
+A download that failed, or that was given up on (stalled, no seeders), goes back to pending this many minutes later and another release is chosen, without waiting for the retry days above or the next sync cycle. The release that failed is not picked again, and a request is given up on after three failed attempts. 0 turns this off.
+
+- **Type:** number
+- **Default:** `0`
+- **Constraints:** min: 0, max: 1440
+
+#### `AUTO_DOWNLOAD_RETRY_FAILED_RELEASE_DAYS`
+
+**Try a failed release again after (days)**
+
+A release that failed or stalled is kept out of the search for this many days, then it may be picked again. A torrent that stalled can be revived by new seeds, so a failure should not shut a book out for good. A request is still given up on after three failed attempts.
+
+- **Type:** number
+- **Default:** `7`
+- **Constraints:** min: 1, max: 365
+
+#### `AUTO_DOWNLOAD_BACKOFF_MAX_DAYS`
+
+**Longest wait between searches for an unmatched request (days)**
+
+A request that no source has a match for is searched every cycle at first. After three passes in a row with no match it is searched once a day, then every two days, and at most this often apart. A match, or Sync now, starts it over. 0 searches every unmatched request every cycle.
+
+- **Type:** number
+- **Default:** `3`
+- **Constraints:** min: 0, max: 30
+
+#### `AUTO_DOWNLOAD_EXISTENCE_CHECK_ENABLED`
+
+**Mark audiobooks no store sells**
+
+An audiobook request that stays unmatched is looked up on Audible (US and UK) through your Audiobookshelf server. Either way it stays pending and its reason says what the store answered (with the ASIN when listed), for you to decline or keep; it is checked again after a week. A lookup that fails decides nothing. Needs the Audiobookshelf URL and token below.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `AUTO_DOWNLOAD_EXISTENCE_CHECK_AFTER_PASSES`
+
+**Look the book up after (unmatched passes)**
+
+How many consecutive passes with no strict match a request goes through before the store is asked. A pass that matched, or a reopen, starts the count over.
+
+- **Type:** number
+- **Default:** `3`
+- **Constraints:** min: 1, max: 100
+
+#### `AUTO_DOWNLOAD_AUDIOBOOK_MIN_SIZE_PERCENT`
+
+**Smallest acceptable audiobook copy (%)**
+
+A copy of an audiobook smaller than this share of the largest copy found for the same book is probably a lower-bitrate copy. It is tried after the others, and a single m4b that small is not preferred over a fuller set of chapter files. 0 turns the check off.
+
+- **Type:** number
+- **Default:** `67`
+- **Constraints:** min: 0, max: 100
+
+</details>
+
 ## Network
 
 | Variable | Description | Type | Default |
@@ -1037,8 +1318,8 @@ Custom label for the OIDC sign-in button on the login page.
 | `USE_DOH` | Use encrypted DNS queries for improved reliability and privacy. | boolean | `true` |
 | `USING_TOR` | Route all traffic through Tor for enhanced privacy. Requires root startup. | boolean | `false` |
 | `PROXY_MODE` | Choose proxy type. SOCKS5 handles all traffic through a single proxy. | string (choice) | `none` |
-| `HTTP_PROXY` | HTTP proxy URL (e.g., http://proxy:8080) | string | _none_ |
-| `HTTPS_PROXY` | HTTPS proxy URL (leave empty to use HTTP proxy for HTTPS) | string | _none_ |
+| `HTTP_PROXY` | HTTP proxy URL. Supports auth: http://user:pass@host:port | string | _none_ |
+| `HTTPS_PROXY` | HTTPS proxy URL (leave empty to use HTTP proxy for HTTPS). Supports auth: http://user:pass@host:port | string | _none_ |
 | `SOCKS5_PROXY` | SOCKS5 proxy URL. Supports auth: socks5://user:pass@host:port | string | _none_ |
 | `NO_PROXY` | Comma-separated hosts to bypass proxy (e.g., localhost,127.0.0.1,10.*,*.local) | string | _none_ |
 
@@ -1106,7 +1387,7 @@ Choose proxy type. SOCKS5 handles all traffic through a single proxy.
 
 **HTTP Proxy**
 
-HTTP proxy URL (e.g., http://proxy:8080)
+HTTP proxy URL. Supports auth: http://user:pass@host:port
 
 - **Type:** string
 - **Default:** _none_
@@ -1115,7 +1396,7 @@ HTTP proxy URL (e.g., http://proxy:8080)
 
 **HTTPS Proxy**
 
-HTTPS proxy URL (leave empty to use HTTP proxy for HTTPS)
+HTTPS proxy URL (leave empty to use HTTP proxy for HTTPS). Supports auth: http://user:pass@host:port
 
 - **Type:** string
 - **Default:** _none_
@@ -1323,8 +1604,10 @@ How long to cache individual book details. Default: 600 (10 minutes). Max: 60480
 | `PROWLARR_API_KEY` | Found in Prowlarr: Settings > General > API Key | string (secret) | _none_ |
 | `PROWLARR_INDEXERS` | Select which indexers to search. 📚 = has book categories. Leave empty to search all. | string (comma-separated) | _empty list_ |
 | `PROWLARR_INDEXER_TIMEOUT` | How long to wait for a single indexer to answer a search. Indexers behind FlareSolverr can need 90 seconds or more while a cold Cloudflare challenge is solved; raise this if searches come back empty and the Prowlarr log shows the search still running. | number | `90` |
+| `PROWLARR_EBOOK_MAX_SIZE_MB` | Hide ebook results larger than this. Expanded searches and general indexers can return TV series, courses and software next to the books. 0 shows everything, and a result with no reported size is always shown. Audiobook searches are not limited. | number | `0` |
 | `PROWLARR_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
 | `PROWLARR_COLLAPSE_DUPLICATES` | Collapse a release that several indexer entries returned down to a single row, keeping the entry with the best Prowlarr priority. Turn this off to see every entry that carried it, which is what makes results from filter-specific entries (freeleech and the like) visible. | boolean | `true` |
+| `PROWLARR_HIDE_UNSUPPORTED_FORMATS` | Hide a result whose title ends in a file extension that is not in Supported Book Formats, such as a .doc or .rtf file. Downloading it would only fail at post-processing. Titles without an extension, archives and audiobook searches are never hidden. | boolean | `true` |
 | `PROWLARR_USE_SEED_PREFERENCES` | Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client | boolean | `false` |
 | `PROWLARR_MAM_ID` | The mam_id value MyAnonamouse shows when you create a session. MAM locks each session to one IP or ASN, so reusing Prowlarr's or another client's session often fails with a 403: you will likely need a separate session for Shelfmark if it reaches MAM from another IP (different host, VPN or proxy) or the existing session is ASN-locked to another network. Leave empty to turn enrichment off. | string (secret) | _none_ |
 
@@ -1379,6 +1662,16 @@ How long to wait for a single indexer to answer a search. Indexers behind FlareS
 - **Default:** `90`
 - **Constraints:** min: 5, max: 300
 
+#### `PROWLARR_EBOOK_MAX_SIZE_MB`
+
+**Maximum Ebook Size (MB)**
+
+Hide ebook results larger than this. Expanded searches and general indexers can return TV series, courses and software next to the books. 0 shows everything, and a result with no reported size is always shown. Audiobook searches are not limited.
+
+- **Type:** number
+- **Default:** `0`
+- **Constraints:** min: 0, max: 100000
+
 #### `PROWLARR_AUTO_EXPAND`
 
 **Auto-expand search on no results**
@@ -1393,6 +1686,15 @@ Automatically retry search without category filtering if no results are found
 **Show one row per release**
 
 Collapse a release that several indexer entries returned down to a single row, keeping the entry with the best Prowlarr priority. Turn this off to see every entry that carried it, which is what makes results from filter-specific entries (freeleech and the like) visible.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `PROWLARR_HIDE_UNSUPPORTED_FORMATS`
+
+**Hide results in formats you did not enable**
+
+Hide a result whose title ends in a file extension that is not in Supported Book Formats, such as a .doc or .rtf file. Downloading it would only fail at post-processing. Titles without an extension, archives and audiobook searches are never hidden.
 
 - **Type:** boolean
 - **Default:** `true`
@@ -1414,6 +1716,100 @@ The mam_id value MyAnonamouse shows when you create a session. MAM locks each se
 
 - **Type:** string (secret)
 - **Default:** _none_
+
+</details>
+
+## Jackett
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `JACKETT_ENABLED` | Enable searching for books via Jackett indexers | boolean | `false` |
+| `JACKETT_URL` | Base URL of your Jackett instance | string | _none_ |
+| `JACKETT_API_KEY` | Shown at the top right of the Jackett dashboard | string (secret) | _none_ |
+| `JACKETT_INDEXERS` | Select which indexers to search. Leave empty to search all configured indexers. | string (comma-separated) | _empty list_ |
+| `JACKETT_INDEXER_TIMEOUT` | How long to wait for Jackett to answer a search. Searching all indexers waits for the slowest one, and indexers behind FlareSolverr can need 90 seconds or more on a cold Cloudflare challenge. | number | `90` |
+| `JACKETT_EBOOK_MAX_SIZE_MB` | Hide ebook results larger than this. 0 shows everything, and a result with no reported size is always shown. Audiobook searches are not limited. | number | `0` |
+| `JACKETT_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
+| `JACKETT_HIDE_UNSUPPORTED_FORMATS` | Hide a result whose title ends in a file extension that is not in Supported Book Formats, such as a .doc or .rtf file. Titles without an extension, archives and audiobook searches are never hidden. | boolean | `true` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `JACKETT_ENABLED`
+
+**Enable Jackett source**
+
+Enable searching for books via Jackett indexers
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `JACKETT_URL`
+
+**Jackett URL**
+
+Base URL of your Jackett instance
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `JACKETT_API_KEY`
+
+**API Key**
+
+Shown at the top right of the Jackett dashboard
+
+- **Type:** string (secret)
+- **Default:** _none_
+- **Required:** Yes
+
+#### `JACKETT_INDEXERS`
+
+**Indexers to Search**
+
+Select which indexers to search. Leave empty to search all configured indexers.
+
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
+
+#### `JACKETT_INDEXER_TIMEOUT`
+
+**Indexer Search Timeout (seconds)**
+
+How long to wait for Jackett to answer a search. Searching all indexers waits for the slowest one, and indexers behind FlareSolverr can need 90 seconds or more on a cold Cloudflare challenge.
+
+- **Type:** number
+- **Default:** `90`
+- **Constraints:** min: 5, max: 300
+
+#### `JACKETT_EBOOK_MAX_SIZE_MB`
+
+**Maximum Ebook Size (MB)**
+
+Hide ebook results larger than this. 0 shows everything, and a result with no reported size is always shown. Audiobook searches are not limited.
+
+- **Type:** number
+- **Default:** `0`
+- **Constraints:** min: 0, max: 100000
+
+#### `JACKETT_AUTO_EXPAND`
+
+**Auto-expand search on no results**
+
+Automatically retry search without category filtering if no results are found
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `JACKETT_HIDE_UNSUPPORTED_FORMATS`
+
+**Hide results in formats you did not enable**
+
+Hide a result whose title ends in a file extension that is not in Supported Book Formats, such as a .doc or .rtf file. Titles without an extension, archives and audiobook searches are never hidden.
+
+- **Type:** boolean
+- **Default:** `true`
 
 </details>
 
@@ -1497,6 +1893,129 @@ Automatically retry search without category filtering if no results are found
 
 </details>
 
+## Soulseek (slskd)
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `SLSKD_ENABLED` | Enable searching and downloading books through slskd | boolean | `false` |
+| `SLSKD_URL` | Base URL of the slskd web interface | string | _none_ |
+| `SLSKD_API_KEY` | An API key from slskd's configuration (web.authentication.api_keys) with the readwrite role | string (secret) | _none_ |
+| `SLSKD_DOWNLOAD_PATH` | Where slskd's completed downloads folder is mounted inside Shelfmark. Leave empty when both containers see it at the same path, or use Settings > Advanced > Remote Path Mappings with client 'slskd'. | string | _none_ |
+| `SLSKD_ISOLATE_DOWNLOADS` | Download into a folder of its own inside slskd's downloads folder (needs slskd 0.26 or newer). Other apps using the same slskd cannot mix files with it or lose track of it when they clear slskd's list of finished transfers, and Shelfmark confirms a download by the files on disk. | boolean | `true` |
+| `SLSKD_DESTINATION_PREFIX` | The folder, inside slskd's downloads folder, that holds one folder per download. It must not climb out of slskd's downloads folder. | string | `shelfmark` |
+| `SLSKD_KEEP_COMPLETED` | Leave the finished files (and their transfer records) in slskd after Shelfmark copies them to your library, so they stay shared with other Soulseek users. Turn off to delete them once imported. | boolean | `true` |
+| `SLSKD_SEARCH_TIMEOUT` | How long a Soulseek search collects peer responses. Longer waits find more peers but make every search slower. | number | `15` |
+| `SLSKD_RESPONSE_LIMIT` | Stop a search early once this many peers have answered | number | `100` |
+| `SLSKD_QUEUE_TIMEOUT_MINUTES` | Give up when the peer has not started sending within this long. Set to 0 to wait indefinitely. | number | `60` |
+| `SLSKD_REMOVE_COMPLETED` | Clear the transfer from slskd's download list after Shelfmark imports it. Applies when each download does not get its own folder. | boolean | `true` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `SLSKD_ENABLED`
+
+**Enable Soulseek source**
+
+Enable searching and downloading books through slskd
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `SLSKD_URL`
+
+**slskd URL**
+
+Base URL of the slskd web interface
+
+- **Type:** string
+- **Default:** _none_
+
+#### `SLSKD_API_KEY`
+
+**API Key**
+
+An API key from slskd's configuration (web.authentication.api_keys) with the readwrite role
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `SLSKD_DOWNLOAD_PATH`
+
+**Downloads Path**
+
+Where slskd's completed downloads folder is mounted inside Shelfmark. Leave empty when both containers see it at the same path, or use Settings > Advanced > Remote Path Mappings with client 'slskd'.
+
+- **Type:** string
+- **Default:** _none_
+
+#### `SLSKD_ISOLATE_DOWNLOADS`
+
+**Give each download its own folder**
+
+Download into a folder of its own inside slskd's downloads folder (needs slskd 0.26 or newer). Other apps using the same slskd cannot mix files with it or lose track of it when they clear slskd's list of finished transfers, and Shelfmark confirms a download by the files on disk.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `SLSKD_DESTINATION_PREFIX`
+
+**Download Folder**
+
+The folder, inside slskd's downloads folder, that holds one folder per download. It must not climb out of slskd's downloads folder.
+
+- **Type:** string
+- **Default:** `shelfmark`
+
+#### `SLSKD_KEEP_COMPLETED`
+
+**Keep finished files in slskd**
+
+Leave the finished files (and their transfer records) in slskd after Shelfmark copies them to your library, so they stay shared with other Soulseek users. Turn off to delete them once imported.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `SLSKD_SEARCH_TIMEOUT`
+
+**Search Wait (seconds)**
+
+How long a Soulseek search collects peer responses. Longer waits find more peers but make every search slower.
+
+- **Type:** number
+- **Default:** `15`
+- **Constraints:** min: 3, max: 120
+
+#### `SLSKD_RESPONSE_LIMIT`
+
+**Max Peer Responses**
+
+Stop a search early once this many peers have answered
+
+- **Type:** number
+- **Default:** `100`
+- **Constraints:** min: 10, max: 1000
+
+#### `SLSKD_QUEUE_TIMEOUT_MINUTES`
+
+**Queue Timeout (minutes)**
+
+Give up when the peer has not started sending within this long. Set to 0 to wait indefinitely.
+
+- **Type:** number
+- **Default:** `60`
+- **Constraints:** min: 0, max: 1440
+
+#### `SLSKD_REMOVE_COMPLETED`
+
+**Remove completed transfers from slskd**
+
+Clear the transfer from slskd's download list after Shelfmark imports it. Applies when each download does not get its own folder.
+
+- **Type:** boolean
+- **Default:** `true`
+
+</details>
+
 ## AudiobookBay
 
 | Variable | Description | Type | Default |
@@ -1505,6 +2024,8 @@ Automatically retry search without category filtering if no results are found
 | `ABB_HOSTNAME` | AudiobookBay domain (e.g., audiobookbay.lu, audiobookbay.is). Required to enable searches. | string | _empty string_ |
 | `ABB_PAGE_LIMIT` | Maximum number of search result pages to fetch (1-10). | number | `1` |
 | `ABB_EXACT_PHRASE` | Wrap generated queries in quotes for stricter matching. If no results are found, Shelfmark retries without quotes. | boolean | `false` |
+| `ABB_SEED_TIME_MINUTES` | How long a finished AudiobookBay torrent keeps seeding before the client stops it. 0 uses the torrent client's own limit. | number | `0` |
+| `ABB_SEED_RATIO` | Share ratio an AudiobookBay torrent should reach before the client stops it. 0 uses the torrent client's own limit. | number | `0.0` |
 | `ABB_RATE_LIMIT_DELAY` | Delay between requests in seconds to avoid rate limiting (0-10). | number | `1.0` |
 
 <details>
@@ -1548,6 +2069,26 @@ Wrap generated queries in quotes for stricter matching. If no results are found,
 - **Type:** boolean
 - **Default:** `false`
 
+#### `ABB_SEED_TIME_MINUTES`
+
+**Seed Time (minutes)**
+
+How long a finished AudiobookBay torrent keeps seeding before the client stops it. 0 uses the torrent client's own limit.
+
+- **Type:** number
+- **Default:** `0`
+- **Constraints:** min: 0, max: 525600
+
+#### `ABB_SEED_RATIO`
+
+**Seed Ratio**
+
+Share ratio an AudiobookBay torrent should reach before the client stops it. 0 uses the torrent client's own limit.
+
+- **Type:** number
+- **Default:** `0.0`
+- **Constraints:** min: 0.0, max: 100.0
+
 #### `ABB_RATE_LIMIT_DELAY`
 
 **Rate Limit Delay (seconds)**
@@ -1588,6 +2129,59 @@ Maximum number of results to request per search (1-100).
 - **Type:** number
 - **Default:** `25`
 - **Constraints:** min: 1, max: 100
+
+</details>
+
+## Webshare.cz
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `WEBSHARE_ENABLED` | Search Webshare.cz by file name and download matching ebooks and audiobooks. Requires a Webshare account; a VIP account is recommended for full download speed. | boolean | `false` |
+| `WEBSHARE_USERNAME` | Your Webshare.cz login. | string | _none_ |
+| `WEBSHARE_PASSWORD` | Your Webshare.cz password. | string (secret) | _none_ |
+| `WEBSHARE_MAX_RESULTS` | Maximum number of files to request per search (1-200). Results are then filtered to your supported ebook or audiobook formats. | number | `50` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `WEBSHARE_ENABLED`
+
+**Enable Webshare.cz**
+
+Search Webshare.cz by file name and download matching ebooks and audiobooks. Requires a Webshare account; a VIP account is recommended for full download speed.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `WEBSHARE_USERNAME`
+
+**Username or Email**
+
+Your Webshare.cz login.
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `WEBSHARE_PASSWORD`
+
+**Password**
+
+Your Webshare.cz password.
+
+- **Type:** string (secret)
+- **Default:** _none_
+- **Required:** Yes
+
+#### `WEBSHARE_MAX_RESULTS`
+
+**Max Results**
+
+Maximum number of files to request per search (1-200). Results are then filtered to your supported ebook or audiobook formats.
+
+- **Type:** number
+- **Default:** `50`
+- **Constraints:** min: 1, max: 200
 
 </details>
 
@@ -1712,28 +2306,43 @@ How long to keep cached search results before they expire.
 | `QBITTORRENT_API_KEY` | Found in qBittorrent: Options > Web UI > API Key (qBittorrent 5.2.0+). Used instead of the username and password when set. | string (secret) | _none_ |
 | `QBITTORRENT_CATEGORY` | Category to assign to book downloads in qBittorrent | string | `books` |
 | `QBITTORRENT_CATEGORY_AUDIOBOOK` | Category for audiobook downloads. Leave empty to use the book category. | string | _empty string_ |
+| `QBITTORRENT_SEPARATE_DOWNLOAD_DIRS` | Download books and audiobooks to different directories instead of one shared directory. | boolean | `false` |
 | `QBITTORRENT_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses qBittorrent default if not specified) | string | _none_ |
+| `QBITTORRENT_DOWNLOAD_DIR_BOOK` | Server-side directory where book torrents are downloaded (optional, uses qBittorrent default if not specified) | string | _none_ |
+| `QBITTORRENT_DOWNLOAD_DIR_AUDIOBOOK` | Server-side directory where audiobook torrents are downloaded (optional, uses qBittorrent default if not specified) | string | _none_ |
 | `QBITTORRENT_TAG` | Tag(s) to assign to qBittorrent downloads. Leave empty for no tags. | string (comma-separated) | _empty list_ |
 | `TRANSMISSION_URL` | URL of your Transmission instance (use https:// for TLS) | string | _none_ |
 | `TRANSMISSION_USERNAME` | Transmission RPC username (if authentication enabled) | string | _none_ |
 | `TRANSMISSION_PASSWORD` | Transmission RPC password | string (secret) | _none_ |
 | `TRANSMISSION_CATEGORY` | Label to assign to book downloads in Transmission | string | `books` |
 | `TRANSMISSION_CATEGORY_AUDIOBOOK` | Label for audiobook downloads. Leave empty to use the book label. | string | _empty string_ |
+| `TRANSMISSION_SEPARATE_DOWNLOAD_DIRS` | Download books and audiobooks to different directories instead of one shared directory. | boolean | `false` |
 | `TRANSMISSION_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses Transmission default if not specified) | string | _none_ |
+| `TRANSMISSION_DOWNLOAD_DIR_BOOK` | Server-side directory where book torrents are downloaded (optional, uses Transmission default if not specified) | string | _none_ |
+| `TRANSMISSION_DOWNLOAD_DIR_AUDIOBOOK` | Server-side directory where audiobook torrents are downloaded (optional, uses Transmission default if not specified) | string | _none_ |
 | `DELUGE_HOST` | Hostname/IP or full URL of your Deluge Web UI (deluge-web) | string | `localhost` |
 | `DELUGE_PORT` | Deluge Web UI port (default: 8112) | string | `8112` |
 | `DELUGE_PASSWORD` | Deluge Web UI password (default: deluge) | string (secret) | _none_ |
 | `DELUGE_CATEGORY` | Label to assign to book downloads in Deluge | string | `books` |
 | `DELUGE_CATEGORY_AUDIOBOOK` | Label for audiobook downloads. Leave empty to use the book label. | string | _empty string_ |
+| `DELUGE_SEPARATE_DOWNLOAD_DIRS` | Download books and audiobooks to different directories instead of one shared directory. | boolean | `false` |
 | `DELUGE_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses Deluge default if not specified) | string | _none_ |
+| `DELUGE_DOWNLOAD_DIR_BOOK` | Server-side directory where book torrents are downloaded (optional, uses Deluge default if not specified) | string | _none_ |
+| `DELUGE_DOWNLOAD_DIR_AUDIOBOOK` | Server-side directory where audiobook torrents are downloaded (optional, uses Deluge default if not specified) | string | _none_ |
 | `RTORRENT_URL` | XML-RPC URL of your rTorrent instance | string | _none_ |
 | `RTORRENT_USERNAME` | HTTP Basic auth username (if authentication enabled) | string | _none_ |
 | `RTORRENT_PASSWORD` | HTTP Basic auth password | string (secret) | _none_ |
 | `RTORRENT_LABEL` | Label to assign to ebook downloads in rTorrent | string | `cwabd` |
 | `RTORRENT_AUDIOBOOK_LABEL` | Label to assign to audiobook downloads in rTorrent (falls back to Book Label if not set) | string | _none_ |
+| `RTORRENT_SEPARATE_DOWNLOAD_DIRS` | Download books and audiobooks to different directories instead of one shared directory. | boolean | `false` |
 | `RTORRENT_DOWNLOAD_DIR` | Server-side directory where torrents are downloaded (optional, uses rTorrent default if not specified) | string | _none_ |
+| `RTORRENT_DOWNLOAD_DIR_BOOK` | Server-side directory where book torrents are downloaded (optional, uses rTorrent default if not specified) | string | _none_ |
+| `RTORRENT_DOWNLOAD_DIR_AUDIOBOOK` | Server-side directory where audiobook torrents are downloaded (optional, uses rTorrent default if not specified) | string | _none_ |
 | `PROWLARR_TORRENT_ACTION` | After a successful import, Remove keeps downloaded files in qBittorrent, Transmission, and Deluge; Remove & Delete Files also deletes them. rTorrent cannot delete download data, so this action leaves its torrent untouched. Blackhole does not support removal. Debrid clients delete temporary local files for either Remove action. | string (choice) | `keep` |
+| `TORRENT_NO_SEEDERS_WAIT` | Give up on a torrent when its client sees no seed at all for this long, even while it is still downloading, or fewer seeds than the minimum below while nothing is downloading. The torrent is removed and the download marked failed, so another release can be tried. The card shows the seed count and a countdown while it waits. 0 keeps the default behaviour (only the stall timer ends it). Only qBittorrent reports seed counts. | number | `0` |
+| `TORRENT_MIN_SEEDERS` | Seeds the client must see for a motionless torrent to keep waiting. 0 also turns the no-seed check off. Only qBittorrent reports seed counts. | number | `1` |
 | `PROWLARR_TORRENT_POST_IMPORT_CATEGORY` | Category or label to assign after a successful import | string | _empty string_ |
+| `TORRENT_STALL_TIMEOUT_MINUTES` | How long a torrent can go without any progress before Shelfmark cancels it. Applies from when the torrent starts and restarts each time it moves. Raise it for slow swarms or magnets that take a while to find peers, or lower it to give up on dead torrents sooner. | number | `15` |
 | `PROWLARR_USENET_CLIENT` | Choose which usenet client to use | string (choice) | _empty string_ |
 | `NZBGET_URL` | URL of your NZBGet instance | string | _none_ |
 | `NZBGET_USERNAME` | NZBGet control username | string | `nzbget` |
@@ -1858,11 +2467,38 @@ Category for audiobook downloads. Leave empty to use the book category.
 - **Type:** string
 - **Default:** _empty string_
 
+#### `QBITTORRENT_SEPARATE_DOWNLOAD_DIRS`
+
+**Separate Book and Audiobook Directories**
+
+Download books and audiobooks to different directories instead of one shared directory.
+
+- **Type:** boolean
+- **Default:** `false`
+
 #### `QBITTORRENT_DOWNLOAD_DIR`
 
 **Download Directory**
 
 Server-side directory where torrents are downloaded (optional, uses qBittorrent default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `QBITTORRENT_DOWNLOAD_DIR_BOOK`
+
+**Book Download Directory**
+
+Server-side directory where book torrents are downloaded (optional, uses qBittorrent default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `QBITTORRENT_DOWNLOAD_DIR_AUDIOBOOK`
+
+**Audiobook Download Directory**
+
+Server-side directory where audiobook torrents are downloaded (optional, uses qBittorrent default if not specified)
 
 - **Type:** string
 - **Default:** _none_
@@ -1921,11 +2557,38 @@ Label for audiobook downloads. Leave empty to use the book label.
 - **Type:** string
 - **Default:** _empty string_
 
+#### `TRANSMISSION_SEPARATE_DOWNLOAD_DIRS`
+
+**Separate Book and Audiobook Directories**
+
+Download books and audiobooks to different directories instead of one shared directory.
+
+- **Type:** boolean
+- **Default:** `false`
+
 #### `TRANSMISSION_DOWNLOAD_DIR`
 
 **Download Directory**
 
 Server-side directory where torrents are downloaded (optional, uses Transmission default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `TRANSMISSION_DOWNLOAD_DIR_BOOK`
+
+**Book Download Directory**
+
+Server-side directory where book torrents are downloaded (optional, uses Transmission default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `TRANSMISSION_DOWNLOAD_DIR_AUDIOBOOK`
+
+**Audiobook Download Directory**
+
+Server-side directory where audiobook torrents are downloaded (optional, uses Transmission default if not specified)
 
 - **Type:** string
 - **Default:** _none_
@@ -1975,11 +2638,38 @@ Label for audiobook downloads. Leave empty to use the book label.
 - **Type:** string
 - **Default:** _empty string_
 
+#### `DELUGE_SEPARATE_DOWNLOAD_DIRS`
+
+**Separate Book and Audiobook Directories**
+
+Download books and audiobooks to different directories instead of one shared directory.
+
+- **Type:** boolean
+- **Default:** `false`
+
 #### `DELUGE_DOWNLOAD_DIR`
 
 **Download Directory**
 
 Server-side directory where torrents are downloaded (optional, uses Deluge default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `DELUGE_DOWNLOAD_DIR_BOOK`
+
+**Book Download Directory**
+
+Server-side directory where book torrents are downloaded (optional, uses Deluge default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `DELUGE_DOWNLOAD_DIR_AUDIOBOOK`
+
+**Audiobook Download Directory**
+
+Server-side directory where audiobook torrents are downloaded (optional, uses Deluge default if not specified)
 
 - **Type:** string
 - **Default:** _none_
@@ -2029,11 +2719,38 @@ Label to assign to audiobook downloads in rTorrent (falls back to Book Label if 
 - **Type:** string
 - **Default:** _none_
 
+#### `RTORRENT_SEPARATE_DOWNLOAD_DIRS`
+
+**Separate Book and Audiobook Directories**
+
+Download books and audiobooks to different directories instead of one shared directory.
+
+- **Type:** boolean
+- **Default:** `false`
+
 #### `RTORRENT_DOWNLOAD_DIR`
 
 **Download Directory**
 
 Server-side directory where torrents are downloaded (optional, uses rTorrent default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `RTORRENT_DOWNLOAD_DIR_BOOK`
+
+**Book Download Directory**
+
+Server-side directory where book torrents are downloaded (optional, uses rTorrent default if not specified)
+
+- **Type:** string
+- **Default:** _none_
+
+#### `RTORRENT_DOWNLOAD_DIR_AUDIOBOOK`
+
+**Audiobook Download Directory**
+
+Server-side directory where audiobook torrents are downloaded (optional, uses rTorrent default if not specified)
 
 - **Type:** string
 - **Default:** _none_
@@ -2048,6 +2765,26 @@ After a successful import, Remove keeps downloaded files in qBittorrent, Transmi
 - **Default:** `keep`
 - **Options:** `keep` (Keep), `remove` (Remove), `remove_and_delete` (Remove & Delete Files), `change_category` (Change Category)
 
+#### `TORRENT_NO_SEEDERS_WAIT`
+
+**Give Up With No Seeders (minutes)**
+
+Give up on a torrent when its client sees no seed at all for this long, even while it is still downloading, or fewer seeds than the minimum below while nothing is downloading. The torrent is removed and the download marked failed, so another release can be tried. The card shows the seed count and a countdown while it waits. 0 keeps the default behaviour (only the stall timer ends it). Only qBittorrent reports seed counts.
+
+- **Type:** number
+- **Default:** `0`
+- **Constraints:** min: 0, max: 240
+
+#### `TORRENT_MIN_SEEDERS`
+
+**Minimum Seeders**
+
+Seeds the client must see for a motionless torrent to keep waiting. 0 also turns the no-seed check off. Only qBittorrent reports seed counts.
+
+- **Type:** number
+- **Default:** `1`
+- **Constraints:** min: 0, max: 1000
+
 #### `PROWLARR_TORRENT_POST_IMPORT_CATEGORY`
 
 **Post-Import Category**
@@ -2056,6 +2793,16 @@ Category or label to assign after a successful import
 
 - **Type:** string
 - **Default:** _empty string_
+
+#### `TORRENT_STALL_TIMEOUT_MINUTES`
+
+**Stall Timeout (minutes)**
+
+How long a torrent can go without any progress before Shelfmark cancels it. Applies from when the torrent starts and restarts each time it moves. Raise it for slow swarms or magnets that take a while to find peers, or lower it to give up on dead torrents sooner.
+
+- **Type:** number
+- **Default:** `15`
+- **Constraints:** min: 5, max: 60
 
 #### `PROWLARR_USENET_CLIENT`
 
@@ -2327,6 +3074,67 @@ Enable Moly.hu as a metadata provider for book searches
 
 </details>
 
+### Metadata Providers: Databáze knih
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `DATABAZEKNIH_ENABLED` | Enable Databáze knih as a metadata provider for book searches | boolean | `false` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `DATABAZEKNIH_ENABLED`
+
+**Enable Databáze knih**
+
+Enable Databáze knih as a metadata provider for book searches
+
+- **Type:** boolean
+- **Default:** `false`
+
+</details>
+
+### Metadata Providers: DNB
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `DNB_ENABLED` | Enable DNB as a metadata provider for book searches | boolean | `false` |
+| `DNB_DEFAULT_SORT` | Default sort order for DNB search results. | string (choice) | `relevance` |
+| `DNB_USE_BOOK_LANGUAGES` | Filter DNB results by Default Book Languages: each user's own setting, else the system default. DNB also catalogs translations into many other languages. | boolean | `true` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `DNB_ENABLED`
+
+**Enable DNB**
+
+Enable DNB as a metadata provider for book searches
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `DNB_DEFAULT_SORT`
+
+**Default Sort Order**
+
+Default sort order for DNB search results.
+
+- **Type:** string (choice)
+- **Default:** `relevance`
+- **Options:** `relevance` (Most relevant), `newest` (Newest), `oldest` (Oldest)
+
+#### `DNB_USE_BOOK_LANGUAGES`
+
+**Only show editions in my book languages**
+
+Filter DNB results by Default Book Languages: each user's own setting, else the system default. DNB also catalogs translations into many other languages.
+
+- **Type:** boolean
+- **Default:** `true`
+
+</details>
+
 ## Direct Download
 
 ### Direct Download: Download Sources
@@ -2594,6 +3402,7 @@ How long the bypass helper process may sit unused before it is shut down. Higher
 | `LIBGEN_MIRROR_URLS` | Mirrors are tried in the order you add them until one works. | string (comma-separated) | _empty list_ |
 | `ZLIB_MIRROR_URLS` | Only the first mirror in the list is used. | string (comma-separated) | _empty list_ |
 | `WELIB_MIRROR_URLS` | Only the first mirror in the list is used. | string (comma-separated) | _empty list_ |
+| `OCEANOFPDF_MIRROR_URLS` | Searches and downloads directly, without Anna's Archive. Only the first mirror in the list is used. The site is behind Cloudflare, so the bypass must be enabled. | string (comma-separated) | _empty list_ |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -2640,6 +3449,15 @@ Only the first mirror in the list is used.
 **Welib**
 
 Only the first mirror in the list is used.
+
+- **Type:** string (comma-separated)
+- **Default:** _empty list_
+
+#### `OCEANOFPDF_MIRROR_URLS`
+
+**OceanofPDF**
+
+Searches and downloads directly, without Anna's Archive. Only the first mirror in the list is used. The site is behind Cloudflare, so the bypass must be enabled.
 
 - **Type:** string (comma-separated)
 - **Default:** _empty list_

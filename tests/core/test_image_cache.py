@@ -54,7 +54,7 @@ def test_fetch_and_cache_blocks_unsafe_redirect(tmp_path, monkeypatch) -> None:
         calls.append(url)
         return RedirectResponse()
 
-    monkeypatch.setattr("shelfmark.core.image_cache.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("shelfmark.download.network.socket.getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr("shelfmark.core.image_cache.requests.get", fake_get)
 
     assert cache.fetch_and_cache("cover-redirect", "https://example.com/cover.jpg") is None
@@ -72,3 +72,54 @@ def test_fetch_and_cache_returns_none_on_request_exception(tmp_path, monkeypatch
 
     assert cache.fetch_and_cache("cover-1", "https://example.com/cover.jpg") is None
     assert "cover-1" not in cache._index
+
+
+def test_cover_cache_key_depends_on_the_url_only() -> None:
+    from shelfmark.core.image_cache import cover_cache_key
+
+    key = cover_cache_key("https://example.com/cover.jpg")
+
+    assert key == cover_cache_key("  https://example.com/cover.jpg \n")
+    assert key != cover_cache_key("https://example.com/other.jpg")
+    assert key != cover_cache_key("https://example.com/cover.jpg?size=large")
+    assert key.isalnum() and key == key.lower()
+    assert "/" not in key and "." not in key
+
+
+def test_cache_hits_do_not_rewrite_the_index_each_time(tmp_path, monkeypatch) -> None:
+    """A hit only moves the last-access time, so the index is flushed on a timer."""
+    cache = ImageCacheService(tmp_path)
+    assert cache.put("cover-a", b"\xff\xd8\xff" + b"0" * 64, "image/jpeg")
+    saves: list[int] = []
+    real_save = cache._save_index
+    monkeypatch.setattr(cache, "_save_index", lambda: (saves.append(1), real_save())[1])
+
+    before = cache._index["cover-a"]["accessed_at"]
+    for _ in range(5):
+        assert cache.get("cover-a") is not None
+
+    assert saves == []
+    assert cache._index["cover-a"]["accessed_at"] >= before
+
+
+def test_cache_hit_flushes_the_index_once_the_window_has_passed(tmp_path, monkeypatch) -> None:
+    from shelfmark.core import image_cache
+
+    cache = ImageCacheService(tmp_path)
+    assert cache.put("cover-a", b"\xff\xd8\xff" + b"0" * 64, "image/jpeg")
+    saves: list[int] = []
+    real_save = cache._save_index
+    monkeypatch.setattr(cache, "_save_index", lambda: (saves.append(1), real_save())[1])
+
+    now = cache._last_saved
+    # One second past the window. Exactly on it, (now + 30) - now can come out a hair under 30
+    # for the small monotonic values of a freshly booted runner.
+    monkeypatch.setattr(
+        image_cache.time, "monotonic", lambda: now + image_cache.ACCESS_FLUSH_SECONDS + 1
+    )
+    assert cache.get("cover-a") is not None
+    assert saves == [1]
+
+    # The flush restarts the window.
+    assert cache.get("cover-a") is not None
+    assert saves == [1]

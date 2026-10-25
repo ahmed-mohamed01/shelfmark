@@ -23,12 +23,13 @@ from shelfmark.core.settings_registry import (
     ActionButton,
 )
 
+
 @register_settings(
-    name="my_plugin",           # Unique identifier
-    display_name="My Plugin",   # Shown in sidebar
-    icon="wrench",              # Icon name
-    order=100,                  # Sort order (lower = higher in list)
-    group="metadata_providers"  # Optional: group in sidebar
+    name="my_plugin",  # Unique identifier
+    display_name="My Plugin",  # Shown in sidebar
+    icon="wrench",  # Icon name
+    order=100,  # Sort order (lower = higher in list)
+    group="metadata_providers",  # Optional: group in sidebar
 )
 def my_plugin_settings():
     return [
@@ -46,6 +47,7 @@ def my_plugin_settings():
         ),
     ]
 
+
 def _test_connection():
     # Perform connection test
     return {"success": True, "message": "Connected successfully!"}
@@ -59,16 +61,16 @@ Single-line text input for strings.
 
 ```python
 TextField(
-    key="MY_SETTING",           # Config key
-    label="Setting Name",       # Display label
-    description="Help text",    # Optional description below field
-    default="",                 # Default value
+    key="MY_SETTING",  # Config key
+    label="Setting Name",  # Display label
+    description="Help text",  # Optional description below field
+    default="",  # Default value
     placeholder="Enter value",  # Placeholder text
-    max_length=100,             # Optional max characters
-    required=False,             # Is this field required?
-    requires_restart=False,     # Does changing this need a restart?
-    show_when=None,             # Conditional visibility (see below)
-    disabled_when=None,         # Conditional disable (see below)
+    max_length=100,  # Optional max characters
+    required=False,  # Is this field required?
+    requires_restart=False,  # Does changing this need a restart?
+    show_when=None,  # Conditional visibility (see below)
+    disabled_when=None,  # Conditional disable (see below)
 )
 ```
 
@@ -98,7 +100,7 @@ NumberField(
     default=30,
     min_value=5,
     max_value=300,
-    step=1,                     # Increment step
+    step=1,  # Increment step
     required=False,
 )
 ```
@@ -135,9 +137,11 @@ SelectField(
 )
 ```
 
+`SelectField` also takes `filter_by_field`, the key of another field whose value filters this field's options through each option's `childOf` property. `options` can be a list or a function that returns one, evaluated when the schema is built.
+
 ### MultiSelectField
 
-Multi-choice selection from a list of options.
+Multi-choice selection from a list of options. `variant` is `"pills"` (default) or `"dropdown"` for a checkbox dropdown.
 
 ```python
 MultiSelectField(
@@ -154,18 +158,69 @@ MultiSelectField(
 )
 ```
 
+### TagListField
+
+Editable list of free-form strings, shown as tags. The value is a list of strings.
+
+```python
+TagListField(
+    key="MY_PLUGIN_MIRROR_URLS",
+    label="Mirror URLs",
+    description="Type a URL and press Enter to add it",
+    placeholder="https://mirror.example",
+    normalize_urls=True,  # default: entries are cleaned up as URLs
+)
+```
+
+### OrderableListField
+
+A list of options that can be toggled on and off and reordered. The value is a list of `{"id": ..., "enabled": ...}` objects in priority order.
+
+```python
+OrderableListField(
+    key="MY_PLUGIN_SOURCE_PRIORITY",
+    label="Source priority",
+    options=[
+        {"id": "a", "label": "Source A"},
+        {"id": "b", "label": "Source B", "isLocked": True, "disabledReason": "Needs an API key"},
+    ],
+    default=[{"id": "a", "enabled": True}, {"id": "b", "enabled": False}],
+)
+```
+
+An option can set `isLocked` (the toggle is disabled), `isPinned` (it cannot be reordered), `description` and `section`.
+
+### TableField
+
+Editable table of structured rows. The value is a list of objects, one per row.
+
+```python
+TableField(
+    key="MY_PLUGIN_RULES",
+    label="Rules",
+    columns=[
+        {"key": "name", "label": "Name", "type": "text", "placeholder": "Rule name"},
+        {"key": "mode", "label": "Mode", "type": "select", "options": [...]},
+    ],
+    add_label="Add rule",
+    empty_message="No rules yet",
+    default=[],
+)
+```
+
 ### ActionButton
 
 Button that executes a callback function. Does not store a value.
 
 ```python
 ActionButton(
-    key="test_connection",      # Unique key for the action
-    label="Test Connection",    # Button text
+    key="test_connection",  # Unique key for the action
+    label="Test Connection",  # Button text
     description="Test the API connection",
-    style="primary",            # "default", "primary", or "danger"
-    callback=my_callback_fn,    # Function to execute
+    style="primary",  # "default", "primary", or "danger"
+    callback=my_callback_fn,  # Function to execute
 )
+
 
 def my_callback_fn():
     """Callback must return dict with 'success' and 'message' keys."""
@@ -176,17 +231,27 @@ def my_callback_fn():
         return {"success": False, "message": f"Failed: {str(e)}"}
 ```
 
+A callback that declares a `current_values` parameter receives the form's current, unsaved values as a dict, so a "Test connection" button can test what the user just typed instead of what was last saved:
+
+```python
+def my_callback_fn(current_values: dict):
+    api_key = current_values.get("MY_PLUGIN_API_KEY", "")
+    ...
+```
+
+The decorator calls your settings function as soon as the module is imported, so define the callback above `@register_settings`, not below it.
+
 ### HeadingField
 
 Display-only section heading with optional link. Does not store a value.
 
 ```python
 HeadingField(
-    key="section_heading",      # Unique key
-    title="Configuration",      # Heading text
+    key="section_heading",  # Unique key
+    title="Configuration",  # Heading text
     description="Configure the plugin settings below",
     link_url="https://example.com/docs",  # Optional link
-    link_text="View Documentation",       # Link text
+    link_text="View Documentation",  # Link text
 )
 ```
 
@@ -204,8 +269,14 @@ CustomComponentField(
     label="Request Policy Rules",
     description="Custom editor for policy defaults and matrix rules.",
     value_fields=[
-        SelectField(key="REQUEST_POLICY_DEFAULT_EBOOK", label="Default Ebook Mode", default="download"),
-        SelectField(key="REQUEST_POLICY_DEFAULT_AUDIOBOOK", label="Default Audiobook Mode", default="download"),
+        SelectField(
+            key="REQUEST_POLICY_DEFAULT_EBOOK", label="Default Ebook Mode", default="download"
+        ),
+        SelectField(
+            key="REQUEST_POLICY_DEFAULT_AUDIOBOOK",
+            label="Default Audiobook Mode",
+            default="download",
+        ),
         TableField(key="REQUEST_POLICY_RULES", label="Rules", columns=_rule_columns, default=[]),
     ],
     wrap_in_field_wrapper=True,  # use standard FieldWrapper label/description layout
@@ -226,6 +297,10 @@ All field types support these common properties:
 | `description` | `str` | `""` | Help text shown below the field |
 | `default` | `Any` | `None` | Default value if not set |
 | `required` | `bool` | `False` | Whether the field must have a value |
+| `env_var` | `str` | `None` | Environment variable name to use instead of `key` |
+| `env_supported` | `bool` | `True` | Set `False` for a UI-only setting that cannot come from an environment variable |
+| `user_overridable` | `bool` | `False` | Let an admin set a per-user override of this field |
+| `universal_only` | `bool` | `False` | Only show the field in Universal search mode |
 | `disabled` | `bool` | `False` | Disable the field (greyed out) |
 | `disabled_reason` | `str` | `""` | Explanation shown when disabled |
 | `requires_restart` | `bool` | `False` | Whether changes require container restart |
@@ -263,7 +338,7 @@ NumberField(
     disabled_when={
         "field": "FEATURE_ENABLED",
         "value": False,
-        "reason": "Enable the feature first"
+        "reason": "Enable the feature first",
     },
 )
 ```
@@ -285,6 +360,7 @@ register_group(
     order=50,
 )
 
+
 # Then register settings to the group
 @register_settings(
     name="plugin_a",
@@ -299,16 +375,34 @@ def plugin_a_settings():
 
 **Existing groups:**
 - `direct_download` (order=20): For download-related settings
-- `metadata_providers` (order=50): For metadata provider plugins
+- `metadata_providers` (order=12): For metadata provider plugins
 
 ## Value Resolution Priority
 
 Settings values are resolved in this order (highest priority first):
 
-1. **Config File** - Stored in `CONFIG_DIR/plugins/<tab_name>.json`
-2. **Field Default** - Value specified in the field definition
+1. **Environment variable** - The field's key, or `env_var` when set. Skipped for a field with `env_supported=False`. A value that comes from an environment variable is shown locked in the UI
+2. **Config File** - Stored in `CONFIG_DIR/plugins/<tab_name>.json`
+3. **Field Default** - Value specified in the field definition
 
-The `general` tab uses `CONFIG_DIR/settings.json` instead of the plugins subdirectory.
+The `general` and `search_mode` tabs use `CONFIG_DIR/settings.json` instead of the plugins subdirectory.
+
+## Validating or Transforming on Save
+
+`register_on_save(tab_name, handler)` runs a function each time the tab is saved. The handler receives a copy of the values being saved and returns a dict. Return `{"error": True, "message": "..."}` to refuse the save and show the message, or `{"values": {...}}` to save changed values.
+
+```python
+from shelfmark.core.settings_registry import register_on_save
+
+
+def _validate_my_plugin(values: dict) -> dict:
+    if values.get("MY_PLUGIN_TIMEOUT", 30) < 5:
+        return {"error": True, "message": "Timeout must be at least 5 seconds"}
+    return {"values": values}
+
+
+register_on_save("my_plugin", _validate_my_plugin)
+```
 
 ## Reading Setting Values
 
@@ -329,7 +423,7 @@ all_settings = config.get_all()
 ```
 
 The config singleton:
-- Automatically resolves values from config files with field defaults as fallback
+- Resolves values in the order above, with the field default as the last fallback
 - Caches values for performance
 - Refreshes automatically when settings are updated via the UI
 
@@ -340,9 +434,12 @@ Here's a complete example for a metadata provider plugin:
 ```python
 # shelfmark/metadata_providers/my_provider.py
 
-from shelfmark.metadata_providers.base import (
+from shelfmark.metadata_providers import (
+    BookMetadata,
     MetadataProvider,
+    MetadataSearchOptions,
     register_provider,
+    register_provider_kwargs,
 )
 from shelfmark.core.settings_registry import (
     register_settings,
@@ -416,6 +513,12 @@ def my_provider_settings():
     ]
 
 
+@register_provider_kwargs("my_provider")
+def _my_provider_kwargs() -> dict:
+    """Keyword arguments for MyProvider(...), read from settings each time one is created."""
+    return {"api_key": config.get("MY_PROVIDER_API_KEY", "")}
+
+
 @register_provider("my_provider")
 class MyProvider(MetadataProvider):
     """My Provider metadata implementation."""
@@ -424,24 +527,27 @@ class MyProvider(MetadataProvider):
     display_name = "My Provider"
     requires_auth = True
 
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or config.get("MY_PROVIDER_API_KEY", "")
-        self.base_url = config.get(
-            "MY_PROVIDER_BASE_URL",
-            "https://api.myprovider.com/v1"
-        )
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key
+        self.base_url = config.get("MY_PROVIDER_BASE_URL", "https://api.myprovider.com/v1")
 
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    def search(self, query: str):
+    def search(self, options: MetadataSearchOptions) -> list[BookMetadata]:
         # Implementation...
-        pass
+        return []
 
-    def get_book(self, book_id: str):
+    def get_book(self, book_id: str) -> BookMetadata | None:
         # Implementation...
-        pass
+        return None
+
+    def search_by_isbn(self, isbn: str) -> BookMetadata | None:
+        # Implementation...
+        return None
 ```
+
+All four methods above are abstract, so a provider that leaves one out cannot be instantiated. The provider module also has to be imported once so its decorators run: add it to the list of imports at the bottom of `shelfmark/metadata_providers/__init__.py`.
 
 ## Complete Example: Release Source
 
@@ -450,11 +556,11 @@ Here's a complete example for a release source plugin:
 ```python
 # shelfmark/release_sources/my_source.py
 
-from shelfmark.release_sources.base import (
-    ReleaseSource,
+from shelfmark.release_sources import (
     DownloadHandler,
-    register_source,
+    ReleaseSource,
     register_handler,
+    register_source,
 )
 from shelfmark.core.settings_registry import (
     register_settings,
@@ -552,21 +658,24 @@ class MySource(ReleaseSource):
     def is_available(self) -> bool:
         return self.enabled
 
-    def search(self, book):
+    def search(self, book, plan, *, expand_search=False, content_type="ebook"):
         # Implementation...
-        pass
+        return []
 
 
 @register_handler("my_source")
 class MySourceHandler(DownloadHandler):
     """Handler for downloading from My Source."""
 
-    name = "my_source"
-
-    def download(self, release, output_path):
+    def download(self, task, cancel_flag, progress_callback, status_callback):
         # Implementation...
-        pass
+        return None
+
+    def cancel(self, task_id):
+        return False
 ```
+
+The full source and handler interfaces, and how to register the module, are in the [Release Sources Plugin Guide](release-sources-plugin-guide.md).
 
 ## Best Practices
 

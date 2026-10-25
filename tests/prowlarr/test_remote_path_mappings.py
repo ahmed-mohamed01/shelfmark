@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from shelfmark.core.models import DownloadTask
 from shelfmark.download.clients import DownloadState, DownloadStatus
 from shelfmark.release_sources.prowlarr.handler import ProwlarrHandler
@@ -307,6 +309,313 @@ def test_wait_for_completed_path_allows_delayed_remapped_file(monkeypatch, tmp_p
     assert resolved_path == local_file
     assert error is None
     assert ("locating", "Waiting for completed files...") in recorder.status_updates
+
+
+def test_waits_for_supported_file_to_stop_growing_in_remapped_directory(monkeypatch, tmp_path):
+    import shelfmark.download.clients.base_handler as base_handler
+
+    local_dir = tmp_path / "local" / "downloads" / "book"
+    local_dir.mkdir(parents=True)
+    (local_dir / "book.cue").write_text("cue")
+    (local_dir / "cover.jpg").write_text("cover")
+
+    mock_client = MagicMock()
+    mock_client.name = "qbittorrent"
+    mock_client.get_download_path.return_value = "/remote/downloads/book"
+
+    def config_get(key: str, default=""):
+        if key == "PROWLARR_REMOTE_PATH_MAPPINGS":
+            return [
+                {
+                    "host": "qbittorrent",
+                    "remotePath": "/remote/downloads",
+                    "localPath": str(local_dir.parent),
+                }
+            ]
+        if key == "DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT":
+            return 1
+        return default
+
+    media_file = local_dir / "book.m4b"
+    sleep_calls = 0
+
+    def advance_sync(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            media_file.write_bytes(b"a")
+        elif sleep_calls == 2:
+            media_file.write_bytes(b"audio")
+
+    handler = ProwlarrHandler()
+    recorder = ProgressRecorder()
+    monkeypatch.setattr(base_handler.config, "get", config_get)
+    monkeypatch.setattr(handler, "_completed_path_retry_interval", lambda: 0.01)
+    monkeypatch.setattr(base_handler.time, "sleep", advance_sync)
+
+    resolved_path, error = handler._wait_for_completed_path(
+        mock_client,
+        "download_id",
+        cancel_flag=None,
+        status_callback=recorder.status_callback,
+        content_type="audiobook",
+    )
+
+    assert resolved_path == local_dir
+    assert error is None
+    assert sleep_calls == 3
+    assert recorder.status_updates.count(("locating", "Waiting for completed files...")) == 3
+
+
+def _wait_for_local_directory(
+    monkeypatch,
+    directory: Path,
+    *,
+    timeout: object,
+    content_type: str | None = None,
+    on_sleep=None,
+    expected=None,
+):
+    import shelfmark.download.clients.base_handler as base_handler
+
+    mock_client = MagicMock()
+    mock_client.name = "qbittorrent"
+    mock_client.get_download_path.return_value = str(directory)
+    mock_client.get_expected_files.return_value = expected
+
+    def config_get(key: str, default=""):
+        if key == "PROWLARR_REMOTE_PATH_MAPPINGS":
+            return []
+        if key == "DOWNLOAD_CLIENT_COMPLETED_PATH_TIMEOUT":
+            return timeout
+        return default
+
+    handler = ProwlarrHandler()
+    monkeypatch.setattr(base_handler.config, "get", config_get)
+    monkeypatch.setattr(handler, "_completed_path_retry_interval", lambda: 0.01)
+    monkeypatch.setattr(base_handler.time, "sleep", on_sleep or (lambda _seconds: None))
+    return handler._wait_for_completed_path(
+        mock_client,
+        "download_id",
+        cancel_flag=None,
+        status_callback=ProgressRecorder().status_callback,
+        content_type=content_type,
+    )
+
+
+def test_a_directory_holding_only_an_archive_is_returned_for_extraction(monkeypatch, tmp_path):
+    # A scene release: the book is inside the .rar, which post-processing extracts.
+    release = tmp_path / "Book.Title-GROUP"
+    release.mkdir()
+    (release / "book.rar").write_bytes(b"Rar!archive")
+    (release / "book.nfo").write_text("nfo")
+    (release / "book.sfv").write_text("sfv")
+
+    resolved_path, error = _wait_for_local_directory(monkeypatch, release, timeout=1)
+
+    assert resolved_path == release
+    assert error is None
+
+
+def test_a_completed_directory_is_returned_when_no_wait_is_configured(monkeypatch, tmp_path):
+    release = tmp_path / "Book"
+    release.mkdir()
+    (release / "book.epub").write_bytes(b"epub")
+
+    resolved_path, error = _wait_for_local_directory(monkeypatch, release, timeout=0)
+
+    assert resolved_path == release
+    assert error is None
+
+
+def test_a_directory_without_book_files_still_fails_when_no_wait_is_configured(
+    monkeypatch, tmp_path
+):
+    release = tmp_path / "Book"
+    release.mkdir()
+    (release / "cover.jpg").write_bytes(b"jpg")
+
+    resolved_path, error = _wait_for_local_directory(monkeypatch, release, timeout=0)
+
+    assert resolved_path is None
+    assert error == "Completed download has no stable supported files yet."
+
+
+def _expected(*files: tuple[str, int]):
+    from shelfmark.download.clients import ExpectedFile
+
+    return [ExpectedFile(name, size) for name, size in files]
+
+
+def _batch_release(tmp_path, count: int, *, present: int):
+    """A 23-file style book folder that a sync has copied `present` files of."""
+    release = tmp_path / "Release"
+    release.mkdir()
+    for number in range(1, present + 1):
+        (release / f"{number:02d}.epub").write_bytes(b"x" * (100 + number))
+    expected = _expected(*((f"Release/{n:02d}.epub", 100 + n) for n in range(1, count + 1)))
+    return release, expected
+
+
+def test_a_folder_with_only_some_of_the_clients_files_keeps_waiting(monkeypatch, tmp_path):
+    """The sync paused after 10 of 23 files and the folder stopped changing (#1561)."""
+    release, expected = _batch_release(tmp_path, 23, present=10)
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, expected=expected
+    )
+
+    assert resolved_path is None
+    assert error == "Completed download is not fully on disk yet (10 of 23 files)."
+
+
+def test_a_truncated_file_does_not_count_as_present(monkeypatch, tmp_path):
+    release, expected = _batch_release(tmp_path, 3, present=3)
+    (release / "02.epub").write_bytes(b"x" * 5)
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, expected=expected
+    )
+
+    assert resolved_path is None
+    assert error == "Completed download is not fully on disk yet (2 of 3 files)."
+
+
+def test_the_import_goes_ahead_once_the_rest_of_the_files_arrive(monkeypatch, tmp_path):
+    release, expected = _batch_release(tmp_path, 5, present=2)
+    sleeps = 0
+
+    def sync_more(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        arriving = release / f"{2 + sleeps:02d}.epub"
+        if 2 + sleeps <= 5:
+            arriving.write_bytes(b"x" * (100 + 2 + sleeps))
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, expected=expected, on_sleep=sync_more
+    )
+
+    assert resolved_path == release
+    assert error is None
+    assert sleeps >= 3
+
+
+def test_a_complete_folder_is_accepted(monkeypatch, tmp_path):
+    release, expected = _batch_release(tmp_path, 4, present=4)
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, expected=expected
+    )
+
+    assert resolved_path == release
+    assert error is None
+
+
+def test_names_without_the_top_level_folder_also_match(monkeypatch, tmp_path):
+    """A torrent saved without a subfolder is listed without one."""
+    release, _ = _batch_release(tmp_path, 3, present=3)
+    expected = _expected(*((f"{n:02d}.epub", 100 + n) for n in range(1, 4)))
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, expected=expected
+    )
+
+    assert resolved_path == release
+    assert error is None
+
+
+def test_a_single_file_still_syncing_is_not_accepted(monkeypatch, tmp_path):
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"part")
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, book, timeout=1, expected=_expected(("book.epub", 4000))
+    )
+
+    assert resolved_path is None
+    assert error == "Completed download is not fully on disk yet (0 of 1 files)."
+
+
+def test_a_single_file_at_its_final_size_is_accepted(monkeypatch, tmp_path):
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"x" * 4000)
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, book, timeout=1, expected=_expected(("book.epub", 4000))
+    )
+
+    assert resolved_path == book
+    assert error is None
+
+
+def test_a_client_without_a_file_list_keeps_the_old_behaviour(monkeypatch, tmp_path):
+    release, _ = _batch_release(tmp_path, 23, present=10)
+
+    resolved_path, error = _wait_for_local_directory(monkeypatch, release, timeout=1, expected=None)
+
+    assert resolved_path == release
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    ("content_type", "filename"),
+    [
+        (None, "book.m4b"),
+        ("book (fiction)", "recording.mp3"),
+        ("audiobook", "book.epub"),
+        (None, "book.pdf"),
+    ],
+)
+def test_a_finished_directory_of_the_wrong_kind_is_returned_without_waiting_out_the_timeout(
+    monkeypatch, tmp_path, content_type, filename
+):
+    """Post-processing can name the format problem; polling for 60 s to say it later cannot (F3)."""
+    release = tmp_path / "Release"
+    release.mkdir()
+    (release / filename).write_bytes(b"finished")
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=1, content_type=content_type
+    )
+
+    assert resolved_path == release
+    assert error is None
+
+
+def test_a_directory_with_only_cover_art_and_notes_keeps_waiting(monkeypatch, tmp_path):
+    """The book may still be syncing: sidecar files alone are not a finished wrong-type result."""
+    release = tmp_path / "Release"
+    release.mkdir()
+    (release / "cover.jpg").write_bytes(b"jpg")
+    (release / "book.nfo").write_text("nfo")
+
+    resolved_path, error = _wait_for_local_directory(monkeypatch, release, timeout=1)
+
+    assert resolved_path is None
+    assert error == "Completed download has no stable supported files yet."
+
+
+def test_a_wrong_kind_file_that_is_still_growing_keeps_waiting(monkeypatch, tmp_path):
+    release = tmp_path / "Release"
+    release.mkdir()
+    growing = release / "book.m4b"
+    growing.write_bytes(b"a")
+    sleeps = 0
+
+    def grow(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        growing.write_bytes(b"a" * (sleeps + 1))
+
+    resolved_path, error = _wait_for_local_directory(
+        monkeypatch, release, timeout=0.05, on_sleep=grow
+    )
+
+    # The file changes on every poll, so it is never stable and the wait runs out.
+    assert resolved_path is None
+    assert error == "Completed download has no stable supported files yet."
+    assert sleeps >= 2
 
 
 def test_wait_for_completed_path_fails_fast_for_unsafe_mapping(monkeypatch, tmp_path):

@@ -41,8 +41,8 @@ services:
 ```
 
 Notes:
-- Point `/books` to your library ingest folder (Calibre-Web, Booklore, Audiobookshelf, etc) for automatic import.
-- If you set Books Output Mode to Booklore (API), books are uploaded via API instead of written to `/books`. Audiobooks still use a destination folder.
+- Point `/books` to your library ingest folder (Calibre-Web, Grimmory, Audiobookshelf, etc) for automatic import.
+- If you set Output Mode to Grimmory (API), books are uploaded via API instead of written to `/books`. Audiobooks still use a destination folder.
 - Ensure `PUID`/`PGID` (or legacy `UID`/`GID`) match the owner of the host directories.
 - For non-root mode, start the container as `1000:1000`.
 - On Kubernetes, set `runAsUser: 1000`, `runAsGroup: 1000`, and `runAsNonRoot: true` together.
@@ -95,13 +95,16 @@ If the files are copied or synced into Shelfmark on a delay, increase **Complete
 in Settings -> Advanced. The default is 60 seconds; seedbox or remote-sync setups may need a value
 longer than the sync interval.
 
+With qBittorrent, Shelfmark also reads the torrent's own file list and imports only once every file
+the torrent downloads is there at its full size, so a sync that copies files in batches and pauses
+between them does not cause a partial import. The same wait applies, and files the torrent skips
+are not counted.
+
 ## File Processing Options
 
-### Transfer Method (Torrent / Usenet Only)
+### Hardlink Torrents (Torrent / Usenet Only)
 
-Available methods:
-- Copy (default). Works everywhere.
-- Hardlink. Preserves seeding without duplicating files.
+Imported files are copied by default, which works everywhere. Turn on **Hardlink Book Torrents** (and **Hardlink Audiobook Torrents** for audiobooks) to hardlink instead, which preserves seeding without duplicating files.
 
 Hardlink requirements and behavior:
 - Source and destination must be on the same filesystem.

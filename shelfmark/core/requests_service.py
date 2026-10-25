@@ -184,6 +184,19 @@ def _prepare_request_create(
     }
 
 
+# Which of a request's tasks decides its delivery state: an active attempt, else a
+# completed one, else a failed or cancelled one.
+_DELIVERY_PRECEDENCE: dict[str, int] = {
+    QueueStatus.QUEUED: 3,
+    QueueStatus.RESOLVING: 3,
+    QueueStatus.LOCATING: 3,
+    QueueStatus.DOWNLOADING: 3,
+    QueueStatus.COMPLETE: 2,
+    QueueStatus.ERROR: 1,
+    QueueStatus.CANCELLED: 1,
+}
+
+
 def sync_delivery_states_from_queue_status(
     user_db: UserDB,
     *,
@@ -191,6 +204,11 @@ def sync_delivery_states_from_queue_status(
     user_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Persist delivery-state transitions for fulfilled requests based on queue status."""
+    # Runs on every status poll. With no task in the queue nothing can change, so skip
+    # reading (and parsing) the whole fulfilled-request history.
+    if not any(queue_status.get(status_key) for status_key in QueueStatus):
+        return []
+
     fulfilled_rows = user_db.list_requests(user_id=user_id, status=RequestStatus.FULFILLED)
     if not fulfilled_rows:
         return []
@@ -221,6 +239,14 @@ def sync_delivery_states_from_queue_status(
             if request_id is None:
                 request_id = unique_request_ids_by_source.get(str(source_id).strip())
             if request_id is None:
+                continue
+            # A request retried after a failure has more than one task. The attempt that
+            # decides its state is one still running, else any that completed: an older
+            # failure must not undo a later delivery (and reopen the request).
+            current = request_delivery_states.get(request_id)
+            if current is not None and _DELIVERY_PRECEDENCE.get(
+                current, 0
+            ) > _DELIVERY_PRECEDENCE.get(status_key, 0):
                 continue
             request_delivery_states[request_id] = status_key
             if isinstance(task_payload, dict):
@@ -481,6 +507,17 @@ def reject_request(
 
     normalized_admin_note = _normalize_admin_note(admin_note)
 
+    extra: dict[str, Any] = {}
+    book_data = request_row.get("book_data")
+    if isinstance(book_data, dict):
+        from shelfmark.core.existence_check import without_state
+
+        # The audiobook existence check's pass count ends with the review, so a request
+        # that is reopened later counts its passes afresh.
+        cleared = without_state(book_data)
+        if cleared is not None:
+            extra["book_data"] = cleared
+
     try:
         return user_db.update_request(
             request_id,
@@ -489,11 +526,56 @@ def reject_request(
             admin_note=normalized_admin_note,
             reviewed_by=admin_user_id,
             reviewed_at=_now_timestamp(),
+            **extra,
         )
     except TypeError as exc:
         raise RequestServiceError(str(exc), status_code=400) from exc
     except ValueError as exc:
         raise RequestServiceError(str(exc), status_code=409, code="stale_transition") from exc
+
+
+def reopen_request(
+    user_db: UserDB,
+    *,
+    request_id: int,
+    admin_user_id: int,
+    admin_note: object = None,
+) -> dict[str, Any]:
+    """Move a rejected request back to pending as admin, so the rejection can be undone."""
+    request_row = ensure_request_access(
+        user_db,
+        request_id=request_id,
+        actor_user_id=admin_user_id,
+        is_admin=True,
+    )
+    if request_row["status"] != RequestStatus.REJECTED:
+        msg = "Only a rejected request can be reopened"
+        raise RequestServiceError(msg, status_code=409, code="stale_transition")
+
+    normalized_admin_note = _normalize_admin_note(admin_note)
+
+    # The user may have asked again after the rejection; two pending requests for the
+    # same book would both be worked.
+    book_data = request_row.get("book_data") or {}
+    if isinstance(book_data, dict):
+        duplicate = _find_duplicate_pending_request(
+            user_db,
+            user_id=request_row["user_id"],
+            title=_normalize_match_text(book_data.get("title")),
+            author=_normalize_match_text(book_data.get("author")),
+            content_type=normalize_content_type(
+                request_row.get("content_type") or book_data.get("content_type")
+            ),
+        )
+        if duplicate is not None:
+            msg = "Duplicate pending request exists for this title/author/content_type"
+            raise RequestServiceError(msg, status_code=409, code="duplicate_pending_request")
+
+    reopened = user_db.reopen_rejected_request(request_id, admin_note=normalized_admin_note)
+    if reopened is None:
+        msg = "Request state changed before update"
+        raise RequestServiceError(msg, status_code=409, code="stale_transition")
+    return reopened
 
 
 def fulfil_request(

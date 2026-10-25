@@ -54,12 +54,12 @@ def _mock_fetch(monkeypatch, *, content=b"", status_code=200, error=None):
 
 
 def _mock_request(monkeypatch, payload, *, status_code=200):
-    """Patch requests.request with a single canned Debrid-Link envelope."""
+    """Patch the API session with a single canned Debrid-Link envelope."""
     response = MagicMock(status_code=status_code)
     response.raise_for_status = MagicMock()
     response.json = MagicMock(return_value=payload)
     request = MagicMock(return_value=response)
-    monkeypatch.setattr("shelfmark.download.clients.debridlink.requests.request", request)
+    monkeypatch.setattr("shelfmark.download.clients.debridlink._session.request", request)
     return request
 
 
@@ -114,7 +114,7 @@ class TestEnvelope:
         response = MagicMock(status_code=503)
         response.json = MagicMock(side_effect=ValueError("no json"))
         monkeypatch.setattr(
-            "shelfmark.download.clients.debridlink.requests.request",
+            "shelfmark.download.clients.debridlink._session.request",
             MagicMock(return_value=response),
         )
         client = _client(monkeypatch)
@@ -140,7 +140,7 @@ class TestEnvelope:
 
     def test_a_network_failure_does_not_leak_the_url(self, monkeypatch):
         monkeypatch.setattr(
-            "shelfmark.download.clients.debridlink.requests.request",
+            "shelfmark.download.clients.debridlink._session.request",
             MagicMock(side_effect=requests.ConnectionError("https://debrid-link.com/secret")),
         )
         client = _client(monkeypatch)
@@ -256,7 +256,7 @@ class TestStatus:
         status = client._handle_torrent_info(partial, state)
 
         assert status.progress == 50.0
-        started.assert_called_once_with(state)
+        started.assert_called_once_with(state, partial["files"])
 
     def test_an_empty_file_list_is_not_treated_as_ready(self, tmp_path, monkeypatch):
         client = self._bare_client()
@@ -326,7 +326,7 @@ class TestStatus:
         state = _state(tmp_path)
         DebridLinkClient._downloads["DL1"] = state
         release = threading.Event()
-        monkeypatch.setattr(client, "_process_and_download", lambda _state: release.wait(5))
+        monkeypatch.setattr(client, "_process_and_download", lambda _state, _files: release.wait(5))
 
         client._maybe_start_download_thread(state)
         try:
@@ -338,6 +338,28 @@ class TestStatus:
 
         assert status.message == "Downloading files via HTTP..."
         assert status.progress == 50.0
+
+    def test_retrieval_reuses_the_files_the_status_check_already_has(self, tmp_path, monkeypatch):
+        client = self._bare_client()
+        state = _state(tmp_path)
+        DebridLinkClient._downloads["DL1"] = state
+        refetched = MagicMock(side_effect=AssertionError("file list fetched a second time"))
+        monkeypatch.setattr(client, "_fetch_file_list", refetched)
+        seen: list[list[dict]] = []
+        monkeypatch.setattr(
+            client, "_process_and_download", lambda _state, files=None: seen.append(files)
+        )
+
+        ready = {
+            "downloadPercent": 100,
+            "files": [{"name": "Dune.epub", "downloadPercent": 100, "downloadUrl": "https://dl/x"}],
+        }
+        client._handle_torrent_info(ready, state)
+        assert state.download_thread is not None
+        state.download_thread.join(5)
+
+        assert seen == [ready["files"]]
+        refetched.assert_not_called()
 
     def test_a_vanished_torrent_becomes_an_error_rather_than_a_stall(self, monkeypatch, tmp_path):
         monkeypatch.setattr("shelfmark.download.clients.debridlink.TMP_DIR", tmp_path)

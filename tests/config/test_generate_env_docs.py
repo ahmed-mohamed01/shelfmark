@@ -53,8 +53,29 @@ def test_generated_env_docs_include_custom_component_value_fields() -> None:
 
     assert (
         "| `TEMPLATE_AUDIOBOOK_ORGANIZE` | Use / to create folders. Variables: "
-        "{Author}, {FirstAuthor} (first of several authors), {Title}, {Year}, {Language}, "
+        "{Author}, {FirstAuthor} (first of several authors), {AuthorSort} (first author, surname first), {Title}, {Year}, {Language}, "
         "{User}, {OriginalName} "
         "(source filename without extension), {Series}, {SeriesPosition}, {Subtitle}, "
         "{PrimaryTitle}, {PartNumber}, {Narrator}. Use arbitrary prefix/suffix:"
     ) in docs
+
+
+def test_generated_env_docs_include_startup_variables_read_outside_the_registry() -> None:
+    docs = generate_env_docs()
+
+    for name in (
+        "SHELFMARK_API_KEY_READONLY",
+        "UMASK",
+        "TOR_CHECK_INTERVAL",
+        "TOR_MAX_FAILURES",
+    ):
+        assert f"| `{name}` |" in docs
+
+
+def test_generated_env_docs_toc_anchors_match_github_headings() -> None:
+    docs = generate_env_docs()
+
+    assert "(#soulseek-slskd)" in docs
+    assert "(#websharecz)" in docs
+    assert "(#soulseek-(slskd))" not in docs
+    assert "(#webshare.cz)" not in docs

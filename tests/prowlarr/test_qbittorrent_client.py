@@ -82,6 +82,73 @@ def test_set_category_creates_and_assigns_category():
     )
 
 
+def _client_answering_files(payload, status_code=200):
+    from shelfmark.download.clients.qbittorrent import QBittorrentClient
+
+    client = QBittorrentClient.__new__(QBittorrentClient)
+    client._base_url = "http://localhost:8080"
+    client._api_key = "key"  # a bearer key cannot sign in again, so no retry
+    client._ensure_authenticated = MagicMock()
+    client._client = MagicMock()
+    response = MagicMock(status_code=status_code)
+    response.json.return_value = payload
+    response.raise_for_status = MagicMock()
+    client._client._session.get.return_value = response
+    return client
+
+
+class TestGetExpectedFiles:
+    def test_lists_the_files_with_their_sizes(self):
+        client = _client_answering_files(
+            [
+                {"name": "Book/01.mp3", "size": 100, "priority": 1},
+                {"name": "Book/02.mp3", "size": 200, "priority": 7},
+            ]
+        )
+
+        expected = client.get_expected_files("abc123")
+
+        assert [(f.name, f.size) for f in (expected or [])] == [
+            ("Book/01.mp3", 100),
+            ("Book/02.mp3", 200),
+        ]
+        assert client._client._session.get.call_args.kwargs["params"] == {"hash": "abc123"}
+
+    def test_skips_files_the_client_is_not_downloading_and_padding_files(self):
+        client = _client_answering_files(
+            [
+                {"name": "Book/01.mp3", "size": 100, "priority": 1},
+                {"name": "Book/skipped.jpg", "size": 50, "priority": 0},
+                {"name": "Book/.pad/0", "size": 4096, "priority": 1},
+                {"name": "Book/empty.txt", "size": 0, "priority": 1},
+            ]
+        )
+
+        expected = client.get_expected_files("abc123")
+
+        assert [f.name for f in (expected or [])] == ["Book/01.mp3"]
+
+    def test_normalizes_windows_separators(self):
+        client = _client_answering_files([{"name": "Book\\01.mp3", "size": 100, "priority": 1}])
+
+        assert [f.name for f in (client.get_expected_files("abc123") or [])] == ["Book/01.mp3"]
+
+    @pytest.mark.parametrize(
+        ("payload", "status_code"),
+        [([], 200), ({"error": "x"}, 200), ([{"name": "a", "size": 0}], 200), ([], 404)],
+    )
+    def test_none_when_there_is_nothing_to_go_on(self, payload, status_code):
+        assert _client_answering_files(payload, status_code).get_expected_files("abc123") is None
+
+    def test_none_when_the_client_cannot_be_reached(self):
+        import requests
+
+        client = _client_answering_files([])
+        client._client._session.get.side_effect = requests.ConnectionError("down")
+
+        assert client.get_expected_files("abc123") is None
+
+
 class TestQBittorrentClientIsConfigured:
     """Tests for QBittorrentClient.is_configured()."""
 
@@ -470,6 +537,50 @@ class TestQBittorrentClientGetStatus:
             assert status.complete is True
             assert status.state_value == "complete"
             assert status.file_path == "/downloads/completed.epub"
+
+    def test_get_status_full_progress_still_downloading_not_complete(self, monkeypatch):
+        """rdt-client reports progress 1.0 while still finalising (state stays "downloading").
+
+        The torrent must not be treated as complete until it leaves the download-side
+        states, or post-processing runs against a content path that does not exist yet.
+        """
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "test",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+
+        mock_torrent = MockTorrent(
+            hash_val="abc123",
+            progress=1.0,
+            state="downloading",
+            content_path="/downloads/not-there-yet/",
+        )
+        mock_client_instance = MagicMock()
+        info_payload = mock_torrent.to_dict() | {"save_path": "/downloads"}
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [info_payload], status_code=200
+        )
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            client = qb_module.QBittorrentClient()
+            status = client.get_status("abc123")
+
+            assert status.complete is False
+            assert status.state_value == "downloading"
+            assert status.file_path is None
 
     def test_get_status_complete_derives_when_content_path_equals_save_path(self, monkeypatch):
         """Keep get_status() and get_download_path() consistent."""
@@ -1543,6 +1654,63 @@ class TestQBittorrentClientAddDownload:
                 client = qb_module.QBittorrentClient()
                 client.add_download("magnet:?xt=urn:btih:test&dn=test", "Test")
 
+                call_kwargs = mock_client_instance.torrents_add.call_args.kwargs
+                assert call_kwargs.get("save_path") == "/downloads/books"
+
+    def test_add_download_uses_separate_book_and_audiobook_dirs(self, monkeypatch):
+        """With separate directories on, books and audiobooks use their own directories."""
+        config_values = {
+            "QBITTORRENT_URL": "http://localhost:8080",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "password",
+            "QBITTORRENT_CATEGORY": "books",
+            "QBITTORRENT_DOWNLOAD_DIR": "/downloads/shared",
+            "QBITTORRENT_SEPARATE_DOWNLOAD_DIRS": True,
+            "QBITTORRENT_DOWNLOAD_DIR_BOOK": "/downloads/books",
+            "QBITTORRENT_DOWNLOAD_DIR_AUDIOBOOK": "/downloads/audiobooks",
+        }
+        monkeypatch.setattr(
+            "shelfmark.download.clients.qbittorrent.config.get",
+            lambda key, default="": config_values.get(key, default),
+        )
+
+        valid_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        mock_torrent = MockTorrent(hash_val=valid_hash)
+        mock_client_instance = MagicMock()
+        mock_client_instance.torrents_add.return_value = "Ok."
+        mock_client_instance._session.get.return_value = create_mock_session_response(
+            [mock_torrent], status_code=200
+        )
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+
+        with patch.dict("sys.modules", {"qbittorrentapi": MagicMock(Client=mock_client_class)}):
+            import importlib
+
+            import shelfmark.download.clients.qbittorrent as qb_module
+
+            importlib.reload(qb_module)
+
+            with patch(
+                "shelfmark.download.clients.qbittorrent.extract_torrent_info",
+                autospec=True,
+            ) as mock_extract:
+                mock_extract.return_value = TorrentInfo(
+                    info_hash=valid_hash,
+                    torrent_data=None,
+                    is_magnet=True,
+                    magnet_url=f"magnet:?xt=urn:btih:{valid_hash}&dn=test",
+                )
+
+                client = qb_module.QBittorrentClient()
+                client.add_download(
+                    "magnet:?xt=urn:btih:test&dn=test", "Test", content_type="audiobook"
+                )
+                call_kwargs = mock_client_instance.torrents_add.call_args.kwargs
+                assert call_kwargs.get("save_path") == "/downloads/audiobooks"
+
+                client.add_download(
+                    "magnet:?xt=urn:btih:test&dn=test", "Test", content_type="ebook"
+                )
                 call_kwargs = mock_client_instance.torrents_add.call_args.kwargs
                 assert call_kwargs.get("save_path") == "/downloads/books"
 

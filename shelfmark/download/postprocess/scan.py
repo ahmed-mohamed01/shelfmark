@@ -13,10 +13,7 @@ from shelfmark.download.archive import ArchiveExtractionError, extract_archive, 
 from shelfmark.download.fs import run_blocking_io
 from shelfmark.download.permissions_debug import log_path_permission_context
 from shelfmark.download.postprocess.policy import (
-    get_supported_audiobook_formats,
-)
-from shelfmark.download.postprocess.policy import (
-    get_supported_formats as get_book_formats,
+    get_supported_formats_for as get_supported_formats,
 )
 from shelfmark.download.staging import build_staging_dir
 
@@ -26,13 +23,6 @@ if TYPE_CHECKING:
     from shelfmark.core.models import DownloadTask
 
 logger = setup_logger("shelfmark.download.postprocess.pipeline")
-
-
-def get_supported_formats(content_type: str | None = None) -> list[str]:
-    """Return supported file extensions for the requested content type."""
-    if check_audiobook(content_type):
-        return get_supported_audiobook_formats()
-    return get_book_formats()
 
 
 def _format_not_supported_error(rejected_files: list[Path], task: DownloadTask) -> str:
@@ -57,6 +47,13 @@ def _format_not_supported_error(rejected_files: list[Path], task: DownloadTask) 
     )
 
 
+# rarfile extracts by running `unrar` as a subprocess. Under gevent a subprocess can only be
+# started on the thread that owns the default loop, so in the IO threadpool it raises
+# "TypeError: child watchers are only available on the default loop" and the download fails. The
+# patched subprocess waits cooperatively, so these archives are extracted in place instead.
+_SUBPROCESS_ARCHIVE_SUFFIXES = frozenset({".rar"})
+
+
 def extract_archive_files(
     archive_path: Path,
     output_dir: Path,
@@ -68,12 +65,17 @@ def extract_archive_files(
     content_type = task.content_type
 
     try:
-        extracted_files, warnings, rejected_files = run_blocking_io(
-            extract_archive,
-            archive_path,
-            output_dir,
-            content_type,
-        )
+        if archive_path.suffix.lower() in _SUBPROCESS_ARCHIVE_SUFFIXES:
+            extracted_files, warnings, rejected_files = extract_archive(
+                archive_path, output_dir, content_type
+            )
+        else:
+            extracted_files, warnings, rejected_files = run_blocking_io(
+                extract_archive,
+                archive_path,
+                output_dir,
+                content_type,
+            )
     except ArchiveExtractionError as exc:
         logger.warning(
             "Task %s: archive extraction failed for %s: %s",

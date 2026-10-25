@@ -49,6 +49,10 @@ logger = setup_logger(__name__)
 
 _API_BASE = "https://debrid-link.com/api/v2"
 
+# One session for every client instance, so the status poll every couple of seconds
+# reuses a keep-alive connection instead of opening a new TLS connection each time.
+_session = requests.Session()
+
 _DEBRIDLINK_CLIENT_ERRORS = (
     AttributeError,
     OSError,
@@ -428,7 +432,7 @@ class DebridLinkClient(DownloadClient):
         """
         url = f"{_API_BASE}{path}"
         try:
-            resp = requests.request(
+            resp = _session.request(
                 method,
                 url,
                 headers=self._auth_headers(),
@@ -592,7 +596,7 @@ class DebridLinkClient(DownloadClient):
             and all(_as_float(f.get("downloadPercent", 100)) >= _COMPLETE_PERCENT for f in files)
         )
         if ready:
-            self._maybe_start_download_thread(state)
+            self._maybe_start_download_thread(state, files)
             return DownloadStatus(
                 progress=50.0,
                 state=DownloadState.DOWNLOADING,
@@ -657,8 +661,15 @@ class DebridLinkClient(DownloadClient):
             with state.lock:
                 state.start_requested = False
 
-    def _maybe_start_download_thread(self, state: _DownloadState) -> None:
-        """Spawn a background thread to download the seedbox's files."""
+    def _maybe_start_download_thread(
+        self, state: _DownloadState, files: list[dict[str, Any]] | None = None
+    ) -> None:
+        """Spawn a background thread to download the seedbox's files.
+
+        ``files`` is the list the status check already fetched by ``ids``; passing it on
+        saves the thread a second request that has none of the status path's flood and
+        transient-error handling.
+        """
         with state.lock:
             already_running = state.phase in ("downloading_http", "complete")
             thread_alive = state.download_thread is not None and state.download_thread.is_alive()
@@ -670,7 +681,7 @@ class DebridLinkClient(DownloadClient):
             state.progress = 50.0
             t = threading.Thread(
                 target=self._process_and_download,
-                args=(state,),
+                args=(state, files),
                 daemon=True,
             )
             state.download_thread = t

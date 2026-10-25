@@ -25,6 +25,7 @@ class ReleaseProtocol(StrEnum):
     TORRENT = "torrent"  # BitTorrent
     NZB = "nzb"  # Usenet NZB
     DCC = "dcc"  # IRC DCC
+    SOULSEEK = "soulseek"  # Soulseek peer transfer (via slskd)
 
 
 class SourceUnavailableError(Exception):
@@ -476,6 +477,22 @@ class DownloadHandler(ABC):
         """
         return None
 
+    def list_authors(self, release_data: dict[str, Any]) -> list[str] | None:
+        """Return the release's authors from a source page beyond its search result.
+
+        For sources whose search results can leave the author out. Return None when the
+        source has nothing more to say than the result did.
+        """
+        return None
+
+    def seed_complaints(self, release_data: dict[str, Any]) -> int | None:
+        """How many comments on the release's page say nobody is seeding it.
+
+        For sources that report no seeder count of their own. None when the source has no
+        such signal or the page could not be read.
+        """
+        return None
+
     @abstractmethod
     def cancel(self, task_id: str) -> bool:
         """Cancel an in-progress download."""
@@ -490,9 +507,12 @@ _BUILTIN_SOURCE_MODULES = (
     "shelfmark.release_sources.direct_download",
     "shelfmark.release_sources.elscione",
     "shelfmark.release_sources.irc",
+    "shelfmark.release_sources.jackett",
     "shelfmark.release_sources.libgen",
     "shelfmark.release_sources.newznab",
     "shelfmark.release_sources.prowlarr",
+    "shelfmark.release_sources.slskd",
+    "shelfmark.release_sources.webshare",
 )
 _builtin_source_state = {"loaded": False}
 

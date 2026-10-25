@@ -9,7 +9,6 @@ This module provides:
 Clients register themselves via the @register_client decorator.
 """
 
-import logging
 import os
 import random
 import time
@@ -23,10 +22,12 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import requests
 
+from shelfmark.core.logger import setup_logger
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_logger = logging.getLogger(__name__)
+_logger = setup_logger(__name__)
 
 # Type variable for generic return type
 T = TypeVar("T")
@@ -135,6 +136,9 @@ class DownloadStatus:
     file_path: str | None  # Path in client's download dir (when complete)
     download_speed: int | None = None  # Bytes per second
     eta: int | None = None  # Seconds remaining
+    seeders: int | None = None  # Seeds connected right now (torrent clients that report it)
+    swarm_seeders: int | None = None  # Seeds the tracker says exist, connected or not
+    peers: int | None = None  # Other peers connected right now
 
     @classmethod
     def error(cls, message: str) -> DownloadStatus:
@@ -175,6 +179,14 @@ class DownloadStatus:
         return self.state
 
 
+@dataclass(frozen=True)
+class ExpectedFile:
+    """A file the client will have on disk when a download is complete."""
+
+    name: str  # Path relative to the client's save directory, "/" separated
+    size: int  # Final size in bytes
+
+
 class DownloadClient(ABC):
     """Base class for external download clients.
 
@@ -192,6 +204,8 @@ class DownloadClient(ABC):
     name: str
     handoff_only = False
     prefers_torrent_file = False
+    # False when remove(delete_files=True) always fails, as on rTorrent.
+    can_delete_files = True
 
     def _log_error(self, method: str, e: Exception, level: str = "error") -> str:
         """Log a client error with consistent formatting.
@@ -351,6 +365,15 @@ class DownloadClient(ABC):
             File or directory path, or None if not available.
 
         """
+
+    def get_expected_files(self, download_id: str) -> list[ExpectedFile] | None:
+        """The files a finished download holds, or None when the client cannot say.
+
+        Lets the handler tell a folder that has all of its files from one that stopped changing
+        while a sync to this host is still copying them in. Only files the client downloads
+        count: a file the user skipped is not expected. Default: the client cannot say.
+        """
+        return None
 
     def find_existing(
         self, url: str, category: str | None = None

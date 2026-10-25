@@ -11,7 +11,7 @@ import requests
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
-from shelfmark.download.network import get_ssl_verify
+from shelfmark.download.network import get_proxies, get_ssl_verify
 from shelfmark.release_sources.prowlarr.torznab import parse_torznab_xml
 from shelfmark.release_sources.prowlarr.utils import coerce_float_like, coerce_int_like
 
@@ -52,19 +52,24 @@ class ProwlarrSearchError(RuntimeError):
     """
 
 
-def resolve_indexer_timeout(timeout: object = None) -> int:
+def resolve_indexer_timeout(
+    timeout: object = None, *, config_key: str = "PROWLARR_INDEXER_TIMEOUT"
+) -> int:
     """Resolve the per-indexer search timeout, falling back to config.
+
+    ``config_key`` lets other Torznab-proxy sources (Jackett) reuse the clamping.
 
     Out-of-range and unparsable values are clamped rather than rejected: this
     feeds an HTTP timeout, and a bad setting should not take searching down.
     """
     if timeout is None:
-        timeout = config.get("PROWLARR_INDEXER_TIMEOUT", DEFAULT_INDEXER_TIMEOUT_SECONDS)
+        timeout = config.get(config_key, DEFAULT_INDEXER_TIMEOUT_SECONDS)
 
     resolved = coerce_int_like(timeout)
     if resolved is None:
         logger.warning(
-            "Invalid PROWLARR_INDEXER_TIMEOUT %r - using %ss",
+            "Invalid %s %r - using %ss",
+            config_key,
             timeout,
             DEFAULT_INDEXER_TIMEOUT_SECONDS,
         )
@@ -178,6 +183,7 @@ class ProwlarrClient:
                 params=params,
                 json=json_data,
                 timeout=self.timeout,
+                proxies=get_proxies(url),
                 verify=get_ssl_verify(url),
             )
 
@@ -432,6 +438,7 @@ class ProwlarrClient:
                     # Override the session default JSON accept header.
                     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"
                 },
+                proxies=get_proxies(url),
                 verify=get_ssl_verify(url),
             )
             if not response.ok:

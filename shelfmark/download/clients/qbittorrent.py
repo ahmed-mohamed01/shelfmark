@@ -16,6 +16,7 @@ from shelfmark.core.logger import setup_logger
 from shelfmark.download.clients import (
     DownloadClient,
     DownloadStatus,
+    ExpectedFile,
     register_client,
 )
 from shelfmark.download.clients._coercion import (
@@ -23,6 +24,7 @@ from shelfmark.download.clients._coercion import (
     coerce_optional_int,
     config_text,
     normalize_http_config_url,
+    resolve_download_dir,
 )
 from shelfmark.download.clients.torrent_utils import (
     extract_torrent_info,
@@ -50,6 +52,31 @@ _METADATA_DOWNLOAD_STATES = {"forcedMetaDL", "metaDL"}
 _METADATA_WAIT_POLLS = 20
 _METADATA_WAIT_INTERVAL_SECONDS = 0.5
 _ONE_WEEK_IN_SECONDS = 604800
+# States that mean a torrent is still downloading or being finalised. Some
+# qBittorrent-compatible clients (e.g. rdt-client) report progress 1.0 while
+# still in one of these, before the files and content path are final, resulting in
+# a file not found error.
+_INCOMPLETE_STATES = frozenset(
+    {
+        "allocating",
+        "checkingDL",
+        "checkingResumeData",
+        "downloading",
+        "forcedDL",
+        "forcedMetaDL",
+        "metaDL",
+        "moving",
+        "queuedDL",
+        "stalledDL",
+    }
+)
+
+
+def _non_negative_int(value: object) -> int | None:
+    """A client count, or None when it is missing or the client's "unknown" (-1)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 class _UnsafeQBittorrentPath:
@@ -228,6 +255,11 @@ class QBittorrentClient(DownloadClient):
         )
         self._category = config_text(config.get("QBITTORRENT_CATEGORY", "books"))
         self._download_dir = config_text(config.get("QBITTORRENT_DOWNLOAD_DIR", ""))
+        self._separate_download_dirs = bool(config.get("QBITTORRENT_SEPARATE_DOWNLOAD_DIRS", False))
+        self._download_dir_book = config_text(config.get("QBITTORRENT_DOWNLOAD_DIR_BOOK", ""))
+        self._download_dir_audiobook = config_text(
+            config.get("QBITTORRENT_DOWNLOAD_DIR_AUDIOBOOK", "")
+        )
         self._tags = _normalize_tags(config.get("QBITTORRENT_TAG", []))
         # download_id -> qBittorrent's current primary hash, for identities that no
         # longer match it directly. See _resolve_torrent().
@@ -508,8 +540,15 @@ class QBittorrentClient(DownloadClient):
             add_kwargs: _QBittorrentAddKwargs = {"rename": name}
             if category:
                 add_kwargs["category"] = category
-            if self._download_dir:
-                add_kwargs["save_path"] = self._download_dir
+            download_dir = resolve_download_dir(
+                separate=self._separate_download_dirs,
+                shared_dir=self._download_dir,
+                book_dir=self._download_dir_book,
+                audiobook_dir=self._download_dir_audiobook,
+                content_type=kwargs.get("content_type"),
+            )
+            if download_dir:
+                add_kwargs["save_path"] = download_dir
             if tags:
                 add_kwargs["tags"] = ",".join(tags)
             if seeding_time_limit is not None:
@@ -622,9 +661,10 @@ class QBittorrentClient(DownloadClient):
             state, message = state_info.get(torrent_state, ("unknown", str(torrent_state)))
 
             torrent_progress = getattr(torrent, "progress", 0.0)
-            # Don't mark complete while files are being moved to final location
-            # (qBittorrent moves files from incomplete → complete folder)
-            complete = torrent_progress >= 1.0 and torrent_state != "moving"
+            # Don't mark complete while files are still downloading, being finalised,
+            # or being moved to their final location (qBittorrent moves files from
+            # incomplete to complete folder).
+            complete = torrent_progress >= 1.0 and torrent_state not in _INCOMPLETE_STATES
 
             # For active downloads without a special message, leave message as None
             # so the handler can build the progress message
@@ -646,6 +686,10 @@ class QBittorrentClient(DownloadClient):
             torrent_speed = getattr(torrent, "dlspeed", None)
             torrent_speed = torrent_speed if isinstance(torrent_speed, int) else None
 
+            connected_seeds = _non_negative_int(getattr(torrent, "num_seeds", None))
+            swarm_seeds = _non_negative_int(getattr(torrent, "num_complete", None))
+            connected_peers = _non_negative_int(getattr(torrent, "num_leechs", None))
+
             return DownloadStatus(
                 progress=float(torrent_progress) * 100,
                 state="complete" if complete else state,
@@ -654,6 +698,9 @@ class QBittorrentClient(DownloadClient):
                 file_path=file_path,
                 download_speed=torrent_speed,
                 eta=eta,
+                seeders=connected_seeds,
+                swarm_seeders=swarm_seeds,
+                peers=connected_peers,
             )
         except _QBITTORRENT_CLIENT_ERRORS as e:
             return DownloadStatus.error(self._log_error("get_status", e))
@@ -754,6 +801,52 @@ class QBittorrentClient(DownloadClient):
             getattr(torrent, "name", ""),
         )
 
+    def _get_with_auth(self, url: str, params: dict[str, str]) -> requests.Response:
+        """GET a Web API endpoint, signing in again once if the session was dropped."""
+        self._ensure_authenticated()
+        resp = self._client._session.get(url, params=params, timeout=10)
+        if resp.status_code == _HTTP_STATUS_FORBIDDEN and self._can_reauthenticate:
+            logger.debug("qBittorrent returned 403; re-authenticating and retrying")
+            self._ensure_authenticated()
+            resp = self._client._session.get(url, params=params, timeout=10)
+        return resp
+
+    def get_expected_files(self, download_id: str) -> list[ExpectedFile] | None:
+        """The files this torrent holds when finished, from `/api/v2/torrents/files`.
+
+        Files with priority 0 are not downloaded and BEP 47 padding files are not real, so
+        neither is expected. None when the client does not answer or lists nothing.
+        """
+        try:
+            resp = self._get_with_auth(
+                f"{self._base_url}/api/v2/torrents/files", {"hash": download_id}
+            )
+            if resp.status_code == _HTTP_STATUS_NOT_FOUND:
+                return None
+            resp.raise_for_status()
+            payload = resp.json()
+        except _QBITTORRENT_CLIENT_ERRORS as e:
+            self._log_error("get_expected_files", e, level="debug")
+            return None
+        if not isinstance(payload, list):
+            return None
+
+        expected: list[ExpectedFile] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            size = entry.get("size")
+            if not isinstance(name, str) or not name or isinstance(size, bool):
+                continue
+            if not isinstance(size, int) or size <= 0 or entry.get("priority") == 0:
+                continue
+            normalized = name.replace("\\", "/")
+            if ".pad" in normalized.split("/")[:-1]:
+                continue
+            expected.append(ExpectedFile(normalized, size))
+        return expected or None
+
     def _derive_download_path_from_files(
         self, download_id: str
     ) -> str | _UnsafeQBittorrentPath | None:
@@ -764,20 +857,11 @@ class QBittorrentClient(DownloadClient):
         """
         import os
 
-        def get_with_auth(url: str, params: dict[str, str]) -> requests.Response:
-            self._ensure_authenticated()
-            resp = self._client._session.get(url, params=params, timeout=10)
-            if resp.status_code == _HTTP_STATUS_FORBIDDEN and self._can_reauthenticate:
-                logger.debug("qBittorrent returned 403; re-authenticating and retrying")
-                self._ensure_authenticated()
-                resp = self._client._session.get(url, params=params, timeout=10)
-            return resp
-
         try:
             properties_url = f"{self._base_url}/api/v2/torrents/properties"
             files_url = f"{self._base_url}/api/v2/torrents/files"
 
-            props_resp = get_with_auth(properties_url, {"hash": download_id})
+            props_resp = self._get_with_auth(properties_url, {"hash": download_id})
             if props_resp.status_code == _HTTP_STATUS_NOT_FOUND:
                 return None
             props_resp.raise_for_status()
@@ -787,7 +871,7 @@ class QBittorrentClient(DownloadClient):
             if not isinstance(save_path, str) or not save_path:
                 return None
 
-            files_resp = get_with_auth(files_url, {"hash": download_id})
+            files_resp = self._get_with_auth(files_url, {"hash": download_id})
             if files_resp.status_code == _HTTP_STATUS_NOT_FOUND:
                 return None
             files_resp.raise_for_status()

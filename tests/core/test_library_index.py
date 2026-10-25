@@ -234,6 +234,53 @@ def test_provider_error_keeps_answering_from_the_stale_cache(
     assert len(warnings) == 1
 
 
+def test_a_failing_library_is_tried_once_per_search_not_once_per_result(
+    providers: list[_Provider], monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    provider = _Provider("ebook", {"ebook"}, [_DCC_ENTRY])
+    providers.append(provider)
+    assert library_index.is_in_library(_book(), "ebook") is True
+
+    provider.error = RuntimeError("boom")
+    clock[0] += library_index._CACHE_TTL_SECONDS + 1
+    warnings = _warnings(monkeypatch)
+
+    for _ in range(40):  # one search page, every result asks
+        assert library_index.is_in_library(_book(), "ebook") is True
+
+    assert provider.fetches == 2  # the first index, then one failed attempt
+    assert len(warnings) == 1
+
+
+def test_a_failing_library_with_no_cache_is_not_retried_for_every_result(
+    providers: list[_Provider], clock: list[float]
+) -> None:
+    provider = _Provider("ebook", {"ebook"}, error=OSError("no such file"))
+    providers.append(provider)
+
+    for _ in range(10):
+        assert library_index.is_in_library(_book(), "ebook") is False
+
+    assert provider.fetches == 1
+
+
+def test_a_failing_library_is_retried_once_the_back_off_has_passed(
+    providers: list[_Provider], clock: list[float]
+) -> None:
+    provider = _Provider("ebook", {"ebook"}, [_DCC_ENTRY], error=OSError("down"))
+    providers.append(provider)
+    assert library_index.is_in_library(_book(), "ebook") is False
+
+    provider.error = None
+    clock[0] += library_index._FAILURE_BACKOFF_SECONDS - 1
+    assert library_index.is_in_library(_book(), "ebook") is False
+    assert provider.fetches == 1
+
+    clock[0] += 2
+    assert library_index.is_in_library(_book(), "ebook") is True
+    assert provider.fetches == 2
+
+
 def test_entries_are_cached_until_the_ttl_expires(
     providers: list[_Provider], clock: list[float]
 ) -> None:
@@ -413,9 +460,145 @@ def test_a_collection_reports_itself_as_a_collection() -> None:
     assert library_index.match_entries(book, shelf) == "collection"
 
 
+def test_a_collection_word_the_search_title_carries_is_the_book_itself() -> None:
+    shelf = [_shelf_entry({"the", "complete", "maus"}, {"art", "spiegelman"})]
+    book = _book(title="The Complete Maus", authors=["Art Spiegelman"])
+
+    assert library_index.match_entries(book, shelf) == "owned"
+
+
+def test_a_megapack_reports_itself_as_a_collection() -> None:
+    shelf = [_shelf_entry({"dungeon", "crawler", "carl", "megapack"}, {"matt", "dinniman"})]
+
+    assert library_index.match_entries(_book(), shelf) == "collection"
+
+
 def test_an_exact_shelf_title_outranks_a_collection_holding_the_same_book() -> None:
     collection = _shelf_entry({"dungeon", "crawler", "carl", "omnibus"}, {"matt", "dinniman"})
     single = _shelf_entry({"dungeon", "crawler", "carl"}, {"matt", "dinniman"})
     book = _book(title="Dungeon Crawler Carl", authors=["Matt Dinniman"])
 
     assert library_index.match_entries(book, [collection, single]) == "owned"
+
+
+# --------------------------------------------------------------------------- #
+# Fail closed for callers that act on the answer
+# --------------------------------------------------------------------------- #
+def test_a_library_that_suddenly_lists_nothing_keeps_answering_from_the_earlier_index(
+    providers: list[_Provider], monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    provider = _Provider("audio", {"audiobook"}, [_DCC_ENTRY])
+    providers.append(provider)
+    assert library_index.is_in_library(_book(), "audiobook") is True
+
+    provider.entries = []  # the server's answer changed shape and every item vanished
+    clock[0] += library_index._CACHE_TTL_SECONDS + 1
+    warnings = _warnings(monkeypatch)
+
+    assert library_index.is_in_library(_book(), "audiobook") is True
+    assert library_index.is_in_library(_book(), "audiobook", strict=True) is True
+    assert provider.fetches == 2  # the second answer came from the back-off, not a refetch
+    assert len(warnings) == 1
+    assert "listed no items" in warnings[0]
+
+
+def test_a_library_that_was_never_indexed_may_be_empty(providers: list[_Provider]) -> None:
+    providers.append(_Provider("audio", {"audiobook"}, []))
+
+    assert library_index.is_in_library(_book(), "audiobook") is False
+    assert library_index.is_in_library(_book(), "audiobook", strict=True) is False
+
+
+def test_a_strict_check_still_refuses_during_the_back_off(
+    providers: list[_Provider], clock: list[float]
+) -> None:
+    provider = _Provider("ebook", {"ebook"}, error=OSError("mount gone"))
+    providers.append(provider)
+    with pytest.raises(library_index.LibraryUnavailableError):
+        library_index.is_in_library(_book(), "ebook", strict=True)
+
+    # Inside the back-off nothing is fetched, and the answer must not fall back to "not owned".
+    with pytest.raises(library_index.LibraryUnavailableError):
+        library_index.is_in_library(_book(), "ebook", strict=True)
+    assert provider.fetches == 1
+
+
+def test_a_strict_check_refuses_to_guess_when_a_library_is_down_and_nothing_is_cached(
+    providers: list[_Provider],
+) -> None:
+    providers.append(_Provider("ebook", {"ebook"}, error=OSError("mount gone")))
+
+    with pytest.raises(library_index.LibraryUnavailableError, match=r"Ebook \(test\)"):
+        library_index.is_in_library(_book(), "ebook", strict=True)
+
+
+def test_a_strict_check_still_answers_from_a_stale_cache(
+    providers: list[_Provider], clock: list[float]
+) -> None:
+    provider = _Provider("ebook", {"ebook"}, [_DCC_ENTRY])
+    providers.append(provider)
+    assert library_index.is_in_library(_book(), "ebook", strict=True) is True
+
+    provider.error = RuntimeError("boom")
+    clock[0] += library_index._CACHE_TTL_SECONDS + 1
+
+    assert library_index.is_in_library(_book(), "ebook", strict=True) is True
+
+
+def test_a_down_library_leaves_the_badges_fail_open(providers: list[_Provider]) -> None:
+    providers.append(_Provider("ebook", {"ebook"}, error=OSError("mount gone")))
+
+    assert library_index.ownership(_book()) == {"ebook": None}
+
+
+def test_require_ready_names_the_library_that_cannot_be_read(providers: list[_Provider]) -> None:
+    providers.append(_Provider("audiobook", {"audiobook"}, [_DCC_ENTRY]))
+    providers.append(_Provider("ebook", {"ebook"}, error=OSError("mount gone")))
+
+    with pytest.raises(library_index.LibraryUnavailableError, match=r"Ebook \(test\)"):
+        library_index.require_ready()
+
+
+def test_require_ready_passes_once_every_enabled_library_has_been_read(
+    providers: list[_Provider],
+) -> None:
+    providers.append(_Provider("ebook", {"ebook"}, [_DCC_ENTRY]))
+    providers.append(_Provider("audiobook", {"audiobook"}, [_DCC_ENTRY]))
+
+    library_index.require_ready()  # does not raise
+
+
+def test_require_ready_ignores_a_disabled_library(providers: list[_Provider]) -> None:
+    providers.append(_Provider("ebook", {"ebook"}, enabled=False, error=OSError("mount gone")))
+
+    library_index.require_ready()  # does not raise
+
+
+def test_require_ready_only_checks_the_libraries_for_the_content_type(
+    providers: list[_Provider],
+) -> None:
+    providers.append(_Provider("ebook", {"ebook"}, error=OSError("no such file")))
+    providers.append(_Provider("audio", {"audiobook"}, [_entry("carl")]))
+
+    library_index.require_ready("audiobook")
+
+    with pytest.raises(library_index.LibraryUnavailableError, match="Ebook"):
+        library_index.require_ready("ebook")
+
+
+def test_matching_tokenises_the_title_once_for_all_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The title does not change between entries, so it is split into words once."""
+    from shelfmark.core import text_match
+
+    calls: list[str | None] = []
+    real = text_match.significant_tokens
+
+    def counting(text: str | None) -> list[str]:
+        calls.append(text)
+        return real(text)
+
+    monkeypatch.setattr(text_match, "significant_tokens", counting)
+    entries = [_entry("unrelated", f"word{i}", "someone") for i in range(50)]
+
+    assert library_index.match_entries(_book(), entries) is None
+    assert len(calls) <= 2

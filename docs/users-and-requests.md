@@ -42,10 +42,10 @@ There are four categories of per-user settings:
 
 Override where a user's downloads are sent. Options depend on the global output mode configuration:
 
-- **Output mode** — Folder, Email (SMTP), or BookLore (API)
+- **Output mode** — Folder, Email (SMTP), or Grimmory (API)
 - **Destination** — A custom folder path for this user's ebook downloads
 - **Audiobook destination** — A custom folder path for audiobook downloads
-- **BookLore library/path** — Per-user BookLore target (when using BookLore output mode)
+- **Grimmory library/path** — Per-user Grimmory target (when using Grimmory output mode)
 - **Email recipient** — Per-user email address (when using Email output mode)
 
 ### Search Preferences
@@ -60,6 +60,8 @@ Override how a user searches, on top of the global search defaults:
 ### Notifications
 
 Users can configure personal notification routes, separate from the global notification settings. Each route targets a URL (e.g. an Apprise-compatible endpoint) and can be scoped to specific event types or all events.
+
+Route URLs can use `{User}` and `{Email}` in their path or query, filled in from each user's account when a notification is sent. A route is skipped for users without the value it needs, or whose value contains spaces or any of `, ; / \ "` (or is only dots, such as `..`), since those would split it into several targets or change the URL path. The admin-set default routes apply to every user who hasn't set routes of their own and can use any service, so one default such as `mailtos://user:pass@smtp.example.com?to={Email}` reaches each user at their own address. The service a default points to then receives each user's email address, so only use one you trust with it. Routes a user sets themselves stay limited to the personal-route services, e.g. `ntfys://ntfy.sh/shelfmark-{User}`.
 
 ### Request Policy (admin-only)
 
@@ -99,6 +101,8 @@ The rules matrix lets you override the mode for specific source + content type c
 
 For example, if the default ebook mode is "Download", a rule can restrict a specific source to "Request Release" or "Blocked", but not the other way around. If no rule matches, the content-type default applies.
 
+Rules cannot use "Request Book". Sources whose browse results are already concrete releases are also treated as "Request Release" when the default mode is "Request Book", since there is no book-level request to make for them.
+
 ### Per-User Overrides
 
 Admins can override the default ebook/audiobook modes and request rules for individual users. Per-user rules are overlaid on the global rules, not replacing them.
@@ -109,5 +113,6 @@ Admins can override the default ebook/audiobook modes and request rules for indi
 2. Request appears in the admin request queue as **pending**
 3. Admin either **fulfils** (queues a download) or **rejects** the request
 4. For fulfilled requests, delivery state is tracked through the download pipeline
-5. If delivery fails, an admin can reopen the request to try a different release
+5. If delivery fails and the download cannot be retried, the request goes back to pending automatically so an admin can approve it again with a different release. An admin can also reopen a rejected request
 6. Users can cancel their own pending requests
+7. An admin can **reopen** a rejected request, from the Requests tab or from History. It goes back to pending with what the user originally asked for, and shows in the activity list again even if the user had dismissed it.
